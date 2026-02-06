@@ -1,4 +1,12 @@
 import { create } from 'zustand';
+import type {
+  Genre,
+  SongSection,
+  ProEffect,
+  KeyLightingZone,
+  EmotionVector,
+  ProLightingState,
+} from '../types';
 
 // Fixture state from effects engine
 interface FixtureState {
@@ -10,6 +18,8 @@ interface FixtureState {
   g: number;
   b: number;
 }
+
+const MAX_SECTION_HISTORY = 50;
 
 interface DMXState {
   // Connection status
@@ -31,6 +41,9 @@ interface DMXState {
   // Blackout state
   isBlackout: boolean;
 
+  // Professional lighting state
+  proLighting: ProLightingState;
+
   // Actions
   setConnected: (connected: boolean) => void;
   setStatus: (fps: number, packetsSent: number) => void;
@@ -39,8 +52,36 @@ interface DMXState {
   setFixtureStates: (fixtures: FixtureState[]) => void;
   setEffectsInfo: (state: string, movement: string, dimmer: string) => void;
   setBlackout: (blackout: boolean) => void;
+  setGenre: (genre: Genre | null) => void;
+  setSection: (section: SongSection, intensity: number) => void;
+  setActiveEffects: (effects: Partial<ProEffect>) => void;
+  setKeyLightingZones: (zones: KeyLightingZone[]) => void;
+  setEmotionVector: (emotion: EmotionVector | null) => void;
+  setBeatPhrase: (phrase: number, beatsPerPhrase: number) => void;
+  updateProLighting: (data: Partial<ProLightingState>) => void;
   clearAll: () => void;
 }
+
+const defaultProEffect: ProEffect = {
+  strobeMode: 'off',
+  chaseType: 'off',
+  movementType: 'none',
+  colorWash: null,
+  intensity: 0,
+  speed: 0,
+};
+
+const defaultProLighting: ProLightingState = {
+  genre: null,
+  section: 'UNKNOWN',
+  sectionIntensity: 0,
+  sectionHistory: [],
+  activeEffects: { ...defaultProEffect },
+  keyLightingZones: [],
+  emotionVector: null,
+  beatPhrase: 0,
+  beatsPerPhrase: 4,
+};
 
 export const useDMXStore = create<DMXState>((set) => ({
   // Initial state
@@ -53,6 +94,7 @@ export const useDMXStore = create<DMXState>((set) => ({
   movementPattern: 'none',
   dimmerEffect: 'none',
   isBlackout: false,
+  proLighting: { ...defaultProLighting },
 
   // Actions
   setConnected: (connected) => set({ isConnected: connected }),
@@ -97,10 +139,70 @@ export const useDMXStore = create<DMXState>((set) => ({
 
   setBlackout: (blackout) => set({ isBlackout: blackout }),
 
+  setGenre: (genre) =>
+    set((state) => ({
+      proLighting: { ...state.proLighting, genre },
+    })),
+
+  setSection: (section, intensity) =>
+    set((state) => {
+      const now = Date.now();
+      const history = [...state.proLighting.sectionHistory];
+
+      // Close the previous section entry
+      if (history.length > 0 && !history[history.length - 1].endTime) {
+        history[history.length - 1].endTime = now;
+      }
+
+      // Add new section entry
+      history.push({ section, startTime: now, intensity });
+
+      // Trim history
+      const trimmed = history.slice(-MAX_SECTION_HISTORY);
+
+      return {
+        proLighting: {
+          ...state.proLighting,
+          section,
+          sectionIntensity: intensity,
+          sectionHistory: trimmed,
+        },
+      };
+    }),
+
+  setActiveEffects: (effects) =>
+    set((state) => ({
+      proLighting: {
+        ...state.proLighting,
+        activeEffects: { ...state.proLighting.activeEffects, ...effects },
+      },
+    })),
+
+  setKeyLightingZones: (zones) =>
+    set((state) => ({
+      proLighting: { ...state.proLighting, keyLightingZones: zones },
+    })),
+
+  setEmotionVector: (emotion) =>
+    set((state) => ({
+      proLighting: { ...state.proLighting, emotionVector: emotion },
+    })),
+
+  setBeatPhrase: (phrase, beatsPerPhrase) =>
+    set((state) => ({
+      proLighting: { ...state.proLighting, beatPhrase: phrase, beatsPerPhrase },
+    })),
+
+  updateProLighting: (data) =>
+    set((state) => ({
+      proLighting: { ...state.proLighting, ...data },
+    })),
+
   clearAll: () =>
     set({
       universes: new Map(),
       fixtureStates: new Map(),
       isBlackout: false,
+      proLighting: { ...defaultProLighting },
     }),
 }));

@@ -16,6 +16,11 @@ import {
   IconButton,
   Chip,
   Pagination,
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -23,6 +28,10 @@ import {
   Delete as DeleteIcon,
   CheckCircle as ActiveIcon,
   Visibility as ViewIcon,
+  AutoFixHigh as WizardIcon,
+  Dashboard as ScratchIcon,
+  ContentCopy as TemplateIcon,
+  FileUpload as ImportIcon,
 } from '@mui/icons-material';
 import { rigsApi } from '../../services/api';
 import type { Rig, RigCreate } from '../../types';
@@ -33,6 +42,7 @@ export default function RigList() {
   const [totalPages, setTotalPages] = useState(1);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [newRigMenuOpen, setNewRigMenuOpen] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newRig, setNewRig] = useState<RigCreate>({
     name: '',
@@ -102,7 +112,7 @@ export default function RigList() {
         <Button
           variant="contained"
           startIcon={<AddIcon />}
-          onClick={() => setCreateDialogOpen(true)}
+          onClick={() => setNewRigMenuOpen(true)}
         >
           New Rig
         </Button>
@@ -192,7 +202,70 @@ export default function RigList() {
         </Box>
       )}
 
-      {/* Create Dialog */}
+      {/* New Rig Choice Dialog */}
+      <Dialog
+        open={newRigMenuOpen}
+        onClose={() => setNewRigMenuOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Create New Rig</DialogTitle>
+        <DialogContent sx={{ p: 0 }}>
+          <List>
+            <ListItem disablePadding>
+              <ListItemButton
+                onClick={() => {
+                  setNewRigMenuOpen(false);
+                  navigate('/rigs/new/wizard');
+                }}
+              >
+                <ListItemIcon><WizardIcon color="primary" /></ListItemIcon>
+                <ListItemText
+                  primary="Quick Setup Wizard"
+                  secondary="Guided setup with venue presets and auto-placement"
+                />
+              </ListItemButton>
+            </ListItem>
+            <ListItem disablePadding>
+              <ListItemButton
+                onClick={() => {
+                  setNewRigMenuOpen(false);
+                  setCreateDialogOpen(true);
+                }}
+              >
+                <ListItemIcon><ScratchIcon /></ListItemIcon>
+                <ListItemText
+                  primary="Start from Scratch"
+                  secondary="Create an empty rig and add fixtures manually"
+                />
+              </ListItemButton>
+            </ListItem>
+            <ListItem disablePadding>
+              <ListItemButton disabled>
+                <ListItemIcon><TemplateIcon /></ListItemIcon>
+                <ListItemText
+                  primary="From Template"
+                  secondary="Use a saved rig template (coming soon)"
+                />
+              </ListItemButton>
+            </ListItem>
+            <ListItem disablePadding>
+              <ListItemButton disabled>
+                <ListItemIcon><ImportIcon /></ListItemIcon>
+                <ListItemText
+                  primary="Import File"
+                  secondary="Import from MVR, console patch, or JSON (coming soon)"
+                />
+              </ListItemButton>
+            </ListItem>
+          </List>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setNewRigMenuOpen(false)}>Cancel</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Create Dialog (Start from Scratch) */}
       <Dialog
         open={createDialogOpen}
         onClose={() => setCreateDialogOpen(false)}

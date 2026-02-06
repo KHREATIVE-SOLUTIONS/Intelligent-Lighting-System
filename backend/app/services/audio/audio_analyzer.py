@@ -3,11 +3,13 @@ Audio Analyzer Service
 ======================
 
 Real-time audio analysis including beat detection, mood classification,
-and frequency analysis.
+frequency analysis, and ML pipeline integration (MERT, structure, genre).
 """
 
 import asyncio
 import numpy as np
+import time
+import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from collections import deque
@@ -18,6 +20,8 @@ from app.schemas.audio import (
     AudioStreamConfig, AudioAnalysisResponse,
     BeatResponse, MoodResponse, FrequencyResponse, FrequencyBand
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AudioAnalyzer:
@@ -77,6 +81,36 @@ class AudioAnalyzer:
         # Latency tracking
         self.latency_ms = 0.0
 
+        # ML pipeline components (set via set_ml_models)
+        self._mert_model = None
+        self._structure_analyzer = None
+        self._genre_classifier = None
+
+        # ML pipeline state / rate limiting
+        self._last_mert_time = 0.0
+        self._mert_interval = 0.5          # 2Hz (every 500ms)
+        self._last_genre_time = 0.0
+        self._genre_interval = 10.0        # Every 10 seconds
+        self._last_structure_analysis = None
+        self._last_emotion_vector = None
+        self._last_emotion_mapping = None
+        self._last_genre_result = None
+
+    def set_ml_models(self, mert_model=None, structure_analyzer=None, genre_classifier=None):
+        """Set ML model references from model_manager.
+
+        Called during startup after models are loaded.
+        """
+        self._mert_model = mert_model
+        self._structure_analyzer = structure_analyzer
+        self._genre_classifier = genre_classifier
+        logger.info(
+            "ML models wired into audio analyzer: mert=%s, structure=%s, genre=%s",
+            mert_model is not None,
+            structure_analyzer is not None,
+            genre_classifier is not None,
+        )
+
     async def start(self):
         """Start the audio analyzer."""
         self.is_running = True
@@ -98,28 +132,161 @@ class AudioAnalyzer:
             audio_data: Audio samples as float32 array (-1.0 to 1.0)
 
         Returns:
-            Dictionary containing beat, mood, and frequency analysis
+            Dictionary containing beat, mood, frequency, and ML pipeline analysis
         """
         start_time = datetime.utcnow()
 
         # Update buffer
         self._update_buffer(audio_data)
 
-        # Run analyses
+        # Run core analyses
         beat_result = await self._analyze_beat(audio_data)
         frequency_result = self._analyze_frequency(audio_data)
         mood_result = await self._analyze_mood(audio_data)
 
-        # Calculate latency
-        end_time = datetime.utcnow()
-        self.latency_ms = (end_time - start_time).total_seconds() * 1000
-
-        return {
+        result = {
             "beat": beat_result,
             "mood": mood_result,
             "frequency": frequency_result,
-            "latency_ms": self.latency_ms,
         }
+
+        # Run ML pipeline models (MERT, structure, genre)
+        ml_result = await self._run_ml_pipeline(audio_data, beat_result, frequency_result)
+        if ml_result:
+            result["ml"] = ml_result
+
+        # Calculate latency
+        end_time = datetime.utcnow()
+        self.latency_ms = (end_time - start_time).total_seconds() * 1000
+        result["latency_ms"] = self.latency_ms
+
+        return result
+
+    async def _run_ml_pipeline(
+        self, audio_data: np.ndarray, beat_result: Dict, frequency_result: Dict
+    ) -> Optional[Dict[str, Any]]:
+        """Run MERT, structure analyzer, and genre classifier.
+
+        Each model has its own rate limit:
+        - MERT: 2Hz (every 500ms)
+        - Structure: on every downbeat
+        - Genre: every 10 seconds
+        """
+        current_time = time.time()
+        ml_output: Dict[str, Any] = {}
+
+        # --- MERT emotion recognition (2Hz) ---
+        if self._mert_model is not None:
+            self._mert_model.feed_audio(audio_data, self.sample_rate)
+            if current_time - self._last_mert_time >= self._mert_interval:
+                self._last_mert_time = current_time
+                try:
+                    emotion = await self._mert_model.get_emotion()
+                    self._last_emotion_vector = emotion
+                    self._last_emotion_mapping = self._mert_model.map_to_lighting(emotion)
+                except Exception as e:
+                    logger.warning("MERT inference error: %s", e)
+
+        if self._last_emotion_vector is not None:
+            ev = self._last_emotion_vector
+            ml_output["emotion_vector"] = {
+                "valence": ev.valence,
+                "arousal": ev.arousal,
+                "dominance": ev.dominance,
+                "tension": ev.tension,
+                "energy_trajectory": ev.energy_trajectory,
+                "groove": ev.groove,
+                "darkness": ev.darkness,
+                "confidence": ev.confidence,
+            }
+        if self._last_emotion_mapping is not None:
+            em = self._last_emotion_mapping
+            ml_output["emotion_mapping"] = {
+                "color_temp_k": em.color_temp_k,
+                "base_intensity": em.base_intensity,
+                "movement_speed": em.movement_speed,
+                "strobe_probability": em.strobe_probability,
+                "chase_complexity": em.chase_complexity,
+                "color_saturation": em.color_saturation,
+                "palette_warmth": em.palette_warmth,
+                "coverage": em.coverage,
+                "pulse_depth": em.pulse_depth,
+            }
+
+        # --- Music structure analyzer (on downbeats) ---
+        if self._structure_analyzer is not None:
+            is_beat = beat_result.get("is_beat", False)
+            is_downbeat = beat_result.get("is_downbeat", False)
+            bpm = beat_result.get("bpm", 120.0)
+            rms_energy = frequency_result.get("rms_energy", 0.0)
+            spectral_flux = frequency_result.get("spectral_flux", 0.0)
+            spectral_centroid = frequency_result.get("spectral_centroid", 0.0)
+
+            bands = {}
+            for b in frequency_result.get("bands", []):
+                bands[b["name"]] = b["energy"]
+            bass_energy = bands.get("bass", 0) + bands.get("sub_bass", 0)
+
+            try:
+                analysis = self._structure_analyzer.update_beat(
+                    is_beat=is_beat,
+                    is_downbeat=is_downbeat,
+                    bpm=bpm,
+                    energy=min(1.0, rms_energy * 2),
+                    bass=min(1.0, bass_energy),
+                    spectral_flux=spectral_flux,
+                    spectral_centroid=spectral_centroid,
+                )
+                self._last_structure_analysis = analysis
+            except Exception as e:
+                logger.warning("Structure analysis error: %s", e)
+
+        if self._last_structure_analysis is not None:
+            sa = self._last_structure_analysis
+            ml_output["structure"] = {
+                "section": sa.current_section.section_type.value,
+                "section_confidence": sa.current_section.confidence,
+                "section_progress": sa.current_section.progress,
+                "bars_elapsed": sa.current_section.bars_elapsed,
+                "bars_remaining": sa.current_section.estimated_bars_remaining,
+                "phrase_position": sa.current_section.phrase_position,
+                "phrase_length": sa.current_section.phrase_length,
+                "is_section_boundary": sa.current_section.is_section_boundary,
+                "transition": {
+                    "predicted_next": sa.transition.predicted_next_section.value,
+                    "bars_until": sa.transition.bars_until_transition,
+                    "confidence": sa.transition.transition_confidence,
+                    "is_buildup": sa.transition.is_buildup,
+                    "buildup_progress": sa.transition.buildup_progress,
+                    "type": sa.transition.transition_type,
+                },
+                "bar_number": sa.bar_number,
+                "beat_in_bar": sa.beat_in_bar,
+            }
+
+        # --- Genre classifier (every 10 seconds) ---
+        if self._genre_classifier is not None:
+            if current_time - self._last_genre_time >= self._genre_interval:
+                self._last_genre_time = current_time
+                try:
+                    genre_result = await self._genre_classifier.classify(
+                        self.audio_buffer, self.sample_rate
+                    )
+                    self._last_genre_result = genre_result
+                except Exception as e:
+                    logger.warning("Genre classification error: %s", e)
+
+        if self._last_genre_result is not None:
+            gr = self._last_genre_result
+            ml_output["genre"] = {
+                "top_level": gr.top_level,
+                "genre": gr.genre,
+                "genre_confidence": gr.genre_confidence,
+                "subgenre": gr.subgenre,
+                "genre_scores": gr.genre_scores,
+            }
+
+        return ml_output if ml_output else None
 
     def _update_buffer(self, audio_data: np.ndarray):
         """Update the circular audio buffer."""
@@ -211,8 +378,10 @@ class AudioAnalyzer:
 
         Uses spectral features to estimate emotional content.
         """
-        # Use ML model if available
-        if self.model_manager and self.model_manager.has_model('hubert'):
+        # Use ML model if available (prefer MERT over HuBERT)
+        if self.model_manager and (
+            self.model_manager.has_model('mert') or self.model_manager.has_model('hubert')
+        ):
             result = await self.model_manager.classify_mood(audio_data)
             self.current_valence = result['valence']
             self.current_arousal = result['arousal']

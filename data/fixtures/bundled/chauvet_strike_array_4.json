@@ -1,0 +1,50 @@
+{
+  "manufacturer": "Chauvet Professional",
+  "model": "Strike Array 4",
+  "fixture_type": "strobe",
+  "weight": 8.5,
+  "power": 316,
+  "beam_angle": 68.0,
+  "pan_range": 0,
+  "tilt_range": 0,
+  "has_rgb": true,
+  "has_cmy": false,
+  "has_color_wheel": false,
+  "source": "bundled",
+  "is_bundled": true,
+  "categories": ["blinder", "strobe", "warm_white", "rgb"],
+  "modes": [
+    {
+      "name": "5-Channel",
+      "channel_count": 5,
+      "description": "Basic mode - main strobe and RGB backlight",
+      "channels": [
+        {"channel_number": 1, "channel_type": "dimmer", "name": "Warm White Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "strobe", "name": "Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 3, "channel_type": "red", "name": "RGB Red", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "green", "name": "RGB Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 5, "channel_type": "blue", "name": "RGB Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    },
+    {
+      "name": "13-Channel",
+      "channel_count": 13,
+      "description": "Extended mode with individual cell control",
+      "channels": [
+        {"channel_number": 1, "channel_type": "dimmer", "name": "WW Cell 1 Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "dimmer", "name": "WW Cell 2 Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 3, "channel_type": "dimmer", "name": "WW Cell 3 Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "dimmer", "name": "WW Cell 4 Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 5, "channel_type": "strobe", "name": "WW Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "speed", "name": "WW Strobe Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 7, "channel_type": "macro", "name": "WW Effect Macros", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 8, "channel_type": "speed", "name": "WW Effect Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 9, "channel_type": "dimmer", "name": "RGB Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 10, "channel_type": "red", "name": "RGB Red", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 11, "channel_type": "green", "name": "RGB Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 12, "channel_type": "blue", "name": "RGB Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 13, "channel_type": "strobe", "name": "RGB Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    }
+  ]
+}

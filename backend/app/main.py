@@ -10,7 +10,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api.endpoints import shows, rigs, fixtures, audio, dmx, websocket, effects, training, lfo
+from app.api.endpoints import (
+    shows, rigs, fixtures, audio, dmx, websocket, effects, training, lfo,
+    fixture_library, rig_patching, fixture_test, wizard, templates,
+    rig_import_export, discovery, qr_scanning, demo,
+)
 from app.core.config import settings
 from app.db.database import engine, Base
 from app.services.audio.audio_analyzer import AudioAnalyzer
@@ -42,6 +46,14 @@ async def lifespan(app: FastAPI):
     try:
         # Initialize audio analyzer
         app.state.audio_analyzer = AudioAnalyzer(app.state.model_manager)
+
+        # Wire ML pipeline models into audio analyzer
+        if app.state.model_manager:
+            app.state.audio_analyzer.set_ml_models(
+                mert_model=app.state.model_manager.mert_model,
+                structure_analyzer=app.state.model_manager.structure_analyzer,
+                genre_classifier=app.state.model_manager.genre_classifier,
+            )
     except Exception as e:
         print(f"Warning: Could not initialize audio analyzer: {e}")
         app.state.audio_analyzer = None
@@ -78,6 +90,34 @@ async def lifespan(app: FastAPI):
 
         # Register with API
         set_effects_engine(app.state.effects_engine)
+
+        # Initialize professional lighting modules
+        # Genre profiles, section manager, pro effects, and key lighting
+        # are already instantiated inside EffectsEngine - just configure them
+        from app.services.lighting.genre_profiles import Genre
+        from app.services.lighting.key_lighting import PerformerZone, KeyLightConfig
+        from app.services.effects.color_mapper import RGB
+
+        # Set default genre
+        app.state.effects_engine.set_genre(Genre.EDM)
+
+        # Configure DJ booth key lighting
+        app.state.effects_engine.key_lighting.configure_zone(
+            PerformerZone.DJ_BOOTH,
+            KeyLightConfig(
+                zone=PerformerZone.DJ_BOOTH,
+                min_intensity=0.4,
+                color_temp="genre",
+                active=True,
+            )
+        )
+
+        # Pro lighting starts disabled - enable via API when ready
+        print("Professional lighting modules initialized (use API to enable)")
+
+        # Wire effects engine to demo module
+        from app.api.endpoints.demo import set_demo_effects_engine
+        set_demo_effects_engine(app.state.effects_engine)
 
         # Start the effects engine async loop (BUG-016 fix: store task reference)
         import asyncio
@@ -196,6 +236,15 @@ app.include_router(websocket.router, prefix="/ws", tags=["WebSocket"])
 app.include_router(effects.router, prefix="/api", tags=["Effects"])
 app.include_router(training.router, prefix="/api", tags=["Training"])
 app.include_router(lfo.router, prefix="/api", tags=["LFO Effects"])
+app.include_router(fixture_library.router, prefix="/api/fixtures/library", tags=["Fixture Library"])
+app.include_router(rig_patching.router, prefix="/api/rigs", tags=["Rig Patching"])
+app.include_router(fixture_test.router, prefix="/api", tags=["Fixture Test"])
+app.include_router(wizard.router, prefix="/api/wizard", tags=["Setup Wizard"])
+app.include_router(templates.router, prefix="/api/templates", tags=["Templates"])
+app.include_router(rig_import_export.router, prefix="/api", tags=["Import/Export"])
+app.include_router(discovery.router, prefix="/api", tags=["Discovery"])
+app.include_router(qr_scanning.router, prefix="/api", tags=["QR Scanning"])
+app.include_router(demo.router, prefix="/api", tags=["Demo & Venues"])
 
 
 @app.get("/")
@@ -225,6 +274,10 @@ async def health_check():
             getattr(app.state, 'effects_engine', None) and app.state.effects_engine.running
         ) else "stopped",
         "lfo_engine": "ready" if getattr(app.state, 'lfo_engine', None) else "unavailable",
+        "pro_lighting": "enabled" if (
+            getattr(app.state, 'effects_engine', None) and
+            app.state.effects_engine._pro_lighting_enabled
+        ) else "disabled",
     }
 
     # Determine overall health

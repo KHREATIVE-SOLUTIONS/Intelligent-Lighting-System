@@ -12,7 +12,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
-from app.models.fixture import Fixture, FixtureMode, FixtureChannel, FixtureType
+from app.models.fixture import Fixture, FixtureMode, FixtureChannel, FixtureType, ChannelType
 from app.schemas.fixture import (
     FixtureCreate, FixtureUpdate, FixtureResponse, FixtureListResponse,
     FixtureModeCreate, FixtureModeResponse,
@@ -235,25 +235,126 @@ async def delete_mode(
     await db.delete(mode)
 
 
+@router.get("/channel-templates/{fixture_type}")
+async def get_channel_templates(fixture_type: str):
+    """Get suggested channel layout templates for a fixture type."""
+    templates = {
+        "moving_head": [
+            {"channel_number": 1, "channel_type": "pan", "name": "Pan"},
+            {"channel_number": 2, "channel_type": "pan_fine", "name": "Pan Fine"},
+            {"channel_number": 3, "channel_type": "tilt", "name": "Tilt"},
+            {"channel_number": 4, "channel_type": "tilt_fine", "name": "Tilt Fine"},
+            {"channel_number": 5, "channel_type": "speed", "name": "Speed"},
+            {"channel_number": 6, "channel_type": "dimmer", "name": "Dimmer"},
+            {"channel_number": 7, "channel_type": "shutter", "name": "Shutter"},
+            {"channel_number": 8, "channel_type": "red", "name": "Red"},
+            {"channel_number": 9, "channel_type": "green", "name": "Green"},
+            {"channel_number": 10, "channel_type": "blue", "name": "Blue"},
+            {"channel_number": 11, "channel_type": "white", "name": "White"},
+            {"channel_number": 12, "channel_type": "zoom", "name": "Zoom"},
+        ],
+        "led_par": [
+            {"channel_number": 1, "channel_type": "dimmer", "name": "Dimmer"},
+            {"channel_number": 2, "channel_type": "red", "name": "Red"},
+            {"channel_number": 3, "channel_type": "green", "name": "Green"},
+            {"channel_number": 4, "channel_type": "blue", "name": "Blue"},
+            {"channel_number": 5, "channel_type": "white", "name": "White"},
+            {"channel_number": 6, "channel_type": "strobe", "name": "Strobe"},
+        ],
+        "led_bar": [
+            {"channel_number": 1, "channel_type": "dimmer", "name": "Dimmer"},
+            {"channel_number": 2, "channel_type": "strobe", "name": "Strobe"},
+            {"channel_number": 3, "channel_type": "red", "name": "Red"},
+            {"channel_number": 4, "channel_type": "green", "name": "Green"},
+            {"channel_number": 5, "channel_type": "blue", "name": "Blue"},
+        ],
+        "wash": [
+            {"channel_number": 1, "channel_type": "dimmer", "name": "Dimmer"},
+            {"channel_number": 2, "channel_type": "red", "name": "Red"},
+            {"channel_number": 3, "channel_type": "green", "name": "Green"},
+            {"channel_number": 4, "channel_type": "blue", "name": "Blue"},
+            {"channel_number": 5, "channel_type": "white", "name": "White"},
+            {"channel_number": 6, "channel_type": "zoom", "name": "Zoom"},
+        ],
+    }
+
+    if fixture_type not in templates:
+        return {"fixture_type": fixture_type, "channels": [], "message": "No template available"}
+
+    return {"fixture_type": fixture_type, "channels": templates[fixture_type]}
+
+
 @router.post("/import/gdtf")
 async def import_gdtf(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
     """Import a fixture from a GDTF file."""
-    # GDTF files are ZIP archives containing XML and 3D models
-    # This is a placeholder for the actual implementation
-    if not file.filename.endswith('.gdtf'):
-        raise HTTPException(status_code=400, detail="File must be a .gdtf file")
+    if not file.filename or not file.filename.lower().endswith(".gdtf"):
+        raise HTTPException(status_code=400, detail="File must be a GDTF file (.gdtf)")
 
-    # TODO: Implement GDTF parsing
-    # 1. Extract ZIP
-    # 2. Parse description.xml
-    # 3. Create Fixture, FixtureMode, and FixtureChannel records
-    # 4. Store 3D model references
+    content = await file.read()
+
+    try:
+        from app.services.fixture_library.gdtf_parser import parse_gdtf
+        fixture_data = parse_gdtf(content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Check for duplicate by GDTF ID
+    gdtf_id = fixture_data.get("gdtf_id")
+    if gdtf_id:
+        existing_query = select(Fixture).where(Fixture.gdtf_id == gdtf_id)
+        existing_result = await db.execute(existing_query)
+        existing = existing_result.scalar_one_or_none()
+        if existing:
+            return {"message": "Fixture already exists", "fixture_id": existing.id}
+
+    modes_data = fixture_data.pop("modes", [])
+    fixture = Fixture(
+        manufacturer=fixture_data.get("manufacturer", "Unknown"),
+        model=fixture_data.get("model", "Unknown"),
+        fixture_type=FixtureType(fixture_data.get("fixture_type", "other")),
+        gdtf_id=fixture_data.get("gdtf_id"),
+        gdtf_file=file.filename,
+        weight=fixture_data.get("weight"),
+        power=fixture_data.get("power"),
+        beam_angle=fixture_data.get("beam_angle"),
+        has_rgb=fixture_data.get("has_rgb", False),
+        has_color_wheel=fixture_data.get("has_color_wheel", False),
+        source="gdtf",
+    )
+    db.add(fixture)
+    await db.flush()
+
+    for mode_data in modes_data:
+        channels_data = mode_data.pop("channels", [])
+        mode = FixtureMode(
+            fixture_id=fixture.id,
+            name=mode_data["name"],
+            channel_count=mode_data["channel_count"],
+        )
+        db.add(mode)
+        await db.flush()
+
+        for ch_data in channels_data:
+            channel = FixtureChannel(
+                mode_id=mode.id,
+                channel_number=ch_data["channel_number"],
+                channel_type=ChannelType(ch_data.get("channel_type", "other")),
+                name=ch_data.get("name", f"Channel {ch_data['channel_number']}"),
+                default_value=ch_data.get("default_value", 0),
+                is_fine=ch_data.get("is_fine", False),
+            )
+            db.add(channel)
+
+    await db.flush()
+    await db.refresh(fixture)
 
     return {
-        "status": "success",
-        "message": f"GDTF import placeholder for {file.filename}",
-        "note": "Full GDTF parsing not yet implemented"
+        "message": "GDTF fixture imported successfully",
+        "fixture_id": fixture.id,
+        "manufacturer": fixture.manufacturer,
+        "model": fixture.model,
+        "modes": len(modes_data),
     }

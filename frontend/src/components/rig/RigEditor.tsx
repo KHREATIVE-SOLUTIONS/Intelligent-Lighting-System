@@ -21,6 +21,11 @@ import {
   MenuItem,
   FormControl,
   InputLabel,
+  Tooltip,
+  Chip,
+  Switch,
+  FormControlLabel,
+  Alert,
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
@@ -28,9 +33,16 @@ import {
   Delete as DeleteIcon,
   Save as SaveIcon,
   Visibility as ViewIcon,
+  FlashOn as TestIcon,
+  Lock as LockIcon,
+  LockOpen as LockOpenIcon,
+  AutoFixHigh as AutoPatchIcon,
+  Warning as WarningIcon,
+  ViewInAr as BuilderIcon,
 } from '@mui/icons-material';
 import { rigsApi, fixturesApi } from '../../services/api';
-import type { Rig, Fixture, RigFixtureCreate } from '../../types';
+import FixtureTestPanel from './FixtureTestPanel';
+import type { Rig, Fixture, RigFixtureCreate, PatchConflict, FixtureChannel } from '../../types';
 
 export default function RigEditor() {
   const { id } = useParams<{ id: string }>();
@@ -39,15 +51,26 @@ export default function RigEditor() {
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
   const [loading, setLoading] = useState(true);
   const [addFixtureOpen, setAddFixtureOpen] = useState(false);
+  const [conflicts, setConflicts] = useState<PatchConflict[]>([]);
+  const [autoPatching, setAutoPatching] = useState(false);
+
+  // Test panel state
+  const [testAnchor, setTestAnchor] = useState<HTMLElement | null>(null);
+  const [testFixtureId, setTestFixtureId] = useState<number | null>(null);
+
   const [newFixture, setNewFixture] = useState<RigFixtureCreate>({
     fixture_id: 0,
     dmx_address: 1,
     universe: 0,
+    mode_id: undefined,
     position_x: 0,
     position_y: 4,
     position_z: 0,
     name: '',
   });
+
+  // Selected fixture's available modes
+  const [selectedFixtureModes, setSelectedFixtureModes] = useState<Fixture['modes']>([]);
 
   useEffect(() => {
     if (id) {
@@ -61,6 +84,8 @@ export default function RigEditor() {
     try {
       const data = await rigsApi.get(rigId);
       setRig(data);
+      // Check for conflicts
+      checkConflicts(rigId);
     } catch (error) {
       console.error('Failed to fetch rig:', error);
     } finally {
@@ -77,9 +102,17 @@ export default function RigEditor() {
     }
   };
 
+  const checkConflicts = async (rigId: number) => {
+    try {
+      const data = await rigsApi.getConflicts(rigId);
+      setConflicts(data.conflicts || []);
+    } catch {
+      // Silently ignore - conflicts are informational
+    }
+  };
+
   const handleSave = async () => {
     if (!rig) return;
-
     try {
       await rigsApi.update(rig.id, {
         name: rig.name,
@@ -94,9 +127,19 @@ export default function RigEditor() {
     }
   };
 
+  const handleFixtureSelect = (fixtureId: number) => {
+    const f = fixtures.find((fix) => fix.id === fixtureId);
+    setSelectedFixtureModes(f?.modes || []);
+    const firstMode = f?.modes?.[0];
+    setNewFixture({
+      ...newFixture,
+      fixture_id: fixtureId,
+      mode_id: firstMode?.id,
+    });
+  };
+
   const handleAddFixture = async () => {
     if (!rig || !newFixture.fixture_id) return;
-
     try {
       await rigsApi.addFixture(rig.id, newFixture);
       setAddFixtureOpen(false);
@@ -104,11 +147,13 @@ export default function RigEditor() {
         fixture_id: 0,
         dmx_address: 1,
         universe: 0,
+        mode_id: undefined,
         position_x: 0,
         position_y: 4,
         position_z: 0,
         name: '',
       });
+      setSelectedFixtureModes([]);
       fetchRig(rig.id);
     } catch (error) {
       console.error('Failed to add fixture:', error);
@@ -117,7 +162,6 @@ export default function RigEditor() {
 
   const handleRemoveFixture = async (fixtureId: number) => {
     if (!rig) return;
-
     try {
       await rigsApi.removeFixture(rig.id, fixtureId);
       fetchRig(rig.id);
@@ -126,19 +170,73 @@ export default function RigEditor() {
     }
   };
 
-  const getNextAddress = (): number => {
-    if (!rig?.fixtures?.length) return 1;
-    const maxAddress = Math.max(...rig.fixtures.map((f) => f.dmx_address));
-    return Math.min(maxAddress + 16, 512);
+  const handleAutoPatch = async () => {
+    if (!rig) return;
+    setAutoPatching(true);
+    try {
+      await rigsApi.autoPatch(rig.id);
+      await fetchRig(rig.id);
+    } catch (error) {
+      console.error('Auto-patch failed:', error);
+    } finally {
+      setAutoPatching(false);
+    }
   };
 
-  if (loading) {
-    return <Typography>Loading...</Typography>;
-  }
+  const handleToggleLock = async (fixtureId: number, currentLocked: boolean) => {
+    if (!rig) return;
+    try {
+      await rigsApi.updateFixture(rig.id, fixtureId, { is_address_locked: !currentLocked });
+      fetchRig(rig.id);
+    } catch (error) {
+      console.error('Failed to toggle lock:', error);
+    }
+  };
 
-  if (!rig) {
-    return <Typography>Rig not found</Typography>;
-  }
+  const handleOpenTest = (event: React.MouseEvent<HTMLElement>, fixtureId: number) => {
+    setTestAnchor(event.currentTarget);
+    setTestFixtureId(fixtureId);
+  };
+
+  const handleTestAll = async () => {
+    if (!rig) return;
+    try {
+      await rigsApi.testAll(rig.id);
+    } catch (error) {
+      console.error('Test all failed:', error);
+    }
+  };
+
+  const getNextAddress = async (): Promise<number> => {
+    if (!rig) return 1;
+    try {
+      const data = await rigsApi.getNextAddress(rig.id, newFixture.universe || 0);
+      return data.address || 1;
+    } catch {
+      // Fallback
+      if (!rig.fixtures?.length) return 1;
+      const maxAddress = Math.max(...rig.fixtures.map((f) => f.dmx_address));
+      return Math.min(maxAddress + 16, 512);
+    }
+  };
+
+  const isFixtureConflicting = (fixtureId: number): boolean => {
+    return conflicts.some(
+      (c) => c.fixture_a_id === fixtureId || c.fixture_b_id === fixtureId
+    );
+  };
+
+  // Get channels for the test panel fixture
+  const getTestFixtureChannels = (): FixtureChannel[] => {
+    if (!testFixtureId || !rig) return [];
+    const rf = rig.fixtures.find((f) => f.id === testFixtureId);
+    if (!rf?.fixture?.modes) return [];
+    const mode = rf.fixture.modes.find((m) => m.id === rf.mode_id);
+    return mode?.channels || [];
+  };
+
+  if (loading) return <Typography>Loading...</Typography>;
+  if (!rig) return <Typography>Rig not found</Typography>;
 
   return (
     <Box>
@@ -155,6 +253,12 @@ export default function RigEditor() {
           InputProps={{ style: { fontSize: '1.5rem' } }}
         />
         <Button
+          startIcon={<BuilderIcon />}
+          onClick={() => navigate(`/rigs/${rig.id}/builder`)}
+        >
+          2D Builder
+        </Button>
+        <Button
           startIcon={<ViewIcon />}
           onClick={() => navigate(`/rigs/${rig.id}/visualizer`)}
         >
@@ -165,6 +269,15 @@ export default function RigEditor() {
         </Button>
       </Box>
 
+      {conflicts.length > 0 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {conflicts.length} DMX address conflict{conflicts.length > 1 ? 's' : ''} detected.
+          <Button size="small" onClick={handleAutoPatch} sx={{ ml: 1 }}>
+            Auto-fix
+          </Button>
+        </Alert>
+      )}
+
       <Grid container spacing={3}>
         {/* Rig Settings */}
         <Grid item xs={12} md={4}>
@@ -173,7 +286,6 @@ export default function RigEditor() {
               <Typography variant="h6" gutterBottom>
                 Stage Settings
               </Typography>
-
               <TextField
                 fullWidth
                 label="Venue"
@@ -181,7 +293,6 @@ export default function RigEditor() {
                 onChange={(e) => setRig({ ...rig, venue: e.target.value })}
                 margin="normal"
               />
-
               <TextField
                 fullWidth
                 label="Description"
@@ -191,7 +302,6 @@ export default function RigEditor() {
                 onChange={(e) => setRig({ ...rig, description: e.target.value })}
                 margin="normal"
               />
-
               <Grid container spacing={2} sx={{ mt: 1 }}>
                 <Grid item xs={4}>
                   <TextField
@@ -199,9 +309,7 @@ export default function RigEditor() {
                     type="number"
                     fullWidth
                     value={rig.stage_width}
-                    onChange={(e) =>
-                      setRig({ ...rig, stage_width: Number(e.target.value) })
-                    }
+                    onChange={(e) => setRig({ ...rig, stage_width: Number(e.target.value) })}
                   />
                 </Grid>
                 <Grid item xs={4}>
@@ -210,9 +318,7 @@ export default function RigEditor() {
                     type="number"
                     fullWidth
                     value={rig.stage_depth}
-                    onChange={(e) =>
-                      setRig({ ...rig, stage_depth: Number(e.target.value) })
-                    }
+                    onChange={(e) => setRig({ ...rig, stage_depth: Number(e.target.value) })}
                   />
                 </Grid>
                 <Grid item xs={4}>
@@ -221,9 +327,7 @@ export default function RigEditor() {
                     type="number"
                     fullWidth
                     value={rig.stage_height}
-                    onChange={(e) =>
-                      setRig({ ...rig, stage_height: Number(e.target.value) })
-                    }
+                    onChange={(e) => setRig({ ...rig, stage_height: Number(e.target.value) })}
                   />
                 </Grid>
               </Grid>
@@ -235,45 +339,102 @@ export default function RigEditor() {
         <Grid item xs={12} md={8}>
           <Card>
             <CardContent>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
                 <Typography variant="h6">Fixtures ({rig.fixtures?.length || 0})</Typography>
-                <Button
-                  startIcon={<AddIcon />}
-                  onClick={() => {
-                    setNewFixture({ ...newFixture, dmx_address: getNextAddress() });
-                    setAddFixtureOpen(true);
-                  }}
-                >
-                  Add Fixture
-                </Button>
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button
+                    size="small"
+                    startIcon={<AutoPatchIcon />}
+                    onClick={handleAutoPatch}
+                    disabled={autoPatching}
+                  >
+                    Auto-Patch
+                  </Button>
+                  <Button
+                    size="small"
+                    startIcon={<TestIcon />}
+                    onClick={handleTestAll}
+                  >
+                    Test All
+                  </Button>
+                  <Button
+                    startIcon={<AddIcon />}
+                    onClick={async () => {
+                      const addr = await getNextAddress();
+                      setNewFixture({ ...newFixture, dmx_address: addr });
+                      setAddFixtureOpen(true);
+                    }}
+                  >
+                    Add Fixture
+                  </Button>
+                </Box>
               </Box>
 
               <List>
-                {rig.fixtures?.map((fixture) => (
-                  <ListItem key={fixture.id} divider>
-                    <ListItemText
-                      primary={fixture.name || fixture.fixture?.model || `Fixture ${fixture.id}`}
-                      secondary={
-                        <>
-                          Universe {fixture.universe}, Address {fixture.dmx_address}
-                          <br />
-                          Position: ({fixture.position_x.toFixed(1)}, {fixture.position_y.toFixed(1)},{' '}
-                          {fixture.position_z.toFixed(1)})
-                          {fixture.group_name && ` - Group: ${fixture.group_name}`}
-                        </>
-                      }
-                    />
-                    <ListItemSecondaryAction>
-                      <IconButton
-                        onClick={() => handleRemoveFixture(fixture.id)}
-                        color="error"
-                        size="small"
-                      >
-                        <DeleteIcon />
-                      </IconButton>
-                    </ListItemSecondaryAction>
-                  </ListItem>
-                ))}
+                {rig.fixtures?.map((fixture) => {
+                  const hasConflict = isFixtureConflicting(fixture.id);
+                  return (
+                    <ListItem
+                      key={fixture.id}
+                      divider
+                      sx={{
+                        borderLeft: hasConflict ? '3px solid #f44336' : 'none',
+                        bgcolor: hasConflict ? 'rgba(244,67,54,0.04)' : 'inherit',
+                      }}
+                    >
+                      <ListItemText
+                        primary={
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <span>{fixture.name || fixture.fixture?.model || `Fixture ${fixture.id}`}</span>
+                            {hasConflict && (
+                              <Tooltip title="DMX address conflict">
+                                <WarningIcon color="error" fontSize="small" />
+                              </Tooltip>
+                            )}
+                            {fixture.is_address_locked && (
+                              <Chip label="Locked" size="small" icon={<LockIcon />} />
+                            )}
+                          </Box>
+                        }
+                        secondary={
+                          <>
+                            Universe {fixture.universe}, Address {fixture.dmx_address}
+                            {fixture.mode_id && ` | Mode ID: ${fixture.mode_id}`}
+                            <br />
+                            Position: ({fixture.position_x.toFixed(1)}, {fixture.position_y.toFixed(1)},{' '}
+                            {fixture.position_z.toFixed(1)})
+                            {fixture.group_name && ` - Group: ${fixture.group_name}`}
+                          </>
+                        }
+                      />
+                      <ListItemSecondaryAction>
+                        <Tooltip title={fixture.is_address_locked ? 'Unlock address' : 'Lock address'}>
+                          <IconButton
+                            size="small"
+                            onClick={() => handleToggleLock(fixture.id, fixture.is_address_locked)}
+                          >
+                            {fixture.is_address_locked ? <LockIcon fontSize="small" /> : <LockOpenIcon fontSize="small" />}
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Test fixture">
+                          <IconButton
+                            size="small"
+                            onClick={(e) => handleOpenTest(e, fixture.id)}
+                          >
+                            <TestIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        <IconButton
+                          onClick={() => handleRemoveFixture(fixture.id)}
+                          color="error"
+                          size="small"
+                        >
+                          <DeleteIcon />
+                        </IconButton>
+                      </ListItemSecondaryAction>
+                    </ListItem>
+                  );
+                })}
                 {(!rig.fixtures || rig.fixtures.length === 0) && (
                   <ListItem>
                     <ListItemText
@@ -288,22 +449,26 @@ export default function RigEditor() {
         </Grid>
       </Grid>
 
+      {/* Test Panel Popover */}
+      {testFixtureId && rig.fixtures.find((f) => f.id === testFixtureId) && (
+        <FixtureTestPanel
+          rigId={rig.id}
+          fixture={rig.fixtures.find((f) => f.id === testFixtureId)!}
+          channels={getTestFixtureChannels()}
+          anchorEl={testAnchor}
+          onClose={() => { setTestAnchor(null); setTestFixtureId(null); }}
+        />
+      )}
+
       {/* Add Fixture Dialog */}
-      <Dialog
-        open={addFixtureOpen}
-        onClose={() => setAddFixtureOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
+      <Dialog open={addFixtureOpen} onClose={() => setAddFixtureOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Add Fixture to Rig</DialogTitle>
         <DialogContent>
           <FormControl fullWidth margin="normal">
             <InputLabel>Fixture Type</InputLabel>
             <Select
               value={newFixture.fixture_id}
-              onChange={(e) =>
-                setNewFixture({ ...newFixture, fixture_id: Number(e.target.value) })
-              }
+              onChange={(e) => handleFixtureSelect(Number(e.target.value))}
               label="Fixture Type"
             >
               {fixtures.map((f) => (
@@ -313,6 +478,23 @@ export default function RigEditor() {
               ))}
             </Select>
           </FormControl>
+
+          {selectedFixtureModes.length > 0 && (
+            <FormControl fullWidth margin="normal">
+              <InputLabel>Mode</InputLabel>
+              <Select
+                value={newFixture.mode_id || ''}
+                onChange={(e) => setNewFixture({ ...newFixture, mode_id: Number(e.target.value) || undefined })}
+                label="Mode"
+              >
+                {selectedFixtureModes.map((m) => (
+                  <MenuItem key={m.id} value={m.id}>
+                    {m.name} ({m.channel_count} channels)
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
 
           <TextField
             margin="normal"
@@ -329,9 +511,7 @@ export default function RigEditor() {
                 type="number"
                 fullWidth
                 value={newFixture.universe}
-                onChange={(e) =>
-                  setNewFixture({ ...newFixture, universe: Number(e.target.value) })
-                }
+                onChange={(e) => setNewFixture({ ...newFixture, universe: Number(e.target.value) })}
                 inputProps={{ min: 0, max: 15 }}
               />
             </Grid>
@@ -341,9 +521,7 @@ export default function RigEditor() {
                 type="number"
                 fullWidth
                 value={newFixture.dmx_address}
-                onChange={(e) =>
-                  setNewFixture({ ...newFixture, dmx_address: Number(e.target.value) })
-                }
+                onChange={(e) => setNewFixture({ ...newFixture, dmx_address: Number(e.target.value) })}
                 inputProps={{ min: 1, max: 512 }}
               />
             </Grid>
@@ -359,9 +537,7 @@ export default function RigEditor() {
                 type="number"
                 fullWidth
                 value={newFixture.position_x}
-                onChange={(e) =>
-                  setNewFixture({ ...newFixture, position_x: Number(e.target.value) })
-                }
+                onChange={(e) => setNewFixture({ ...newFixture, position_x: Number(e.target.value) })}
                 inputProps={{ step: 0.1 }}
               />
             </Grid>
@@ -371,9 +547,7 @@ export default function RigEditor() {
                 type="number"
                 fullWidth
                 value={newFixture.position_y}
-                onChange={(e) =>
-                  setNewFixture({ ...newFixture, position_y: Number(e.target.value) })
-                }
+                onChange={(e) => setNewFixture({ ...newFixture, position_y: Number(e.target.value) })}
                 inputProps={{ step: 0.1 }}
               />
             </Grid>
@@ -383,9 +557,7 @@ export default function RigEditor() {
                 type="number"
                 fullWidth
                 value={newFixture.position_z}
-                onChange={(e) =>
-                  setNewFixture({ ...newFixture, position_z: Number(e.target.value) })
-                }
+                onChange={(e) => setNewFixture({ ...newFixture, position_z: Number(e.target.value) })}
                 inputProps={{ step: 0.1 }}
               />
             </Grid>
@@ -393,11 +565,7 @@ export default function RigEditor() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setAddFixtureOpen(false)}>Cancel</Button>
-          <Button
-            onClick={handleAddFixture}
-            variant="contained"
-            disabled={!newFixture.fixture_id}
-          >
+          <Button onClick={handleAddFixture} variant="contained" disabled={!newFixture.fixture_id}>
             Add
           </Button>
         </DialogActions>

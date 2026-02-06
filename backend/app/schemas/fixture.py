@@ -89,6 +89,11 @@ class FixtureBase(BaseModel):
     color_temp_range: Optional[List[int]] = None
     thumbnail_url: Optional[str] = None
     model_3d_url: Optional[str] = None
+    source: Optional[str] = None
+    source_id: Optional[str] = None
+    categories: Optional[List[str]] = None
+    popularity_score: int = 0
+    is_bundled: bool = False
 
 
 class FixtureCreate(FixtureBase):

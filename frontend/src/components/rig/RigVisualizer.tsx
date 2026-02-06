@@ -1,159 +1,347 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Box, IconButton, Typography, Card, CardContent } from '@mui/material';
 import { ArrowBack as BackIcon } from '@mui/icons-material';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { rigsApi } from '../../services/api';
 import type { Rig, RigFixture } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
 
-// Fixture 3D component
-function Fixture3D({
-  fixture,
-  dmxData,
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+// Beam cone material - shared across all fixtures for performance
+const BEAM_VERTEX_SHADER = `
+  varying float vIntensity;
+  void main() {
+    vIntensity = position.y;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const BEAM_FRAGMENT_SHADER = `
+  uniform vec3 beamColor;
+  uniform float beamIntensity;
+  varying float vIntensity;
+  void main() {
+    float falloff = smoothstep(0.0, 1.0, 1.0 - vIntensity);
+    float alpha = falloff * beamIntensity * 0.2;
+    gl_FragColor = vec4(beamColor, alpha);
+  }
+`;
+
+// 9-zone stage grid positions (normalized -0.33 to 0.33 for both axes)
+const ZONE_POSITIONS: Record<string, { x: number; z: number }> = {
+  USL: { x: -0.33, z: -0.33 },
+  USC: { x: 0, z: -0.33 },
+  USR: { x: 0.33, z: -0.33 },
+  MSL: { x: -0.33, z: 0 },
+  MSC: { x: 0, z: 0 },
+  MSR: { x: 0.33, z: 0 },
+  DSL: { x: -0.33, z: 0.33 },
+  DSC: { x: 0, z: 0.33 },
+  DSR: { x: 0.33, z: 0.33 },
+};
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+// Build a channel type -> DMX offset map from the fixture's active mode
+function buildChannelMap(fixture: RigFixture): Record<string, number> {
+  const map: Record<string, number> = {};
+  if (!fixture.fixture?.modes?.length) return map;
+
+  const mode = fixture.mode_id
+    ? fixture.fixture.modes.find((m) => m.id === fixture.mode_id)
+    : fixture.fixture.modes[0];
+
+  if (!mode?.channels) return map;
+
+  for (const ch of mode.channels) {
+    map[ch.channel_type] = ch.channel_number - 1;
+  }
+  return map;
+}
+
+// ============================================================================
+// VOLUMETRIC BEAM COMPONENT
+// ============================================================================
+
+function BeamCone({
+  color,
+  intensity,
+  beamAngle,
+  beamLength,
 }: {
-  fixture: RigFixture;
-  dmxData: number[];
+  color: THREE.Color;
+  intensity: number;
+  beamAngle: number;
+  beamLength: number;
 }) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const lightRef = useRef<THREE.SpotLight>(null);
-  const [intensity, setIntensity] = useState(0);
-  const [color, setColor] = useState(new THREE.Color(1, 1, 1));
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+
+  const uniforms = useMemo(
+    () => ({
+      beamColor: { value: new THREE.Color(1, 1, 1) },
+      beamIntensity: { value: 0 },
+    }),
+    []
+  );
 
   useFrame(() => {
-    // Get DMX values for this fixture using correct channel mapping
-    // Mover/Wash channel layout: Pan(0), PanFine(1), Tilt(2), TiltFine(3), Speed(4),
-    //                           Dimmer(5), Shutter(6), R(7), G(8), B(9), W(10)
-    const baseAddr = fixture.dmx_address - 1;
-
-    // Check if this is a mover/wash (16ch) or LED bar (12ch)
-    const isMover = fixture.dmx_address < 213;
-
-    let dimmer, red, green, blue, pan, tilt;
-
-    if (isMover) {
-      // Mover/Wash fixture channel mapping
-      pan = dmxData[baseAddr] || 128;       // Channel 0: Pan
-      tilt = dmxData[baseAddr + 2] || 128;  // Channel 2: Tilt
-      dimmer = (dmxData[baseAddr + 5] || 0) / 255;  // Channel 5: Dimmer
-      red = (dmxData[baseAddr + 7] || 0) / 255;     // Channel 7: Red
-      green = (dmxData[baseAddr + 8] || 0) / 255;   // Channel 8: Green
-      blue = (dmxData[baseAddr + 9] || 0) / 255;    // Channel 9: Blue
-    } else {
-      // LED Bar channel mapping: Dimmer(0), Strobe(1), R(2), G(3), B(4)
-      dimmer = (dmxData[baseAddr] || 0) / 255;
-      red = (dmxData[baseAddr + 2] || 0) / 255;
-      green = (dmxData[baseAddr + 3] || 0) / 255;
-      blue = (dmxData[baseAddr + 4] || 0) / 255;
-      pan = 128;
-      tilt = 128;
-    }
-
-    setIntensity(dimmer);
-    setColor(new THREE.Color(red, green, blue));
-
-    // Apply rotation for moving heads
-    if (meshRef.current && isMover) {
-      // Convert pan from 0-255 to radians (-π to π)
-      const panRad = (pan / 255) * Math.PI * 2 - Math.PI;
-      // Convert tilt from 0-255 to radians (-π/2 to π/2)
-      const tiltRad = (tilt / 255) * Math.PI - Math.PI / 2;
-      meshRef.current.rotation.y = panRad;
-      meshRef.current.rotation.x = tiltRad;
+    if (materialRef.current) {
+      materialRef.current.uniforms.beamColor.value.copy(color);
+      materialRef.current.uniforms.beamIntensity.value = intensity;
     }
   });
 
+  const topRadius = Math.tan((beamAngle * Math.PI) / 360) * beamLength;
+
+  if (intensity < 0.05) return null;
+
   return (
-    <group position={[fixture.position_x, fixture.position_y, fixture.position_z]}>
-      {/* Fixture body */}
-      <mesh ref={meshRef}>
-        <boxGeometry args={[0.3, 0.3, 0.4]} />
-        <meshStandardMaterial color="#333" metalness={0.8} roughness={0.2} />
-      </mesh>
+    <mesh position={[0, -beamLength / 2, 0]}>
+      <coneGeometry args={[topRadius, beamLength, 16, 1, true]} />
+      <shaderMaterial
+        ref={materialRef}
+        vertexShader={BEAM_VERTEX_SHADER}
+        fragmentShader={BEAM_FRAGMENT_SHADER}
+        uniforms={uniforms}
+        transparent
+        side={THREE.DoubleSide}
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+      />
+    </mesh>
+  );
+}
 
-      {/* Lens glow */}
-      <mesh position={[0, -0.15, 0]}>
-        <cylinderGeometry args={[0.1, 0.12, 0.05, 16]} />
-        <meshStandardMaterial
-          color={color}
-          emissive={color}
-          emissiveIntensity={intensity * 2}
-        />
-      </mesh>
+// ============================================================================
+// FIXTURE 3D COMPONENT
+// ============================================================================
 
-      {/* Spotlight beam (visible cone) */}
-      {intensity > 0.1 && (
-        <spotLight
-          ref={lightRef}
-          position={[0, -0.2, 0]}
-          angle={0.3}
-          penumbra={0.5}
-          intensity={intensity * 10}
-          color={color}
-          castShadow
-          target-position={[fixture.position_x, 0, fixture.position_z]}
+function Fixture3D({
+  fixture,
+  dmxData,
+  fixtureIndex,
+}: {
+  fixture: RigFixture;
+  dmxData: number[];
+  fixtureIndex: number;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const headRef = useRef<THREE.Group>(null);
+  const lensRef = useRef<THREE.Mesh>(null);
+  const spotRef = useRef<THREE.SpotLight>(null);
+
+  const channelMapRef = useRef(buildChannelMap(fixture));
+
+  // Smoothed values to avoid jitter
+  const smoothed = useRef({ intensity: 0, r: 1, g: 1, b: 1, pan: 0, tilt: 0 });
+
+  const beamAngle = fixture.fixture?.beam_angle || 25;
+  const fixtureType = fixture.fixture?.fixture_type || 'other';
+  const isMovingHead = fixtureType === 'moving_head' || fixtureType === 'spot' || fixtureType === 'beam';
+
+  // Beam length scales with fixture height (fixtures on truss beam to floor)
+  const beamLength = fixture.position_y > 0 ? fixture.position_y : 3;
+
+  const [beamColor] = useState(() => new THREE.Color(1, 1, 1));
+  const [beamIntensity, setBeamIntensity] = useState(0);
+
+  useFrame((_, delta) => {
+    const baseAddr = fixture.dmx_address - 1;
+    const chMap = channelMapRef.current;
+    const lerp = Math.min(1, delta * 15); // Smooth factor
+
+    // Read DMX values
+    const rawDimmer = chMap.dimmer !== undefined
+      ? (dmxData[baseAddr + chMap.dimmer] || 0) / 255
+      : 1;
+    const rawR = chMap.red !== undefined
+      ? (dmxData[baseAddr + chMap.red] || 0) / 255
+      : 1;
+    const rawG = chMap.green !== undefined
+      ? (dmxData[baseAddr + chMap.green] || 0) / 255
+      : 1;
+    const rawB = chMap.blue !== undefined
+      ? (dmxData[baseAddr + chMap.blue] || 0) / 255
+      : 1;
+    const rawPan = chMap.pan !== undefined
+      ? dmxData[baseAddr + chMap.pan] || 128
+      : 128;
+    const rawTilt = chMap.tilt !== undefined
+      ? dmxData[baseAddr + chMap.tilt] || 128
+      : 128;
+    const strobe = chMap.strobe !== undefined
+      ? (dmxData[baseAddr + chMap.strobe] || 0) / 255
+      : 0;
+    const zoom = chMap.zoom !== undefined
+      ? (dmxData[baseAddr + chMap.zoom] || 128) / 255
+      : 0.5;
+
+    // Smooth interpolation
+    const s = smoothed.current;
+    s.intensity += (rawDimmer - s.intensity) * lerp;
+    s.r += (rawR - s.r) * lerp;
+    s.g += (rawG - s.g) * lerp;
+    s.b += (rawB - s.b) * lerp;
+
+    // Apply strobe effect (rapid intensity modulation)
+    let effectiveIntensity = s.intensity;
+    if (strobe > 0.1) {
+      const strobeFreq = 2 + strobe * 20; // 2-22 Hz
+      const strobePhase = (performance.now() / 1000 * strobeFreq) % 1;
+      effectiveIntensity = strobePhase < 0.5 ? s.intensity : 0;
+    }
+
+    // Update beam color
+    beamColor.setRGB(s.r, s.g, s.b);
+    setBeamIntensity(effectiveIntensity);
+
+    // Update lens glow emissive
+    if (lensRef.current) {
+      const lensMat = lensRef.current.material as THREE.MeshStandardMaterial;
+      lensMat.emissive.setRGB(s.r, s.g, s.b);
+      lensMat.emissiveIntensity = effectiveIntensity * 3;
+      lensMat.color.setRGB(s.r * 0.5, s.g * 0.5, s.b * 0.5);
+    }
+
+    // Update spotlight for floor projection
+    if (spotRef.current) {
+      spotRef.current.color.setRGB(s.r, s.g, s.b);
+      spotRef.current.intensity = effectiveIntensity * 8;
+      spotRef.current.angle = 0.15 + zoom * 0.4; // Narrower to wider with zoom
+    }
+
+    // Pan/tilt for moving heads
+    if (headRef.current && isMovingHead) {
+      const panRange = fixture.fixture?.pan_range || 540;
+      const tiltRange = fixture.fixture?.tilt_range || 270;
+      const targetPan = (rawPan / 255) * (panRange * Math.PI / 180) - (panRange * Math.PI / 360);
+      const targetTilt = (rawTilt / 255) * (tiltRange * Math.PI / 180) - (tiltRange * Math.PI / 360);
+
+      s.pan += (targetPan - s.pan) * lerp;
+      s.tilt += (targetTilt - s.tilt) * lerp;
+
+      headRef.current.rotation.y = s.pan;
+      headRef.current.rotation.x = s.tilt;
+    }
+  });
+
+  // Fixture body geometry based on type
+  const bodyGeometry = useMemo(() => {
+    switch (fixtureType) {
+      case 'moving_head':
+      case 'spot':
+      case 'beam':
+        return <boxGeometry args={[0.25, 0.35, 0.3]} />;
+      case 'led_par':
+      case 'wash':
+        return <cylinderGeometry args={[0.15, 0.18, 0.2, 8]} />;
+      case 'led_bar':
+        return <boxGeometry args={[0.8, 0.1, 0.15]} />;
+      case 'strobe':
+        return <boxGeometry args={[0.3, 0.1, 0.15]} />;
+      default:
+        return <boxGeometry args={[0.2, 0.2, 0.2]} />;
+    }
+  }, [fixtureType]);
+
+  // SpotLight target position
+  const targetPos = useMemo(
+    () => new THREE.Vector3(fixture.position_x, 0, fixture.position_z),
+    [fixture.position_x, fixture.position_z]
+  );
+
+  return (
+    <group ref={groupRef} position={[fixture.position_x, fixture.position_y, fixture.position_z]}>
+      {/* Head group (rotates for moving heads) */}
+      <group ref={headRef}>
+        {/* Fixture body */}
+        <mesh castShadow>
+          {bodyGeometry}
+          <meshStandardMaterial color="#2a2a2a" metalness={0.9} roughness={0.15} />
+        </mesh>
+
+        {/* Lens */}
+        <mesh ref={lensRef} position={[0, -0.18, 0]}>
+          <cylinderGeometry args={[0.08, 0.1, 0.04, 16]} />
+          <meshStandardMaterial
+            color="#111"
+            emissive={beamColor}
+            emissiveIntensity={beamIntensity * 3}
+            toneMapped={false}
+          />
+        </mesh>
+
+        {/* Volumetric beam cone */}
+        <BeamCone
+          color={beamColor}
+          intensity={beamIntensity}
+          beamAngle={beamAngle}
+          beamLength={beamLength}
         />
+
+        {/* SpotLight for floor color projection (only first 16 fixtures for performance) */}
+        {fixtureIndex < 16 && beamIntensity > 0.1 && (
+          <>
+            <spotLight
+              ref={spotRef}
+              position={[0, -0.2, 0]}
+              angle={0.3}
+              penumbra={0.6}
+              intensity={beamIntensity * 8}
+              color={beamColor}
+              castShadow={fixtureIndex < 4}
+              shadow-mapSize-width={256}
+              shadow-mapSize-height={256}
+              distance={beamLength * 1.5}
+              decay={1.5}
+              target-position={targetPos}
+            />
+          </>
+        )}
+      </group>
+
+      {/* Yoke (static, visible for moving heads) */}
+      {isMovingHead && (
+        <mesh position={[0, 0.2, 0]}>
+          <boxGeometry args={[0.05, 0.15, 0.3]} />
+          <meshStandardMaterial color="#333" metalness={0.8} roughness={0.2} />
+        </mesh>
       )}
-
-      {/* Label */}
-      <Html position={[0, 0.3, 0]}>
-        <div
-          style={{
-            background: 'rgba(0,0,0,0.7)',
-            color: 'white',
-            padding: '2px 6px',
-            borderRadius: '4px',
-            fontSize: '10px',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {fixture.name || `#${fixture.dmx_address}`}
-        </div>
-      </Html>
     </group>
   );
 }
 
-// Simple HTML component for labels in 3D
-function Html({ children, position }: { children: React.ReactNode; position: [number, number, number] }) {
-  const { camera, size } = useThree();
-  const ref = useRef<HTMLDivElement>(null);
+// ============================================================================
+// STAGE FLOOR WITH KEY LIGHTING ZONES
+// ============================================================================
 
-  useFrame(() => {
-    if (ref.current) {
-      const vec = new THREE.Vector3(...position);
-      vec.project(camera);
-      const x = (vec.x * 0.5 + 0.5) * size.width;
-      const y = (-vec.y * 0.5 + 0.5) * size.height;
-      ref.current.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
-    }
-  });
-
-  return (
-    <div
-      ref={ref}
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        pointerEvents: 'none',
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-// Stage floor component
-function Stage({ width, depth }: { width: number; depth: number }) {
+function Stage({
+  width,
+  depth,
+  keyZones,
+}: {
+  width: number;
+  depth: number;
+  keyZones: Array<{ zone: string; active: boolean; intensity: number; color: { r: number; g: number; b: number } }>;
+}) {
   return (
     <group>
-      {/* Stage floor */}
+      {/* Stage floor with slight reflectivity */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[width, depth]} />
-        <meshStandardMaterial color="#1a1a1a" />
+        <meshStandardMaterial
+          color="#1a1a1a"
+          metalness={0.1}
+          roughness={0.8}
+        />
       </mesh>
 
       {/* Stage grid */}
@@ -169,45 +357,199 @@ function Stage({ width, depth }: { width: number; depth: number }) {
         fadeStrength={1}
         position={[0, 0.01, 0]}
       />
+
+      {/* Audience area (dark region beyond downstage) */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, depth / 2 + 2]}>
+        <planeGeometry args={[width + 4, 4]} />
+        <meshStandardMaterial color="#0a0a0a" />
+      </mesh>
+
+      {/* DJ booth platform at front-center */}
+      <mesh position={[0, 0.1, -depth / 2 + 1]} receiveShadow>
+        <boxGeometry args={[2, 0.2, 1.5]} />
+        <meshStandardMaterial color="#222" metalness={0.3} roughness={0.7} />
+      </mesh>
+
+      {/* Key lighting zone highlights on stage floor */}
+      {keyZones
+        .filter((z) => z.active && ZONE_POSITIONS[z.zone])
+        .map((zone) => {
+          const pos = ZONE_POSITIONS[zone.zone];
+          const worldX = pos.x * width;
+          const worldZ = pos.z * depth;
+          const zoneColor = new THREE.Color(
+            zone.color.r / 255,
+            zone.color.g / 255,
+            zone.color.b / 255
+          );
+          return (
+            <mesh
+              key={zone.zone}
+              rotation={[-Math.PI / 2, 0, 0]}
+              position={[worldX, 0.02, worldZ]}
+            >
+              <circleGeometry args={[width / 6, 32]} />
+              <meshStandardMaterial
+                color={zoneColor}
+                emissive={zoneColor}
+                emissiveIntensity={zone.intensity * 0.5}
+                transparent
+                opacity={zone.intensity * 0.3}
+              />
+            </mesh>
+          );
+        })}
     </group>
   );
 }
 
-// Truss component
+// ============================================================================
+// TRUSS COMPONENT (CYLINDRICAL TRUSS ELEMENTS)
+// ============================================================================
+
 function Truss({ width, height, depth }: { width: number; height: number; depth: number }) {
+  // Truss chord parameters
+  const chordRadius = 0.025;
+  const segments = 8;
+
   return (
     <group position={[0, height, 0]}>
-      {/* Front truss */}
+      {/* Front truss - main chord */}
       <mesh position={[0, 0, -depth / 2 + 0.5]}>
-        <boxGeometry args={[width, 0.15, 0.15]} />
-        <meshStandardMaterial color="#555" metalness={0.8} />
+        <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
+        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
       </mesh>
+      {/* Front truss - bottom chord */}
+      <mesh position={[0, -0.12, -depth / 2 + 0.5]}>
+        <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
+        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
+      </mesh>
+      {/* Rotate cylinders to be horizontal */}
+      <group rotation={[0, 0, Math.PI / 2]}>
+        {/* (Note: cylinder default axis is Y, rotated to X for horizontal) */}
+      </group>
 
       {/* Back truss */}
       <mesh position={[0, 0, depth / 2 - 0.5]}>
-        <boxGeometry args={[width, 0.15, 0.15]} />
-        <meshStandardMaterial color="#555" metalness={0.8} />
+        <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
+        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
+      </mesh>
+      <mesh position={[0, -0.12, depth / 2 - 0.5]}>
+        <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
+        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
       </mesh>
 
       {/* Side trusses */}
-      <mesh position={[-width / 2 + 0.5, 0, 0]}>
-        <boxGeometry args={[0.15, 0.15, depth]} />
-        <meshStandardMaterial color="#555" metalness={0.8} />
+      <mesh position={[-width / 2 + 0.5, 0, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[chordRadius, chordRadius, depth, segments]} />
+        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
       </mesh>
-      <mesh position={[width / 2 - 0.5, 0, 0]}>
-        <boxGeometry args={[0.15, 0.15, depth]} />
-        <meshStandardMaterial color="#555" metalness={0.8} />
+      <mesh position={[width / 2 - 0.5, 0, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[chordRadius, chordRadius, depth, segments]} />
+        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
       </mesh>
+
+      {/* Vertical support legs (4 corners) */}
+      {[
+        [-width / 2 + 0.5, -depth / 2 + 0.5],
+        [width / 2 - 0.5, -depth / 2 + 0.5],
+        [-width / 2 + 0.5, depth / 2 - 0.5],
+        [width / 2 - 0.5, depth / 2 - 0.5],
+      ].map(([x, z], i) => (
+        <mesh key={i} position={[x, -height / 2, z]}>
+          <cylinderGeometry args={[0.04, 0.04, height, 6]} />
+          <meshStandardMaterial color="#555" metalness={0.8} roughness={0.2} />
+        </mesh>
+      ))}
+
+      {/* Cross braces on front truss (diagonal elements) */}
+      {Array.from({ length: Math.floor(width / 1.5) }, (_, i) => {
+        const x = -width / 2 + 1 + i * 1.5;
+        return (
+          <group key={`brace-${i}`} position={[x, -0.06, -depth / 2 + 0.5]}>
+            <mesh rotation={[0, 0, Math.PI / 4]}>
+              <cylinderGeometry args={[0.01, 0.01, 0.2, 4]} />
+              <meshStandardMaterial color="#555" metalness={0.8} roughness={0.3} />
+            </mesh>
+          </group>
+        );
+      })}
     </group>
   );
 }
 
-// Main scene component
+// ============================================================================
+// HAZE PARTICLES (SUBTLE ATMOSPHERIC EFFECT)
+// ============================================================================
+
+function HazeParticles({ count, spread }: { count: number; spread: [number, number, number] }) {
+  const particlesRef = useRef<THREE.Points>(null);
+
+  const [positions, sizes] = useMemo(() => {
+    const pos = new Float32Array(count * 3);
+    const sz = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * spread[0];
+      pos[i * 3 + 1] = Math.random() * spread[1];
+      pos[i * 3 + 2] = (Math.random() - 0.5) * spread[2];
+      sz[i] = 0.05 + Math.random() * 0.15;
+    }
+    return [pos, sz];
+  }, [count, spread[0], spread[1], spread[2]]);
+
+  useFrame((_, delta) => {
+    if (particlesRef.current) {
+      // Slow upward drift
+      const posArray = particlesRef.current.geometry.attributes.position.array as Float32Array;
+      for (let i = 0; i < count; i++) {
+        posArray[i * 3 + 1] += delta * 0.05 * (0.5 + Math.random() * 0.5);
+        if (posArray[i * 3 + 1] > spread[1]) {
+          posArray[i * 3 + 1] = 0;
+        }
+      }
+      particlesRef.current.geometry.attributes.position.needsUpdate = true;
+    }
+  });
+
+  return (
+    <points ref={particlesRef}>
+      <bufferGeometry>
+        <bufferAttribute
+          attach="attributes-position"
+          count={count}
+          array={positions}
+          itemSize={3}
+        />
+        <bufferAttribute
+          attach="attributes-size"
+          count={count}
+          array={sizes}
+          itemSize={1}
+        />
+      </bufferGeometry>
+      <pointsMaterial
+        color="#888"
+        size={0.08}
+        transparent
+        opacity={0.06}
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+        sizeAttenuation
+      />
+    </points>
+  );
+}
+
+// ============================================================================
+// MAIN SCENE COMPONENT
+// ============================================================================
+
 function Scene({ rig }: { rig: Rig }) {
   const dmxData = useDMXStore((state) => {
     const universeData = state.universes.get(0);
     return universeData || new Array(512).fill(0);
   });
+  const keyLightingZones = useDMXStore((state) => state.proLighting.keyLightingZones);
 
   return (
     <>
@@ -220,30 +562,53 @@ function Scene({ rig }: { rig: Rig }) {
         maxPolarAngle={Math.PI / 2}
       />
 
-      <ambientLight intensity={0.1} />
-      <pointLight position={[10, 10, 10]} intensity={0.5} />
+      {/* Minimal ambient - let beams and spots be the light sources */}
+      <ambientLight intensity={0.03} />
 
-      <Stage width={rig.stage_width} depth={rig.stage_depth} />
+      {/* Stage environment */}
+      <Stage
+        width={rig.stage_width}
+        depth={rig.stage_depth}
+        keyZones={keyLightingZones}
+      />
       <Truss
         width={rig.stage_width - 1}
         height={rig.stage_height - 1}
         depth={rig.stage_depth - 1}
       />
 
-      {rig.fixtures?.map((fixture) => (
-        <Fixture3D key={fixture.id} fixture={fixture} dmxData={dmxData} />
+      {/* Haze particles for atmospheric effect */}
+      <HazeParticles
+        count={200}
+        spread={[rig.stage_width, rig.stage_height, rig.stage_depth]}
+      />
+
+      {/* Fixtures */}
+      {rig.fixtures?.map((fixture, index) => (
+        <Fixture3D
+          key={fixture.id}
+          fixture={fixture}
+          dmxData={dmxData}
+          fixtureIndex={index}
+        />
       ))}
 
-      <fog attach="fog" args={['#000', 10, 50]} />
+      {/* Exponential fog for haze effect */}
+      <fogExp2 attach="fog" args={['#000000', 0.025]} />
     </>
   );
 }
+
+// ============================================================================
+// MAIN EXPORT COMPONENT
+// ============================================================================
 
 export default function RigVisualizer() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [rig, setRig] = useState<Rig | null>(null);
   const [loading, setLoading] = useState(true);
+  const proLighting = useDMXStore((state) => state.proLighting);
 
   useEffect(() => {
     if (id) {
@@ -279,11 +644,52 @@ export default function RigVisualizer() {
           <BackIcon />
         </IconButton>
         <Typography variant="h5">{rig.name} - 3D View</Typography>
+        {proLighting.genre && (
+          <Box
+            sx={{
+              ml: 'auto',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1,
+              px: 2,
+              py: 0.5,
+              bgcolor: 'grey.800',
+              borderRadius: 2,
+            }}
+          >
+            <Typography variant="body2" color="text.secondary">
+              {proLighting.genre}
+            </Typography>
+            <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+              {proLighting.section}
+            </Typography>
+            <Box
+              sx={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                bgcolor: proLighting.sectionIntensity > 0.7
+                  ? 'error.main'
+                  : proLighting.sectionIntensity > 0.4
+                    ? 'warning.main'
+                    : 'success.main',
+              }}
+            />
+          </Box>
+        )}
       </Box>
 
       {/* 3D Canvas */}
       <Box sx={{ flexGrow: 1, bgcolor: '#000', borderRadius: 2, overflow: 'hidden' }}>
-        <Canvas shadows>
+        <Canvas
+          shadows
+          gl={{
+            antialias: true,
+            toneMapping: THREE.ACESFilmicToneMapping,
+            toneMappingExposure: 1.2,
+          }}
+          dpr={[1, 1.5]}
+        >
           <Scene rig={rig} />
         </Canvas>
       </Box>
@@ -291,11 +697,30 @@ export default function RigVisualizer() {
       {/* Info Panel */}
       <Card sx={{ mt: 2 }}>
         <CardContent sx={{ py: 1 }}>
-          <Typography variant="body2">
-            Stage: {rig.stage_width}m x {rig.stage_depth}m x {rig.stage_height}m |
-            Fixtures: {rig.fixtures?.length || 0} |
-            Use mouse to rotate, scroll to zoom, right-click to pan
-          </Typography>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography variant="body2">
+              Stage: {rig.stage_width}m x {rig.stage_depth}m x {rig.stage_height}m |
+              Fixtures: {rig.fixtures?.length || 0} |
+              Use mouse to rotate, scroll to zoom, right-click to pan
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 2 }}>
+              {proLighting.activeEffects.strobeMode !== 'off' && (
+                <Typography variant="body2" color="warning.main">
+                  Strobe: {proLighting.activeEffects.strobeMode}
+                </Typography>
+              )}
+              {proLighting.activeEffects.movementType !== 'none' && (
+                <Typography variant="body2" color="info.main">
+                  Movement: {proLighting.activeEffects.movementType.replace(/_/g, ' ')}
+                </Typography>
+              )}
+              {proLighting.activeEffects.chaseType !== 'off' && (
+                <Typography variant="body2" color="success.main">
+                  Chase: {proLighting.activeEffects.chaseType.replace(/_/g, ' ')}
+                </Typography>
+              )}
+            </Box>
+          </Box>
         </CardContent>
       </Card>
     </Box>

@@ -1,0 +1,59 @@
+{
+  "manufacturer": "Robe",
+  "model": "Robin DL4S Profile",
+  "fixture_type": "spot",
+  "weight": 10.5,
+  "power": 210,
+  "beam_angle": 15.0,
+  "pan_range": 0,
+  "tilt_range": 0,
+  "has_rgb": true,
+  "has_cmy": false,
+  "has_color_wheel": false,
+  "source": "bundled",
+  "is_bundled": true,
+  "categories": ["led", "profile", "fresnel", "rgbw", "static"],
+  "modes": [
+    {
+      "name": "10-Channel",
+      "channel_count": 10,
+      "description": "Basic mode",
+      "channels": [
+        {"channel_number": 1, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 1},
+        {"channel_number": 3, "channel_type": "red", "name": "Red", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 5, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "white", "name": "White", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 7, "channel_type": "other", "name": "CTC", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 8, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 9, "channel_type": "zoom", "name": "Zoom", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 10, "channel_type": "macro", "name": "Control/Reset", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    },
+    {
+      "name": "17-Channel",
+      "channel_count": 17,
+      "description": "Extended mode with fine color control",
+      "channels": [
+        {"channel_number": 1, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 1},
+        {"channel_number": 3, "channel_type": "red", "name": "Red", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "red", "name": "Red Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 3},
+        {"channel_number": 5, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "green", "name": "Green Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 5},
+        {"channel_number": 7, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 8, "channel_type": "blue", "name": "Blue Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 7},
+        {"channel_number": 9, "channel_type": "white", "name": "White", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 10, "channel_type": "white", "name": "White Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 9},
+        {"channel_number": 11, "channel_type": "other", "name": "CTC", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 12, "channel_type": "macro", "name": "Color Macro", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 13, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 14, "channel_type": "zoom", "name": "Zoom", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 15, "channel_type": "zoom", "name": "Zoom Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 14},
+        {"channel_number": 16, "channel_type": "macro", "name": "Dimmer Curve", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 17, "channel_type": "macro", "name": "Control/Reset", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    }
+  ]
+}

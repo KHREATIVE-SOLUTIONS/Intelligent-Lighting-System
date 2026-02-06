@@ -13,6 +13,10 @@ from app.schemas.fixture import (
     FixtureCreate, FixtureUpdate, FixtureResponse, FixtureListResponse,
     FixtureModeResponse, FixtureChannelResponse,
 )
+from app.schemas.template import (
+    RigTemplateCreate, RigTemplateResponse, RigTemplateListResponse,
+    TemplateApplyRequest,
+)
 from app.schemas.audio import (
     AudioAnalysisResponse, AudioStreamConfig,
     MoodResponse, BeatResponse, FrequencyResponse,
@@ -29,6 +33,8 @@ __all__ = [
     "RigFixtureCreate", "RigFixtureUpdate", "RigFixtureResponse",
     "FixtureCreate", "FixtureUpdate", "FixtureResponse", "FixtureListResponse",
     "FixtureModeResponse", "FixtureChannelResponse",
+    "RigTemplateCreate", "RigTemplateResponse", "RigTemplateListResponse",
+    "TemplateApplyRequest",
     "AudioAnalysisResponse", "AudioStreamConfig",
     "MoodResponse", "BeatResponse", "FrequencyResponse",
     "DMXFrame", "DMXUniverse", "ArtNetConfig",

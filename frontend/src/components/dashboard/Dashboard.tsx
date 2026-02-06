@@ -14,6 +14,8 @@ import {
   MusicNote as MusicIcon,
   Mood as MoodIcon,
   Equalizer as EqualizerIcon,
+  Lightbulb as LightingIcon,
+  Timeline as TimelineIcon,
 } from '@mui/icons-material';
 import { useAudioStore } from '../../stores/audioStore';
 import { useDMXStore } from '../../stores/dmxStore';
@@ -21,6 +23,8 @@ import { audioWebSocket, audioStreamer } from '../../services/websocket';
 import AudioVisualizer from './AudioVisualizer';
 import MoodDisplay from './MoodDisplay';
 import FrequencyBands from './FrequencyBands';
+import ProLightingPanel from './ProLightingPanel';
+import SectionTimeline from './SectionTimeline';
 
 export default function Dashboard() {
   const {
@@ -33,7 +37,17 @@ export default function Dashboard() {
     frequency,
   } = useAudioStore();
 
-  const { setUniverse, setFixtureStates, setEffectsInfo } = useDMXStore();
+  const {
+    setUniverse,
+    setFixtureStates,
+    setEffectsInfo,
+    setGenre,
+    setSection,
+    setActiveEffects,
+    setKeyLightingZones,
+    setEmotionVector,
+    setBeatPhrase,
+  } = useDMXStore();
 
   const handleAnalysisUpdate = useCallback(
     (data: unknown) => {
@@ -55,9 +69,39 @@ export default function Dashboard() {
             analysisData.lighting.dimmer || 'none'
           );
         }
+
+        // Professional lighting state updates
+        if (analysisData.lighting.genre) {
+          setGenre(analysisData.lighting.genre);
+        }
+        if (analysisData.lighting.section) {
+          setSection(
+            analysisData.lighting.section,
+            analysisData.lighting.section_intensity ?? 0
+          );
+        }
+        if (analysisData.lighting.pro_effects) {
+          setActiveEffects(analysisData.lighting.pro_effects);
+        }
+        if (analysisData.lighting.key_zones) {
+          setKeyLightingZones(analysisData.lighting.key_zones);
+        }
+        if (analysisData.lighting.emotion_vector) {
+          setEmotionVector(analysisData.lighting.emotion_vector);
+        }
+        if (analysisData.lighting.beat_phrase !== undefined) {
+          setBeatPhrase(
+            analysisData.lighting.beat_phrase,
+            analysisData.lighting.beats_per_phrase ?? 4
+          );
+        }
       }
     },
-    [updateAnalysis, setUniverse, setFixtureStates, setEffectsInfo]
+    [
+      updateAnalysis, setUniverse, setFixtureStates, setEffectsInfo,
+      setGenre, setSection, setActiveEffects, setKeyLightingZones,
+      setEmotionVector, setBeatPhrase,
+    ]
   );
 
   useEffect(() => {
@@ -247,6 +291,32 @@ export default function Dashboard() {
                 Frequency Bands
               </Typography>
               <FrequencyBands bands={frequency?.bands || []} />
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Professional Lighting Panel */}
+        <Grid item xs={12} md={6}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                <LightingIcon sx={{ mr: 1 }} color="warning" />
+                <Typography variant="h6">Professional Lighting</Typography>
+              </Box>
+              <ProLightingPanel />
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Section Timeline */}
+        <Grid item xs={12} md={6}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                <TimelineIcon sx={{ mr: 1 }} color="info" />
+                <Typography variant="h6">Section Timeline</Typography>
+              </Box>
+              <SectionTimeline />
             </CardContent>
           </Card>
         </Grid>

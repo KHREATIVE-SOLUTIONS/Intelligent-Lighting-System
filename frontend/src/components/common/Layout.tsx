@@ -31,6 +31,7 @@ const menuItems = [
   { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
   { text: 'Shows', icon: <ShowsIcon />, path: '/shows' },
   { text: 'Rigs', icon: <RigsIcon />, path: '/rigs' },
+  { text: 'Fixtures', icon: <LightbulbIcon />, path: '/fixtures' },
 ];
 
 export default function Layout() {

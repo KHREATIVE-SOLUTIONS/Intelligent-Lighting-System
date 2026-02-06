@@ -1,0 +1,44 @@
+{
+  "manufacturer": "Robe",
+  "model": "Robin PATT 2013",
+  "fixture_type": "effect",
+  "weight": 6.5,
+  "power": 320,
+  "beam_angle": 40.0,
+  "pan_range": 0,
+  "tilt_range": 0,
+  "has_rgb": false,
+  "has_cmy": false,
+  "has_color_wheel": false,
+  "source": "bundled",
+  "is_bundled": true,
+  "categories": ["blinder", "effect", "warm_white", "tungsten"],
+  "modes": [
+    {
+      "name": "4-Channel",
+      "channel_count": 4,
+      "description": "Basic mode - individual cells",
+      "channels": [
+        {"channel_number": 1, "channel_type": "dimmer", "name": "Cell 1", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "dimmer", "name": "Cell 2", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 3, "channel_type": "dimmer", "name": "Cell 3", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "dimmer", "name": "Cell 4", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    },
+    {
+      "name": "8-Channel",
+      "channel_count": 8,
+      "description": "Extended mode with strobe and effects",
+      "channels": [
+        {"channel_number": 1, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 1},
+        {"channel_number": 3, "channel_type": "dimmer", "name": "Cell 1", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "dimmer", "name": "Cell 2", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 5, "channel_type": "dimmer", "name": "Cell 3", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "dimmer", "name": "Cell 4", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 7, "channel_type": "strobe", "name": "Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 8, "channel_type": "macro", "name": "Control/Reset", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "manufacturer": "ADJ",
+  "model": "Hyper Gem LED",
+  "fixture_type": "effect",
+  "weight": 2.5,
+  "power": 25,
+  "beam_angle": 120.0,
+  "pan_range": 0,
+  "tilt_range": 0,
+  "has_rgb": true,
+  "has_cmy": false,
+  "has_color_wheel": false,
+  "source": "bundled",
+  "is_bundled": true,
+  "categories": ["effect", "moonflower", "rgb", "compact"],
+  "modes": [
+    {
+      "name": "2-Channel",
+      "channel_count": 2,
+      "description": "Basic control",
+      "channels": [
+        {"channel_number": 1, "channel_type": "macro", "name": "Auto/Sound Program", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "speed", "name": "Motor Speed/Sound Sensitivity", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    },
+    {
+      "name": "5-Channel",
+      "channel_count": 5,
+      "description": "Full DMX control",
+      "channels": [
+        {"channel_number": 1, "channel_type": "red", "name": "Red LED", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "green", "name": "Green LED", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 3, "channel_type": "blue", "name": "Blue LED", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "strobe", "name": "Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 5, "channel_type": "speed", "name": "Motor Rotation", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    }
+  ]
+}

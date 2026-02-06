@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     HUBERT_MODEL_PATH: str = "ml_models/hubert/model.pt"
     YOLO_MODEL_PATH: str = "ml_models/yolov9/model.pt"
 
+    # New ML Model Stack (replaces HuBERT with MERT)
+    MERT_MODEL_PATH: str = "data/models/mert_v1_95m"
+    EMOTION_HEAD_PATH: str = "data/models/mert_v1_95m/emotion_head.onnx"
+
     # DMX/ArtNet
     ARTNET_IP: str = "0.0.0.0"
     ARTNET_PORT: int = 6454

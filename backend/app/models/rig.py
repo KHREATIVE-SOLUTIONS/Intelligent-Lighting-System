@@ -33,6 +33,10 @@ class Rig(Base):
     # DMX universe configuration
     universes = Column(JSON, default=list)  # List of universe configs
 
+    # Import source
+    source_format = Column(String(50), nullable=True)  # "mvr", "gdtf", "console", "manual"
+    source_file = Column(String(500), nullable=True)
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -81,6 +85,11 @@ class RigFixture(Base):
     # Status
     is_active = Column(Boolean, default=True)
     is_inverted = Column(Boolean, default=False)
+    is_address_locked = Column(Boolean, default=False)
+
+    # Identification
+    serial_number = Column(String(100), nullable=True)
+    qr_code_data = Column(String(500), nullable=True)
 
     # Relationships
     rig = relationship("Rig", back_populates="fixtures")

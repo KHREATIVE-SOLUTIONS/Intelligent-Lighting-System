@@ -1,13 +1,16 @@
 """
-Decision Engine
-State machine + Markov chain for intelligent effect selection.
+Decision Engine v2
+Genre-aware, section-driven state machine with professional timing rules.
 
 6 States: Intro → Build-Up → Peak → Sustain ↔ Breakdown → Outro
 
-Based on research:
-- Energy-weighted effect selection
-- Cooldown timers prevent repetition
-- Surprise factor for static looks
+Features:
+- Genre-specific transition weights (EDM/Rock/Pop/Hip-Hop/Jazz)
+- Section-driven effect selection (not random timers)
+- Bar/phrase boundary timing (changes only on 4/8/16 bar lines)
+- Dynamic range enforcement with anti-fatigue
+- Anticipation system for pre-loading next looks
+- Key lighting integration
 """
 
 from collections import deque
@@ -21,6 +24,155 @@ import math
 from .movement_patterns import MovementType, StaticLook, MOVEMENT_PRESETS
 from .dimmer_effects import DimmerType, DIMMER_PRESETS, BEAT_PATTERNS
 from .strobe_controller import StrobeMode, STROBE_PRESETS
+
+
+# Genre-specific preferred effects for each section
+GENRE_SECTION_EFFECTS: Dict[str, Dict[str, Dict[str, list]]] = {
+    "edm": {
+        "intro": {
+            "movement": [MovementType.TRUE_CIRCLE, MovementType.VERTICAL_SWEEP],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+        "verse": {
+            "movement": [MovementType.HORIZONTAL_SWEEP, MovementType.MIRROR_SWEEP, MovementType.TRUE_CIRCLE],
+            "dimmer": [DimmerType.BEAT_SYNC, DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+        "chorus": {
+            "movement": [MovementType.CIRCLE_CHASE, MovementType.BALLYHOO, MovementType.COUNTER_ROTATION],
+            "dimmer": [DimmerType.BEAT_SYNC, DimmerType.KICK_FOLLOWER],
+            "strobe": [StrobeMode.BEAT_LOCKED],
+        },
+        "drop": {
+            "movement": [MovementType.ALTERNATING, MovementType.MIRROR_SWEEP, MovementType.CENTER_OUT_WAVE],
+            "dimmer": [DimmerType.BEAT_SYNC],
+            "strobe": [StrobeMode.BURST],
+        },
+        "breakdown": {
+            "movement": [MovementType.TRUE_CIRCLE, MovementType.SPIRAL],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+    },
+    "rock": {
+        "intro": {
+            "movement": [MovementType.VERTICAL_SWEEP, MovementType.NONE],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+        "verse": {
+            "movement": [MovementType.HORIZONTAL_SWEEP, MovementType.TILT_CHASE],
+            "dimmer": [DimmerType.BEAT_SYNC],
+            "strobe": [StrobeMode.OFF],
+        },
+        "chorus": {
+            "movement": [MovementType.BALLYHOO, MovementType.MIRROR_SWEEP, MovementType.ALTERNATING],
+            "dimmer": [DimmerType.BEAT_SYNC],
+            "strobe": [StrobeMode.BEAT_LOCKED],
+        },
+        "drop": {
+            "movement": [MovementType.TILT_BUMP, MovementType.PAN_BUMP, MovementType.COUNTER_ROTATION],
+            "dimmer": [DimmerType.KICK_FOLLOWER],
+            "strobe": [StrobeMode.BURST],
+        },
+        "breakdown": {
+            "movement": [MovementType.NONE, MovementType.VERTICAL_SWEEP],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+    },
+    "pop": {
+        "intro": {
+            "movement": [MovementType.TRUE_CIRCLE, MovementType.HORIZONTAL_SWEEP],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+        "verse": {
+            "movement": [MovementType.MIRROR_SWEEP, MovementType.TRUE_CIRCLE, MovementType.PAN_CHASE],
+            "dimmer": [DimmerType.SINE_PULSE, DimmerType.BEAT_SYNC],
+            "strobe": [StrobeMode.OFF],
+        },
+        "chorus": {
+            "movement": [MovementType.BALLYHOO, MovementType.CIRCLE_CHASE, MovementType.CENTER_OUT_WAVE],
+            "dimmer": [DimmerType.BEAT_SYNC],
+            "strobe": [StrobeMode.BEAT_LOCKED],
+        },
+        "drop": {
+            "movement": [MovementType.ALTERNATING, MovementType.MIRROR_SWEEP],
+            "dimmer": [DimmerType.BEAT_SYNC],
+            "strobe": [StrobeMode.BURST],
+        },
+        "breakdown": {
+            "movement": [MovementType.TRUE_CIRCLE, MovementType.SPIRAL],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+    },
+    "hip_hop": {
+        "intro": {
+            "movement": [MovementType.NONE, MovementType.VERTICAL_SWEEP],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+        "verse": {
+            "movement": [MovementType.HORIZONTAL_SWEEP, MovementType.TILT_CHASE],
+            "dimmer": [DimmerType.BEAT_SYNC],
+            "strobe": [StrobeMode.OFF],
+        },
+        "chorus": {
+            "movement": [MovementType.MIRROR_SWEEP, MovementType.BALLYHOO],
+            "dimmer": [DimmerType.BEAT_SYNC],
+            "strobe": [StrobeMode.BEAT_LOCKED],
+        },
+        "drop": {
+            "movement": [MovementType.TILT_BUMP, MovementType.CENTER_OUT_WAVE],
+            "dimmer": [DimmerType.KICK_FOLLOWER],
+            "strobe": [StrobeMode.BURST],
+        },
+        "breakdown": {
+            "movement": [MovementType.NONE, MovementType.SPIRAL],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+    },
+    "jazz": {
+        "intro": {
+            "movement": [MovementType.NONE],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+        "verse": {
+            "movement": [MovementType.NONE, MovementType.VERTICAL_SWEEP],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+        "chorus": {
+            "movement": [MovementType.TRUE_CIRCLE, MovementType.HORIZONTAL_SWEEP],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+        "drop": {
+            "movement": [MovementType.HORIZONTAL_SWEEP],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+        "breakdown": {
+            "movement": [MovementType.NONE],
+            "dimmer": [DimmerType.SINE_PULSE],
+            "strobe": [StrobeMode.OFF],
+        },
+    },
+}
+
+# Minimum bars between effect changes per genre
+GENRE_MIN_CHANGE_BARS: Dict[str, int] = {
+    "edm": 4,
+    "rock": 4,
+    "pop": 8,
+    "hip_hop": 4,
+    "jazz": 8,
+}
 
 
 class LightingState(Enum):
@@ -290,6 +442,7 @@ class MarkovChain:
 class DecisionEngine:
     """
     Makes intelligent decisions about lighting effects based on audio.
+    Genre-aware, section-driven, with professional timing rules.
     """
 
     def __init__(self):
@@ -323,6 +476,175 @@ class DecisionEngine:
             "pattern_change": 8,
         }
 
+        # v2: Genre awareness
+        self._genre: str = "edm"
+        self._section: str = "unknown"
+
+        # v2: Bar/phrase boundary timing
+        self._total_bars: int = 0
+        self._last_effect_change_bar: int = 0
+        self._last_movement_change_bar: int = 0
+        self._last_color_change_bar: int = 0
+
+        # v2: Dynamic range enforcement
+        self._intensity_history: deque = deque(maxlen=1800)  # ~30s at 60fps
+        self._drop_count: int = 0
+        self._drop_intensity_variation: float = 0.0  # Anti-fatigue offset
+
+        # v2: Anticipation
+        self._anticipation_active: bool = False
+        self._anticipation_target_state: Optional[LightingState] = None
+        self._pre_drop_blackout_triggered: bool = False
+
+    def set_genre(self, genre: str):
+        """Set the active genre for decision weighting."""
+        self._genre = genre.lower()
+
+    def set_section(self, section: str):
+        """Set the current song section (from SectionManager)."""
+        old_section = self._section
+        self._section = section.lower()
+        if old_section != self._section:
+            # Section changed - this is the primary trigger for effect changes
+            self._on_section_change(old_section, self._section)
+
+    def _on_section_change(self, old_section: str, new_section: str):
+        """Handle section transition as the primary effect-change trigger."""
+        # Map sections to lighting states
+        section_state_map = {
+            "intro": LightingState.INTRO,
+            "verse": LightingState.SUSTAIN,
+            "pre_chorus": LightingState.BUILDUP,
+            "chorus": LightingState.PEAK,
+            "drop": LightingState.PEAK,
+            "breakdown": LightingState.BREAKDOWN,
+            "bridge": LightingState.SUSTAIN,
+            "outro": LightingState.OUTRO,
+            "buildup": LightingState.BUILDUP,
+        }
+        new_state = section_state_map.get(new_section, self.state)
+        if new_state != self.state:
+            self.previous_state = self.state
+            self.state = new_state
+            self.state_start_time = time.time()
+            self.bars_in_state = 0
+            self._last_effect_change_bar = self._total_bars
+
+            # Track drops for anti-fatigue
+            if new_state == LightingState.PEAK:
+                self._drop_count += 1
+                # Vary drop intensity: first drop 100%, subsequent drops 85-100%
+                if self._drop_count > 1:
+                    self._drop_intensity_variation = random.uniform(0.0, 0.15)
+                else:
+                    self._drop_intensity_variation = 0.0
+
+        # Select effects for the new section
+        self._select_genre_effects(new_section)
+
+    def _can_change_effect(self, change_type: str = "general") -> bool:
+        """Check if effect change is allowed at current bar position.
+
+        Professional timing: changes only on bar/phrase boundaries.
+        """
+        min_bars = GENRE_MIN_CHANGE_BARS.get(self._genre, 4)
+
+        if change_type == "movement":
+            return (self._total_bars - self._last_movement_change_bar) >= max(min_bars, 8)
+        elif change_type == "color":
+            # Color changes only on section boundaries (handled by _on_section_change)
+            return False
+        else:
+            return (self._total_bars - self._last_effect_change_bar) >= min_bars
+
+    def _select_genre_effects(self, section: str):
+        """Select effects from genre-specific palettes for the given section."""
+        genre_effects = GENRE_SECTION_EFFECTS.get(self._genre, GENRE_SECTION_EFFECTS["edm"])
+        section_effects = genre_effects.get(section, genre_effects.get("verse", {}))
+
+        movement_options = section_effects.get("movement", [MovementType.NONE])
+        dimmer_options = section_effects.get("dimmer", [DimmerType.SINE_PULSE])
+        strobe_options = section_effects.get("strobe", [StrobeMode.OFF])
+
+        self.selection.movement = random.choice(movement_options) if movement_options else MovementType.NONE
+        self.selection.dimmer = random.choice(dimmer_options) if dimmer_options else DimmerType.SINE_PULSE
+        self.selection.strobe = random.choice(strobe_options) if strobe_options else StrobeMode.OFF
+
+        # Map movement to preset name
+        preset_map = {
+            MovementType.HORIZONTAL_SWEEP: "slow_sweep",
+            MovementType.TRUE_CIRCLE: "circle_slow",
+            MovementType.MIRROR_SWEEP: "mirror_sweep",
+            MovementType.BALLYHOO: "ballyhoo_classic",
+            MovementType.CIRCLE_CHASE: "circle_chase",
+            MovementType.CENTER_OUT_WAVE: "center_out",
+            MovementType.PAN_CHASE: "chase_left_right",
+            MovementType.COUNTER_ROTATION: "vortex",
+            MovementType.ALTERNATING: "alternating_sweep",
+            MovementType.TILT_CHASE: "tilt_wave",
+        }
+        self.selection.movement_preset = preset_map.get(self.selection.movement, "")
+
+        # Map dimmer to preset
+        dimmer_preset_map = {
+            DimmerType.SINE_PULSE: "breathing",
+            DimmerType.BEAT_SYNC: "beat_kick",
+            DimmerType.KICK_FOLLOWER: "beat_kick",
+            DimmerType.RAMP_UP: "build_up",
+            DimmerType.RAMP_DOWN: "fade_out",
+        }
+        self.selection.dimmer_preset = dimmer_preset_map.get(self.selection.dimmer, "breathing")
+
+        # Beat pattern for beat-sync
+        if self.selection.dimmer in (DimmerType.BEAT_SYNC, DimmerType.KICK_FOLLOWER):
+            if section in ("drop", "chorus"):
+                self.selection.beat_pattern = BEAT_PATTERNS.get("four_on_floor", [])
+            else:
+                self.selection.beat_pattern = BEAT_PATTERNS.get("half_time", [])
+
+        # Strobe only on drop (handled by section check)
+        if section == "drop":
+            self.selection.strobe_on_drop = True
+            self.selection.strobe_preset = "drop_burst"
+        else:
+            self.selection.strobe_on_drop = False
+
+        # Static look chance on breakdown/intro
+        if section in ("breakdown", "intro"):
+            self.selection.use_static_look = random.random() < 0.5
+            if self.selection.use_static_look:
+                self.selection.static_look = self._pick_static_look()
+                self.selection.movement = MovementType.NONE
+
+        self._last_effect_change_bar = self._total_bars
+        self._last_movement_change_bar = self._total_bars
+
+    def get_dynamic_intensity_scale(self) -> float:
+        """Get intensity scale factor for dynamic range enforcement.
+
+        Prevents fatigue by scaling down when average intensity is too high.
+        Also applies anti-fatigue variation on drops.
+        """
+        if len(self._intensity_history) < 60:
+            return 1.0
+
+        avg_intensity = sum(self._intensity_history) / len(self._intensity_history)
+
+        # If average > 85%, scale down to create headroom
+        if avg_intensity > 0.85:
+            scale = 0.85 / avg_intensity
+            return max(0.7, scale)
+
+        # Anti-fatigue on drops
+        if self.state == LightingState.PEAK:
+            return 1.0 - self._drop_intensity_variation
+
+        return 1.0
+
+    def track_intensity(self, intensity: float):
+        """Track output intensity for dynamic range enforcement."""
+        self._intensity_history.append(intensity)
+
     def update(self, audio: AudioState, delta_time: float):
         """
         Update decision engine with new audio state.
@@ -338,9 +660,16 @@ class DecisionEngine:
         self.energy_history.append(audio.energy)
 
         if len(self.energy_history) >= 2:
-            recent = sum(self.energy_history[-8:]) / 8
-            older = sum(self.energy_history[:-8]) / max(1, len(self.energy_history) - 8)
+            # Deques don't support slicing - use list conversion for trend calc
+            history = list(self.energy_history)
+            recent = sum(history[-8:]) / min(8, len(history))
+            older_count = max(1, len(history) - 8)
+            older = sum(history[:-8]) / older_count if older_count > 0 else recent
             audio.energy_trend = recent - older
+
+        # Track total bars
+        if audio.is_beat and audio.beat_number % 4 == 0:
+            self._total_bars += 1
 
         # Detect song structure changes
         self._detect_structure_changes()
@@ -457,13 +786,24 @@ class DecisionEngine:
         # No strobe during build-up (save for drop)
         s.strobe = StrobeMode.OFF
 
+        # v2 Anticipation: pre-drop signal when build-up is nearly done
+        if progress > 0.9 and not self._pre_drop_blackout_triggered:
+            self._pre_drop_blackout_triggered = True
+            self._anticipation_active = True
+            self._anticipation_target_state = LightingState.PEAK
+
     def _decide_peak(self):
-        """Effects for peak/drop section."""
+        """Effects for peak/drop section with genre awareness."""
         s = self.selection
         audio = self.audio
 
-        # STROBE ON DROP!
-        if self.bars_in_state == 0:
+        # Reset anticipation state
+        self._pre_drop_blackout_triggered = False
+        self._anticipation_active = False
+
+        # STROBE ON DROP! (genre-dependent)
+        genre_strobe = self._genre not in ("jazz",)  # Jazz never strobes
+        if self.bars_in_state == 0 and genre_strobe:
             s.strobe_on_drop = True
             s.strobe = StrobeMode.BURST
             s.strobe_preset = "drop_burst"
@@ -476,17 +816,18 @@ class DecisionEngine:
             self.cooldowns.set_cooldown("strobe_burst", 64, audio.bpm)
             self.cooldowns.set_cooldown("static_look", 16, audio.bpm)
 
-        # Movement: high energy patterns - fast chase, alternating, mirror
-        if self.cooldowns.is_available("pattern_change"):
-            # Prefer dramatic patterns during peak
-            high_energy_patterns = [
+        # Movement: genre-specific high energy patterns (bar-boundary check)
+        if self.cooldowns.is_available("pattern_change") and self._can_change_effect("movement"):
+            # Use genre-specific drop patterns
+            genre_effects = GENRE_SECTION_EFFECTS.get(self._genre, GENRE_SECTION_EFFECTS["edm"])
+            high_energy_patterns = genre_effects.get("drop", {}).get("movement", [
                 MovementType.BALLYHOO,
                 MovementType.CIRCLE_CHASE,
                 MovementType.MIRROR_SWEEP,
                 MovementType.COUNTER_ROTATION,
                 MovementType.ALTERNATING,
-            ]
-            # 60% chance to pick from high-energy list, 40% use Markov
+            ])
+            # 60% chance to pick from genre list, 40% use Markov
             if random.random() < 0.6:
                 s.movement = random.choice(high_energy_patterns)
                 # Map to preset
@@ -513,21 +854,22 @@ class DecisionEngine:
         s.dimmer_preset = "beat_kick"
 
     def _decide_sustain(self):
-        """Effects for sustain section (after drop)."""
+        """Effects for sustain section (after drop) with genre awareness."""
         s = self.selection
         audio = self.audio
 
-        # Movement: varied patterns using Markov chain
-        if self.cooldowns.is_available("pattern_change"):
-            # Sustain prefers flowing, continuous patterns
-            sustain_patterns = [
+        # Movement: genre-specific patterns with bar-boundary timing
+        if self.cooldowns.is_available("pattern_change") and self._can_change_effect("movement"):
+            # Use genre-specific chorus/verse patterns for sustain
+            genre_effects = GENRE_SECTION_EFFECTS.get(self._genre, GENRE_SECTION_EFFECTS["edm"])
+            sustain_patterns = genre_effects.get("chorus", {}).get("movement", [
                 MovementType.TRUE_CIRCLE,
                 MovementType.CIRCLE_CHASE,
                 MovementType.PAN_CHASE,
                 MovementType.TILT_CHASE,
                 MovementType.HORIZONTAL_SWEEP,
                 MovementType.MIRROR_SWEEP,
-            ]
+            ])
 
             if random.random() < 0.4:
                 s.movement = random.choice(sustain_patterns)

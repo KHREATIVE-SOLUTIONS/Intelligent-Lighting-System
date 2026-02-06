@@ -1,0 +1,69 @@
+{
+  "manufacturer": "Elation",
+  "model": "Fuze Wash 500",
+  "fixture_type": "wash",
+  "weight": 10.5,
+  "power": 305,
+  "beam_angle": 6.0,
+  "pan_range": 540,
+  "tilt_range": 270,
+  "has_rgb": true,
+  "has_cmy": false,
+  "has_color_wheel": false,
+  "source": "bundled",
+  "is_bundled": true,
+  "categories": ["moving_head", "wash", "rgbw", "led", "zoom"],
+  "modes": [
+    {
+      "name": "15-Channel",
+      "channel_count": 15,
+      "description": "Basic control mode",
+      "channels": [
+        {"channel_number": 1, "channel_type": "pan", "name": "Pan", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "pan_fine", "name": "Pan Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 1},
+        {"channel_number": 3, "channel_type": "tilt", "name": "Tilt", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "tilt_fine", "name": "Tilt Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 3},
+        {"channel_number": 5, "channel_type": "speed", "name": "Pan/Tilt Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 7, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 6},
+        {"channel_number": 8, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 9, "channel_type": "red", "name": "Red", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 10, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 11, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 12, "channel_type": "white", "name": "White", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 13, "channel_type": "other", "name": "CTO", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 14, "channel_type": "zoom", "name": "Zoom", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 15, "channel_type": "macro", "name": "Control/Reset", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    },
+    {
+      "name": "22-Channel",
+      "channel_count": 22,
+      "description": "Extended mode with fine colors and zone FX",
+      "channels": [
+        {"channel_number": 1, "channel_type": "pan", "name": "Pan", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "pan_fine", "name": "Pan Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 1},
+        {"channel_number": 3, "channel_type": "tilt", "name": "Tilt", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "tilt_fine", "name": "Tilt Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 3},
+        {"channel_number": 5, "channel_type": "speed", "name": "Pan/Tilt Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 7, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 6},
+        {"channel_number": 8, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 9, "channel_type": "red", "name": "Red", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 10, "channel_type": "red", "name": "Red Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 9},
+        {"channel_number": 11, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 12, "channel_type": "green", "name": "Green Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 11},
+        {"channel_number": 13, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 14, "channel_type": "blue", "name": "Blue Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 13},
+        {"channel_number": 15, "channel_type": "white", "name": "White", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 16, "channel_type": "white", "name": "White Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 15},
+        {"channel_number": 17, "channel_type": "other", "name": "CTO", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 18, "channel_type": "macro", "name": "Color Macro", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 19, "channel_type": "zoom", "name": "Zoom", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 20, "channel_type": "effect", "name": "FX Select", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 21, "channel_type": "speed", "name": "FX Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 22, "channel_type": "macro", "name": "Control/Reset", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    }
+  ]
+}

@@ -796,3 +796,106 @@ async def apply_pattern(
             status_code=500,
             detail=f"Failed to apply pattern to DMX controller: {str(e)}"
         )
+
+
+@router.put("/{rig_id}/fixtures/batch-update")
+async def batch_update_fixtures(
+    rig_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch update multiple rig fixture properties (positions, addresses)."""
+    rig = db.query(Rig).filter(Rig.id == rig_id).first()
+    if not rig:
+        raise HTTPException(status_code=404, detail="Rig not found")
+
+    fixtures_data = body.get("fixtures", [])
+    updated = 0
+
+    for item in fixtures_data:
+        rf_id = item.get("id")
+        if not rf_id:
+            continue
+
+        rf = db.query(RigFixture).filter(
+            RigFixture.id == rf_id,
+            RigFixture.rig_id == rig_id,
+        ).first()
+        if not rf:
+            continue
+
+        for field in [
+            "name", "universe", "dmx_address", "mode_id",
+            "position_x", "position_y", "position_z",
+            "rotation_x", "rotation_y", "rotation_z",
+            "group_name", "is_address_locked",
+        ]:
+            if field in item and item[field] is not None:
+                setattr(rf, field, item[field])
+
+        updated += 1
+
+    db.commit()
+    return {"message": f"Updated {updated} fixtures", "updated": updated}
+
+
+@router.post("/{rig_id}/fixtures/duplicate/{fixture_id}")
+async def duplicate_rig_fixture(
+    rig_id: int,
+    fixture_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Duplicate a rig fixture with auto-assigned DMX address."""
+    rig = db.query(Rig).filter(Rig.id == rig_id).first()
+    if not rig:
+        raise HTTPException(status_code=404, detail="Rig not found")
+
+    source = db.query(RigFixture).filter(
+        RigFixture.id == fixture_id,
+        RigFixture.rig_id == rig_id,
+    ).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Rig fixture not found")
+
+    # Find next available address
+    from app.services.rig.patching_service import PatchingService
+    all_fixtures = db.query(RigFixture).filter(RigFixture.rig_id == rig_id).all()
+    occupied = []
+    channel_count = 16
+    if source.mode:
+        channel_count = source.mode.channel_count
+    for rf in all_fixtures:
+        if rf.universe == source.universe:
+            cc = rf.mode.channel_count if rf.mode else 16
+            occupied.append((rf.dmx_address, rf.dmx_address + cc - 1))
+
+    next_addr = PatchingService.get_next_address(occupied, channel_count)
+    if next_addr is None:
+        raise HTTPException(status_code=400, detail="No available DMX address in this universe")
+
+    new_rf = RigFixture(
+        rig_id=rig_id,
+        fixture_id=source.fixture_id,
+        name=f"{source.name or 'Fixture'} (copy)" if source.name else None,
+        universe=source.universe,
+        dmx_address=next_addr,
+        mode_id=source.mode_id,
+        position_x=source.position_x + 1.0,
+        position_y=source.position_y,
+        position_z=source.position_z,
+        rotation_x=source.rotation_x,
+        rotation_y=source.rotation_y,
+        rotation_z=source.rotation_z,
+        group_name=source.group_name,
+        tags=source.tags,
+        is_active=True,
+    )
+    db.add(new_rf)
+    db.commit()
+    db.refresh(new_rf)
+
+    return {
+        "id": new_rf.id,
+        "dmx_address": new_rf.dmx_address,
+        "message": f"Duplicated fixture at address {new_rf.dmx_address}",
+    }

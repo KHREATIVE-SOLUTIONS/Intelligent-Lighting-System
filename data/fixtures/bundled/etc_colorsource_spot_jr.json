@@ -1,0 +1,31 @@
+{
+  "manufacturer": "ETC",
+  "model": "ColorSource Spot jr",
+  "fixture_type": "spot",
+  "weight": 4.5,
+  "power": 60,
+  "beam_angle": 25.0,
+  "pan_range": 0,
+  "tilt_range": 0,
+  "has_rgb": true,
+  "has_cmy": false,
+  "has_color_wheel": false,
+  "source": "bundled",
+  "is_bundled": true,
+  "categories": ["led", "spot", "rgbl", "static", "theatrical"],
+  "modes": [
+    {
+      "name": "6-Channel",
+      "channel_count": 6,
+      "description": "Standard control mode",
+      "channels": [
+        {"channel_number": 1, "channel_type": "dimmer", "name": "Intensity", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "red", "name": "Red", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 3, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 5, "channel_type": "other", "name": "Lime", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "strobe", "name": "Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    }
+  ]
+}

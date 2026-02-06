@@ -29,6 +29,9 @@ class RigFixtureBase(BaseModel):
     tags: List[str] = Field(default_factory=list)
     is_active: bool = True
     is_inverted: bool = False
+    is_address_locked: bool = False
+    serial_number: Optional[str] = None
+    qr_code_data: Optional[str] = None
 
 
 class RigFixtureCreate(RigFixtureBase):
@@ -53,6 +56,9 @@ class RigFixtureUpdate(BaseModel):
     tags: Optional[List[str]] = None
     is_active: Optional[bool] = None
     is_inverted: Optional[bool] = None
+    is_address_locked: Optional[bool] = None
+    serial_number: Optional[str] = None
+    qr_code_data: Optional[str] = None
 
 
 class RigFixtureResponse(RigFixtureBase):
@@ -105,6 +111,8 @@ class RigUpdate(BaseModel):
 class RigResponse(RigBase):
     """Schema for rig response."""
     id: int
+    source_format: Optional[str] = None
+    source_file: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str] = None

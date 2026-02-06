@@ -1,0 +1,45 @@
+{
+  "manufacturer": "Martin",
+  "model": "MAC Encore Wash",
+  "fixture_type": "wash",
+  "weight": 14.5,
+  "power": 468,
+  "beam_angle": 7.5,
+  "pan_range": 540,
+  "tilt_range": 268,
+  "has_rgb": true,
+  "has_cmy": false,
+  "has_color_wheel": false,
+  "source": "bundled",
+  "is_bundled": true,
+  "categories": ["moving_head", "wash", "rgbal", "high_output", "led"],
+  "modes": [
+    {
+      "name": "20-Channel",
+      "channel_count": 20,
+      "description": "Standard control mode",
+      "channels": [
+        {"channel_number": 1, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 3, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 2},
+        {"channel_number": 4, "channel_type": "red", "name": "Red", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 5, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 7, "channel_type": "amber", "name": "Amber", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 8, "channel_type": "other", "name": "Lime", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 9, "channel_type": "other", "name": "CTC", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 10, "channel_type": "macro", "name": "Color Macro", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 11, "channel_type": "effect", "name": "FX Select", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 12, "channel_type": "speed", "name": "FX Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 13, "channel_type": "zoom", "name": "Zoom", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 14, "channel_type": "zoom", "name": "Zoom Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 13},
+        {"channel_number": 15, "channel_type": "pan", "name": "Pan", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 16, "channel_type": "pan_fine", "name": "Pan Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 15},
+        {"channel_number": 17, "channel_type": "tilt", "name": "Tilt", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 18, "channel_type": "tilt_fine", "name": "Tilt Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 17},
+        {"channel_number": 19, "channel_type": "speed", "name": "Pan/Tilt Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 20, "channel_type": "macro", "name": "Control/Reset", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    }
+  ]
+}

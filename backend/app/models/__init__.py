@@ -4,6 +4,8 @@ from app.models.show import Show, ShowCue, ShowTrack
 from app.models.rig import Rig, RigFixture
 from app.models.fixture import Fixture, FixtureMode, FixtureChannel
 from app.models.audio import AudioAnalysis, AudioFingerprint
+from app.models.template import RigTemplate
+from app.models.rdm_device import RDMDevice
 
 __all__ = [
     "Show",
@@ -16,4 +18,6 @@ __all__ = [
     "FixtureChannel",
     "AudioAnalysis",
     "AudioFingerprint",
+    "RigTemplate",
+    "RDMDevice",
 ]

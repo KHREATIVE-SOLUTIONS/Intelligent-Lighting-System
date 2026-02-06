@@ -1,0 +1,49 @@
+{
+  "manufacturer": "Elation",
+  "model": "Smarty Hybrid",
+  "fixture_type": "beam",
+  "weight": 18.0,
+  "power": 480,
+  "beam_angle": 2.0,
+  "pan_range": 540,
+  "tilt_range": 270,
+  "has_rgb": false,
+  "has_cmy": true,
+  "has_color_wheel": true,
+  "source": "bundled",
+  "is_bundled": true,
+  "categories": ["moving_head", "beam", "spot", "wash", "hybrid", "cmy", "gobo"],
+  "modes": [
+    {
+      "name": "24-Channel",
+      "channel_count": 24,
+      "description": "Standard control mode",
+      "channels": [
+        {"channel_number": 1, "channel_type": "pan", "name": "Pan", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "pan_fine", "name": "Pan Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 1},
+        {"channel_number": 3, "channel_type": "tilt", "name": "Tilt", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "tilt_fine", "name": "Tilt Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 3},
+        {"channel_number": 5, "channel_type": "speed", "name": "Pan/Tilt Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "color_wheel", "name": "Color Wheel", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 7, "channel_type": "other", "name": "Cyan", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 8, "channel_type": "other", "name": "Magenta", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 9, "channel_type": "other", "name": "Yellow", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 10, "channel_type": "other", "name": "CTO", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 11, "channel_type": "gobo", "name": "Gobo Wheel 1", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 12, "channel_type": "gobo_rotation", "name": "Gobo 1 Rotation", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 13, "channel_type": "gobo", "name": "Gobo Wheel 2", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 14, "channel_type": "prism", "name": "Prism", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 15, "channel_type": "prism", "name": "Prism Rotation", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 16, "channel_type": "other", "name": "Frost", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 17, "channel_type": "zoom", "name": "Zoom", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 18, "channel_type": "focus", "name": "Focus", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 19, "channel_type": "focus", "name": "Auto Focus", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 20, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 21, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 22, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 21},
+        {"channel_number": 23, "channel_type": "effect", "name": "Effect", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 24, "channel_type": "macro", "name": "Control/Reset", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    }
+  ]
+}

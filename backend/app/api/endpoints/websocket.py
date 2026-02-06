@@ -120,6 +120,9 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
     valence = mood.get('valence', 0.5)
     arousal = mood.get('arousal', 0.5)
 
+    # Extract ML pipeline data if available
+    ml_data = analysis.get('ml', None)
+
     # Update effects engine with audio data (for BPM sync and training recording)
     # Note: LFO effects are applied by the effects engine's main loop
     effects_engine.update_audio(
@@ -132,7 +135,8 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         valence=valence,
         arousal=arousal,
         spectral_flux=spectral_flux,
-        bpm=bpm
+        bpm=bpm,
+        ml_data=ml_data,
     )
 
     # Get the current DMX frame (already updated by effects engine loop)
@@ -189,13 +193,33 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
     except Exception:
         pass
 
-    return {
+    # Get pro lighting state if available
+    pro_state = None
+    try:
+        pro_state = effects_engine.get_pro_lighting_state()
+    except Exception:
+        pass
+
+    result = {
         'dmx_frame': dmx_frame,
         'fixtures': fixture_states,
         'state': 'training',  # Always in training mode
         'movement': active_lfo,  # Show active LFO effect
         'dimmer': 'manual'
     }
+    if pro_state:
+        result['pro_lighting'] = pro_state
+    # Include ML pipeline data in WebSocket response for frontend display
+    if ml_data:
+        if 'emotion_vector' in ml_data:
+            result['emotion_vector'] = ml_data['emotion_vector']
+        if 'structure' in ml_data:
+            result['detected_section'] = ml_data['structure'].get('section', 'unknown')
+            result['section_transition'] = ml_data['structure'].get('transition', {})
+        if 'genre' in ml_data:
+            result['detected_genre'] = ml_data['genre'].get('genre', 'unknown')
+            result['genre_confidence'] = ml_data['genre'].get('genre_confidence', 0.0)
+    return result
 
 
 @router.websocket("/audio")

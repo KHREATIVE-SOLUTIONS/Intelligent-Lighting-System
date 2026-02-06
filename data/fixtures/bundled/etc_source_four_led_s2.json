@@ -1,0 +1,42 @@
+{
+  "manufacturer": "ETC",
+  "model": "Source Four LED Series 2 Lustr",
+  "fixture_type": "spot",
+  "weight": 7.7,
+  "power": 160,
+  "beam_angle": 26.0,
+  "pan_range": 0,
+  "tilt_range": 0,
+  "has_rgb": true,
+  "has_cmy": false,
+  "has_color_wheel": false,
+  "source": "bundled",
+  "is_bundled": true,
+  "categories": ["led", "profile", "theatrical", "7_color", "static"],
+  "modes": [
+    {
+      "name": "7-Channel",
+      "channel_count": 7,
+      "description": "Direct 7-color control (RGBALCI)",
+      "channels": [
+        {"channel_number": 1, "channel_type": "red", "name": "Red", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 3, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "amber", "name": "Amber", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 5, "channel_type": "other", "name": "Lime", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "other", "name": "Cyan", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 7, "channel_type": "other", "name": "Indigo", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    },
+    {
+      "name": "3-Channel",
+      "channel_count": 3,
+      "description": "Simplified HSI mode",
+      "channels": [
+        {"channel_number": 1, "channel_type": "other", "name": "Hue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "other", "name": "Saturation", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 3, "channel_type": "dimmer", "name": "Intensity", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    }
+  ]
+}

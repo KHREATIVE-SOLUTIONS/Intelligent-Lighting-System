@@ -35,6 +35,10 @@ from .decision_engine import (
 )
 from .lfo_engine import LFOEngine
 
+# Professional lighting modules - imported lazily in __init__ to avoid circular imports
+# (lighting modules import from effects submodules, which triggers effects/__init__.py,
+#  which imports effects_engine, creating a cycle)
+
 
 @dataclass
 class EffectsConfig:
@@ -128,6 +132,25 @@ class EffectsEngine:
         # LFO Engine (grandMA2-style effects) - initialized separately via set_lfo_engine
         self._lfo_engine: Optional[LFOEngine] = None
 
+        # Professional lighting modules (lazy imports to avoid circular dependency)
+        from ..lighting.genre_profiles import GenreProfileManager
+        from ..lighting.section_manager import SectionManager
+        from ..lighting.movement_patterns import ProMovementEngine
+        from ..lighting.pro_effects import ProEffects
+        from ..lighting.key_lighting import KeyLightingManager
+
+        self.genre_manager = GenreProfileManager()
+        self.section_manager = SectionManager(bpm=self.config.bpm)
+        self.pro_movement = ProMovementEngine()
+        self.pro_effects = ProEffects(bpm=self.config.bpm)
+        self.key_lighting = KeyLightingManager()
+
+        # Pro lighting integration enabled flag
+        self._pro_lighting_enabled = False
+
+        # ML emotion mapping state (set by _apply_ml_data)
+        self._ml_emotion_mapping = None
+
         # Set default movement pattern - visible circular motion
         self.movement.set_pattern(
             MovementType.TRUE_CIRCLE,
@@ -165,6 +188,27 @@ class EffectsEngine:
         """Get the LFO engine instance."""
         return self._lfo_engine
 
+    def enable_pro_lighting(self, enabled: bool = True):
+        """Enable professional lighting integration."""
+        self._pro_lighting_enabled = enabled
+
+    def set_genre(self, genre, crossfade: bool = True):
+        """Set the active genre profile."""
+        from ..lighting.movement_patterns import apply_genre_defaults
+        self.genre_manager.set_genre(genre, crossfade)
+        self.key_lighting.set_genre(genre.value)
+        # Apply genre speed defaults to pro movement
+        apply_genre_defaults(self.pro_movement.params, genre.value)
+        # Sync genre to pro strobe budget and decision engine
+        self.pro_effects.strobe.set_genre(genre.value)
+        self.decision.set_genre(genre.value)
+
+    def set_section(self, section, immediate: bool = False):
+        """Manually trigger a song section change."""
+        self.section_manager.trigger_section(section, immediate)
+        # Sync to decision engine
+        self.decision.set_section(section.value if hasattr(section, 'value') else str(section))
+
     def update_audio(
         self,
         energy: float = 0.5,
@@ -176,7 +220,8 @@ class EffectsEngine:
         valence: float = 0.5,
         arousal: float = 0.5,
         spectral_flux: float = 0.0,
-        bpm: float = 128.0
+        bpm: float = 128.0,
+        ml_data: dict = None,
     ):
         """
         Update audio state from audio analyzer.
@@ -192,6 +237,7 @@ class EffectsEngine:
             arousal: Mood arousal (0=calm, 1=excited)
             spectral_flux: Rate of spectral change
             bpm: Detected BPM
+            ml_data: ML pipeline output (emotion_vector, emotion_mapping, structure, genre)
         """
         # Update audio features for color mapping
         self.audio_features = AudioFeatures(
@@ -228,6 +274,10 @@ class EffectsEngine:
         if self.config.lock_palette_per_song:
             self._detect_song_change(energy)
 
+        # Process ML pipeline data when pro lighting is enabled
+        if ml_data and self._pro_lighting_enabled:
+            self._apply_ml_data(ml_data)
+
     def _detect_song_change(self, energy: float):
         """Detect song changes via silence and switch color palette."""
         current_time = self.time
@@ -249,7 +299,7 @@ class EffectsEngine:
                 print(f"[Effects] Palette locked: {self._current_song_palette.value}")
 
     def _on_song_change(self):
-        """Handle song change - pick new color palette."""
+        """Handle song change - pick new color palette and reset ML state."""
         # Cycle to next palette
         self._palette_index = (self._palette_index + 1) % len(self._available_palettes)
         self._current_song_palette = self._available_palettes[self._palette_index]
@@ -259,7 +309,110 @@ class EffectsEngine:
         self.color.set_palette(self._current_song_palette)
         self.config.palette = self._current_song_palette
 
+        # Reset pro lighting state for new song
+        if self._pro_lighting_enabled:
+            from ..lighting.section_manager import SongSection
+            self.pro_effects.strobe.reset_song_budget()
+            self.section_manager.trigger_section(SongSection.UNKNOWN, immediate=True)
+            self.pro_effects.build.stop()
+            self._ml_emotion_mapping = None
+
         print(f"[Effects] Song changed! New palette: {self._current_song_palette.value}")
+
+    def _apply_ml_data(self, ml_data: dict):
+        """Apply ML pipeline data (MERT emotion, structure, genre) to pro lighting modules.
+
+        This is the core wiring that makes the system fully automatic:
+        audio -> ML models -> lighting parameter modulation.
+        """
+        from ..lighting.genre_profiles import Genre
+        from ..lighting.section_manager import SongSection
+        from ..lighting.pro_effects import ColorTemperature
+
+        # --- Genre auto-switching ---
+        genre_data = ml_data.get("genre")
+        if genre_data:
+            detected_genre = genre_data.get("genre", "").lower()
+            confidence = genre_data.get("genre_confidence", 0.0)
+            # Only switch if confidence is reasonable
+            if confidence >= 0.4:
+                genre_map = {
+                    "edm": Genre.EDM,
+                    "rock": Genre.ROCK,
+                    "metal": Genre.ROCK,
+                    "pop": Genre.POP,
+                    "hip_hop": Genre.HIP_HOP,
+                    "jazz": Genre.JAZZ,
+                    "classical": Genre.JAZZ,
+                    "ambient": Genre.JAZZ,
+                }
+                genre_enum = genre_map.get(detected_genre)
+                if genre_enum and genre_enum != self.genre_manager.current_genre:
+                    self.set_genre(genre_enum)
+                    # Reset strobe budget for genre change
+                    self.pro_effects.strobe.set_genre(detected_genre)
+                    self.pro_effects.strobe.reset_song_budget()
+                    print(f"[ML] Genre auto-switched to {detected_genre} (conf={confidence:.2f})")
+
+        # --- Structure-driven section changes ---
+        structure_data = ml_data.get("structure")
+        if structure_data:
+            detected_section = structure_data.get("section", "unknown")
+            section_confidence = structure_data.get("section_confidence", 0.0)
+            is_boundary = structure_data.get("is_section_boundary", False)
+
+            if section_confidence >= 0.5:
+                section_map = {
+                    "intro": SongSection.INTRO,
+                    "verse": SongSection.VERSE,
+                    "chorus": SongSection.CHORUS,
+                    "bridge": SongSection.BRIDGE,
+                    "drop": SongSection.DROP,
+                    "breakdown": SongSection.BREAKDOWN,
+                    "build_up": SongSection.BUILDUP,
+                    "outro": SongSection.OUTRO,
+                    "instrumental": SongSection.VERSE,
+                    "solo": SongSection.CHORUS,
+                }
+                section_enum = section_map.get(detected_section)
+                if section_enum and section_enum != self.section_manager.current_section:
+                    # Use immediate transition on section boundaries, crossfade otherwise
+                    self.section_manager.trigger_section(section_enum, immediate=is_boundary)
+
+            # Handle buildup->drop anticipation from transition predictions
+            transition = structure_data.get("transition", {})
+            if transition.get("is_buildup") and transition.get("buildup_progress", 0) > 0:
+                buildup_progress = transition["buildup_progress"]
+                if not self.pro_effects.build.is_active and buildup_progress < 0.3:
+                    # Start build effect for the buildup section
+                    bars_until = transition.get("bars_until", 8)
+                    self.pro_effects.build.trigger(
+                        duration_beats=max(4.0, bars_until * 4),
+                        curve="quadratic",
+                    )
+                # Pre-drop blackout: trigger 0.75s before the drop hits
+                if buildup_progress > 0.85 and transition.get("bars_until", 4) <= 1:
+                    if self.pro_effects.get_blackout_override() is None:
+                        self.pro_effects.trigger_pre_drop_blackout(duration=0.75)
+
+        # --- MERT emotion -> lighting parameter modulation ---
+        emotion_mapping = ml_data.get("emotion_mapping")
+        if emotion_mapping:
+            # Color temperature from valence
+            warmth = emotion_mapping.get("palette_warmth", 0.5)
+            if warmth > 0.65:
+                self.pro_effects.wash.set_color_temperature(ColorTemperature.WARM, blend=0.25)
+            elif warmth < 0.35:
+                self.pro_effects.wash.set_color_temperature(ColorTemperature.COOL, blend=0.25)
+            else:
+                self.pro_effects.wash.set_color_temperature(ColorTemperature.NEUTRAL, blend=0.1)
+
+            # Coverage -> fixture spread on wash
+            coverage = emotion_mapping.get("coverage", 0.5)
+            self.pro_effects.wash.set_fixture_spread(1.0 - coverage)
+
+            # Store emotion mapping for use in _update_fixtures
+            self._ml_emotion_mapping = emotion_mapping
 
     def _on_beat(self, beat_number: int):
         """Handle beat event."""
@@ -271,6 +424,12 @@ class EffectsEngine:
 
         # Trigger movement beat (for bump patterns and beat-locked effects)
         self.movement.trigger_beat()
+
+        # Forward beat to pro lighting modules
+        if self._pro_lighting_enabled:
+            self.pro_movement.trigger_beat()
+            self.pro_effects.trigger_beat(beat_number)
+            self.section_manager.trigger_beat(beat_number)
 
         # White strobe flash ONLY on extreme high energy moments (drops, climaxes)
         # Must be: every 16th beat (start of 4-bar phrase) + very high energy + high bass
@@ -300,11 +459,21 @@ class EffectsEngine:
         self.last_update = current_time
         self.time += delta_time
 
-        # Update decision engine (disabled for now - using fixed movement pattern)
-        # if self.config.auto_mode:
-        #     self.decision.update(self.audio_state, delta_time)
-        #     selection = self.decision.get_selection()
-        #     self._apply_selection(selection)
+        # Update decision engine - genre-aware mode when pro lighting is active
+        if self.config.auto_mode and self._pro_lighting_enabled:
+            # Sync genre and section from pro lighting modules to decision engine
+            self.decision.set_genre(self.genre_manager.current_genre.value)
+            self.decision.set_section(self.section_manager.current_section.value)
+            self.decision.update(self.audio_state, delta_time)
+            selection = self.decision.get_selection()
+            self._apply_selection(selection)
+
+            # Trigger pro effects based on section transitions
+            self._trigger_pro_effects_from_decision()
+        elif self.config.auto_mode:
+            self.decision.update(self.audio_state, delta_time)
+            selection = self.decision.get_selection()
+            self._apply_selection(selection)
 
         # Sync BPM to movement engine for beat-locked patterns
         self.movement.params.bpm = self.config.bpm
@@ -314,6 +483,32 @@ class EffectsEngine:
         self.dimmer.update(delta_time)
         self.strobe.update(delta_time)
         self.color.update(delta_time)
+
+        # Update pro lighting modules
+        if self._pro_lighting_enabled:
+            self.genre_manager.update(delta_time)
+            self.section_manager.update(
+                delta_time,
+                energy=self.audio_features.energy,
+                is_beat=self.audio_features.is_beat,
+            )
+            self.pro_movement.set_bpm(self.config.bpm)
+            self.pro_movement.update(delta_time)
+            self.pro_effects.set_bpm(self.config.bpm)
+            self.pro_effects.update(delta_time)
+
+            # Auto-detect section from audio if no external section data
+            detected = self.section_manager.detect_section_from_energy(
+                self.audio_features.energy,
+                self.audio_features.bass,
+                getattr(self.audio_state, 'spectral_flux', 0.0),
+            )
+            if detected is not None:
+                self.section_manager.trigger_section(detected)
+
+            # Sync section and genre to decision engine
+            self.decision.set_genre(self.genre_manager.current_genre.value)
+            self.decision.set_section(self.section_manager.current_section.value)
 
         # Update drop sequence if active
         if self.drop_sequence.is_active():
@@ -362,6 +557,45 @@ class EffectsEngine:
                 self.strobe.params = preset
             else:
                 self.strobe.params.mode = selection.strobe
+
+    def _trigger_pro_effects_from_decision(self):
+        """Trigger pro effects when the decision engine detects state transitions."""
+        current_state = self.decision.state
+        previous_state = self.decision.previous_state
+
+        # Only trigger on actual transitions
+        if current_state == previous_state:
+            return
+
+        from ..lighting.pro_effects import ProStrobeMode
+
+        if current_state == LightingState.PEAK:
+            # Drop detected - trigger full drop sequence (flash-blackout-flash + burst)
+            self.pro_effects.trigger_drop()
+            # Scale build-up intensity variation for anti-fatigue
+            intensity_scale = self.decision.get_dynamic_intensity_scale()
+            self.decision.track_intensity(intensity_scale)
+
+        elif current_state == LightingState.BUILDUP:
+            # Build-up - trigger progressive build effect and movement speed ramp
+            self.pro_effects.build.trigger(duration_beats=16.0, curve="quadratic")
+            self.pro_effects.strobe.stop()
+            # Accelerate movement during buildup (quarter speed -> double speed)
+            buildup_secs = 16.0 * 60.0 / max(60, self.config.bpm)
+            self.pro_movement.start_speed_ramp(
+                duration=buildup_secs, start_mult=0.25, end_mult=2.0
+            )
+
+        elif current_state == LightingState.BREAKDOWN:
+            # Breakdown - clean transition via momentary blackout, kill strobe, stop builds
+            self.pro_effects.trigger_section_blackout(duration=0.3)
+            self.pro_effects.strobe.stop()
+            self.pro_effects.build.stop()
+            self.pro_movement.stop_speed_ramp()
+
+        elif current_state == LightingState.OUTRO:
+            # Outro - stop all pro effects
+            self.pro_effects.blackout()
 
     def _update_fixtures(self, delta_time: float):
         """Update all fixture values from effect layers."""
@@ -476,6 +710,120 @@ class EffectsEngine:
                         fixture.green = color.g
                         fixture.blue = color.b
 
+                    # === Professional Lighting Layers ===
+                    if self._pro_lighting_enabled:
+                        # Section intensity modulation
+                        section_intensity = self.section_manager.get_intensity()
+                        fixture.dimmer *= section_intensity
+
+                        # Pro movement (adds to existing movement)
+                        if fixture.fixture_type in ["mover", "wash"]:
+                            pan_off, tilt_off = self.pro_movement.get_position(
+                                fixture.id, i, total,
+                                fixture.x, fixture.y, fixture.z,
+                            )
+                            # Scale by section movement energy
+                            move_energy = self.section_manager.get_movement_energy()
+                            # Modulate with MERT movement_speed if available
+                            if self._ml_emotion_mapping is not None:
+                                ml_move = self._ml_emotion_mapping.get("movement_speed", 0.5)
+                                move_energy *= 0.5 + ml_move  # 0.5x-1.5x range
+                            pan_off *= move_energy
+                            tilt_off *= move_energy
+                            # Add bump offset
+                            bump_pan, bump_tilt = self.pro_movement.get_bump_offset()
+                            pan_off += bump_pan
+                            tilt_off += bump_tilt
+                            # Apply as degree offsets (pan/tilt are in DMX 0-255)
+                            fixture.pan = max(0, min(255, fixture.pan + pan_off * 255 / 540))
+                            fixture.tilt = max(0, min(255, fixture.tilt + tilt_off * 255 / 270))
+
+                        # Pro movement chase dimmer (chases control brightness too)
+                        chase_dim = self.pro_movement.get_chase_intensity(i, total)
+                        if chase_dim < 1.0:
+                            fixture.dimmer *= max(0.05, chase_dim)  # Floor at 5% to avoid full blackout
+
+                        # Pro strobe overlay
+                        if self.section_manager.is_strobe_allowed():
+                            pro_strobe = self.pro_effects.strobe.get_value(i, total, phase_offset)
+                            if pro_strobe > 0:
+                                fixture.dimmer = max(fixture.dimmer, pro_strobe)
+
+                        # Pro color wash overlay
+                        wash_color = self.pro_effects.wash.get_color(i, total)
+                        if wash_color and self.pro_effects.wash._colors:
+                            # Blend wash color with current color
+                            sat = self.section_manager.get_color_saturation()
+                            fixture.red = fixture.red * (1 - sat * 0.3) + wash_color.r * sat * 0.3
+                            fixture.green = fixture.green * (1 - sat * 0.3) + wash_color.g * sat * 0.3
+                            fixture.blue = fixture.blue * (1 - sat * 0.3) + wash_color.b * sat * 0.3
+
+                        # Pro chase intensity overlay
+                        chase_val = self.pro_effects.chase.get_intensity(i, total)
+                        if chase_val > 0:
+                            fixture.dimmer = max(fixture.dimmer, chase_val * section_intensity)
+
+                        # Build-up effect modulation
+                        if self.pro_effects.build.is_active:
+                            fixture.dimmer *= self.pro_effects.build.get_intensity_multiplier()
+                            # Fixture reveal mask (progressive center-out reveal)
+                            reveal = self.pro_effects.build.get_fixture_reveal_mask(i, total)
+                            fixture.dimmer *= reveal
+                            desat = self.pro_effects.build.get_color_desaturation()
+                            if desat > 0:
+                                avg = (fixture.red + fixture.green + fixture.blue) / 3.0
+                                fixture.red = fixture.red + (avg - fixture.red) * desat
+                                fixture.green = fixture.green + (avg - fixture.green) * desat
+                                fixture.blue = fixture.blue + (avg - fixture.blue) * desat
+
+                        # MERT emotion modulation (when ML pipeline is active)
+                        if self._ml_emotion_mapping is not None:
+                            em = self._ml_emotion_mapping
+                            # base_intensity modulates overall dimmer
+                            fixture.dimmer *= 0.5 + em.get("base_intensity", 0.5) * 0.5
+                            # color_saturation deepens or lightens colors
+                            ml_sat = em.get("color_saturation", 0.7)
+                            if ml_sat < 0.5:
+                                # Desaturate toward white
+                                desat_amount = (0.5 - ml_sat) * 0.4
+                                avg = (fixture.red + fixture.green + fixture.blue) / 3.0
+                                fixture.red += (avg - fixture.red) * desat_amount
+                                fixture.green += (avg - fixture.green) * desat_amount
+                                fixture.blue += (avg - fixture.blue) * desat_amount
+                            # pulse_depth modulates beat response depth
+                            # (applied via section beat_reactivity scaling already)
+
+                        # Blackout/flash sequence override
+                        blackout_val = self.pro_effects.get_blackout_override()
+                        if blackout_val is not None:
+                            if blackout_val == 0.0:
+                                # Blackout - all dark
+                                fixture.dimmer = 0.0
+                            else:
+                                # Flash - full white
+                                fixture.dimmer = 1.0
+                                fixture.red = 1.0
+                                fixture.green = 1.0
+                                fixture.blue = 1.0
+
+                        # Key lighting final pass (ensure performers always visible)
+                        key_override = self.key_lighting.get_key_light_override(
+                            fixture.id, fixture.dimmer,
+                            fixture.red, fixture.green, fixture.blue,
+                        )
+                        if key_override is not None:
+                            fixture.dimmer = key_override["dimmer"]
+                            fixture.red = key_override["r"]
+                            fixture.green = key_override["g"]
+                            fixture.blue = key_override["b"]
+
+            # Dynamic range enforcement (anti-fatigue)
+            if self._pro_lighting_enabled:
+                intensity_scale = self.decision.get_dynamic_intensity_scale()
+                if intensity_scale < 1.0:
+                    fixture.dimmer *= intensity_scale
+                self.decision.track_intensity(fixture.dimmer)
+
             # White strobe flash override - full white, full intensity
             if self._white_strobe_flash and self._white_strobe_decay > 0:
                 fixture.dimmer = 1.0  # Full brightness
@@ -510,6 +858,29 @@ class EffectsEngine:
         Safe to call from WebSocket handlers concurrently with update().
         """
         return self._fixture_state_snapshot
+
+    def get_pro_lighting_state(self) -> Dict:
+        """Get current professional lighting state for API/WebSocket."""
+        if not self._pro_lighting_enabled:
+            return {"enabled": False}
+        state = {
+            "enabled": True,
+            "genre": self.genre_manager.current_genre.value,
+            "section": self.section_manager.current_section.value,
+            "section_intensity": round(self.section_manager.get_intensity(), 3),
+            "movement_energy": round(self.section_manager.get_movement_energy(), 3),
+            "strobe_allowed": self.section_manager.is_strobe_allowed(),
+            "buildup_progress": round(self.section_manager.get_buildup_progress(), 3),
+            "pro_movement_pattern": self.pro_movement.params.pattern.value,
+            "pro_strobe_active": self.pro_effects.strobe.is_active(),
+            "pro_build_active": self.pro_effects.build.is_active,
+            "key_lighting_zones": [z.value for z in self.key_lighting.get_active_zones()],
+            "strobe_budget_remaining": self.pro_effects.strobe.strobe_budget_remaining,
+        }
+        # Include ML emotion data if available
+        if self._ml_emotion_mapping is not None:
+            state["emotion_mapping"] = self._ml_emotion_mapping
+        return state
 
     # === Manual Controls ===
 

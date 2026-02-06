@@ -91,6 +91,13 @@ class Fixture(Base):
     thumbnail_url = Column(String(500), nullable=True)
     model_3d_url = Column(String(500), nullable=True)
 
+    # Library source tracking
+    source = Column(String(50), nullable=True)  # "ofl", "gdtf", "manual", "bundled"
+    source_id = Column(String(255), nullable=True)  # External ID (e.g., "chauvet-dj/rogue-r2-wash")
+    categories = Column(JSON, nullable=True)  # ["wash", "led", "indoor"]
+    popularity_score = Column(Integer, default=0)
+    is_bundled = Column(Boolean, default=False)
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

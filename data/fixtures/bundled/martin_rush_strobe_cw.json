@@ -1,0 +1,42 @@
+{
+  "manufacturer": "Martin",
+  "model": "RUSH Strobe CW",
+  "fixture_type": "strobe",
+  "weight": 3.5,
+  "power": 210,
+  "beam_angle": 120.0,
+  "pan_range": 0,
+  "tilt_range": 0,
+  "has_rgb": false,
+  "has_cmy": false,
+  "has_color_wheel": false,
+  "source": "bundled",
+  "is_bundled": true,
+  "categories": ["strobe", "cold_white", "blinder"],
+  "modes": [
+    {
+      "name": "3-Channel",
+      "channel_count": 3,
+      "description": "Basic strobe control",
+      "channels": [
+        {"channel_number": 1, "channel_type": "dimmer", "name": "Intensity", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "strobe", "name": "Strobe Rate", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 3, "channel_type": "other", "name": "Strobe Duration", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    },
+    {
+      "name": "7-Channel",
+      "channel_count": 7,
+      "description": "Extended mode with effects and control",
+      "channels": [
+        {"channel_number": 1, "channel_type": "dimmer", "name": "Intensity", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 2, "channel_type": "dimmer", "name": "Intensity Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 1},
+        {"channel_number": 3, "channel_type": "strobe", "name": "Strobe Rate", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "other", "name": "Strobe Duration", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 5, "channel_type": "effect", "name": "Effect", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "speed", "name": "Effect Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 7, "channel_type": "macro", "name": "Control", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+      ]
+    }
+  ]
+}

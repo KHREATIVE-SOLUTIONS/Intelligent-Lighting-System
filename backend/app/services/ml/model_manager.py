@@ -2,15 +2,19 @@
 ML Model Manager
 ================
 
-Manages loading and inference for ML models (BeatNet, HuBERT, YOLOv9).
+Manages loading and inference for ML models.
+Models: BeatNet, MERT (replaces HuBERT), YOLOv9, Genre, Structure.
 """
 
 import asyncio
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional
+import logging
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class ModelManager:
@@ -24,8 +28,14 @@ class ModelManager:
             'beatnet': settings.BEATNET_MODEL_PATH,
             'hubert': settings.HUBERT_MODEL_PATH,
             'yolo': settings.YOLO_MODEL_PATH,
+            'mert': settings.MERT_MODEL_PATH,
         }
         self.loaded = False
+
+        # New ML pipeline components
+        self.mert_model = None
+        self.structure_analyzer = None
+        self.genre_classifier = None
 
     async def load_models(self):
         """Load all ML models."""
@@ -37,20 +47,70 @@ class ModelManager:
         try:
             await self._load_beatnet()
         except Exception as e:
-            print(f"Warning: Could not load BeatNet model: {e}")
+            logger.warning("Could not load BeatNet model: %s", e)
 
+        # Try MERT first, fall back to HuBERT
         try:
-            await self._load_hubert()
+            await self._load_mert()
         except Exception as e:
-            print(f"Warning: Could not load HuBERT model: {e}")
+            logger.warning("Could not load MERT model: %s", e)
+            try:
+                await self._load_hubert()
+            except Exception as e2:
+                logger.warning("Could not load HuBERT model: %s", e2)
 
         try:
             await self._load_yolo()
         except Exception as e:
-            print(f"Warning: Could not load YOLOv9 model: {e}")
+            logger.warning("Could not load YOLOv9 model: %s", e)
+
+        # Load structure analyzer
+        try:
+            await self._load_structure_analyzer()
+        except Exception as e:
+            logger.warning("Could not load structure analyzer: %s", e)
+
+        # Load genre classifier
+        try:
+            await self._load_genre_classifier()
+        except Exception as e:
+            logger.warning("Could not load genre classifier: %s", e)
 
         self.loaded = True
-        print(f"Model loading complete. Loaded models: {list(self.models.keys())}")
+        logger.info("Model loading complete. Loaded models: %s", list(self.models.keys()))
+
+    async def _load_mert(self):
+        """Load MERT-v1-95M for music emotion recognition (replaces HuBERT)."""
+        from app.services.ml.mert_model import MERTModel
+
+        model_dir = Path(self.model_paths['mert'])
+        if not model_dir.exists():
+            logger.info("MERT model directory not found at %s", model_dir)
+            return
+
+        self.mert_model = MERTModel(model_dir=str(model_dir))
+        success = await self.mert_model.load()
+        if success:
+            self.models['mert'] = self.mert_model
+            logger.info("MERT-v1-95M loaded (replaces HuBERT for music emotion)")
+
+    async def _load_structure_analyzer(self):
+        """Load music structure analyzer."""
+        from app.services.ml.music_structure import MusicStructureAnalyzer
+
+        self.structure_analyzer = MusicStructureAnalyzer()
+        await self.structure_analyzer.load()
+        self.models['structure'] = self.structure_analyzer
+        logger.info("Music structure analyzer loaded")
+
+    async def _load_genre_classifier(self):
+        """Load genre classifier."""
+        from app.services.ml.genre_classifier import GenreClassifier
+
+        self.genre_classifier = GenreClassifier()
+        await self.genre_classifier.load()
+        self.models['genre'] = self.genre_classifier
+        logger.info("Genre classifier loaded")
 
     async def _load_beatnet(self):
         """Load BeatNet model for beat detection."""
@@ -221,7 +281,7 @@ class ModelManager:
 
     async def classify_mood(self, audio_data: np.ndarray, sample_rate: int = 16000) -> Dict[str, Any]:
         """
-        Classify mood/emotion using HuBERT/Wav2Vec2 model.
+        Classify mood/emotion using MERT (preferred) or HuBERT (legacy fallback).
 
         Args:
             audio_data: Audio samples as float32 array
@@ -230,6 +290,34 @@ class ModelManager:
         Returns:
             Dictionary with mood classification results
         """
+        # Prefer MERT over HuBERT (MERT is trained on music, HuBERT on speech)
+        if self.mert_model and self.mert_model.loaded:
+            try:
+                self.mert_model.feed_audio(audio_data, sample_rate)
+                emotion = await self.mert_model.get_emotion()
+                return {
+                    'valence': float(emotion.valence),
+                    'arousal': float(emotion.arousal),
+                    'confidence': float(emotion.confidence),
+                    'emotions': {
+                        'tension': emotion.tension,
+                        'groove': emotion.groove,
+                        'darkness': emotion.darkness,
+                    },
+                    'dominant_emotion': self._emotion_to_label(emotion.valence, emotion.arousal),
+                    'emotion_vector': {
+                        'valence': emotion.valence,
+                        'arousal': emotion.arousal,
+                        'dominance': emotion.dominance,
+                        'tension': emotion.tension,
+                        'energy_trajectory': emotion.energy_trajectory,
+                        'groove': emotion.groove,
+                        'darkness': emotion.darkness,
+                    },
+                }
+            except Exception as e:
+                logger.warning("MERT inference error, falling back: %s", e)
+
         if 'hubert' not in self.models or 'hubert' not in self.processors:
             return self._fallback_mood_classification(audio_data)
 
@@ -405,6 +493,30 @@ class ModelManager:
                 'confidence': 0.0,
             }
 
+    def _emotion_to_label(self, valence: float, arousal: float) -> str:
+        """Map valence/arousal to an emotion label."""
+        if arousal > 0.3:
+            if valence > 0.3:
+                return "excited"
+            elif valence < -0.3:
+                return "angry"
+            else:
+                return "energetic"
+        elif arousal < -0.3:
+            if valence > 0.3:
+                return "relaxed"
+            elif valence < -0.3:
+                return "sad"
+            else:
+                return "calm"
+        else:
+            if valence > 0.3:
+                return "happy"
+            elif valence < -0.3:
+                return "melancholic"
+            else:
+                return "neutral"
+
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about loaded models."""
         return {
@@ -415,10 +527,28 @@ class ModelManager:
                     'type': 'Beat Detection',
                     'description': 'Real-time beat and downbeat tracking'
                 },
+                'mert': {
+                    'loaded': self.mert_model is not None and self.mert_model.loaded,
+                    'type': 'Music Emotion Recognition',
+                    'description': 'MERT-v1-95M music emotion (replaces HuBERT)',
+                    'info': self.mert_model.get_info() if self.mert_model else None,
+                },
                 'hubert': {
                     'loaded': 'hubert' in self.models,
-                    'type': 'Emotion Recognition',
-                    'description': 'Audio emotion/mood classification'
+                    'type': 'Speech Emotion Recognition (legacy)',
+                    'description': 'HuBERT speech emotion - use MERT instead',
+                },
+                'structure': {
+                    'loaded': self.structure_analyzer is not None,
+                    'type': 'Music Structure Analysis',
+                    'description': 'Section detection, anticipation',
+                    'info': self.structure_analyzer.get_info() if self.structure_analyzer else None,
+                },
+                'genre': {
+                    'loaded': self.genre_classifier is not None,
+                    'type': 'Genre Classification',
+                    'description': 'Hierarchical genre detection',
+                    'info': self.genre_classifier.get_info() if self.genre_classifier else None,
                 },
                 'yolo': {
                     'loaded': 'yolo' in self.models,

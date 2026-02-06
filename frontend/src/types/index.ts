@@ -151,6 +151,11 @@ export interface Fixture {
   color_temp_range?: number[];
   thumbnail_url?: string;
   model_3d_url?: string;
+  source?: string;
+  source_id?: string;
+  categories?: string[];
+  popularity_score?: number;
+  is_bundled?: boolean;
   modes: FixtureMode[];
 }
 
@@ -233,6 +238,9 @@ export interface RigFixture {
   tags: string[];
   is_active: boolean;
   is_inverted: boolean;
+  is_address_locked: boolean;
+  serial_number?: string;
+  qr_code_data?: string;
   fixture?: Fixture;
 }
 
@@ -251,6 +259,103 @@ export interface RigFixtureCreate {
   rotation_z?: number;
   group_name?: string;
   tags?: string[];
+  is_address_locked?: boolean;
+}
+
+// Professional Lighting Types
+export type Genre = 'EDM' | 'ROCK' | 'POP' | 'HIP_HOP' | 'JAZZ';
+
+export type SongSection =
+  | 'INTRO'
+  | 'VERSE'
+  | 'PRE_CHORUS'
+  | 'CHORUS'
+  | 'DROP'
+  | 'BREAKDOWN'
+  | 'BRIDGE'
+  | 'BUILDUP'
+  | 'OUTRO'
+  | 'INSTRUMENTAL'
+  | 'SOLO'
+  | 'UNKNOWN';
+
+export type StrobeMode = 'off' | 'slow' | 'medium' | 'fast' | 'random' | 'beat_sync';
+export type ChaseType = 'off' | 'left_right' | 'right_left' | 'center_out' | 'converge' | 'random';
+export type MovementType =
+  | 'none'
+  | 'circle'
+  | 'figure_8'
+  | 'sweep_lr'
+  | 'sweep_fb'
+  | 'chase_lr'
+  | 'chase_rl'
+  | 'converge'
+  | 'diverge'
+  | 'random'
+  | 'ballyhoo'
+  | 'tilt_wave'
+  | 'pan_wave'
+  | 'focus_track';
+
+export interface ProEffect {
+  strobeMode: StrobeMode;
+  chaseType: ChaseType;
+  movementType: MovementType;
+  colorWash: { r: number; g: number; b: number } | null;
+  intensity: number;
+  speed: number;
+}
+
+export type StageZone =
+  | 'USL' | 'USC' | 'USR'
+  | 'MSL' | 'MSC' | 'MSR'
+  | 'DSL' | 'DSC' | 'DSR'
+  | 'AUDIENCE' | 'ALL';
+
+export interface KeyLightingZone {
+  zone: StageZone;
+  active: boolean;
+  intensity: number;
+  color: { r: number; g: number; b: number };
+  performerLabel?: string;
+}
+
+export interface SectionIntensityState {
+  section: SongSection;
+  intensity: number;
+  targetIntensity: number;
+  color: { h: number; s: number; l: number };
+  startedAt: number;
+}
+
+export interface SectionHistoryEntry {
+  section: SongSection;
+  startTime: number;
+  endTime?: number;
+  intensity: number;
+}
+
+export interface EmotionVector {
+  valence: number;
+  arousal: number;
+  dominance: number;
+  tension: number;
+  energy_trajectory: number;
+  groove: number;
+  darkness: number;
+  confidence: number;
+}
+
+export interface ProLightingState {
+  genre: Genre | null;
+  section: SongSection;
+  sectionIntensity: number;
+  sectionHistory: SectionHistoryEntry[];
+  activeEffects: ProEffect;
+  keyLightingZones: KeyLightingZone[];
+  emotionVector: EmotionVector | null;
+  beatPhrase: number;
+  beatsPerPhrase: number;
 }
 
 // Audio Analysis Types
@@ -314,4 +419,89 @@ export interface PaginatedResponse<T> {
   page: number;
   size: number;
   pages: number;
+}
+
+// Fixture Library Types
+export interface OFLFixtureResult {
+  manufacturer_key: string;
+  fixture_key: string;
+  name: string;
+  manufacturer: string;
+  categories: string[];
+}
+
+// Patching Types
+export interface PatchConflict {
+  fixture_a_id: number;
+  fixture_b_id: number;
+  universe: number;
+  overlap_start: number;
+  overlap_end: number;
+}
+
+// Rig Template Types
+export interface RigTemplate {
+  id: number;
+  name: string;
+  description?: string;
+  venue_type?: string;
+  stage_width: number;
+  stage_depth: number;
+  stage_height: number;
+  fixture_slots: FixtureSlot[];
+  thumbnail_url?: string;
+  is_system: boolean;
+  is_public: boolean;
+  created_by?: string;
+  created_at: string;
+  usage_count: number;
+}
+
+export interface FixtureSlot {
+  fixture_type: string;
+  count: number;
+  group_name?: string;
+  positions?: Array<{ x: number; y: number; z: number; rotation_y?: number }>;
+  mode_channel_count?: number;
+}
+
+export interface RigTemplateCreate {
+  name: string;
+  description?: string;
+  venue_type?: string;
+  stage_width?: number;
+  stage_depth?: number;
+  stage_height?: number;
+  fixture_slots?: FixtureSlot[];
+  is_public?: boolean;
+}
+
+// Wizard Types
+export interface VenuePreset {
+  key: string;
+  name: string;
+  description: string;
+  stage_width: number;
+  stage_depth: number;
+  stage_height: number;
+  suggested_fixtures: Array<{
+    fixture_type: string;
+    count: number;
+    group_name: string;
+  }>;
+}
+
+export interface WizardData {
+  venue_preset?: string;
+  stage_width: number;
+  stage_depth: number;
+  stage_height: number;
+  fixtures: Array<{
+    fixture_id: number;
+    count: number;
+    mode_id?: number;
+    group_name?: string;
+  }>;
+  rig_name: string;
+  venue?: string;
 }

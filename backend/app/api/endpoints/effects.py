@@ -16,6 +16,11 @@ from ...services.effects import (
     ColorPalette,
     LightingState
 )
+from ...services.lighting.genre_profiles import Genre, GENRE_PROFILES
+from ...services.lighting.section_manager import SongSection
+from ...services.lighting.movement_patterns import ProMovementPattern, PRO_MOVEMENT_PRESETS
+from ...services.lighting.pro_effects import ProStrobeMode
+from ...services.lighting.key_lighting import PerformerZone, KeyLightConfig
 
 router = APIRouter(prefix="/effects", tags=["effects"])
 
@@ -592,3 +597,264 @@ async def get_debug_pipeline():
             "visualizer_url": "http://localhost:8080",
         }
     }
+
+
+# =============================================================================
+# PROFESSIONAL LIGHTING ENDPOINTS
+# =============================================================================
+
+class GenreRequest(BaseModel):
+    """Request to set active genre."""
+    genre: str = Field(..., description="Genre name: edm, rock, pop, hip_hop, jazz")
+    crossfade: bool = Field(True, description="Use crossfade transition")
+
+
+class SectionRequest(BaseModel):
+    """Request to trigger a song section."""
+    section: str = Field(..., description="Section name: intro, verse, chorus, drop, etc.")
+    immediate: bool = Field(False, description="Skip crossfade if True")
+
+
+class ProMovementRequest(BaseModel):
+    """Request to set pro movement pattern."""
+    pattern: str = Field(..., description="Pro movement pattern name")
+    beat_divisor: Optional[float] = Field(None)
+    pan_amplitude: Optional[float] = Field(None)
+    tilt_amplitude: Optional[float] = Field(None)
+    phase_spread: Optional[float] = Field(None)
+
+
+class ProStrobeRequest(BaseModel):
+    """Request to trigger pro strobe effect."""
+    mode: str = Field(..., description="Strobe mode: burst, beat_locked, blinder, progressive")
+    frequency: Optional[float] = Field(None)
+    duration: Optional[float] = Field(None)
+
+
+class ProBuildRequest(BaseModel):
+    """Request to trigger a build-up effect."""
+    duration_beats: float = Field(16.0, description="Build-up duration in beats")
+    curve: str = Field("quadratic", description="Ramp curve: linear, quadratic, exponential")
+
+
+class KeyLightZoneRequest(BaseModel):
+    """Request to configure a key lighting zone."""
+    zone: str = Field(..., description="Zone name: dj_booth, stage_center, etc.")
+    active: bool = Field(True, description="Whether zone is active")
+    min_intensity: Optional[float] = Field(None, description="Minimum intensity 0-1")
+    fixture_ids: Optional[List[str]] = Field(None, description="Fixture IDs for this zone")
+
+
+@router.post("/pro/enable")
+async def enable_pro_lighting(enabled: bool = True):
+    """Enable or disable professional lighting integration."""
+    engine = get_effects_engine()
+    engine.enable_pro_lighting(enabled)
+    return {"status": "ok", "pro_lighting_enabled": enabled}
+
+
+@router.get("/pro/status")
+async def get_pro_lighting_status():
+    """Get professional lighting state."""
+    engine = get_effects_engine()
+    return engine.get_pro_lighting_state()
+
+
+@router.get("/pro/genres")
+async def get_genres():
+    """Get available genre profiles."""
+    return {
+        "genres": [g.value for g in Genre],
+        "current": get_effects_engine().genre_manager.current_genre.value,
+        "profiles": {
+            g.value: {
+                "name": p.name,
+                "description": p.description,
+                "front_light_style": p.front_light_style,
+                "haze_level": p.haze_level,
+            }
+            for g, p in GENRE_PROFILES.items()
+        }
+    }
+
+
+@router.post("/pro/genre")
+async def set_genre(request: GenreRequest):
+    """Set active genre profile."""
+    engine = get_effects_engine()
+    try:
+        genre = Genre(request.genre)
+    except ValueError:
+        raise HTTPException(400, f"Invalid genre: {request.genre}")
+    engine.set_genre(genre, crossfade=request.crossfade)
+    return {"status": "ok", "genre": request.genre}
+
+
+@router.get("/pro/sections")
+async def get_sections():
+    """Get available song sections and current state."""
+    engine = get_effects_engine()
+    return {
+        "sections": [s.value for s in SongSection],
+        "current": engine.section_manager.current_section.value,
+        "intensity": round(engine.section_manager.get_intensity(), 3),
+        "movement_energy": round(engine.section_manager.get_movement_energy(), 3),
+        "strobe_allowed": engine.section_manager.is_strobe_allowed(),
+    }
+
+
+@router.post("/pro/section")
+async def set_section(request: SectionRequest):
+    """Trigger a song section change."""
+    engine = get_effects_engine()
+    try:
+        section = SongSection(request.section)
+    except ValueError:
+        raise HTTPException(400, f"Invalid section: {request.section}")
+    engine.set_section(section, immediate=request.immediate)
+    return {"status": "ok", "section": request.section}
+
+
+@router.get("/pro/movement/patterns")
+async def get_pro_movement_patterns():
+    """Get available professional movement patterns and presets."""
+    return {
+        "patterns": [p.value for p in ProMovementPattern],
+        "presets": list(PRO_MOVEMENT_PRESETS.keys()),
+        "current": get_effects_engine().pro_movement.params.pattern.value,
+    }
+
+
+@router.post("/pro/movement")
+async def set_pro_movement(request: ProMovementRequest):
+    """Set professional movement pattern."""
+    engine = get_effects_engine()
+    try:
+        pattern = ProMovementPattern(request.pattern)
+    except ValueError:
+        raise HTTPException(400, f"Invalid pattern: {request.pattern}")
+    kwargs = {}
+    if request.beat_divisor is not None:
+        kwargs["beat_divisor"] = request.beat_divisor
+    if request.pan_amplitude is not None:
+        kwargs["pan_amplitude"] = request.pan_amplitude
+    if request.tilt_amplitude is not None:
+        kwargs["tilt_amplitude"] = request.tilt_amplitude
+    if request.phase_spread is not None:
+        kwargs["phase_spread"] = request.phase_spread
+    engine.pro_movement.set_pattern(pattern, **kwargs)
+    return {"status": "ok", "pattern": request.pattern}
+
+
+@router.post("/pro/movement/preset/{preset_name}")
+async def set_pro_movement_preset(preset_name: str):
+    """Set professional movement from preset."""
+    engine = get_effects_engine()
+    if preset_name not in PRO_MOVEMENT_PRESETS:
+        raise HTTPException(400, f"Invalid preset: {preset_name}")
+    engine.pro_movement.params = PRO_MOVEMENT_PRESETS[preset_name]
+    return {"status": "ok", "preset": preset_name}
+
+
+@router.post("/pro/movement/speed-ramp")
+async def start_movement_speed_ramp(
+    duration: float = 8.0,
+    start_mult: float = 0.25,
+    end_mult: float = 2.0,
+):
+    """Start a movement speed ramp (buildup acceleration)."""
+    engine = get_effects_engine()
+    engine.pro_movement.start_speed_ramp(duration, start_mult, end_mult)
+    return {"status": "ok", "duration": duration, "start_mult": start_mult, "end_mult": end_mult}
+
+
+@router.post("/pro/movement/speed-ramp/stop")
+async def stop_movement_speed_ramp():
+    """Stop the movement speed ramp."""
+    engine = get_effects_engine()
+    engine.pro_movement.stop_speed_ramp()
+    return {"status": "ok"}
+
+
+@router.post("/pro/strobe")
+async def trigger_pro_strobe(request: ProStrobeRequest):
+    """Trigger a professional strobe effect."""
+    engine = get_effects_engine()
+    try:
+        mode = ProStrobeMode(request.mode)
+    except ValueError:
+        raise HTTPException(400, f"Invalid mode: {request.mode}")
+    kwargs = {}
+    if request.frequency is not None:
+        kwargs["frequency"] = request.frequency
+    if request.duration is not None:
+        if mode == ProStrobeMode.BURST:
+            kwargs["burst_duration"] = request.duration
+        elif mode == ProStrobeMode.BLINDER:
+            kwargs["blinder_duration"] = request.duration
+    engine.pro_effects.strobe.set_mode(mode, **kwargs)
+    return {"status": "ok", "mode": request.mode}
+
+
+@router.post("/pro/strobe/stop")
+async def stop_pro_strobe():
+    """Stop professional strobe effects."""
+    engine = get_effects_engine()
+    engine.pro_effects.strobe.stop()
+    return {"status": "ok"}
+
+
+@router.post("/pro/build")
+async def trigger_pro_build(request: ProBuildRequest):
+    """Trigger a professional build-up effect."""
+    engine = get_effects_engine()
+    engine.pro_effects.build.trigger(request.duration_beats, request.curve)
+    return {"status": "ok", "duration_beats": request.duration_beats, "curve": request.curve}
+
+
+@router.post("/pro/flash")
+async def trigger_pro_flash(duration: float = 0.1):
+    """Trigger a blinder flash."""
+    engine = get_effects_engine()
+    engine.pro_effects.flash(duration)
+    return {"status": "ok", "duration": duration}
+
+
+@router.post("/pro/blackout")
+async def trigger_pro_blackout():
+    """Kill all professional effects."""
+    engine = get_effects_engine()
+    engine.pro_effects.blackout()
+    return {"status": "ok"}
+
+
+@router.get("/pro/key-lighting")
+async def get_key_lighting_status():
+    """Get key lighting status."""
+    engine = get_effects_engine()
+    return {
+        "active_zones": [z.value for z in engine.key_lighting.get_active_zones()],
+        "available_zones": [z.value for z in PerformerZone],
+    }
+
+
+@router.post("/pro/key-lighting")
+async def configure_key_lighting(request: KeyLightZoneRequest):
+    """Configure a key lighting zone."""
+    engine = get_effects_engine()
+    try:
+        zone = PerformerZone(request.zone)
+    except ValueError:
+        raise HTTPException(400, f"Invalid zone: {request.zone}")
+
+    engine.key_lighting.set_zone_active(zone, request.active)
+
+    if request.min_intensity is not None:
+        config = engine.key_lighting._configs.get(zone)
+        if config:
+            config.min_intensity = request.min_intensity
+
+    if request.fixture_ids is not None:
+        engine.key_lighting.assign_fixtures(zone, request.fixture_ids)
+
+    return {"status": "ok", "zone": request.zone, "active": request.active}
