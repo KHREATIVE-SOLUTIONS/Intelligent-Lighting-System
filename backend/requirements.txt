@@ -1,0 +1,55 @@
+# Core Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Database
+sqlalchemy==2.0.25
+asyncpg==0.29.0
+aiosqlite==0.19.0
+alembic==1.13.1
+psycopg2-binary==2.9.9
+
+# Audio Processing
+numpy==1.26.3
+scipy==1.12.0
+librosa==0.10.1
+
+# ML/AI (optional - install based on needs)
+# torch==2.1.2
+# transformers==4.36.2
+# ultralytics==8.0.230
+
+# WebSocket
+websockets==12.0
+python-multipart==0.0.6
+
+# Utilities
+python-dotenv==1.0.0
+httpx==0.26.0
+aiofiles==23.2.1
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+httpx==0.26.0
+
+# Development
+black==23.12.1
+isort==5.13.2
+flake8==7.0.0
+mypy==1.8.0
+
+# Redis (for caching/pub-sub)
+redis==5.0.1
+aioredis==2.0.1
+
+# ML/AI Dependencies (installed by install_models.py)
+torch>=2.1.0
+torchvision>=0.16.0
+torchaudio>=2.1.0
+transformers>=4.36.0
+ultralytics>=8.0.0
+BeatNet>=1.0.0

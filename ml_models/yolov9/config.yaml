@@ -1,0 +1,23 @@
+# YOLOv9 Configuration
+model:
+  name: YOLOv9
+  version: "c"
+  type: object_detection
+  weights: model.pt
+
+inference:
+  confidence_threshold: 0.5
+  iou_threshold: 0.45
+  max_detections: 100
+
+# Custom classes for fixture detection
+# To train on custom fixtures, create a dataset and fine-tune
+classes:
+  - moving_head
+  - par_can
+  - led_bar
+  - strobe
+  - laser
+  - spotlight
+  - wash_light
+  - effect_light

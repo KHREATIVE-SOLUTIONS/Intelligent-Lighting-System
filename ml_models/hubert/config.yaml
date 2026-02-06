@@ -1,0 +1,19 @@
+# HuBERT Configuration
+model:
+  name: HuBERT
+  version: "large"
+  type: emotion_recognition
+  source: superb/hubert-large-superb-er
+
+inference:
+  sample_rate: 16000
+  max_length: 10  # seconds
+
+output:
+  valence: true
+  arousal: true
+  emotions:
+    - angry
+    - happy
+    - sad
+    - neutral

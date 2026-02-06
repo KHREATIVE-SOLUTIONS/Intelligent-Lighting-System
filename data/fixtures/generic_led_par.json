@@ -1,0 +1,39 @@
+{
+  "manufacturer": "Generic",
+  "model": "LED PAR 64 RGBW",
+  "fixture_type": "led_par",
+  "weight": 3.5,
+  "power": 180,
+  "beam_angle": 25,
+  "pan_range": 0,
+  "tilt_range": 0,
+  "has_rgb": true,
+  "has_cmy": false,
+  "has_color_wheel": false,
+  "modes": [
+    {
+      "name": "8 Channel",
+      "channel_count": 8,
+      "channels": [
+        {"channel_number": 1, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0},
+        {"channel_number": 2, "channel_type": "red", "name": "Red", "default_value": 255},
+        {"channel_number": 3, "channel_type": "green", "name": "Green", "default_value": 255},
+        {"channel_number": 4, "channel_type": "blue", "name": "Blue", "default_value": 255},
+        {"channel_number": 5, "channel_type": "white", "name": "White", "default_value": 0},
+        {"channel_number": 6, "channel_type": "strobe", "name": "Strobe", "default_value": 0},
+        {"channel_number": 7, "channel_type": "macro", "name": "Color Macro", "default_value": 0},
+        {"channel_number": 8, "channel_type": "speed", "name": "Program Speed", "default_value": 128}
+      ]
+    },
+    {
+      "name": "4 Channel",
+      "channel_count": 4,
+      "channels": [
+        {"channel_number": 1, "channel_type": "red", "name": "Red", "default_value": 0},
+        {"channel_number": 2, "channel_type": "green", "name": "Green", "default_value": 0},
+        {"channel_number": 3, "channel_type": "blue", "name": "Blue", "default_value": 0},
+        {"channel_number": 4, "channel_type": "white", "name": "White", "default_value": 0}
+      ]
+    }
+  ]
+}

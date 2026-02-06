@@ -1,0 +1,51 @@
+{
+  "manufacturer": "Generic",
+  "model": "Moving Head 200W",
+  "fixture_type": "moving_head",
+  "weight": 12.5,
+  "power": 200,
+  "beam_angle": 15,
+  "pan_range": 540,
+  "tilt_range": 270,
+  "has_rgb": true,
+  "has_cmy": false,
+  "has_color_wheel": true,
+  "modes": [
+    {
+      "name": "Standard (16ch)",
+      "channel_count": 16,
+      "channels": [
+        {"channel_number": 1, "channel_type": "pan", "name": "Pan", "default_value": 128},
+        {"channel_number": 2, "channel_type": "pan_fine", "name": "Pan Fine", "default_value": 0},
+        {"channel_number": 3, "channel_type": "tilt", "name": "Tilt", "default_value": 128},
+        {"channel_number": 4, "channel_type": "tilt_fine", "name": "Tilt Fine", "default_value": 0},
+        {"channel_number": 5, "channel_type": "speed", "name": "Pan/Tilt Speed", "default_value": 0},
+        {"channel_number": 6, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0},
+        {"channel_number": 7, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0},
+        {"channel_number": 8, "channel_type": "red", "name": "Red", "default_value": 255},
+        {"channel_number": 9, "channel_type": "green", "name": "Green", "default_value": 255},
+        {"channel_number": 10, "channel_type": "blue", "name": "Blue", "default_value": 255},
+        {"channel_number": 11, "channel_type": "white", "name": "White", "default_value": 0},
+        {"channel_number": 12, "channel_type": "color_wheel", "name": "Color Wheel", "default_value": 0},
+        {"channel_number": 13, "channel_type": "gobo", "name": "Gobo Wheel", "default_value": 0},
+        {"channel_number": 14, "channel_type": "gobo_rotation", "name": "Gobo Rotation", "default_value": 0},
+        {"channel_number": 15, "channel_type": "prism", "name": "Prism", "default_value": 0},
+        {"channel_number": 16, "channel_type": "focus", "name": "Focus", "default_value": 128}
+      ]
+    },
+    {
+      "name": "Basic (8ch)",
+      "channel_count": 8,
+      "channels": [
+        {"channel_number": 1, "channel_type": "pan", "name": "Pan", "default_value": 128},
+        {"channel_number": 2, "channel_type": "tilt", "name": "Tilt", "default_value": 128},
+        {"channel_number": 3, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0},
+        {"channel_number": 4, "channel_type": "shutter", "name": "Shutter", "default_value": 0},
+        {"channel_number": 5, "channel_type": "red", "name": "Red", "default_value": 255},
+        {"channel_number": 6, "channel_type": "green", "name": "Green", "default_value": 255},
+        {"channel_number": 7, "channel_type": "blue", "name": "Blue", "default_value": 255},
+        {"channel_number": 8, "channel_type": "gobo", "name": "Gobo", "default_value": 0}
+      ]
+    }
+  ]
+}

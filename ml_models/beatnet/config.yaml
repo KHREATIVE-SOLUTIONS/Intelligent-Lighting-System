@@ -1,0 +1,15 @@
+# BeatNet Configuration
+model:
+  name: BeatNet
+  version: "1.0"
+  type: beat_detection
+
+inference:
+  mode: online  # online or offline
+  inference_model: DBN  # DBN or PF
+  sample_rate: 22050
+
+output:
+  beat_times: true
+  downbeat_times: true
+  tempo: true

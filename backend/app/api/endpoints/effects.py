@@ -1,0 +1,594 @@
+"""
+Effects Engine API Endpoints
+Controls the intelligent lighting effects system.
+"""
+
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+from enum import Enum
+
+from ...services.effects import (
+    EffectsEngine, EffectsConfig,
+    MovementType, StaticLook, MovementParams, MOVEMENT_PRESETS,
+    DimmerType, DimmerParams, DIMMER_PRESETS, BEAT_PATTERNS,
+    StrobeMode, StrobeParams, STROBE_PRESETS,
+    ColorPalette,
+    LightingState
+)
+
+router = APIRouter(prefix="/effects", tags=["effects"])
+
+# Global effects engine instance (initialized in main.py)
+_effects_engine: Optional[EffectsEngine] = None
+
+
+def get_effects_engine() -> EffectsEngine:
+    """Get the effects engine instance."""
+    if _effects_engine is None:
+        raise HTTPException(status_code=503, detail="Effects engine not initialized")
+    return _effects_engine
+
+
+def set_effects_engine(engine: EffectsEngine):
+    """Set the effects engine instance."""
+    global _effects_engine
+    _effects_engine = engine
+
+
+# === Request/Response Models ===
+
+class EffectsStatus(BaseModel):
+    """Effects engine status."""
+    running: bool
+    auto_mode: bool
+    current_state: str
+    bpm: float
+    palette: str
+
+    # Current effects
+    movement_pattern: str
+    static_look: str
+    dimmer_effect: str
+    strobe_mode: str
+
+    # Layer status
+    movement_enabled: bool
+    dimmer_enabled: bool
+    strobe_enabled: bool
+    color_enabled: bool
+
+
+class MovementRequest(BaseModel):
+    """Request to set movement pattern."""
+    pattern: str = Field(..., description="Movement pattern name")
+    base_look: Optional[str] = Field("all_center", description="Base static look")
+    pan_speed: Optional[float] = Field(None, description="Pan speed in Hz")
+    tilt_speed: Optional[float] = Field(None, description="Tilt speed in Hz")
+    pan_amplitude: Optional[float] = Field(None, description="Pan amplitude in degrees")
+    tilt_amplitude: Optional[float] = Field(None, description="Tilt amplitude in degrees")
+
+
+class DimmerRequest(BaseModel):
+    """Request to set dimmer effect."""
+    effect: str = Field(..., description="Dimmer effect name")
+    speed: Optional[float] = Field(None, description="Effect speed in Hz")
+    min_intensity: Optional[float] = Field(None, description="Minimum intensity (0-1)")
+    base_intensity: Optional[float] = Field(None, description="Base intensity (0-1)")
+    beat_pattern: Optional[str] = Field(None, description="Beat pattern name")
+
+
+class StrobeRequest(BaseModel):
+    """Request to set strobe mode."""
+    mode: str = Field(..., description="Strobe mode name")
+    frequency: Optional[float] = Field(None, description="Strobe frequency in Hz")
+    duration: Optional[float] = Field(None, description="Burst duration in seconds")
+
+
+class ColorRequest(BaseModel):
+    """Request to set color palette."""
+    palette: str = Field(..., description="Color palette name")
+
+
+class StateRequest(BaseModel):
+    """Request to force a lighting state."""
+    state: str = Field(..., description="Lighting state name")
+
+
+class AutoModeRequest(BaseModel):
+    """Request to toggle auto mode."""
+    enabled: bool = Field(..., description="Enable auto-pilot mode")
+
+
+class PresetRequest(BaseModel):
+    """Request to load a preset."""
+    preset: str = Field(..., description="Preset name")
+
+
+# === Endpoints ===
+
+@router.get("/status", response_model=EffectsStatus)
+async def get_status():
+    """Get current effects engine status."""
+    engine = get_effects_engine()
+
+    return EffectsStatus(
+        running=engine.running,
+        auto_mode=engine.config.auto_mode,
+        current_state=engine.decision.state.value,
+        bpm=engine.config.bpm,
+        palette=engine.config.palette.value,
+        movement_pattern=engine.movement.params.pattern.value,
+        static_look=engine.movement.params.base_look.value,
+        dimmer_effect=engine.dimmer.params.effect_type.value,
+        strobe_mode=engine.strobe.params.mode.value,
+        movement_enabled=engine.config.movement_enabled,
+        dimmer_enabled=engine.config.dimmer_enabled,
+        strobe_enabled=engine.config.strobe_enabled,
+        color_enabled=engine.config.color_enabled
+    )
+
+
+@router.post("/start")
+async def start_effects():
+    """Start the effects engine."""
+    engine = get_effects_engine()
+    if not engine.running:
+        import asyncio
+        asyncio.create_task(engine.run())
+    return {"status": "started"}
+
+
+@router.post("/stop")
+async def stop_effects():
+    """Stop the effects engine."""
+    engine = get_effects_engine()
+    engine.stop()
+    return {"status": "stopped"}
+
+
+@router.post("/auto-mode")
+async def set_auto_mode(request: AutoModeRequest):
+    """Enable or disable auto-pilot mode."""
+    engine = get_effects_engine()
+    engine.set_auto_mode(request.enabled)
+    return {"auto_mode": request.enabled}
+
+
+# === Movement Control ===
+
+@router.get("/movement/patterns")
+async def get_movement_patterns():
+    """Get available movement patterns."""
+    return {
+        "patterns": [m.value for m in MovementType],
+        "presets": list(MOVEMENT_PRESETS.keys()),
+        "static_looks": [s.value for s in StaticLook]
+    }
+
+
+@router.post("/movement")
+async def set_movement(request: MovementRequest):
+    """Set movement pattern."""
+    engine = get_effects_engine()
+
+    # Parse pattern
+    try:
+        pattern = MovementType(request.pattern)
+    except ValueError:
+        raise HTTPException(400, f"Invalid pattern: {request.pattern}")
+
+    # Parse base look
+    try:
+        base_look = StaticLook(request.base_look) if request.base_look else StaticLook.ALL_CENTER
+    except ValueError:
+        base_look = StaticLook.ALL_CENTER
+
+    # Build kwargs
+    kwargs = {}
+    if request.pan_speed is not None:
+        kwargs["pan_speed"] = request.pan_speed
+    if request.tilt_speed is not None:
+        kwargs["tilt_speed"] = request.tilt_speed
+    if request.pan_amplitude is not None:
+        kwargs["pan_amplitude"] = request.pan_amplitude
+    if request.tilt_amplitude is not None:
+        kwargs["tilt_amplitude"] = request.tilt_amplitude
+
+    engine.set_movement(pattern, base_look, **kwargs)
+    return {"status": "ok", "pattern": request.pattern}
+
+
+@router.post("/movement/preset/{preset_name}")
+async def set_movement_preset(preset_name: str):
+    """Set movement from preset."""
+    engine = get_effects_engine()
+
+    if preset_name not in MOVEMENT_PRESETS:
+        raise HTTPException(400, f"Invalid preset: {preset_name}")
+
+    engine.movement.params = MOVEMENT_PRESETS[preset_name]
+    return {"status": "ok", "preset": preset_name}
+
+
+@router.post("/movement/static/{look}")
+async def set_static_look(look: str):
+    """Set a static look (stops movement)."""
+    engine = get_effects_engine()
+
+    try:
+        static_look = StaticLook(look)
+    except ValueError:
+        raise HTTPException(400, f"Invalid look: {look}")
+
+    engine.set_static_look(static_look)
+    return {"status": "ok", "look": look}
+
+
+# === Dimmer Control ===
+
+@router.get("/dimmer/effects")
+async def get_dimmer_effects():
+    """Get available dimmer effects."""
+    return {
+        "effects": [d.value for d in DimmerType],
+        "presets": list(DIMMER_PRESETS.keys()),
+        "beat_patterns": list(BEAT_PATTERNS.keys())
+    }
+
+
+@router.post("/dimmer")
+async def set_dimmer(request: DimmerRequest):
+    """Set dimmer effect."""
+    engine = get_effects_engine()
+
+    try:
+        effect = DimmerType(request.effect)
+    except ValueError:
+        raise HTTPException(400, f"Invalid effect: {request.effect}")
+
+    kwargs = {}
+    if request.speed is not None:
+        kwargs["speed"] = request.speed
+    if request.min_intensity is not None:
+        kwargs["min_intensity"] = request.min_intensity
+    if request.base_intensity is not None:
+        kwargs["base_intensity"] = request.base_intensity
+
+    engine.set_dimmer_effect(effect, **kwargs)
+
+    if request.beat_pattern and request.beat_pattern in BEAT_PATTERNS:
+        engine.dimmer.params.beat_pattern = BEAT_PATTERNS[request.beat_pattern]
+
+    return {"status": "ok", "effect": request.effect}
+
+
+@router.post("/dimmer/preset/{preset_name}")
+async def set_dimmer_preset(preset_name: str):
+    """Set dimmer from preset."""
+    engine = get_effects_engine()
+
+    if preset_name not in DIMMER_PRESETS:
+        raise HTTPException(400, f"Invalid preset: {preset_name}")
+
+    engine.dimmer.params = DIMMER_PRESETS[preset_name]
+    return {"status": "ok", "preset": preset_name}
+
+
+@router.post("/dimmer/beat-pattern/{pattern_name}")
+async def set_beat_pattern(pattern_name: str):
+    """Set beat pattern."""
+    engine = get_effects_engine()
+
+    if pattern_name not in BEAT_PATTERNS:
+        raise HTTPException(400, f"Invalid pattern: {pattern_name}")
+
+    engine.set_beat_pattern(pattern_name)
+    return {"status": "ok", "pattern": pattern_name}
+
+
+# === Strobe Control ===
+
+@router.get("/strobe/modes")
+async def get_strobe_modes():
+    """Get available strobe modes."""
+    return {
+        "modes": [s.value for s in StrobeMode],
+        "presets": list(STROBE_PRESETS.keys())
+    }
+
+
+@router.post("/strobe")
+async def set_strobe(request: StrobeRequest):
+    """Set strobe mode."""
+    engine = get_effects_engine()
+
+    try:
+        mode = StrobeMode(request.mode)
+    except ValueError:
+        raise HTTPException(400, f"Invalid mode: {request.mode}")
+
+    kwargs = {}
+    if request.frequency is not None:
+        kwargs["frequency"] = request.frequency
+
+    engine.set_strobe(mode, **kwargs)
+    return {"status": "ok", "mode": request.mode}
+
+
+@router.post("/strobe/burst")
+async def trigger_strobe_burst(duration: float = 2.0, frequency: float = 12.0):
+    """Trigger a strobe burst."""
+    engine = get_effects_engine()
+    engine.trigger_strobe_burst(duration, frequency)
+    return {"status": "ok", "duration": duration, "frequency": frequency}
+
+
+@router.post("/strobe/stop")
+async def stop_strobe():
+    """Stop strobing."""
+    engine = get_effects_engine()
+    engine.strobe.stop()
+    return {"status": "ok"}
+
+
+# === Color Control ===
+
+@router.get("/color/palettes")
+async def get_color_palettes():
+    """Get available color palettes."""
+    return {
+        "palettes": [p.value for p in ColorPalette]
+    }
+
+
+@router.post("/color/palette")
+async def set_color_palette(request: ColorRequest):
+    """Set color palette."""
+    engine = get_effects_engine()
+
+    try:
+        palette = ColorPalette(request.palette)
+    except ValueError:
+        raise HTTPException(400, f"Invalid palette: {request.palette}")
+
+    engine.set_color_palette(palette)
+    return {"status": "ok", "palette": request.palette}
+
+
+# === State Control ===
+
+@router.get("/states")
+async def get_states():
+    """Get available lighting states."""
+    return {
+        "states": [s.value for s in LightingState],
+        "current": get_effects_engine().decision.state.value
+    }
+
+
+@router.post("/state")
+async def force_state(request: StateRequest):
+    """Force a specific lighting state."""
+    engine = get_effects_engine()
+
+    try:
+        state = LightingState(request.state)
+    except ValueError:
+        raise HTTPException(400, f"Invalid state: {request.state}")
+
+    engine.force_state(state)
+    return {"status": "ok", "state": request.state}
+
+
+# === Triggers ===
+
+@router.post("/trigger/drop")
+async def trigger_drop():
+    """Trigger a drop sequence (strobe + static look)."""
+    engine = get_effects_engine()
+    engine.trigger_drop_strobe()
+    engine.decision.trigger_drop()
+    return {"status": "ok", "trigger": "drop"}
+
+
+@router.post("/trigger/buildup")
+async def trigger_buildup(duration: float = 4.0):
+    """Trigger a build-up sequence."""
+    engine = get_effects_engine()
+    engine.trigger_buildup(duration)
+    return {"status": "ok", "trigger": "buildup", "duration": duration}
+
+
+@router.post("/trigger/blackout")
+async def trigger_blackout():
+    """Blackout all fixtures."""
+    engine = get_effects_engine()
+    engine.blackout()
+    return {"status": "ok", "trigger": "blackout"}
+
+
+@router.post("/trigger/restore")
+async def trigger_restore():
+    """Restore from blackout."""
+    engine = get_effects_engine()
+    engine.restore()
+    return {"status": "ok", "trigger": "restore"}
+
+
+# === Presets ===
+
+@router.get("/presets")
+async def get_presets():
+    """Get available combined presets."""
+    return {
+        "presets": ["chill", "hype", "drop", "breakdown"]
+    }
+
+
+@router.post("/preset/{preset_name}")
+async def load_preset(preset_name: str):
+    """Load a combined effect preset."""
+    engine = get_effects_engine()
+    engine.load_preset(preset_name)
+    return {"status": "ok", "preset": preset_name}
+
+
+# === Layer Enable/Disable ===
+
+@router.post("/layers/movement/{enabled}")
+async def set_movement_enabled(enabled: bool):
+    """Enable/disable movement layer."""
+    engine = get_effects_engine()
+    engine.config.movement_enabled = enabled
+    return {"status": "ok", "movement_enabled": enabled}
+
+
+@router.post("/layers/dimmer/{enabled}")
+async def set_dimmer_enabled(enabled: bool):
+    """Enable/disable dimmer layer."""
+    engine = get_effects_engine()
+    engine.config.dimmer_enabled = enabled
+    return {"status": "ok", "dimmer_enabled": enabled}
+
+
+@router.post("/layers/strobe/{enabled}")
+async def set_strobe_enabled(enabled: bool):
+    """Enable/disable strobe layer."""
+    engine = get_effects_engine()
+    engine.config.strobe_enabled = enabled
+    return {"status": "ok", "strobe_enabled": enabled}
+
+
+@router.post("/layers/color/{enabled}")
+async def set_color_enabled(enabled: bool):
+    """Enable/disable color layer."""
+    engine = get_effects_engine()
+    engine.config.color_enabled = enabled
+    return {"status": "ok", "color_enabled": enabled}
+
+
+@router.get("/debug/frame")
+async def get_debug_frame():
+    """Debug: Get current DMX frame from effects engine."""
+    engine = get_effects_engine()
+
+    # Force an update cycle
+    engine.update()
+
+    # Get the DMX frame
+    frame = engine.fixtures.get_dmx_frame(universe=0)
+
+    # Get fixture states
+    fixtures = []
+    for fixture in engine.fixtures.fixtures.values():
+        fixtures.append({
+            'id': fixture.id,
+            'dmx_address': fixture.dmx_address,
+            'pan': fixture.pan,
+            'tilt': fixture.tilt,
+            'dimmer': fixture.dimmer,
+            'strobe': fixture.strobe,
+            'r': fixture.red,
+            'g': fixture.green,
+            'b': fixture.blue
+        })
+
+    non_zero = sum(1 for v in frame if v > 0)
+    return {
+        "non_zero_channels": non_zero,
+        "first_50_channels": frame[:50],
+        "fixtures": fixtures[:4],  # First 4 fixtures
+        "audio_energy": engine.audio_features.energy,
+        "callback_set": engine._dmx_callback is not None
+    }
+
+
+@router.get("/debug/pipeline")
+async def get_debug_pipeline():
+    """Debug: Get complete pipeline state for troubleshooting."""
+    engine = get_effects_engine()
+
+    # Force an update cycle to get fresh data
+    engine.update()
+
+    # Get DMX frame
+    frame = engine.fixtures.get_dmx_frame(universe=0)
+
+    # Analyze first mover (address 1)
+    mover_base = 0  # Address 1 = index 0
+    mover_dmx = {
+        'pan': frame[mover_base + 0],
+        'tilt': frame[mover_base + 2],
+        'dimmer': frame[mover_base + 5],
+        'shutter': frame[mover_base + 6],
+        'red': frame[mover_base + 7],
+        'green': frame[mover_base + 8],
+        'blue': frame[mover_base + 9],
+    }
+
+    # Get fixture states
+    fixtures = []
+    for fixture in list(engine.fixtures.fixtures.values())[:4]:
+        fixtures.append({
+            'id': fixture.id,
+            'dmx_address': fixture.dmx_address,
+            'dimmer': round(fixture.dimmer, 3),
+            'strobe': round(fixture.strobe, 3),
+            'pan': round(fixture.pan, 1),
+            'tilt': round(fixture.tilt, 1),
+            'rgb': (round(fixture.red, 2), round(fixture.green, 2), round(fixture.blue, 2))
+        })
+
+    # Audio features
+    audio = {
+        'energy': round(engine.audio_features.energy, 3),
+        'bass': round(engine.audio_features.bass, 3),
+        'mid': round(engine.audio_features.mid, 3),
+        'high': round(engine.audio_features.high, 3),
+        'valence': round(engine.audio_features.valence, 3),
+        'arousal': round(engine.audio_features.arousal, 3),
+        'is_beat': engine.audio_features.is_beat,
+    }
+
+    # Config state
+    config = {
+        'running': engine.running,
+        'auto_mode': engine.config.auto_mode,
+        'bpm': engine.config.bpm,
+        'movement_enabled': engine.config.movement_enabled,
+        'dimmer_enabled': engine.config.dimmer_enabled,
+        'strobe_enabled': engine.config.strobe_enabled,
+        'color_enabled': engine.config.color_enabled,
+    }
+
+    # Effect states
+    effects = {
+        'movement_pattern': engine.movement.params.pattern.value,
+        'dimmer_effect': engine.dimmer.params.effect_type.value,
+        'dimmer_base_intensity': engine.dimmer.params.base_intensity,
+        'strobe_mode': engine.strobe.params.mode.value,
+        'color_palette': engine.config.palette.value,
+        'lighting_state': engine.decision.state.value,
+    }
+
+    non_zero = sum(1 for v in frame if v > 0)
+
+    return {
+        "status": "ok",
+        "summary": {
+            "non_zero_dmx_channels": non_zero,
+            "dmx_callback_set": engine._dmx_callback is not None,
+            "first_mover_dmx": mover_dmx,
+        },
+        "audio_features": audio,
+        "engine_config": config,
+        "effect_states": effects,
+        "fixtures_sample": fixtures,
+        "troubleshooting": {
+            "if_dimmer_0": "Check if audio capture is running and sending data",
+            "if_no_audio": "Run: python scripts/audio_capture.py",
+            "if_colors_black": "Check RGB values in fixtures_sample",
+            "visualizer_url": "http://localhost:8080",
+        }
+    }

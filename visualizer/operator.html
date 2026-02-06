@@ -1,0 +1,1232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ILS Operator Console - Training Mode</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: #0a0a0f;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', -apple-system, sans-serif;
+            min-height: 100vh;
+            user-select: none;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1a1a25 0%, #0d0d12 100%);
+            padding: 15px 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #2a2a35;
+        }
+
+        .header h1 {
+            font-size: 1.3rem;
+            font-weight: 300;
+            letter-spacing: 2px;
+            color: #888;
+        }
+
+        .header-status {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .status-badge {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .status-badge.recording {
+            background: #3d1515;
+            color: #ff4444;
+            animation: pulse-red 1.5s infinite;
+        }
+
+        .status-badge.idle {
+            background: #1a2a1a;
+            color: #4a8;
+        }
+
+        .status-badge.connected {
+            background: #0d2818;
+            color: #4ade80;
+        }
+
+        .status-badge.disconnected {
+            background: #2d1515;
+            color: #f87171;
+        }
+
+        @keyframes pulse-red {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .main-container {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 20px;
+            padding: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .panel {
+            background: #12121a;
+            border-radius: 12px;
+            border: 1px solid #2a2a35;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            background: #1a1a25;
+            padding: 12px 18px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #666;
+            border-bottom: 1px solid #2a2a35;
+        }
+
+        .panel-content {
+            padding: 18px;
+        }
+
+        /* Recording Controls */
+        .recording-controls {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn-record {
+            background: linear-gradient(135deg, #c33 0%, #a22 100%);
+            color: white;
+        }
+
+        .btn-record:hover {
+            background: linear-gradient(135deg, #e44 0%, #c33 100%);
+            transform: scale(1.02);
+        }
+
+        .btn-record.active {
+            background: linear-gradient(135deg, #ff4444 0%, #cc2222 100%);
+            animation: pulse-btn 1s infinite;
+        }
+
+        .btn-stop {
+            background: #333;
+            color: #aaa;
+        }
+
+        .btn-stop:hover {
+            background: #444;
+            color: #fff;
+        }
+
+        .btn-export {
+            background: linear-gradient(135deg, #2a6 0%, #185 100%);
+            color: white;
+        }
+
+        .btn-export:hover {
+            background: linear-gradient(135deg, #3b7 0%, #2a6 100%);
+        }
+
+        @keyframes pulse-btn {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(255, 68, 68, 0.4); }
+            50% { box-shadow: 0 0 0 10px rgba(255, 68, 68, 0); }
+        }
+
+        /* Faders Section */
+        .faders-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 12px;
+            margin-bottom: 25px;
+        }
+
+        .fader-channel {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .fader-label {
+            font-size: 0.7rem;
+            color: #666;
+            text-transform: uppercase;
+        }
+
+        .fader-container {
+            position: relative;
+            width: 40px;
+            height: 180px;
+            background: #0a0a0f;
+            border-radius: 20px;
+            border: 1px solid #2a2a35;
+            overflow: hidden;
+        }
+
+        .fader-track {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 4px;
+            height: calc(100% - 20px);
+            background: #1a1a25;
+            border-radius: 2px;
+        }
+
+        .fader-fill {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            background: linear-gradient(to top, #4af 0%, #28f 100%);
+            border-radius: 2px;
+            transition: height 0.05s;
+        }
+
+        .fader-knob {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 36px;
+            height: 24px;
+            background: linear-gradient(to bottom, #555 0%, #333 100%);
+            border-radius: 4px;
+            border: 1px solid #666;
+            cursor: grab;
+            transition: bottom 0.05s;
+        }
+
+        .fader-knob:active {
+            cursor: grabbing;
+            border-color: #4af;
+        }
+
+        .fader-value {
+            font-size: 0.75rem;
+            font-family: monospace;
+            color: #4af;
+        }
+
+        /* Color Palette */
+        .color-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+
+        .color-btn {
+            aspect-ratio: 1;
+            border: 2px solid transparent;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.15s;
+            position: relative;
+        }
+
+        .color-btn:hover {
+            transform: scale(1.1);
+            z-index: 1;
+        }
+
+        .color-btn.active {
+            border-color: white;
+            box-shadow: 0 0 15px currentColor;
+        }
+
+        .color-btn span {
+            position: absolute;
+            bottom: -18px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 0.6rem;
+            color: #666;
+            white-space: nowrap;
+        }
+
+        /* Movement Patterns */
+        .movement-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .movement-btn {
+            padding: 14px 10px;
+            background: #1a1a25;
+            border: 1px solid #2a2a35;
+            border-radius: 8px;
+            color: #888;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.15s;
+            text-align: center;
+        }
+
+        .movement-btn:hover {
+            background: #252535;
+            color: #fff;
+        }
+
+        .movement-btn.active {
+            background: #2a3a5a;
+            border-color: #4af;
+            color: #4af;
+        }
+
+        /* Trigger Buttons */
+        .triggers-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+
+        .trigger-btn {
+            padding: 20px 15px;
+            background: linear-gradient(135deg, #2a2a35 0%, #1a1a25 100%);
+            border: 1px solid #3a3a45;
+            border-radius: 10px;
+            color: #aaa;
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.1s;
+            text-transform: uppercase;
+        }
+
+        .trigger-btn:hover {
+            background: linear-gradient(135deg, #3a3a45 0%, #2a2a35 100%);
+            color: #fff;
+        }
+
+        .trigger-btn:active {
+            transform: scale(0.95);
+        }
+
+        .trigger-btn.strobe {
+            background: linear-gradient(135deg, #553 0%, #442 100%);
+            border-color: #774;
+        }
+
+        .trigger-btn.strobe:hover {
+            background: linear-gradient(135deg, #775 0%, #553 100%);
+        }
+
+        .trigger-btn.blackout {
+            background: linear-gradient(135deg, #222 0%, #111 100%);
+            border-color: #333;
+        }
+
+        .trigger-btn.flash {
+            background: linear-gradient(135deg, #445 0%, #334 100%);
+            border-color: #556;
+        }
+
+        /* Stats Panel */
+        .stats-grid {
+            display: grid;
+            gap: 12px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            background: #1a1a25;
+            border-radius: 8px;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: #666;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            font-size: 1rem;
+            font-family: monospace;
+            color: #4af;
+        }
+
+        /* Audio Meters */
+        .audio-meters {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .meter {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .meter-bar {
+            width: 100%;
+            height: 80px;
+            background: #0a0a0f;
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .meter-fill {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            background: linear-gradient(to top, #2a6 0%, #4c8 50%, #fc4 80%, #f44 100%);
+            transition: height 0.05s;
+        }
+
+        .meter-label {
+            font-size: 0.65rem;
+            color: #666;
+            text-transform: uppercase;
+        }
+
+        /* MIDI Status */
+        .midi-status {
+            margin-top: 15px;
+            padding: 12px;
+            background: #1a1a25;
+            border-radius: 8px;
+            font-size: 0.75rem;
+        }
+
+        .midi-device {
+            color: #4a8;
+            font-family: monospace;
+        }
+
+        /* Keyboard Shortcuts */
+        .shortcuts-list {
+            font-size: 0.7rem;
+            color: #666;
+            line-height: 1.8;
+        }
+
+        .shortcuts-list kbd {
+            display: inline-block;
+            padding: 2px 6px;
+            background: #2a2a35;
+            border-radius: 3px;
+            font-family: monospace;
+            color: #aaa;
+            margin-right: 8px;
+        }
+
+        /* Session Input */
+        .session-input {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .session-input input {
+            flex: 1;
+            padding: 10px 14px;
+            background: #0a0a0f;
+            border: 1px solid #2a2a35;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 0.9rem;
+        }
+
+        .session-input input:focus {
+            outline: none;
+            border-color: #4af;
+        }
+
+        /* Visualizer Embed */
+        .visualizer-frame {
+            width: 100%;
+            height: 250px;
+            border: none;
+            border-radius: 8px;
+            background: #000;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>ILS OPERATOR CONSOLE</h1>
+        <div class="header-status">
+            <span id="midi-badge" class="status-badge disconnected">MIDI: None</span>
+            <span id="recording-badge" class="status-badge idle">IDLE</span>
+            <span id="connection-badge" class="status-badge disconnected">Disconnected</span>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="left-column">
+            <!-- Recording Panel -->
+            <div class="panel" style="margin-bottom: 20px;">
+                <div class="panel-header">Recording Control</div>
+                <div class="panel-content">
+                    <div class="session-input">
+                        <input type="text" id="session-name" placeholder="Session name (e.g., song_edm_01)">
+                    </div>
+                    <div class="recording-controls">
+                        <button class="btn btn-record" id="btn-record">Record</button>
+                        <button class="btn btn-stop" id="btn-stop">Stop</button>
+                        <button class="btn btn-export" id="btn-export">Export Data</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Control Panel -->
+            <div class="panel">
+                <div class="panel-header">Lighting Control</div>
+                <div class="panel-content">
+                    <!-- Faders -->
+                    <div class="faders-grid" id="faders">
+                        <!-- Faders will be generated by JS -->
+                    </div>
+
+                    <!-- Color Palette -->
+                    <h3 style="font-size: 0.8rem; color: #666; margin-bottom: 12px; text-transform: uppercase;">Colors</h3>
+                    <div class="color-grid" id="colors">
+                        <!-- Colors will be generated by JS -->
+                    </div>
+
+                    <!-- Movement Patterns -->
+                    <h3 style="font-size: 0.8rem; color: #666; margin: 20px 0 12px; text-transform: uppercase;">Movement</h3>
+                    <div class="movement-grid" id="movements">
+                        <!-- Movements will be generated by JS -->
+                    </div>
+
+                    <!-- Trigger Buttons -->
+                    <h3 style="font-size: 0.8rem; color: #666; margin: 20px 0 12px; text-transform: uppercase;">Triggers</h3>
+                    <div class="triggers-grid">
+                        <button class="trigger-btn strobe" id="btn-strobe">Strobe</button>
+                        <button class="trigger-btn blackout" id="btn-blackout">Blackout</button>
+                        <button class="trigger-btn flash" id="btn-flash">Flash</button>
+                        <button class="trigger-btn" id="btn-drop">Drop</button>
+                        <button class="trigger-btn" id="btn-buildup">Build Up</button>
+                        <button class="trigger-btn" id="btn-restore">Restore</button>
+                    </div>
+
+                    <!-- LFO Effects (grandMA2 Style) -->
+                    <h3 style="font-size: 0.8rem; color: #4af; margin: 25px 0 12px; text-transform: uppercase; border-top: 1px solid #2a2a35; padding-top: 20px;">LFO Effects (MA2 Style)</h3>
+                    <div class="movement-grid" id="lfo-effects">
+                        <button class="movement-btn" data-lfo="circle">Circle</button>
+                        <button class="movement-btn" data-lfo="circle_wings">Wings Circle</button>
+                        <button class="movement-btn" data-lfo="ballyhoo">Ballyhoo</button>
+                        <button class="movement-btn" data-lfo="pan_sweep">Pan Sweep</button>
+                        <button class="movement-btn" data-lfo="tilt_sweep">Tilt Sweep</button>
+                        <button class="movement-btn" data-lfo="dimmer_chase">Dim Chase</button>
+                        <button class="movement-btn" data-lfo="dimmer_pulse">Dim Pulse</button>
+                        <button class="movement-btn" data-lfo="dimmer_odd_even">Odd/Even</button>
+                        <button class="movement-btn" data-lfo="color_chase">Color Chase</button>
+                        <button class="movement-btn" data-lfo="strobe">LFO Strobe</button>
+                        <button class="movement-btn" data-lfo="flicker">Flicker</button>
+                        <button class="movement-btn" data-lfo="" style="background:#2a1515; border-color:#533;">Stop LFO</button>
+                    </div>
+
+                    <!-- Phase Distribution -->
+                    <h3 style="font-size: 0.8rem; color: #666; margin: 20px 0 12px; text-transform: uppercase;">Phase Distribution</h3>
+                    <div class="movement-grid" id="phase-dist" style="grid-template-columns: repeat(5, 1fr);">
+                        <button class="movement-btn active" data-dist="linear">Linear</button>
+                        <button class="movement-btn" data-dist="groups">Groups</button>
+                        <button class="movement-btn" data-dist="blocks">Blocks</button>
+                        <button class="movement-btn" data-dist="wings">Wings</button>
+                        <button class="movement-btn" data-dist="shuffle">Shuffle</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="right-column">
+            <!-- Preview -->
+            <div class="panel" style="margin-bottom: 20px;">
+                <div class="panel-header">Preview</div>
+                <div class="panel-content" style="padding: 0;">
+                    <iframe src="/index.html" class="visualizer-frame" id="visualizer-preview"></iframe>
+                </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="panel" style="margin-bottom: 20px;">
+                <div class="panel-header">Session Stats</div>
+                <div class="panel-content">
+                    <div class="stats-grid">
+                        <div class="stat-row">
+                            <span class="stat-label">Frames</span>
+                            <span class="stat-value" id="stat-frames">0</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Duration</span>
+                            <span class="stat-value" id="stat-duration">0:00</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">FPS</span>
+                            <span class="stat-value" id="stat-fps">0</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">BPM</span>
+                            <span class="stat-value" id="stat-bpm">--</span>
+                        </div>
+                    </div>
+
+                    <!-- Audio Meters -->
+                    <div class="audio-meters">
+                        <div class="meter">
+                            <div class="meter-bar"><div class="meter-fill" id="meter-bass"></div></div>
+                            <span class="meter-label">Bass</span>
+                        </div>
+                        <div class="meter">
+                            <div class="meter-bar"><div class="meter-fill" id="meter-mid"></div></div>
+                            <span class="meter-label">Mid</span>
+                        </div>
+                        <div class="meter">
+                            <div class="meter-bar"><div class="meter-fill" id="meter-high"></div></div>
+                            <span class="meter-label">High</span>
+                        </div>
+                        <div class="meter">
+                            <div class="meter-bar"><div class="meter-fill" id="meter-energy"></div></div>
+                            <span class="meter-label">Energy</span>
+                        </div>
+                    </div>
+
+                    <!-- MIDI Status -->
+                    <div class="midi-status">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <strong>MIDI Input:</strong>
+                            <button id="btn-midi-toggle" style="padding: 4px 10px; background: #2a2a35; border: 1px solid #3a3a45; color: #888; border-radius: 4px; cursor: pointer; font-size: 0.7rem;">Enable MIDI</button>
+                        </div>
+                        <span class="midi-device" id="midi-device">Disabled</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Keyboard Shortcuts -->
+            <div class="panel">
+                <div class="panel-header">Keyboard Shortcuts</div>
+                <div class="panel-content">
+                    <div class="shortcuts-list">
+                        <kbd>1-9</kbd> Dimmer 10%-90%<br>
+                        <kbd>0</kbd> Dimmer 100%<br>
+                        <kbd>Q</kbd> White <kbd>W</kbd> Red <kbd>E</kbd> Orange<br>
+                        <kbd>R</kbd> Yellow <kbd>T</kbd> Green <kbd>Y</kbd> Cyan<br>
+                        <kbd>U</kbd> Blue <kbd>I</kbd> Purple <kbd>O</kbd> Magenta<br>
+                        <kbd>Space</kbd> Strobe <kbd>B</kbd> Blackout <kbd>N</kbd> Flash<br>
+                        <span style="color:#4af; margin-top:8px; display:block;">LFO (hold Shift):</span>
+                        <kbd>⇧C</kbd> Circle <kbd>⇧W</kbd> Wings <kbd>⇧B</kbd> Ballyhoo<br>
+                        <kbd>⇧D</kbd> Dim Chase <kbd>⇧U</kbd> Pulse <kbd>⇧X</kbd> Stop
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // API Base URL
+        const API_BASE = 'http://localhost:8000/api';
+
+        // State
+        let isRecording = false;
+        let isConnected = false;
+        let midiAccess = null;
+        let currentColor = 'white';
+        let currentMovement = 'none';
+        let faderValues = [100, 0, 0, 0, 0, 0, 0, 0]; // Master, and 7 more
+
+        // Color definitions
+        const COLORS = [
+            { name: 'white', color: '#ffffff', r: 1, g: 1, b: 1 },
+            { name: 'red', color: '#ff0000', r: 1, g: 0, b: 0 },
+            { name: 'orange', color: '#ff8000', r: 1, g: 0.5, b: 0 },
+            { name: 'yellow', color: '#ffff00', r: 1, g: 1, b: 0 },
+            { name: 'green', color: '#00ff00', r: 0, g: 1, b: 0 },
+            { name: 'cyan', color: '#00ffff', r: 0, g: 1, b: 1 },
+            { name: 'blue', color: '#0066ff', r: 0, g: 0.4, b: 1 },
+            { name: 'purple', color: '#8800ff', r: 0.53, g: 0, b: 1 },
+            { name: 'magenta', color: '#ff00ff', r: 1, g: 0, b: 1 },
+            { name: 'pink', color: '#ff66b2', r: 1, g: 0.4, b: 0.7 },
+            { name: 'amber', color: '#ffbf00', r: 1, g: 0.75, b: 0 },
+            { name: 'uv', color: '#4400ff', r: 0.27, g: 0, b: 1 },
+        ];
+
+        // Movement patterns
+        const MOVEMENTS = [
+            { name: 'none', label: 'Static' },
+            { name: 'circle', label: 'Circle' },
+            { name: 'sweep', label: 'Sweep' },
+            { name: 'tilt', label: 'Tilt' },
+            { name: 'figure8', label: 'Figure 8' },
+            { name: 'chase', label: 'Chase' },
+            { name: 'ballyhoo', label: 'Ballyhoo' },
+            { name: 'random', label: 'Random' },
+        ];
+
+        // Fader labels
+        const FADER_LABELS = ['Master', 'Pan', 'Tilt', 'Speed', 'Zoom', 'Aux 1', 'Aux 2', 'Aux 3'];
+
+        // Initialize UI
+        function initUI() {
+            // Generate faders
+            const fadersContainer = document.getElementById('faders');
+            FADER_LABELS.forEach((label, i) => {
+                const fader = createFader(i, label);
+                fadersContainer.appendChild(fader);
+            });
+
+            // Generate color buttons
+            const colorsContainer = document.getElementById('colors');
+            COLORS.forEach(c => {
+                const btn = document.createElement('button');
+                btn.className = 'color-btn' + (c.name === currentColor ? ' active' : '');
+                btn.style.background = c.color;
+                btn.dataset.color = c.name;
+                btn.innerHTML = `<span>${c.name}</span>`;
+                btn.onclick = () => setColor(c.name);
+                colorsContainer.appendChild(btn);
+            });
+
+            // Generate movement buttons
+            const movementsContainer = document.getElementById('movements');
+            MOVEMENTS.forEach(m => {
+                const btn = document.createElement('button');
+                btn.className = 'movement-btn' + (m.name === currentMovement ? ' active' : '');
+                btn.dataset.movement = m.name;
+                btn.textContent = m.label;
+                btn.onclick = () => setMovement(m.name);
+                movementsContainer.appendChild(btn);
+            });
+
+            // Setup event listeners
+            document.getElementById('btn-record').onclick = startRecording;
+            document.getElementById('btn-stop').onclick = stopRecording;
+            document.getElementById('btn-export').onclick = exportData;
+            document.getElementById('btn-strobe').onclick = () => triggerStrobe();
+            document.getElementById('btn-blackout').onclick = () => triggerBlackout();
+            document.getElementById('btn-flash').onclick = () => triggerFlash();
+            document.getElementById('btn-drop').onclick = () => triggerDrop();
+            document.getElementById('btn-buildup').onclick = () => triggerBuildup();
+            document.getElementById('btn-restore').onclick = () => triggerRestore();
+
+            // LFO Effects buttons
+            document.querySelectorAll('#lfo-effects .movement-btn').forEach(btn => {
+                btn.onclick = () => setLFOEffect(btn.dataset.lfo);
+            });
+
+            // Phase distribution buttons
+            document.querySelectorAll('#phase-dist .movement-btn').forEach(btn => {
+                btn.onclick = () => setPhaseDistribution(btn.dataset.dist);
+            });
+
+            // Keyboard shortcuts
+            document.addEventListener('keydown', handleKeyboard);
+        }
+
+        // Create a fader element
+        function createFader(index, label) {
+            const container = document.createElement('div');
+            container.className = 'fader-channel';
+            container.innerHTML = `
+                <span class="fader-label">${label}</span>
+                <div class="fader-container" data-index="${index}">
+                    <div class="fader-track">
+                        <div class="fader-fill" id="fader-fill-${index}" style="height: ${faderValues[index]}%"></div>
+                    </div>
+                    <div class="fader-knob" id="fader-knob-${index}" style="bottom: calc(${faderValues[index]}% - 12px)"></div>
+                </div>
+                <span class="fader-value" id="fader-value-${index}">${faderValues[index]}%</span>
+            `;
+
+            // Add drag functionality
+            const faderContainer = container.querySelector('.fader-container');
+            let isDragging = false;
+
+            const updateFader = (e) => {
+                if (!isDragging) return;
+                const rect = faderContainer.getBoundingClientRect();
+                const y = e.clientY || e.touches[0].clientY;
+                let pct = 100 - ((y - rect.top) / rect.height * 100);
+                pct = Math.max(0, Math.min(100, pct));
+                setFaderValue(index, pct);
+            };
+
+            faderContainer.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                updateFader(e);
+            });
+
+            document.addEventListener('mousemove', updateFader);
+            document.addEventListener('mouseup', () => isDragging = false);
+
+            // Touch support
+            faderContainer.addEventListener('touchstart', (e) => {
+                isDragging = true;
+                updateFader(e);
+            });
+            document.addEventListener('touchmove', updateFader);
+            document.addEventListener('touchend', () => isDragging = false);
+
+            return container;
+        }
+
+        // Set fader value
+        function setFaderValue(index, value) {
+            faderValues[index] = Math.round(value);
+            document.getElementById(`fader-fill-${index}`).style.height = `${value}%`;
+            document.getElementById(`fader-knob-${index}`).style.bottom = `calc(${value}% - 12px)`;
+            document.getElementById(`fader-value-${index}`).textContent = `${Math.round(value)}%`;
+
+            // Send to API based on fader function
+            if (index === 0) {
+                // Master dimmer
+                fetch(`${API_BASE}/training/manual/dimmer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ value: value / 100 })
+                }).catch(console.error);
+            }
+        }
+
+        // Set color
+        async function setColor(colorName) {
+            currentColor = colorName;
+            document.querySelectorAll('.color-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.color === colorName);
+            });
+
+            try {
+                await fetch(`${API_BASE}/training/manual/color/preset/${colorName}`, {
+                    method: 'POST'
+                });
+            } catch (e) {
+                console.error('Failed to set color:', e);
+            }
+        }
+
+        // Set movement
+        async function setMovement(movementName) {
+            currentMovement = movementName;
+            document.querySelectorAll('.movement-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.movement === movementName);
+            });
+
+            try {
+                await fetch(`${API_BASE}/training/manual/movement/${movementName}`, {
+                    method: 'POST'
+                });
+            } catch (e) {
+                console.error('Failed to set movement:', e);
+            }
+        }
+
+        // LFO Effects (grandMA2 style)
+        let currentLFOEffect = '';
+
+        async function setLFOEffect(effectName) {
+            currentLFOEffect = effectName;
+
+            // Update button states
+            document.querySelectorAll('#lfo-effects .movement-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.lfo === effectName);
+            });
+
+            try {
+                if (effectName === '' || !effectName) {
+                    // Stop all LFO effects
+                    await fetch(`${API_BASE}/lfo/deactivate-all`, { method: 'POST' });
+                } else {
+                    // Activate the effect (exclusive mode)
+                    await fetch(`${API_BASE}/lfo/activate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ effect_name: effectName, exclusive: true })
+                    });
+                }
+            } catch (e) {
+                console.error('Failed to set LFO effect:', e);
+            }
+        }
+
+        // Phase distribution
+        let currentDistribution = 'linear';
+
+        async function setPhaseDistribution(distName) {
+            currentDistribution = distName;
+
+            // Update button states
+            document.querySelectorAll('#phase-dist .movement-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.dist === distName);
+            });
+
+            // Note: Phase distribution is set when creating custom effects
+            // For now, just store the preference
+            console.log('Phase distribution set to:', distName);
+        }
+
+        // Recording controls
+        async function startRecording() {
+            const sessionName = document.getElementById('session-name').value || undefined;
+            try {
+                // Enable manual mode first
+                await fetch(`${API_BASE}/training/manual/enable`, { method: 'POST' });
+
+                const response = await fetch(`${API_BASE}/training/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_name: sessionName })
+                });
+                const data = await response.json();
+
+                isRecording = true;
+                document.getElementById('btn-record').classList.add('active');
+                document.getElementById('recording-badge').className = 'status-badge recording';
+                document.getElementById('recording-badge').textContent = 'RECORDING';
+                console.log('Recording started:', data.session_name);
+            } catch (e) {
+                console.error('Failed to start recording:', e);
+                alert('Failed to start recording. Is the backend running?');
+            }
+        }
+
+        async function stopRecording() {
+            try {
+                const response = await fetch(`${API_BASE}/training/stop`, { method: 'POST' });
+                const data = await response.json();
+
+                isRecording = false;
+                document.getElementById('btn-record').classList.remove('active');
+                document.getElementById('recording-badge').className = 'status-badge idle';
+                document.getElementById('recording-badge').textContent = 'IDLE';
+                console.log('Recording stopped:', data.frame_count, 'frames');
+
+                // Disable manual mode
+                await fetch(`${API_BASE}/training/manual/disable`, { method: 'POST' });
+            } catch (e) {
+                console.error('Failed to stop recording:', e);
+            }
+        }
+
+        async function exportData() {
+            try {
+                const response = await fetch(`${API_BASE}/training/export`, { method: 'POST' });
+                const data = await response.json();
+                alert(`Exported ${data.frame_count} frames to:\n${data.filepath}`);
+            } catch (e) {
+                console.error('Failed to export:', e);
+                alert('Failed to export. Make sure recording is stopped first.');
+            }
+        }
+
+        // Trigger actions
+        async function triggerStrobe(duration = 0.5) {
+            try {
+                await fetch(`${API_BASE}/training/manual/strobe?duration=${duration}`, { method: 'POST' });
+            } catch (e) { console.error(e); }
+        }
+
+        async function triggerBlackout() {
+            try {
+                await fetch(`${API_BASE}/training/manual/blackout`, { method: 'POST' });
+            } catch (e) { console.error(e); }
+        }
+
+        async function triggerFlash() {
+            try {
+                await fetch(`${API_BASE}/training/manual/flash`, { method: 'POST' });
+            } catch (e) { console.error(e); }
+        }
+
+        async function triggerDrop() {
+            try {
+                await fetch(`${API_BASE}/effects/trigger/drop`, { method: 'POST' });
+            } catch (e) { console.error(e); }
+        }
+
+        async function triggerBuildup() {
+            try {
+                await fetch(`${API_BASE}/effects/trigger/buildup?duration=4`, { method: 'POST' });
+            } catch (e) { console.error(e); }
+        }
+
+        async function triggerRestore() {
+            try {
+                await fetch(`${API_BASE}/effects/trigger/restore`, { method: 'POST' });
+            } catch (e) { console.error(e); }
+        }
+
+        // Keyboard handler
+        function handleKeyboard(e) {
+            // Ignore if typing in input
+            if (e.target.tagName === 'INPUT') return;
+
+            const key = e.key.toLowerCase();
+
+            // Dimmer shortcuts (1-9, 0)
+            if (key >= '1' && key <= '9') {
+                const value = parseInt(key) * 10;
+                setFaderValue(0, value);
+            } else if (key === '0') {
+                setFaderValue(0, 100);
+            }
+
+            // Color shortcuts
+            const colorMap = {
+                'q': 'white', 'w': 'red', 'e': 'orange', 'r': 'yellow',
+                't': 'green', 'y': 'cyan', 'u': 'blue', 'i': 'purple',
+                'o': 'magenta', 'p': 'pink'
+            };
+            if (colorMap[key]) setColor(colorMap[key]);
+
+            // Movement shortcuts (basic)
+            const moveMap = {
+                'a': 'none', 's': 'circle', 'd': 'sweep', 'f': 'figure8', 'g': 'chase'
+            };
+            if (moveMap[key]) setMovement(moveMap[key]);
+
+            // LFO Effect shortcuts (Shift + key)
+            if (e.shiftKey) {
+                const lfoMap = {
+                    'c': 'circle',
+                    'w': 'circle_wings',
+                    'b': 'ballyhoo',
+                    'p': 'pan_sweep',
+                    't': 'tilt_sweep',
+                    'd': 'dimmer_chase',
+                    'u': 'dimmer_pulse',
+                    'o': 'dimmer_odd_even',
+                    'x': ''  // Stop LFO
+                };
+                if (lfoMap[key] !== undefined) {
+                    e.preventDefault();
+                    setLFOEffect(lfoMap[key]);
+                }
+            }
+
+            // Trigger shortcuts
+            if (key === ' ') { e.preventDefault(); triggerStrobe(); }
+            if (key === 'b' && !e.shiftKey) triggerBlackout();
+            if (key === 'n') triggerFlash();
+        }
+
+        // MIDI Setup
+        let midiEnabled = false;
+
+        async function toggleMIDI() {
+            if (midiEnabled) {
+                disableMIDI();
+            } else {
+                await enableMIDI();
+            }
+        }
+
+        async function enableMIDI() {
+            try {
+                midiAccess = await navigator.requestMIDIAccess();
+                console.log('MIDI access granted');
+
+                // List devices
+                const inputs = Array.from(midiAccess.inputs.values());
+                if (inputs.length > 0) {
+                    const deviceNames = inputs.map(i => i.name).join(', ');
+                    document.getElementById('midi-device').textContent = deviceNames;
+                    document.getElementById('midi-badge').textContent = `MIDI: ${inputs.length}`;
+                    document.getElementById('midi-badge').className = 'status-badge connected';
+
+                    // Listen to all inputs
+                    inputs.forEach(input => {
+                        input.onmidimessage = handleMIDI;
+                        console.log('Listening to MIDI:', input.name);
+                    });
+
+                    midiEnabled = true;
+                    document.getElementById('btn-midi-toggle').textContent = 'Disable MIDI';
+                    document.getElementById('btn-midi-toggle').style.background = '#1a3a1a';
+                    document.getElementById('btn-midi-toggle').style.borderColor = '#2a5a2a';
+                    document.getElementById('btn-midi-toggle').style.color = '#4a8';
+                } else {
+                    document.getElementById('midi-device').textContent = 'No MIDI devices found';
+                    document.getElementById('midi-badge').textContent = 'MIDI: None';
+                }
+
+                // Watch for new devices
+                midiAccess.onstatechange = (e) => {
+                    console.log('MIDI state change:', e.port.name, e.port.state);
+                    if (midiEnabled && e.port.state === 'connected' && e.port.type === 'input') {
+                        e.port.onmidimessage = handleMIDI;
+                    }
+                };
+            } catch (e) {
+                console.log('MIDI not available:', e);
+                document.getElementById('midi-device').textContent = 'Not available in this browser';
+            }
+        }
+
+        function disableMIDI() {
+            if (midiAccess) {
+                // Remove listeners from all inputs
+                const inputs = Array.from(midiAccess.inputs.values());
+                inputs.forEach(input => {
+                    input.onmidimessage = null;
+                });
+            }
+
+            midiEnabled = false;
+            document.getElementById('midi-device').textContent = 'Disabled';
+            document.getElementById('midi-badge').textContent = 'MIDI: Off';
+            document.getElementById('midi-badge').className = 'status-badge disconnected';
+            document.getElementById('btn-midi-toggle').textContent = 'Enable MIDI';
+            document.getElementById('btn-midi-toggle').style.background = '#2a2a35';
+            document.getElementById('btn-midi-toggle').style.borderColor = '#3a3a45';
+            document.getElementById('btn-midi-toggle').style.color = '#888';
+        }
+
+        // Handle MIDI messages
+        function handleMIDI(msg) {
+            const [status, data1, data2] = msg.data;
+            const channel = status & 0x0F;
+            const type = status & 0xF0;
+
+            console.log(`MIDI: ch${channel} type=${type.toString(16)} d1=${data1} d2=${data2}`);
+
+            // Control Change (faders, knobs)
+            if (type === 0xB0) {
+                // Map CC to faders (CC 1-8 -> faders 0-7)
+                if (data1 >= 1 && data1 <= 8) {
+                    const faderIndex = data1 - 1;
+                    const value = (data2 / 127) * 100;
+                    setFaderValue(faderIndex, value);
+                }
+                // Executor buttons could be mapped here
+                // grandMA2 executor buttons send CC on specific channels
+            }
+
+            // Note On (buttons)
+            if (type === 0x90 && data2 > 0) {
+                // Map notes to colors (C=60 through B=71)
+                if (data1 >= 60 && data1 < 60 + COLORS.length) {
+                    setColor(COLORS[data1 - 60].name);
+                }
+                // Map notes to movements (C#=73 through G#=80)
+                if (data1 >= 73 && data1 < 73 + MOVEMENTS.length) {
+                    setMovement(MOVEMENTS[data1 - 73].name);
+                }
+                // Trigger buttons
+                if (data1 === 84) triggerStrobe();
+                if (data1 === 85) triggerBlackout();
+                if (data1 === 86) triggerFlash();
+            }
+        }
+
+        // WebSocket for real-time updates
+        function connectWebSocket() {
+            const ws = new WebSocket('ws://localhost:8000/ws/audio');
+
+            ws.onopen = () => {
+                isConnected = true;
+                document.getElementById('connection-badge').className = 'status-badge connected';
+                document.getElementById('connection-badge').textContent = 'Connected';
+                ws.send(JSON.stringify({ type: 'reactive_on', rig_id: 5 }));
+            };
+
+            ws.onclose = () => {
+                isConnected = false;
+                document.getElementById('connection-badge').className = 'status-badge disconnected';
+                document.getElementById('connection-badge').textContent = 'Disconnected';
+                // Reconnect after 2 seconds
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'analysis') {
+                        updateAudioMeters(data);
+                    }
+                } catch (e) {}
+            };
+        }
+
+        // Update audio meters
+        function updateAudioMeters(data) {
+            const freq = data.frequency || {};
+            const bands = {};
+            (freq.bands || []).forEach(b => bands[b.name] = b.energy);
+
+            const bass = (bands.bass || 0) + (bands.sub_bass || 0);
+            const mid = (bands.mid || 0) + (bands.low_mid || 0);
+            const high = (bands.high || 0) + (bands.high_mid || 0);
+            const energy = freq.rms_energy || 0;
+
+            document.getElementById('meter-bass').style.height = `${Math.min(100, bass * 100)}%`;
+            document.getElementById('meter-mid').style.height = `${Math.min(100, mid * 100)}%`;
+            document.getElementById('meter-high').style.height = `${Math.min(100, high * 100)}%`;
+            document.getElementById('meter-energy').style.height = `${Math.min(100, energy * 200)}%`;
+
+            // Update BPM
+            const bpm = data.beat?.bpm || 0;
+            if (bpm > 0) {
+                document.getElementById('stat-bpm').textContent = Math.round(bpm);
+            }
+        }
+
+        // Poll recording stats
+        async function pollStats() {
+            if (!isRecording) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/training/status`);
+                const data = await response.json();
+
+                document.getElementById('stat-frames').textContent = data.frame_count;
+                document.getElementById('stat-fps').textContent = data.fps.toFixed(1);
+
+                const mins = Math.floor(data.duration_seconds / 60);
+                const secs = Math.floor(data.duration_seconds % 60);
+                document.getElementById('stat-duration').textContent =
+                    `${mins}:${secs.toString().padStart(2, '0')}`;
+            } catch (e) {}
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            initUI();
+            connectWebSocket();
+
+            // MIDI toggle button
+            document.getElementById('btn-midi-toggle').onclick = toggleMIDI;
+
+            // Poll stats every 500ms
+            setInterval(pollStats, 500);
+        });
+    </script>
+</body>
+</html>
