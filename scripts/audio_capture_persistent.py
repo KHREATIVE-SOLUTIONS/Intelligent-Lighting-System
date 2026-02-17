@@ -2,14 +2,15 @@
 """
 Persistent Audio Capture - Auto-reconnects when disconnected.
 """
+import argparse
+import os
 import subprocess
 import sys
 import time
 
-DEVICE_ID = "30"  # Studio 24c
-SCRIPT_PATH = "audio_capture.py"
+SCRIPT_PATH = os.path.join(os.path.dirname(__file__), "audio_capture.py")
 
-def main():
+def main(device_id: int, rig_id: int):
     print("=" * 60)
     print("  ILS Persistent Audio Capture")
     print("  Auto-reconnects when WebSocket disconnects")
@@ -25,17 +26,10 @@ def main():
         try:
             # Run audio capture script
             proc = subprocess.Popen(
-                [sys.executable, SCRIPT_PATH],
-                stdin=subprocess.PIPE,
+                [sys.executable, SCRIPT_PATH, "--device", str(device_id), "--rig-id", str(rig_id)],
                 stdout=sys.stdout,
                 stderr=sys.stderr,
-                text=True
             )
-
-            # Send device selection
-            proc.stdin.write(f"{DEVICE_ID}\n")
-            proc.stdin.flush()
-            proc.stdin.close()
 
             # Wait for it to complete (i.e., disconnect)
             proc.wait()
@@ -53,4 +47,8 @@ def main():
     print(f"\nTotal reconnections: {reconnect_count}")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Persistent audio capture with reconnect")
+    parser.add_argument("--device", type=int, required=True, help="Loopback device index")
+    parser.add_argument("--rig-id", type=int, default=5, help="Rig ID for reactive lighting")
+    args = parser.parse_args()
+    main(device_id=args.device, rig_id=args.rig_id)

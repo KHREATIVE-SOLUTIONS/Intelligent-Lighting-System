@@ -278,6 +278,79 @@ async def enable_reactive_mode(
     }
 
 
+# === System Audio Capture Endpoints ===
+
+@router.get("/capture/devices")
+async def list_capture_devices(request: Request):
+    """List all available audio devices for system audio capture."""
+    if not hasattr(request.app.state, 'audio_capture') or request.app.state.audio_capture is None:
+        return {"devices": [], "error": "Audio capture not initialized (sounddevice may not be installed)"}
+
+    import asyncio
+    from app.services.audio.system_audio_capture import SystemAudioCapture
+    # Run in executor because soundcard lazy import initializes COM (can block)
+    devices = await asyncio.get_event_loop().run_in_executor(
+        None, SystemAudioCapture.list_devices
+    )
+    return {"devices": devices}
+
+
+@router.get("/capture/status")
+async def get_capture_status(request: Request):
+    """Get current system audio capture status."""
+    if not hasattr(request.app.state, 'audio_capture') or request.app.state.audio_capture is None:
+        return {"running": False, "available": False, "device_name": None}
+
+    status = request.app.state.audio_capture.get_status()
+    status["available"] = True
+    return status
+
+
+@router.post("/capture/start")
+async def start_capture(
+    request: Request,
+    device_index: int = Query(..., description="Explicit audio capture device index"),
+):
+    """Start system audio capture (WASAPI loopback).
+
+    Args:
+        device_index: Specific device index to use.
+    """
+    if not hasattr(request.app.state, 'audio_capture') or request.app.state.audio_capture is None:
+        raise HTTPException(500, "Audio capture not available")
+
+    capture = request.app.state.audio_capture
+    if capture.is_running:
+        return {"status": "already_running", "device": capture.device_name}
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+
+    # Run in executor to avoid blocking the event loop (soundcard COM init is slow)
+    success = await loop.run_in_executor(
+        None, lambda: capture.start(device_index=device_index, loop=loop)
+    )
+    if not success:
+        raise HTTPException(500, "Failed to start audio capture. Check device availability.")
+
+    # Enable auto mode + pro lighting
+    if hasattr(request.app.state, 'effects_engine') and request.app.state.effects_engine:
+        request.app.state.effects_engine.config.auto_mode = True
+        request.app.state.effects_engine.enable_pro_lighting(True)
+
+    return {"status": "started", "device": capture.device_name}
+
+
+@router.post("/capture/stop")
+async def stop_capture(request: Request):
+    """Stop system audio capture."""
+    if not hasattr(request.app.state, 'audio_capture') or request.app.state.audio_capture is None:
+        raise HTTPException(500, "Audio capture not available")
+
+    request.app.state.audio_capture.stop()
+    return {"status": "stopped"}
+
+
 @router.post("/reactive/disable")
 async def disable_reactive_mode(request: Request):
     """Disable reactive lighting mode."""

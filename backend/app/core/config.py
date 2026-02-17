@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     AUDIO_SAMPLE_RATE: int = 44100
     AUDIO_CHUNK_SIZE: int = 2048
     AUDIO_HOP_LENGTH: int = 512
+    AUDIO_CAPTURE_AUTO_START: bool = False
 
     # ML Models
     BEATNET_MODEL_PATH: str = "ml_models/beatnet/model.pt"

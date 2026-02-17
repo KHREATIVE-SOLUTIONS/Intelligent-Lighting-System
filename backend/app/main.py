@@ -27,6 +27,7 @@ from app.api.endpoints.training import set_manual_controller
 from app.services.midi.midi_controller import MIDIController, set_midi_controller
 from app.services.effects.lfo_engine import LFOEngine
 from app.api.endpoints.lfo import set_lfo_engine
+from app.services.audio.system_audio_capture import SystemAudioCapture
 
 
 @asynccontextmanager
@@ -37,14 +38,17 @@ async def lifespan(app: FastAPI):
 
     try:
         # Initialize ML models
+        print(" Loading ML models...")
         app.state.model_manager = ModelManager()
         await app.state.model_manager.load_models()
+        print(" ML models queued")
     except Exception as e:
         print(f"Warning: Could not load ML models: {e}")
         app.state.model_manager = None
 
     try:
         # Initialize audio analyzer
+        print(" Creating AudioAnalyzer...")
         app.state.audio_analyzer = AudioAnalyzer(app.state.model_manager)
 
         # Wire ML pipeline models into audio analyzer
@@ -60,6 +64,7 @@ async def lifespan(app: FastAPI):
 
     try:
         # Initialize DMX controller
+        print(" Creating DMX controller...")
         app.state.dmx_controller = DMXController()
         await app.state.dmx_controller.connect()
     except Exception as e:
@@ -68,6 +73,7 @@ async def lifespan(app: FastAPI):
 
     try:
         # Initialize Effects Engine - TRAINING MODE (no auto-reactivity)
+        print(" Creating effects engine...")
         app.state.effects_engine = EffectsEngine(EffectsConfig(
             fps=60.0,
             auto_mode=False,  # Disabled for training - human operates manually
@@ -119,10 +125,102 @@ async def lifespan(app: FastAPI):
         from app.api.endpoints.demo import set_demo_effects_engine
         set_demo_effects_engine(app.state.effects_engine)
 
+        # Auto-apply medium venue preset so the demo rig has fixtures
+        from app.services.demo.venue_presets import create_venue_rig
+        manager, preset = create_venue_rig("medium_venue")
+        if manager:
+            app.state.effects_engine.fixtures = manager
+            for zone_spec in preset.key_zones:
+                try:
+                    from app.services.lighting.key_lighting import PerformerZone, KeyLightConfig
+                    zone = PerformerZone(zone_spec.zone)
+                    app.state.effects_engine.key_lighting.configure_zone(
+                        zone,
+                        KeyLightConfig(zone=zone, min_intensity=zone_spec.min_intensity, active=zone_spec.active)
+                    )
+                    app.state.effects_engine.key_lighting.assign_fixtures(zone, zone_spec.fixture_ids)
+                except (ValueError, Exception):
+                    pass
+            print(f"Auto-applied medium_venue preset ({len(preset.fixtures)} fixtures)")
+
         # Start the effects engine async loop (BUG-016 fix: store task reference)
         import asyncio
         app.state.effects_engine_task = asyncio.create_task(app.state.effects_engine.run())
-        print("Effects engine initialized (TRAINING MODE - manual control only)")
+
+        # Start a WebSocket broadcast task that pushes DMX state to all connected clients at ~30fps
+        # This is needed because server-side audio capture bypasses the WebSocket input path
+        async def _broadcast_lighting_state():
+            from app.api.endpoints.websocket import manager, convert_numpy_types
+            from datetime import datetime
+            frame_count = 0
+            while True:
+                try:
+                    await asyncio.sleep(1.0 / 30.0)  # ~30fps
+                    ee = app.state.effects_engine
+                    if ee is None:
+                        continue
+                    # Only broadcast if there are connected clients
+                    audio_clients = len(manager.active_connections.get("audio", set()))
+                    dmx_clients = len(manager.active_connections.get("dmx", set()))
+                    if audio_clients == 0 and dmx_clients == 0:
+                        continue
+
+                    # Build DMX frame
+                    dmx_frame = ee.fixtures.get_dmx_frame(universe=0)
+                    fixture_states = ee.get_fixture_state_snapshot()
+                    if not fixture_states:
+                        fixture_states = []
+                        for fixture in ee.fixtures.fixtures.values():
+                            fixture_states.append({
+                                'id': fixture.id, 'pan': fixture.pan, 'tilt': fixture.tilt,
+                                'dimmer': fixture.dimmer, 'r': fixture.red, 'g': fixture.green, 'b': fixture.blue
+                            })
+
+                    # Get pro lighting state
+                    pro_state = None
+                    try:
+                        pro_state = ee.get_pro_lighting_state()
+                    except Exception:
+                        pass
+
+                    lighting_data = {
+                        'dmx_frame': dmx_frame,
+                        'fixtures': fixture_states,
+                        'state': 'auto',
+                        'movement': 'auto',
+                        'dimmer': 'auto',
+                    }
+                    if pro_state:
+                        lighting_data['genre'] = pro_state.get('genre')
+                        lighting_data['section'] = pro_state.get('section')
+                        lighting_data['section_intensity'] = pro_state.get('section_intensity')
+                        lighting_data['pro_effects'] = {
+                            'strobeMode': pro_state.get('pro_strobe_active', False) and 'beat_sync' or 'off',
+                            'chaseType': 'off',
+                            'movementType': pro_state.get('pro_movement_pattern', 'none'),
+                        }
+
+                    response = convert_numpy_types({
+                        "type": "analysis",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "lighting": lighting_data,
+                    })
+
+                    if audio_clients > 0:
+                        await manager.broadcast("audio", response)
+                    if dmx_clients > 0:
+                        await manager.broadcast("dmx", {
+                            "type": "dmx_update",
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "data": {"universe": 0, "frame": dmx_frame},
+                        })
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    await asyncio.sleep(0.5)  # Back off on errors
+
+        app.state.broadcast_task = asyncio.create_task(_broadcast_lighting_state())
+        print(" Effects engine + WebSocket broadcast ready")
     except Exception as e:
         print(f"Warning: Could not initialize effects engine: {e}")
         import traceback
@@ -130,6 +228,7 @@ async def lifespan(app: FastAPI):
         app.state.effects_engine = None
 
     # Initialize Training Recorder for ML data collection
+    print(" Initializing training recorder...")
     try:
         app.state.training_recorder = TrainingRecorder(
             output_dir="ml_training_data"
@@ -150,6 +249,7 @@ async def lifespan(app: FastAPI):
         app.state.manual_controller = None
 
     # Initialize LFO Engine (grandMA2-style effects)
+    print(" Initializing LFO engine...")
     try:
         app.state.lfo_engine = LFOEngine()
         app.state.lfo_engine.set_fixture_count(8)  # Match demo rig
@@ -166,6 +266,7 @@ async def lifespan(app: FastAPI):
         app.state.lfo_engine = None
 
     # Initialize MIDI Controller
+    print(" Initializing MIDI controller...")
     try:
         app.state.midi_controller = MIDIController()
         set_midi_controller(app.state.midi_controller)
@@ -186,11 +287,90 @@ async def lifespan(app: FastAPI):
         print(f"Warning: Could not initialize MIDI controller: {e}")
         app.state.midi_controller = None
 
+    # Initialize System Audio Capture (WASAPI loopback for clean signal)
+    # Auto-starts via a delayed async task after the server is listening,
+    # so the blocking soundcard COM init never stalls the event loop.
+    try:
+        # Throttle flag: only one process_chunk at a time to avoid saturating the event loop
+        _processing = [False]
+
+        def on_audio_chunk(audio_data):
+            """Process captured system audio through the analysis pipeline."""
+            if _processing[0]:
+                return  # Skip this chunk - previous one still processing
+            if not (app.state.audio_analyzer and app.state.effects_engine):
+                return
+            try:
+                _loop = app.state._audio_loop
+                if _loop and _loop.is_running():
+                    _processing[0] = True
+                    future = asyncio.run_coroutine_threadsafe(
+                        app.state.audio_analyzer.process_chunk(audio_data),
+                        _loop,
+                    )
+                    def _on_result(fut):
+                        _processing[0] = False
+                        try:
+                            result = fut.result()
+                            if result:
+                                ml_data = result.get("ml", {})
+                                app.state.effects_engine.update_audio(result, ml_data=ml_data)
+                        except Exception:
+                            pass
+                    future.add_done_callback(_on_result)
+            except Exception:
+                _processing[0] = False
+
+        app.state._audio_loop = asyncio.get_event_loop()
+        app.state.audio_capture = SystemAudioCapture(
+            sample_rate=settings.AUDIO_SAMPLE_RATE,
+            chunk_size=settings.AUDIO_CHUNK_SIZE,
+            channels=1,
+            on_audio_chunk=on_audio_chunk,
+        )
+
+        # Delayed auto-start: waits 2s for server to bind, then starts capture
+        # in an executor thread so the blocking soundcard COM init is off the event loop.
+        if settings.AUDIO_CAPTURE_AUTO_START:
+            async def _delayed_audio_start():
+                await asyncio.sleep(2)
+                loop = asyncio.get_event_loop()
+                try:
+                    capture = app.state.audio_capture
+                    success = await loop.run_in_executor(
+                        None, lambda: capture.start(loop=loop)
+                    )
+                    if success:
+                        print(f"Audio capture started: {capture.device_name}")
+                        if app.state.effects_engine:
+                            app.state.effects_engine.config.auto_mode = True
+                            app.state.effects_engine.enable_pro_lighting(True)
+                            print("Auto mode + pro lighting ENABLED")
+                    else:
+                        print("Audio capture failed to auto-start - use UI/API to configure")
+                except Exception as e:
+                    print(f"Audio auto-start error: {e}")
+
+            app.state._audio_start_task = asyncio.create_task(_delayed_audio_start())
+            print("Audio capture will auto-start after server is ready")
+        else:
+            app.state._audio_start_task = None
+            print("Audio capture auto-start disabled (manual device selection expected)")
+    except Exception as e:
+        print(f"Warning: Could not initialize audio capture: {e}")
+        app.state.audio_capture = None
+
     print("Startup complete!")
 
     yield
 
     # Shutdown
+    if hasattr(app.state, '_audio_start_task') and app.state._audio_start_task:
+        app.state._audio_start_task.cancel()
+    if hasattr(app.state, 'broadcast_task') and app.state.broadcast_task:
+        app.state.broadcast_task.cancel()
+    if hasattr(app.state, 'audio_capture') and app.state.audio_capture:
+        app.state.audio_capture.stop()
     print("Shutting down Intelligent Lighting System...")
     if hasattr(app.state, 'effects_engine') and app.state.effects_engine:
         app.state.effects_engine.stop()

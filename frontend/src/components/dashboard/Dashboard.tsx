@@ -5,12 +5,9 @@ import {
   Card,
   CardContent,
   Typography,
-  Button,
   LinearProgress,
 } from '@mui/material';
 import {
-  PlayArrow as PlayIcon,
-  Stop as StopIcon,
   MusicNote as MusicIcon,
   Mood as MoodIcon,
   Equalizer as EqualizerIcon,
@@ -19,18 +16,16 @@ import {
 } from '@mui/icons-material';
 import { useAudioStore } from '../../stores/audioStore';
 import { useDMXStore } from '../../stores/dmxStore';
-import { audioWebSocket, audioStreamer } from '../../services/websocket';
+import { audioWebSocket } from '../../services/websocket';
 import AudioVisualizer from './AudioVisualizer';
 import MoodDisplay from './MoodDisplay';
 import FrequencyBands from './FrequencyBands';
 import ProLightingPanel from './ProLightingPanel';
 import SectionTimeline from './SectionTimeline';
+import AudioDeviceChooser from '../common/AudioDeviceChooser';
 
 export default function Dashboard() {
   const {
-    isStreaming,
-    setStreaming,
-    setConnected,
     updateAnalysis,
     beat,
     mood,
@@ -106,26 +101,14 @@ export default function Dashboard() {
 
   useEffect(() => {
     audioWebSocket.on('analysis', handleAnalysisUpdate);
+    audioWebSocket.connect().catch((err: any) => {
+      console.warn('WebSocket connect failed, will retry:', err);
+    });
 
     return () => {
       audioWebSocket.off('analysis', handleAnalysisUpdate);
     };
   }, [handleAnalysisUpdate]);
-
-  const handleStartListening = async () => {
-    try {
-      await audioStreamer.start();
-      setStreaming(true);
-      setConnected(true);
-    } catch (error) {
-      console.error('Failed to start audio:', error);
-    }
-  };
-
-  const handleStopListening = () => {
-    audioStreamer.stop();
-    setStreaming(false);
-  };
 
   return (
     <Box>
@@ -133,36 +116,10 @@ export default function Dashboard() {
         Real-Time Audio Analysis
       </Typography>
 
-      {/* Control Panel */}
+      {/* Audio Capture Control */}
       <Card sx={{ mb: 3 }}>
         <CardContent>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            {!isStreaming ? (
-              <Button
-                variant="contained"
-                color="primary"
-                startIcon={<PlayIcon />}
-                onClick={handleStartListening}
-              >
-                Start Listening
-              </Button>
-            ) : (
-              <Button
-                variant="contained"
-                color="error"
-                startIcon={<StopIcon />}
-                onClick={handleStopListening}
-              >
-                Stop Listening
-              </Button>
-            )}
-
-            <Typography variant="body2" color="text.secondary">
-              {isStreaming
-                ? 'Analyzing audio from microphone...'
-                : 'Click to start audio analysis'}
-            </Typography>
-          </Box>
+          <AudioDeviceChooser />
         </CardContent>
       </Card>
 

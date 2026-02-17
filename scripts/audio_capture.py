@@ -13,13 +13,14 @@ Usage:
     python audio_capture.py
 """
 
+import argparse
 import asyncio
 import json
 import sys
 import time
 import queue
 import threading
-from typing import Optional, List
+from typing import Optional
 
 try:
     import numpy as np
@@ -346,7 +347,67 @@ async def test_backend():
         return False
 
 
-async def main(auto_select=False):
+def choose_device(
+    devices: list[dict],
+    recommended: Optional[dict],
+    device_index: Optional[int],
+    auto_select: bool,
+) -> Optional[dict]:
+    """Resolve a device from CLI args or interactive prompt."""
+    if device_index is not None:
+        for dev in devices:
+            if dev["index"] == device_index:
+                print(f"\nSelected via --device: [{dev['index']}] {dev['name']}")
+                return dev
+        print(f"\nDevice index {device_index} not found in loopback devices.")
+        return None
+
+    if auto_select:
+        if recommended is None:
+            print("\nAuto-select requested but no loopback devices are available.")
+            return None
+        print(f"\nAuto-selected: [{recommended['index']}] {recommended['name']}")
+        return recommended
+
+    print("\nSelect device to capture FROM (what you hear):")
+    if recommended:
+        print(f"Recommended: [{recommended['index']}] {recommended['name'][:40]}")
+    print("Type device number. Type 'q' to quit.")
+
+    while True:
+        try:
+            user_input = input("> ").strip()
+        except EOFError:
+            print("\nNo interactive input available. Re-run with --device <index>.")
+            return None
+
+        if not user_input:
+            print("Explicit selection required. Enter a device index.")
+            continue
+
+        if user_input.lower() in {"q", "quit", "exit"}:
+            return None
+
+        try:
+            parsed_index = int(user_input)
+        except ValueError:
+            print("Invalid input. Enter a numeric device index.")
+            continue
+
+        for dev in devices:
+            if dev["index"] == parsed_index:
+                print(f"Using: [{dev['index']}] {dev['name']}")
+                return dev
+
+        print(f"Device {parsed_index} not found in loopback devices.")
+
+
+async def main(
+    auto_select: bool = False,
+    device_index: Optional[int] = None,
+    rig_id: int = 5,
+    list_only: bool = False,
+):
     """Main entry point."""
     print("=" * 70)
     print("  Intelligent Lighting System - WASAPI Loopback Audio Capture")
@@ -364,7 +425,7 @@ async def main(auto_select=False):
         print("Make sure audio is playing through your output device.")
         return
 
-    # Find recommended device (Studio 24c or default)
+    # Find recommended device (Studio 24c or first loopback)
     recommended = None
     for dev in devices:
         if 'studio 24c' in dev['name'].lower() or 'main out' in dev['name'].lower():
@@ -374,44 +435,19 @@ async def main(auto_select=False):
     if recommended is None and devices:
         recommended = devices[0]
 
-    # Auto-select or get user selection
-    if auto_select:
-        selected = recommended
-        print(f"\nAuto-selected: {selected['name']}")
-    else:
-        print(f"\nSelect device to capture FROM (what you hear):")
-        if recommended:
-            print(f"Recommended: [{recommended['index']}] {recommended['name'][:40]}")
+    if list_only:
+        return
 
-        print("\nEnter device number (or press Enter for recommended):")
-
-        try:
-            user_input = input("> ").strip()
-
-            if user_input:
-                device_index = int(user_input)
-                # Find device by index
-                selected = None
-                for dev in devices:
-                    if dev['index'] == device_index:
-                        selected = dev
-                        break
-                if selected is None:
-                    print(f"Device {device_index} not found in loopback devices")
-                    return
-            else:
-                selected = recommended
-                print(f"Using: {selected['name']}")
-
-        except ValueError:
-            print("Invalid input")
-            return
-        except EOFError:
-            selected = recommended
-            print(f"Using: {selected['name']}")
+    selected = choose_device(
+        devices=devices,
+        recommended=recommended,
+        device_index=device_index,
+        auto_select=auto_select,
+    )
+    if selected is None:
+        return
 
     # Start capture
-    rig_id = 5  # Demo rig
     print(f"\nUsing rig ID: {rig_id} (demo rig)")
 
     capture = AudioCapture()
@@ -423,12 +459,21 @@ async def main(auto_select=False):
 
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser(description="Audio Capture for ILS")
-    parser.add_argument("--auto", action="store_true", help="Auto-select first loopback device")
+    parser.add_argument("--auto", action="store_true", help="Auto-select recommended loopback device")
+    parser.add_argument("--device", type=int, help="Explicit loopback device index")
+    parser.add_argument("--rig-id", type=int, default=5, help="Rig ID for reactive lighting")
+    parser.add_argument("--list-devices", action="store_true", help="List loopback devices and exit")
     args = parser.parse_args()
 
     try:
-        asyncio.run(main(auto_select=args.auto))
+        asyncio.run(
+            main(
+                auto_select=args.auto,
+                device_index=args.device,
+                rig_id=args.rig_id,
+                list_only=args.list_devices,
+            )
+        )
     except KeyboardInterrupt:
         print("\n\nExiting...")

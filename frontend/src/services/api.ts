@@ -316,6 +316,25 @@ export const fixturesApi = {
 };
 
 // Audio API
+export interface AudioCaptureDevice {
+  index: number;
+  name: string;
+  max_input_channels: number;
+  max_output_channels: number;
+  default_samplerate?: number;
+  hostapi: string;
+  is_loopback: boolean;
+  device_type?: string;
+}
+
+export interface AudioCaptureStatus {
+  running: boolean;
+  device_index: number | null;
+  device_name: string | null;
+  capture_method: string;
+  available: boolean;
+}
+
 export const audioApi = {
   getStatus: async (): Promise<{ status: string; sample_rate: number }> => {
     const response = await api.get('/audio/status');
@@ -332,6 +351,28 @@ export const audioApi = {
 
   getCurrent: async (): Promise<AudioAnalysis> => {
     const response = await api.get('/audio/current');
+    return response.data;
+  },
+
+  getCaptureDevices: async (): Promise<AudioCaptureDevice[]> => {
+    const response = await api.get('/audio/capture/devices');
+    return response.data.devices ?? [];
+  },
+
+  getCaptureStatus: async (): Promise<AudioCaptureStatus> => {
+    const response = await api.get('/audio/capture/status');
+    return response.data;
+  },
+
+  startCapture: async (deviceIndex: number): Promise<{ status: string; device?: string }> => {
+    const response = await api.post('/audio/capture/start', null, {
+      params: { device_index: deviceIndex },
+    });
+    return response.data;
+  },
+
+  stopCapture: async (): Promise<{ status: string }> => {
+    const response = await api.post('/audio/capture/stop');
     return response.data;
   },
 };
