@@ -45,6 +45,12 @@ dmx_data = bytearray(512)
 
 # Current audio data
 audio_data = None
+look_spec_data = None
+visualizer_settings = {
+    "haze_level": 1.0,
+    "contrast_level": 1.0,
+    "blackout_threshold": 0.02,
+}
 
 # Shared HTTP session for polling (BUG-020 fix)
 _http_session: aiohttp.ClientSession = None
@@ -175,8 +181,24 @@ async def fetch_audio_data():
                     "bass": bands[1].get("energy", 0) if len(bands) > 1 else 0,
                     "mid": bands[3].get("energy", 0) if len(bands) > 3 else 0,
                     "high": bands[5].get("energy", 0) if len(bands) > 5 else 0,
-                    "beat": data.get("beat", {}).get("is_beat", False)
+                    "beat": data.get("beat", {}).get("is_beat", False),
+                    "look_spec": look_spec_data,
+                    "visualizer_settings": visualizer_settings,
                 }
+                return True
+    except Exception:
+        pass
+    return False
+
+
+async def fetch_look_spec():
+    """Fetch current typed beam/spot look specification from backend."""
+    global look_spec_data
+    try:
+        session = await _get_http_session()
+        async with session.get(f"{ILS_BACKEND_URL}/api/effects/look-spec") as resp:
+            if resp.status == 200:
+                look_spec_data = await resp.json()
                 return True
     except Exception:
         pass
@@ -210,7 +232,8 @@ async def data_polling_loop():
             # Fetch both audio and DMX data concurrently
             audio_task = fetch_audio_data()
             dmx_task = fetch_dmx_data()
-            audio_ok, dmx_ok = await asyncio.gather(audio_task, dmx_task)
+            look_task = fetch_look_spec()
+            audio_ok, dmx_ok, _ = await asyncio.gather(audio_task, dmx_task, look_task)
 
             if audio_ok:
                 await broadcast_audio()
@@ -308,6 +331,37 @@ async def set_dmx(values: dict):
 async def get_audio():
     """Get current audio data."""
     return {"data": audio_data}
+
+
+def _clamp_setting(value, lo: float, hi: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = lo
+    return max(lo, min(hi, parsed))
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """Get current visualizer render settings."""
+    return {"data": visualizer_settings}
+
+
+@app.post("/api/settings")
+async def update_settings(values: dict):
+    """Update visualizer render settings (optional operator tuning)."""
+    global visualizer_settings
+    merged = dict(visualizer_settings)
+    if "haze_level" in values:
+        merged["haze_level"] = _clamp_setting(values["haze_level"], 0.5, 2.0)
+    if "contrast_level" in values:
+        merged["contrast_level"] = _clamp_setting(values["contrast_level"], 0.6, 1.8)
+    if "blackout_threshold" in values:
+        merged["blackout_threshold"] = _clamp_setting(values["blackout_threshold"], 0.0, 0.2)
+    visualizer_settings = merged
+    if audio_data is not None:
+        audio_data["visualizer_settings"] = visualizer_settings
+    return {"status": "ok", "data": visualizer_settings}
 
 
 # Mount static files

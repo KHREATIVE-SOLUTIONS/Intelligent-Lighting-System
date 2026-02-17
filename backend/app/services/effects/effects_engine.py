@@ -34,6 +34,7 @@ from .decision_engine import (
     DecisionEngine, LightingState, AudioState, EffectSelection
 )
 from .lfo_engine import LFOEngine
+from ..lighting.section_templates import get_section_template
 
 # Professional lighting modules - imported lazily in __init__ to avoid circular imports
 # (lighting modules import from effects submodules, which triggers effects/__init__.py,
@@ -77,6 +78,11 @@ class EffectsConfig:
     lock_palette_per_song: bool = True
     silence_threshold: float = 0.02  # RMS below this = silence
     silence_duration_for_song_change: float = 1.5  # Seconds of silence = new song
+
+    # Move-In-Black (MIB)
+    mib_enabled: bool = True
+    mib_transition_ms: int = 450
+    mib_pan_tilt_threshold: float = 28.0  # DMX-value delta threshold
 
 
 class EffectsEngine:
@@ -124,6 +130,16 @@ class EffectsEngine:
         # White strobe flash state
         self._white_strobe_flash = False
         self._white_strobe_decay = 0.0
+
+        # Section template engine
+        self._section_templates_enabled = True
+        self._current_section_template_key: Optional[str] = None
+        self._current_section_intensity_scale: float = 1.0
+        self._song_home_section: Optional[str] = None
+        self._song_home_template = None
+
+        # True backend MIB state machine (per fixture)
+        self._mib_states: Dict[str, Dict] = {}
 
         # Thread-safe fixture state snapshot for WebSocket readers
         self._fixture_state_lock = asyncio.Lock()
@@ -317,6 +333,12 @@ class EffectsEngine:
             self.pro_effects.build.stop()
             self._ml_emotion_mapping = None
 
+        # Reset section-template "home" state and MIB transitions for next song
+        self._song_home_section = None
+        self._song_home_template = None
+        self._current_section_template_key = None
+        self._mib_states.clear()
+
         print(f"[Effects] Song changed! New palette: {self._current_song_palette.value}")
 
     def _apply_ml_data(self, ml_data: dict):
@@ -475,6 +497,9 @@ class EffectsEngine:
             selection = self.decision.get_selection()
             self._apply_selection(selection)
 
+        # Apply section/genre cue templates before layer engines update.
+        self._apply_section_template()
+
         # Sync BPM to movement engine for beat-locked patterns
         self.movement.params.bpm = self.config.bpm
 
@@ -521,6 +546,104 @@ class EffectsEngine:
         if self._dmx_callback:
             frame = self.fixtures.get_dmx_frame(universe=0)
             self._dmx_callback(0, frame)
+
+    def _resolve_section_genre(self) -> Tuple[str, str]:
+        """Resolve current section/genre for template selection."""
+        section = "unknown"
+        genre = "edm"
+        try:
+            if self._pro_lighting_enabled:
+                section = self.section_manager.current_section.value
+                genre = self.genre_manager.current_genre.value
+            else:
+                section = self.decision.state.value
+                genre = getattr(self.decision, "_genre", "edm")
+        except Exception:
+            pass
+        return section, genre
+
+    def _apply_section_template(self):
+        """Apply genre+section templates with song-home tracking."""
+        if not self._section_templates_enabled:
+            return
+
+        section, genre = self._resolve_section_genre()
+        template = get_section_template(genre, section)
+
+        # Song "home" look: first intro/verse template anchors the song identity.
+        if self._song_home_template is None and section in ("intro", "verse"):
+            self._song_home_section = section
+            self._song_home_template = template
+
+        # Outro returns toward home identity before fade-out if available.
+        if section == "outro" and self._song_home_template is not None:
+            template = type(template)(
+                movement_preset=self._song_home_template.movement_preset,
+                dimmer_preset=template.dimmer_preset,
+                strobe_preset="off",
+                base_intensity_scale=min(template.base_intensity_scale, 0.45),
+                blackout_policy=template.blackout_policy,
+                enable_mib=template.enable_mib,
+            )
+
+        key = f"{genre}:{section}:{template.movement_preset}:{template.dimmer_preset}:{template.strobe_preset}"
+        self._current_section_intensity_scale = max(0.0, min(1.25, template.base_intensity_scale))
+        self.config.mib_enabled = bool(template.enable_mib)
+        if key == self._current_section_template_key:
+            return
+        self._current_section_template_key = key
+
+        if self.config.movement_enabled and template.movement_preset in MOVEMENT_PRESETS:
+            self.movement.params = MOVEMENT_PRESETS[template.movement_preset]
+
+        if self.config.dimmer_enabled and template.dimmer_preset in DIMMER_PRESETS:
+            self.dimmer.params = DIMMER_PRESETS[template.dimmer_preset]
+
+        if self.config.strobe_enabled:
+            strobe_map = {
+                "off": None,
+                "beat_lock": "beat_flash",
+                "drop_burst": "drop_burst",
+            }
+            strobe_key = strobe_map.get(template.strobe_preset, template.strobe_preset)
+            if strobe_key is None:
+                self.strobe.stop()
+            elif strobe_key in STROBE_PRESETS:
+                self.strobe.params = STROBE_PRESETS[strobe_key]
+
+    def _apply_mib_transition(self, fixture: Fixture, desired_dimmer: float) -> float:
+        """Per-fixture move-in-black state machine for large pan/tilt moves."""
+        if not self.config.mib_enabled:
+            return desired_dimmer
+
+        fid = fixture.id
+        state = self._mib_states.get(fid)
+        if state is None:
+            state = {
+                "active": False,
+                "end_time": 0.0,
+                "last_pan": float(fixture.pan),
+                "last_tilt": float(fixture.tilt),
+            }
+
+        pan = float(fixture.pan)
+        tilt = float(fixture.tilt)
+        delta = abs(pan - state["last_pan"]) + abs(tilt - state["last_tilt"])
+
+        if (not state["active"]) and delta >= float(self.config.mib_pan_tilt_threshold):
+            state["active"] = True
+            state["end_time"] = self.time + max(0.05, self.config.mib_transition_ms / 1000.0)
+
+        if state["active"]:
+            if self.time < state["end_time"]:
+                desired_dimmer = min(float(desired_dimmer), 0.02)
+            else:
+                state["active"] = False
+
+        state["last_pan"] = pan
+        state["last_tilt"] = tilt
+        self._mib_states[fid] = state
+        return desired_dimmer
 
     def _apply_selection(self, selection: EffectSelection):
         """Apply decision engine selection to effect layers."""
@@ -816,6 +939,13 @@ class EffectsEngine:
                             fixture.red = key_override["r"]
                             fixture.green = key_override["g"]
                             fixture.blue = key_override["b"]
+
+            # Apply section template intensity scale across all non-training paths
+            fixture.dimmer *= self._current_section_intensity_scale
+
+            # True backend move-in-black: hide major reposition travel
+            if fixture.fixture_type != "bar" and fixture.id and (hasattr(fixture, "pan") and hasattr(fixture, "tilt")):
+                fixture.dimmer = self._apply_mib_transition(fixture, float(fixture.dimmer))
 
             # Dynamic range enforcement (anti-fatigue)
             if self._pro_lighting_enabled:

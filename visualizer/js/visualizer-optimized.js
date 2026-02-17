@@ -24,6 +24,21 @@ class ILSVisualizerOptimized {
         this.dmxData = new Array(512).fill(0);
         this.dmxTarget = new Array(512).fill(0);
         this.audioData = null;
+        this.lookSpec = null;
+        this.lookProfile = {
+            beamWidth: 0.5,
+            beamDensity: 0.9,
+            spotScale: 1.0,
+            movementSmoothing: 0.15,
+            strobeGate: 1.0
+        };
+        this.visualizerSettings = {
+            haze_level: 1.0,
+            contrast_level: 1.0,
+            blackout_threshold: 0.02
+        };
+        this._lastLookSection = 'unknown';
+        this._lookTransitionUntil = 0;
 
         // Performance
         this.clock = new THREE.Clock();
@@ -310,27 +325,245 @@ class ILSVisualizerOptimized {
         // For now, skip to maintain performance
     }
 
+    clamp01(v) {
+        return Math.max(0, Math.min(1, v));
+    }
+
+    lerp(a, b, t) {
+        return a + (b - a) * t;
+    }
+
+    getLookStrobeGate(time) {
+        const mode = this.lookSpec?.beam?.strobe_mode || 'off';
+        switch (mode) {
+            case 'beat_sync':
+                return this.audioData?.beat ? 1.0 : 0.28;
+            case 'slow_pulse':
+                return 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(time * 5.5));
+            case 'fast_strobe':
+                return Math.sin(time * 34.0) > 0 ? 1.0 : 0.06;
+            case 'burst':
+                return Math.sin(time * 26.0) > 0.7 ? 1.0 : 0.22;
+            case 'off':
+            default:
+                return 1.0;
+        }
+    }
+
+    applyVisualizerSettingsFromPayload(payload) {
+        if (!payload || typeof payload !== 'object') return;
+        const settings = payload.visualizer_settings || payload.settings;
+        if (!settings || typeof settings !== 'object') return;
+        this.visualizerSettings.haze_level = this.clamp01((settings.haze_level ?? 1.0) / 2.0) * 2.0;
+        this.visualizerSettings.contrast_level = Math.max(0.6, Math.min(1.8, settings.contrast_level ?? 1.0));
+        this.visualizerSettings.blackout_threshold = Math.max(0.0, Math.min(0.2, settings.blackout_threshold ?? 0.02));
+    }
+
+    updateLookProfile(time) {
+        if (!this.lookSpec) return;
+
+        const section = this.lookSpec.section || 'unknown';
+        if (section !== this._lastLookSection) {
+            this._lastLookSection = section;
+            const transitionMs = this.lookSpec.transition?.transition_ms ?? 500;
+            this._lookTransitionUntil = time + transitionMs / 1000.0;
+        }
+
+        const beamAngle = this.lookSpec.beam?.beam_angle_deg ?? 6.0;
+        const angleT = this.clamp01((beamAngle - 2.0) / 18.0); // 2°..20° to 0..1
+        const beamWidthTarget = this.lerp(0.26, 1.15, angleT);
+
+        const beamDensityTarget = this.lerp(0.35, 1.2, this.lookSpec.beam?.density ?? 0.6);
+        const spotScaleTarget = this.lerp(0.5, 1.8, this.lookSpec.spot?.zoom ?? 0.5);
+
+        // Movement smoothing responds to spec movement speed:
+        // slower looks = softer tracking, faster looks = snappier tracking.
+        const speedHz = this.lookSpec.beam?.movement_speed_hz ?? 0.25;
+        const moveSpeedT = this.clamp01(speedHz / 2.0);
+        const smoothingTarget = this.lerp(0.09, 0.24, moveSpeedT);
+
+        this.lookProfile.beamWidth = this.lerp(this.lookProfile.beamWidth, beamWidthTarget, 0.12);
+        this.lookProfile.beamDensity = this.lerp(this.lookProfile.beamDensity, beamDensityTarget, 0.12);
+        this.lookProfile.spotScale = this.lerp(this.lookProfile.spotScale, spotScaleTarget, 0.1);
+        this.lookProfile.movementSmoothing = this.lerp(this.lookProfile.movementSmoothing, smoothingTarget, 0.1);
+        this.lookProfile.strobeGate = this.getLookStrobeGate(time);
+    }
+
+    resolveSectionPattern() {
+        const section = this.lookSpec?.section || 'unknown';
+        const sectionMap = {
+            intro: 'converge',
+            verse: 'fan',
+            pre_chorus: 'tunnel',
+            buildup: 'tunnel',
+            chorus: 'cross',
+            drop: 'cross',
+            peak: 'cross',
+            bridge: 'converge',
+            breakdown: 'tunnel',
+            outro: 'fan'
+        };
+        return sectionMap[section] || 'fan';
+    }
+
+    getPatternWeight(role) {
+        const section = this.lookSpec?.section || 'unknown';
+        const bySection = {
+            intro: role === 'beam' ? 0.28 : 0.18,
+            verse: role === 'beam' ? 0.42 : 0.28,
+            pre_chorus: role === 'beam' ? 0.56 : 0.36,
+            buildup: role === 'beam' ? 0.64 : 0.42,
+            chorus: role === 'beam' ? 0.78 : 0.52,
+            drop: role === 'beam' ? 0.82 : 0.56,
+            peak: role === 'beam' ? 0.88 : 0.62,
+            bridge: role === 'beam' ? 0.5 : 0.4,
+            breakdown: role === 'beam' ? 0.38 : 0.3,
+            outro: role === 'beam' ? 0.3 : 0.22
+        };
+        return bySection[section] ?? (role === 'beam' ? 0.45 : 0.32);
+    }
+
+    getRolePatternOffsets(pattern, role, def, roleIndex, roleTotal, time) {
+        const n = roleTotal > 1 ? roleIndex / (roleTotal - 1) : 0.5;
+        const centered = n * 2 - 1;
+        const side = def.position.x < 0 ? -1 : 1;
+        const beatPush = this.audioData?.beat ? 1.0 : 0.0;
+
+        let panOffset = 0;
+        let tiltOffset = 0;
+
+        if (pattern === 'fan') {
+            if (role === 'beam') {
+                panOffset = side * (0.34 + Math.abs(centered) * 0.24);
+                tiltOffset = -0.18 + Math.abs(centered) * 0.07;
+            } else {
+                panOffset = side * (0.12 + Math.abs(centered) * 0.08);
+                tiltOffset = -0.28;
+            }
+        } else if (pattern === 'tunnel') {
+            if (role === 'beam') {
+                panOffset = side * 0.15 + Math.sin(time * 0.75 + n * 3.4) * 0.05;
+                tiltOffset = -0.06;
+            } else {
+                panOffset = side * 0.06;
+                tiltOffset = -0.25;
+            }
+        } else if (pattern === 'cross') {
+            if (role === 'beam') {
+                panOffset = -side * (0.3 + Math.abs(centered) * 0.08);
+                tiltOffset = -0.12 - beatPush * 0.05;
+            } else {
+                panOffset = 0.0;
+                tiltOffset = -0.32;
+            }
+        } else if (pattern === 'converge') {
+            if (role === 'beam') {
+                panOffset = -side * 0.2;
+                tiltOffset = -0.2;
+            } else {
+                panOffset = 0.0;
+                tiltOffset = -0.35;
+            }
+        }
+
+        return { panOffset, tiltOffset };
+    }
+
     updateFixtures(delta) {
         const time = this.clock.elapsedTime;
+        this.updateLookProfile(time);
+        const sectionPattern = this.resolveSectionPattern();
+        const beamTotal = this.fixtures.filter((f) => getFixtureRole(f.definition) === FIXTURE_ROLES.BEAM).length;
+        const spotTotal = this.fixtures.filter((f) => getFixtureRole(f.definition) === FIXTURE_ROLES.SPOT).length;
+        let beamIndex = 0;
+        let spotIndex = 0;
 
         // Interpolate DMX values for smooth animation
         for (let i = 0; i < 512; i++) {
             this.dmxData[i] += (this.dmxTarget[i] - this.dmxData[i]) * Math.min(1, delta * 15);
         }
 
-        this.fixtures.forEach((fixture) => {
+        this.fixtures.forEach((fixture, fixtureIndex) => {
             const def = fixture.definition;
             const dmx = this.dmxData;
+            const role = getFixtureRole(def);
+            const caps = getFixtureCapabilities(def);
+            const roleIndex = role === FIXTURE_ROLES.BEAM ? beamIndex : spotIndex;
+            const roleTotal = role === FIXTURE_ROLES.BEAM ? beamTotal : (role === FIXTURE_ROLES.SPOT ? spotTotal : 1);
+            if (role === FIXTURE_ROLES.BEAM) beamIndex += 1;
+            if (role === FIXTURE_ROLES.SPOT) spotIndex += 1;
 
             // Get fixture values
             const color = getFixtureColor(dmx, def);
-            const dimmer = getFixtureDimmer(dmx, def);
-            const { pan, tilt } = getFixturePanTilt(dmx, def);
+            let dimmer = getFixtureDimmer(dmx, def);
+            let { pan, tilt } = getFixturePanTilt(dmx, def);
             const shutterOpen = def.type === FIXTURE_TYPES.LED_BAR || isShutterOpen(dmx, def);
+            const shutterValue = def.type === FIXTURE_TYPES.LED_BAR ? 255 : getChannelValue(dmx, def, 'shutter');
+            const shutterStrobeGate = (shutterValue >= 64 && shutterValue <= 223)
+                ? (Math.sin(time * 30) > 0 ? 1.0 : 0.08)
+                : 1.0;
 
-            // Use dimmer directly for beam visibility, shutter modulates strobe only
-            // This makes beams visible whenever dimmer > 0
-            const intensity = dimmer;
+            if (role === FIXTURE_ROLES.BEAM || role === FIXTURE_ROLES.SPOT) {
+                const { panOffset, tiltOffset } = this.getRolePatternOffsets(
+                    sectionPattern,
+                    role,
+                    def,
+                    roleIndex,
+                    roleTotal,
+                    time
+                );
+                const weight = this.getPatternWeight(role);
+                pan += panOffset * weight;
+                tilt += tiltOffset * weight;
+                tilt = Math.max(-Math.PI * 0.49, Math.min(Math.PI * 0.49, tilt));
+            }
+
+            // Role-aware intensity shaping:
+            // beams punch harder in peak sections, spots stay steadier for stage focus.
+            const section = this.lookSpec?.section || 'unknown';
+            if (role === FIXTURE_ROLES.BEAM) {
+                if (section === 'chorus' || section === 'drop' || section === 'peak') {
+                    dimmer = Math.min(1.0, dimmer * 1.12);
+                }
+            } else if (role === FIXTURE_ROLES.SPOT) {
+                if (section === 'verse' || section === 'bridge' || section === 'outro') {
+                    dimmer = Math.min(1.0, dimmer * 1.08);
+                } else if (section === 'drop' || section === 'peak') {
+                    dimmer *= 0.88;
+                }
+            }
+
+            // Base output intensity with shutter and look-level strobe control.
+            let intensity = (shutterOpen ? dimmer : 0.0) * shutterStrobeGate * this.lookProfile.strobeGate;
+            const contrast = this.visualizerSettings.contrast_level ?? 1.0;
+            const blackoutThreshold = this.visualizerSettings.blackout_threshold ?? 0.02;
+            if (intensity < blackoutThreshold) {
+                intensity = 0.0;
+            } else {
+                intensity = this.clamp01(Math.pow(intensity, 1.0 / contrast));
+            }
+
+            // Move-in-black approximation:
+            // when pan/tilt target jumps, dim to near-black while head travels.
+            if (this.lookSpec?.transition?.mib_enabled && def.type !== FIXTURE_TYPES.LED_BAR) {
+                const prevPan = fixture._lastTargetPan ?? pan;
+                const prevTilt = fixture._lastTargetTilt ?? tilt;
+                const targetJump = Math.abs(pan - prevPan) + Math.abs(tilt - prevTilt);
+                fixture._lastTargetPan = pan;
+                fixture._lastTargetTilt = tilt;
+
+                if (!fixture._mibUntil && targetJump > 0.9) {
+                    const transitionMs = this.lookSpec.transition?.transition_ms ?? 500;
+                    fixture._mibUntil = time + transitionMs / 1000.0;
+                }
+
+                if (fixture._mibUntil && time < fixture._mibUntil) {
+                    intensity *= 0.03;
+                } else if (fixture._mibUntil && time >= fixture._mibUntil) {
+                    fixture._mibUntil = 0;
+                }
+            }
+
             const threeColor = new THREE.Color(color.r, color.g, color.b);
 
             if (def.type === FIXTURE_TYPES.LED_BAR) {
@@ -349,8 +582,12 @@ class ILSVisualizerOptimized {
 
                 if (fixture.headGroup) {
                     // Smooth pan/tilt
-                    fixture.headGroup.rotation.y += (pan - fixture.headGroup.rotation.y) * 0.15;
-                    fixture.headGroup.rotation.x += (tilt - fixture.headGroup.rotation.x) * 0.15;
+                    let smooth = this.lookProfile.movementSmoothing;
+                    if (fixture._mibUntil && time < fixture._mibUntil) {
+                        smooth = Math.max(0.32, smooth);
+                    }
+                    fixture.headGroup.rotation.y += (pan - fixture.headGroup.rotation.y) * smooth;
+                    fixture.headGroup.rotation.x += (tilt - fixture.headGroup.rotation.x) * smooth;
                 }
 
                 // Emitter glow
@@ -371,15 +608,23 @@ class ILSVisualizerOptimized {
                     beamColor.b = Math.max(0.4, beamColor.b);
                     fixture.beamMaterial.uniforms.uColor.value.copy(beamColor);
 
-                    fixture.beamMaterial.uniforms.uIntensity.value = intensity * 2.5 + 0.15;
+                    const beamWidthScale = caps.supports_zoom ? 1.25 : 1.0;
+                    const beamDensityScale = def.type === FIXTURE_TYPES.MOVER ? 1.0 : 0.85;
+                    const sectionEnergy = this.lookSpec?.energy ?? this.audioData?.rms ?? 0;
+                    const beamBoost = 0.85 + sectionEnergy * 0.5;
+                    const hazeLevel = this.visualizerSettings.haze_level ?? 1.0;
+                    const hazeBeamBoost = 0.7 + (hazeLevel * 0.7);
+                    const hazeDensityBoost = 0.65 + (hazeLevel * 0.45);
+
+                    fixture.beamMaterial.uniforms.uIntensity.value = intensity * 2.1 * beamBoost * hazeBeamBoost + 0.08;
                     fixture.beamMaterial.uniforms.uTime.value = time;
-                    fixture.beamMaterial.uniforms.uDensity.value = 0.9;
-                    fixture.beamMaterial.uniforms.uBeamWidth.value = 0.5;  // Narrow beam
+                    fixture.beamMaterial.uniforms.uDensity.value = this.lookProfile.beamDensity * beamDensityScale * hazeDensityBoost;
+                    fixture.beamMaterial.uniforms.uBeamWidth.value = this.lookProfile.beamWidth * beamWidthScale;
                     fixture.beamMaterial.uniforms.uBeamLength.value = 30;  // Long beam
                     fixture.beamMaterial.uniforms.uFalloff.value = 0.8;
 
                     if (fixture.beam) {
-                        fixture.beam.visible = true;
+                        fixture.beam.visible = intensity > 0.01;
                     }
                 }
 
@@ -403,9 +648,22 @@ class ILSVisualizerOptimized {
                         fixture.floorSpot.position.x += (spotX - fixture.floorSpot.position.x) * 0.2;
                         fixture.floorSpot.position.z += (spotZ - fixture.floorSpot.position.z) * 0.2;
 
+                        const focusMode = this.lookSpec?.spot?.focus_mode || 'texture';
+                        const goboMode = this.lookSpec?.spot?.gobo_mode || 'clean';
+                        const keyPriority = this.lookSpec?.spot?.key_priority ?? 0.6;
+                        const focusTightness = focusMode === 'performer' ? 0.7 : 1.0;
+                        const goboPulse = (caps.supports_gobo && goboMode === 'texture')
+                            ? (0.86 + 0.14 * Math.sin(time * 6 + fixtureIndex * 0.35))
+                            : 1.0;
+                        const zoomSupportScale = caps.supports_zoom ? 1.15 : 0.85;
+                        const focusSupportScale = caps.supports_focus ? 1.0 : 1.2;
+                        const spotScale = this.lookProfile.spotScale * focusTightness * zoomSupportScale * focusSupportScale;
+                        fixture.floorSpot.scale.set(spotScale, spotScale, 1);
+
                         // Update spot color and intensity
                         fixture.floorSpotMaterial.uniforms.uColor.value.copy(threeColor);
-                        fixture.floorSpotMaterial.uniforms.uIntensity.value = intensity * 1.5;
+                        const spotIntensity = intensity * goboPulse * (0.9 + keyPriority * 0.4);
+                        fixture.floorSpotMaterial.uniforms.uIntensity.value = spotIntensity;
                         fixture.floorSpotMaterial.uniforms.uTime.value = time;
                         fixture.floorSpot.visible = intensity > 0.05;
                     } else {
@@ -462,6 +720,15 @@ class ILSVisualizerOptimized {
                 ctx.fillStyle = '#f59e0b';
                 ctx.fillText('BEAT', w - 40, 14);
             }
+        }
+
+        if (this.lookSpec) {
+            ctx.fillStyle = '#888';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'left';
+            const sec = this.lookSpec.section || 'unknown';
+            const pattern = this.lookSpec.beam?.movement_pattern || 'none';
+            ctx.fillText(`${sec} / ${pattern}`, 8, h - 8);
         }
     }
 
@@ -553,6 +820,12 @@ class ILSVisualizerOptimized {
                             beat: msg.beat ? msg.beat.is_beat : false
                         };
                     }
+                    if (msg.look_spec) {
+                        this.lookSpec = msg.look_spec;
+                    } else if (msg.lighting && msg.lighting.look_spec) {
+                        this.lookSpec = msg.lighting.look_spec;
+                    }
+                    this.applyVisualizerSettingsFromPayload(msg);
                 }
 
                 // Legacy DMX message format (for backwards compatibility)
@@ -565,6 +838,10 @@ class ILSVisualizerOptimized {
                 // Legacy audio message format
                 if (msg.type === 'audio' && msg.data) {
                     this.audioData = msg.data;
+                    if (msg.data.look_spec) {
+                        this.lookSpec = msg.data.look_spec;
+                    }
+                    this.applyVisualizerSettingsFromPayload(msg.data);
                 }
             } catch (e) {
                 console.error('WS parse error:', e);

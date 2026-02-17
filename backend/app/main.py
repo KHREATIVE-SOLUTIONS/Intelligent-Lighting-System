@@ -151,6 +151,7 @@ async def lifespan(app: FastAPI):
         # This is needed because server-side audio capture bypasses the WebSocket input path
         async def _broadcast_lighting_state():
             from app.api.endpoints.websocket import manager, convert_numpy_types
+            from app.services.lighting.look_spec import build_lighting_look_spec
             from datetime import datetime
             frame_count = 0
             while True:
@@ -200,6 +201,10 @@ async def lifespan(app: FastAPI):
                         "timestamp": datetime.utcnow().isoformat(),
                         "lighting": lighting_data,
                     }
+                    try:
+                        response_payload["look_spec"] = build_lighting_look_spec(ee).model_dump(mode="json")
+                    except Exception:
+                        pass
                     try:
                         current_analysis = app.state.audio_analyzer.get_current_analysis()
                         if current_analysis:

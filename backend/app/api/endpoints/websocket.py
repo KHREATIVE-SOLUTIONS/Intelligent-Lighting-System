@@ -208,6 +208,11 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         'movement': active_lfo,  # Show active LFO effect
         'dimmer': 'manual'
     }
+    try:
+        from ...services.lighting.look_spec import build_lighting_look_spec
+        result['look_spec'] = build_lighting_look_spec(effects_engine).model_dump(mode="json")
+    except Exception:
+        pass
     if pro_state:
         result['pro_lighting'] = pro_state
     # Include ML pipeline data in WebSocket response for frontend display

@@ -477,6 +477,26 @@
             border-radius: 8px;
             background: #000;
         }
+
+        .viz-control-row {
+            margin-bottom: 12px;
+        }
+
+        .viz-control-row label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.7rem;
+            color: #888;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+            letter-spacing: 0.5px;
+        }
+
+        .viz-control-row input[type="range"] {
+            width: 100%;
+            accent-color: #3fa7ff;
+        }
     </style>
 </head>
 <body>
@@ -648,12 +668,31 @@
                     </div>
                 </div>
             </div>
+
+            <div class="panel" style="margin-top: 20px;">
+                <div class="panel-header">Visualizer Atmosphere</div>
+                <div class="panel-content">
+                    <div class="viz-control-row">
+                        <label for="viz-haze">Haze Level <span id="viz-haze-val">1.00</span></label>
+                        <input id="viz-haze" type="range" min="0.5" max="2.0" step="0.05" value="1.0">
+                    </div>
+                    <div class="viz-control-row">
+                        <label for="viz-contrast">Contrast <span id="viz-contrast-val">1.00</span></label>
+                        <input id="viz-contrast" type="range" min="0.6" max="1.8" step="0.05" value="1.0">
+                    </div>
+                    <div class="viz-control-row" style="margin-bottom: 0;">
+                        <label for="viz-blackout-threshold">Blackout Threshold <span id="viz-blackout-threshold-val">0.02</span></label>
+                        <input id="viz-blackout-threshold" type="range" min="0.00" max="0.20" step="0.01" value="0.02">
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
         // API Base URL
         const API_BASE = 'http://localhost:8000/api';
+        const VISUALIZER_API_BASE = `${window.location.origin}/api`;
 
         // State
         let isRecording = false;
@@ -662,6 +701,11 @@
         let currentColor = 'white';
         let currentMovement = 'none';
         let faderValues = [100, 0, 0, 0, 0, 0, 0, 0]; // Master, and 7 more
+        let visualizerSettings = {
+            haze_level: 1.0,
+            contrast_level: 1.0,
+            blackout_threshold: 0.02
+        };
 
         // Color definitions
         const COLORS = [
@@ -749,6 +793,64 @@
 
             // Keyboard shortcuts
             document.addEventListener('keydown', handleKeyboard);
+
+            initVisualizerControls();
+        }
+
+        function setVizSettingDisplay(id, value) {
+            const label = document.getElementById(`${id}-val`);
+            if (!label) return;
+            label.textContent = Number(value).toFixed(id === 'viz-blackout-threshold' ? 2 : 2);
+        }
+
+        async function loadVisualizerSettings() {
+            try {
+                const response = await fetch(`${VISUALIZER_API_BASE}/settings`);
+                const payload = await response.json();
+                const settings = payload.data || {};
+                visualizerSettings.haze_level = Number(settings.haze_level ?? 1.0);
+                visualizerSettings.contrast_level = Number(settings.contrast_level ?? 1.0);
+                visualizerSettings.blackout_threshold = Number(settings.blackout_threshold ?? 0.02);
+
+                document.getElementById('viz-haze').value = visualizerSettings.haze_level;
+                document.getElementById('viz-contrast').value = visualizerSettings.contrast_level;
+                document.getElementById('viz-blackout-threshold').value = visualizerSettings.blackout_threshold;
+
+                setVizSettingDisplay('viz-haze', visualizerSettings.haze_level);
+                setVizSettingDisplay('viz-contrast', visualizerSettings.contrast_level);
+                setVizSettingDisplay('viz-blackout-threshold', visualizerSettings.blackout_threshold);
+            } catch (e) {
+                console.error('Failed to load visualizer settings:', e);
+            }
+        }
+
+        async function pushVisualizerSetting(key, value) {
+            const payload = {};
+            payload[key] = Number(value);
+            try {
+                await fetch(`${VISUALIZER_API_BASE}/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            } catch (e) {
+                console.error(`Failed to update ${key}:`, e);
+            }
+        }
+
+        function initVisualizerControls() {
+            const map = [
+                { id: 'viz-haze', key: 'haze_level' },
+                { id: 'viz-contrast', key: 'contrast_level' },
+                { id: 'viz-blackout-threshold', key: 'blackout_threshold' }
+            ];
+            map.forEach(({ id, key }) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.addEventListener('input', () => setVizSettingDisplay(id, el.value));
+                el.addEventListener('change', () => pushVisualizerSetting(key, el.value));
+            });
+            loadVisualizerSettings();
         }
 
         // Create a fader element

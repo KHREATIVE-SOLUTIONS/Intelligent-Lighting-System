@@ -21,6 +21,8 @@ from ...services.lighting.section_manager import SongSection
 from ...services.lighting.movement_patterns import ProMovementPattern, PRO_MOVEMENT_PRESETS
 from ...services.lighting.pro_effects import ProStrobeMode
 from ...services.lighting.key_lighting import PerformerZone, KeyLightConfig
+from ...schemas.lighting_look import LightingLookSpec
+from ...services.lighting.look_spec import build_lighting_look_spec
 
 router = APIRouter(prefix="/effects", tags=["effects"])
 
@@ -136,6 +138,13 @@ async def get_status(request: Request):
         strobe_enabled=engine.config.strobe_enabled,
         color_enabled=engine.config.color_enabled
     )
+
+
+@router.get("/look-spec", response_model=LightingLookSpec)
+async def get_look_spec(request: Request):
+    """Get the current typed beam/spot look specification."""
+    engine = getattr(request.app.state, "effects_engine", None) or get_effects_engine()
+    return build_lighting_look_spec(engine)
 
 
 @router.post("/start")

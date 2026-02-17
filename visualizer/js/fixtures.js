@@ -9,6 +9,42 @@ const FIXTURE_TYPES = {
     LED_BAR: 'bar'
 };
 
+const FIXTURE_ROLES = {
+    BEAM: 'beam',
+    SPOT: 'spot',
+    EFFECT: 'effect'
+};
+
+const CAPABILITY_PROFILES = {
+    beam: {
+        supports_gobo: true,
+        supports_prism: true,
+        supports_frost: true,
+        supports_zoom: false,
+        supports_focus: true,
+        supports_iris: false,
+        movement_speed_class: 'fast'
+    },
+    spot: {
+        supports_gobo: true,
+        supports_prism: false,
+        supports_frost: true,
+        supports_zoom: true,
+        supports_focus: true,
+        supports_iris: true,
+        movement_speed_class: 'medium'
+    },
+    effect: {
+        supports_gobo: false,
+        supports_prism: false,
+        supports_frost: false,
+        supports_zoom: false,
+        supports_focus: false,
+        supports_iris: false,
+        movement_speed_class: 'static'
+    }
+};
+
 // Channel mappings for each fixture type
 const CHANNEL_MAPS = {
     // Moving Head - 16 channels
@@ -163,4 +199,19 @@ function isShutterOpen(dmxData, fixture) {
     const shutter = getChannelValue(dmxData, fixture, 'shutter');
     // Typically: 0-31 closed, 32+ open (with strobe effects at higher values)
     return shutter >= 32;
+}
+
+/**
+ * Get semantic fixture role for look logic.
+ * Beam and spot are role groupings, not strict hardware limits.
+ */
+function getFixtureRole(fixture) {
+    if (fixture.type === FIXTURE_TYPES.MOVER) return FIXTURE_ROLES.BEAM;
+    if (fixture.type === FIXTURE_TYPES.WASH) return FIXTURE_ROLES.SPOT;
+    return FIXTURE_ROLES.EFFECT;
+}
+
+function getFixtureCapabilities(fixture) {
+    const role = getFixtureRole(fixture);
+    return CAPABILITY_PROFILES[role] || CAPABILITY_PROFILES.effect;
 }
