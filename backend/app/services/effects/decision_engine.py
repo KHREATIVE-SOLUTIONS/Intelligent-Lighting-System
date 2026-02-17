@@ -753,7 +753,9 @@ class DecisionEngine:
 
     def _decide_intro(self):
         """Effects for intro section."""
-        self.selection.movement = MovementType.NONE
+        # Keep subtle movement in intro so rigs are visibly alive during startup.
+        self.selection.movement = MovementType.TRUE_CIRCLE
+        self.selection.movement_preset = "circle_slow"
         self.selection.static_look = StaticLook.ALL_CENTER
         self.selection.dimmer = DimmerType.SINE_PULSE
         self.selection.dimmer_preset = "breathing"

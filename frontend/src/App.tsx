@@ -35,6 +35,7 @@ function App() {
           <Route path="rigs/new/wizard" element={<Suspense fallback={<Loading />}><RigWizard /></Suspense>} />
           <Route path="rigs/:id/builder" element={<Suspense fallback={<Loading />}><RigBuilder /></Suspense>} />
           <Route path="rigs/:id" element={<RigEditor />} />
+          <Route path="visualizer" element={<RigVisualizer />} />
           <Route path="rigs/:id/visualizer" element={<RigVisualizer />} />
           <Route path="fixtures" element={<Suspense fallback={<Loading />}><FixtureLibrary /></Suspense>} />
           <Route path="fixtures/new" element={<Suspense fallback={<Loading />}><FixtureEditor /></Suspense>} />

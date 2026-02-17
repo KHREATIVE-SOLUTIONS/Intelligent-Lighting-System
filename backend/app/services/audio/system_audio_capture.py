@@ -22,9 +22,12 @@ logger = logging.getLogger(__name__)
 _sc = None  # soundcard
 _sd = None  # sounddevice
 _pa = None  # pyaudiowpatch
+ENABLE_SOUNDCARD_BACKEND = False
 
 
 def _get_soundcard():
+    if not ENABLE_SOUNDCARD_BACKEND:
+        return None
     global _sc
     if _sc is None:
         try:
@@ -84,6 +87,9 @@ class SystemAudioCapture:
         self._device_index: Optional[int] = None
         self._device_name = "None"
         self._capture_method = "none"  # soundcard_loopback | sounddevice | pyaudio_loopback
+        self._chunk_count = 0
+        self._last_rms = 0.0
+        self._last_peak = 0.0
 
     @staticmethod
     def list_devices() -> list:
@@ -173,6 +179,13 @@ class SystemAudioCapture:
     def _dispatch_chunk(self, audio_data: np.ndarray):
         if not self.on_audio_chunk or not self._running:
             return
+        try:
+            if audio_data.size > 0:
+                self._chunk_count += 1
+                self._last_rms = float(np.sqrt(np.mean(np.square(audio_data))))
+                self._last_peak = float(np.max(np.abs(audio_data)))
+        except Exception:
+            pass
         try:
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(self._async_on_chunk(audio_data), self._loop)
@@ -458,4 +471,7 @@ class SystemAudioCapture:
             "soundcard_available": _get_soundcard() is not None,
             "sounddevice_available": _get_sounddevice() is not None,
             "pyaudiowpatch_available": _get_pyaudio() is not None,
+            "chunk_count": self._chunk_count,
+            "last_rms": self._last_rms,
+            "last_peak": self._last_peak,
         }

@@ -3,7 +3,7 @@ Effects Engine API Endpoints
 Controls the intelligent lighting effects system.
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from enum import Enum
@@ -46,6 +46,8 @@ def set_effects_engine(engine: EffectsEngine):
 class EffectsStatus(BaseModel):
     """Effects engine status."""
     running: bool
+    engine_time: float
+    engine_id: int
     auto_mode: bool
     current_state: str
     bpm: float
@@ -113,12 +115,14 @@ class PresetRequest(BaseModel):
 # === Endpoints ===
 
 @router.get("/status", response_model=EffectsStatus)
-async def get_status():
+async def get_status(request: Request):
     """Get current effects engine status."""
-    engine = get_effects_engine()
+    engine = getattr(request.app.state, "effects_engine", None) or get_effects_engine()
 
     return EffectsStatus(
         running=engine.running,
+        engine_time=engine.time,
+        engine_id=id(engine),
         auto_mode=engine.config.auto_mode,
         current_state=engine.decision.state.value,
         bpm=engine.config.bpm,

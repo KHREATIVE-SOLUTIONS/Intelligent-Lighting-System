@@ -47,7 +47,9 @@ export default function Dashboard() {
   const handleAnalysisUpdate = useCallback(
     (data: unknown) => {
       const analysisData = data as any;
-      updateAnalysis(analysisData);
+      if (analysisData?.beat && analysisData?.mood && analysisData?.frequency) {
+        updateAnalysis(analysisData);
+      }
 
       // Update DMX store with lighting data from effects engine
       if (analysisData.lighting) {

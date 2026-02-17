@@ -32,7 +32,7 @@ python -c "from app.db.database import Base, engine; Base.metadata.create_all(bi
 
 echo.
 echo [2/4] Starting Backend Server...
-start "Backend" cmd /c "venv\Scripts\activate.bat && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+start "Backend" cmd /c "venv\Scripts\activate.bat && uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
 cd ..
 

@@ -671,7 +671,7 @@ class EffectsEngine:
                     base_intensity = 0.3 + self.audio_features.energy * 0.7
 
                     # Layer 2: Movement (pan/tilt)
-                    if self.config.movement_enabled and fixture.fixture_type in ["mover", "wash"]:
+                    if self.config.movement_enabled:
                         pan, tilt = self.movement.get_position(
                             fixture.id,
                             fixture.x, fixture.y, fixture.z,
@@ -717,7 +717,7 @@ class EffectsEngine:
                         fixture.dimmer *= section_intensity
 
                         # Pro movement (adds to existing movement)
-                        if fixture.fixture_type in ["mover", "wash"]:
+                        if self.config.movement_enabled:
                             pan_off, tilt_off = self.pro_movement.get_position(
                                 fixture.id, i, total,
                                 fixture.x, fixture.y, fixture.z,
@@ -966,7 +966,11 @@ class EffectsEngine:
         interval = 1.0 / self.config.fps
 
         while self.running:
-            self.update()
+            try:
+                self.update()
+            except Exception as e:
+                # Keep loop alive in live use; one bad frame should not kill output.
+                print(f"[EffectsEngine] update error: {e}")
             await asyncio.sleep(interval)
 
     def stop(self):

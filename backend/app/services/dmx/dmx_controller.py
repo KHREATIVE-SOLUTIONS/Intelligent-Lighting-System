@@ -185,9 +185,10 @@ class DMXController:
             self.last_send_time = time.time()
         except OSError as e:
             # BUG-017 fix: log send errors instead of silencing them
-            if self.packets_sent % 1000 == 0:
+            if not hasattr(self, '_artnet_err_logged'):
                 import logging
-                logging.getLogger(__name__).warning(f"ArtNet send error: {e}")
+                logging.getLogger(__name__).warning(f"ArtNet send error (suppressing repeats): {e}")
+                self._artnet_err_logged = True
 
     def get_config(self) -> ArtNetConfig:
         """Get current configuration."""

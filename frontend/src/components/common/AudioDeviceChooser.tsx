@@ -22,8 +22,10 @@ import {
   type AudioCaptureDevice,
   type AudioCaptureStatus,
 } from '../../services/api';
+import { useAudioStore } from '../../stores/audioStore';
 
 export default function AudioDeviceChooser() {
+  const setStreaming = useAudioStore((state) => state.setStreaming);
   const [devices, setDevices] = useState<AudioCaptureDevice[]>([]);
   const [status, setStatus] = useState<AudioCaptureStatus | null>(null);
   const [selectedDevice, setSelectedDevice] = useState<number>(-1);
@@ -33,12 +35,18 @@ export default function AudioDeviceChooser() {
   const fetchDevices = useCallback(async () => {
     try {
       const captureDevices = await audioApi.getCaptureDevices();
-      setDevices(captureDevices);
-      if (captureDevices.length > 0) {
-        setSelectedDevice((prev) => (prev >= 0 ? prev : captureDevices[0].index));
+      const pyaudioLoopback = captureDevices.filter(
+        (d) => d.is_loopback && d.device_type === 'pyaudio_loopback'
+      );
+      const loopbackOnly = pyaudioLoopback.length > 0
+        ? pyaudioLoopback
+        : captureDevices.filter((d) => d.is_loopback);
+      setDevices(loopbackOnly);
+      if (loopbackOnly.length > 0) {
+        setSelectedDevice((prev) => (prev >= 0 ? prev : loopbackOnly[0].index));
         setError('');
       }
-      if (captureDevices.length === 0) {
+      if (loopbackOnly.length === 0) {
         setError('No capture devices found. Ensure backend audio dependencies are installed and device is active.');
       }
     } catch (e) {
@@ -51,6 +59,7 @@ export default function AudioDeviceChooser() {
     try {
       const captureStatus = await audioApi.getCaptureStatus();
       setStatus(captureStatus);
+      setStreaming(!!captureStatus.running);
       if (!captureStatus.available) {
         setError('Audio capture service is not available in backend.');
       }
@@ -103,6 +112,8 @@ export default function AudioDeviceChooser() {
 
   const isRunning = status?.running ?? false;
   const isUnavailable = status ? !status.available : false;
+  const signalLevel = status?.last_rms ?? 0;
+  const hasSignal = signalLevel > 0.001;
 
   return (
     <Stack spacing={1.5}>
@@ -182,6 +193,15 @@ export default function AudioDeviceChooser() {
                 ? 'info'
                 : 'warning'
             }
+          />
+        )}
+
+        {isRunning && (
+          <Chip
+            size="small"
+            color={hasSignal ? 'success' : 'warning'}
+            label={hasSignal ? `Signal ${(signalLevel * 100).toFixed(1)}%` : 'No input signal'}
+            variant="outlined"
           />
         )}
       </Box>

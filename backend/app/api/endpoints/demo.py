@@ -261,6 +261,123 @@ async def get_venue_preset(preset_name: str):
     }
 
 
+@router.get("/demo/rig")
+async def get_demo_rig(preset: str = "medium_venue"):
+    """Get a demo rig as a Rig-compatible JSON for the 3D visualizer.
+
+    This returns fixture data shaped like the frontend's Rig type so the
+    visualizer can render without needing a database rig.
+    """
+    venue = VENUE_PRESETS.get(preset)
+    if venue is None:
+        raise HTTPException(404, f"Unknown preset: {preset}. Available: {list(VENUE_PRESETS.keys())}")
+
+    # Map fixture type -> FixtureType enum value used by frontend
+    TYPE_MAP = {
+        "mover": "moving_head",
+        "wash": "wash",
+        "bar": "led_bar",
+        "strobe": "strobe",
+        "spot": "spot",
+    }
+
+    # Channel maps per fixture type (key → 1-indexed channel_number)
+    from ...services.demo.venue_presets import (
+        MOVER_CHANNELS, WASH_CHANNELS, BAR_CHANNELS, STROBE_CHANNELS, SPOT_CHANNELS,
+        MOVER_CH_COUNT, WASH_CH_COUNT, BAR_CH_COUNT, STROBE_CH_COUNT, SPOT_CH_COUNT,
+    )
+    CH_MAPS = {
+        "mover": (MOVER_CHANNELS, MOVER_CH_COUNT),
+        "wash": (WASH_CHANNELS, WASH_CH_COUNT),
+        "bar": (BAR_CHANNELS, BAR_CH_COUNT),
+        "strobe": (STROBE_CHANNELS, STROBE_CH_COUNT),
+        "spot": (SPOT_CHANNELS, SPOT_CH_COUNT),
+    }
+
+    rig_fixtures = []
+    for idx, f in enumerate(venue.fixtures):
+        ch_map, ch_count = CH_MAPS.get(f.fixture_type, (BAR_CHANNELS, BAR_CH_COUNT))
+        channels = []
+        for ch_name, offset in ch_map.items():
+            channels.append({
+                "id": idx * 100 + offset,
+                "mode_id": idx + 1,
+                "channel_number": offset + 1,  # 1-indexed
+                "channel_type": ch_name,
+                "name": ch_name.replace("_", " ").title(),
+                "default_value": 0,
+                "min_value": 0,
+                "max_value": 255,
+                "is_fine": ch_name.endswith("_fine"),
+                "coarse_channel": None,
+            })
+
+        fixture_type = TYPE_MAP.get(f.fixture_type, "other")
+        is_mover = f.fixture_type in ("mover", "wash", "spot")
+
+        rig_fixtures.append({
+            "id": idx + 1,
+            "rig_id": 0,
+            "fixture_id": idx + 1,
+            "name": f.name,
+            "fixture_number": idx + 1,
+            "universe": f.universe,
+            "dmx_address": f.dmx_address,
+            "mode_id": None,
+            "position_x": f.x,
+            "position_y": f.y,
+            "position_z": f.z,
+            "rotation_x": 0,
+            "rotation_y": 0,
+            "rotation_z": 0,
+            "group_name": f.fixture_type,
+            "tags": [f.fixture_type],
+            "is_active": True,
+            "is_inverted": False,
+            "is_address_locked": False,
+            "serial_number": None,
+            "qr_code_data": None,
+            "fixture": {
+                "id": idx + 1,
+                "manufacturer": "Demo",
+                "model": f.name,
+                "fixture_type": fixture_type,
+                "weight": None,
+                "power": None,
+                "beam_angle": 25 if is_mover else 40,
+                "pan_range": 540 if is_mover else 0,
+                "tilt_range": 270 if is_mover else 0,
+                "has_rgb": True,
+                "has_cmy": False,
+                "has_color_wheel": f.fixture_type == "mover",
+                "modes": [{
+                    "id": idx + 1,
+                    "fixture_id": idx + 1,
+                    "name": "Standard",
+                    "channel_count": ch_count,
+                    "description": None,
+                    "channels": channels,
+                }],
+            },
+        })
+
+    return {
+        "id": 0,
+        "name": venue.display_name,
+        "description": venue.description,
+        "venue": venue.name,
+        "stage_width": venue.stage.width,
+        "stage_depth": venue.stage.depth,
+        "stage_height": venue.stage.height,
+        "universes": [{"universe": 0, "protocol": "artnet", "ip_address": None, "port": 6454}],
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
+        "created_by": "demo",
+        "is_active": True,
+        "fixtures": rig_fixtures,
+    }
+
+
 @router.post("/venues/presets/{preset_name}/apply")
 async def apply_venue_preset(preset_name: str):
     """Apply a venue preset - creates the rig and configures the system."""

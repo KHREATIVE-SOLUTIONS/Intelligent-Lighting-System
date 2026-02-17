@@ -16,6 +16,9 @@ from app.schemas.audio import (
     AudioStreamConfig, AudioAnalysisResponse, AudioAnalysisHistoryResponse,
     AudioFingerprintResponse, BeatResponse, MoodResponse, FrequencyResponse,
 )
+from app.services.effects.movement_patterns import MovementType, StaticLook
+from app.services.effects.dimmer_effects import DimmerType
+from app.services.lighting.section_manager import SongSection
 
 router = APIRouter()
 
@@ -303,6 +306,12 @@ async def get_capture_status(request: Request):
 
     status = request.app.state.audio_capture.get_status()
     status["available"] = True
+    engine = getattr(request.app.state, "effects_engine", None)
+    if engine is not None:
+        status["effects_engine_id"] = id(engine)
+        status["effects_engine_time"] = engine.time
+        status["effects_engine_running"] = engine.running
+        status["effects_engine_auto_mode"] = engine.config.auto_mode
     return status
 
 
@@ -323,6 +332,18 @@ async def start_capture(
     if capture.is_running:
         return {"status": "already_running", "device": capture.device_name}
 
+    try:
+        devices = capture.list_devices()
+        selected = next((d for d in devices if d.get("index") == device_index), None)
+        if not selected:
+            raise HTTPException(404, f"Audio device index {device_index} not found")
+        if not selected.get("is_loopback", False):
+            raise HTTPException(400, "Selected device is not a loopback output-capture device")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(500, "Failed to validate selected audio device")
+
     import asyncio
     loop = asyncio.get_event_loop()
 
@@ -334,11 +355,43 @@ async def start_capture(
         raise HTTPException(500, "Failed to start audio capture. Check device availability.")
 
     # Enable auto mode + pro lighting
+    warning = None
     if hasattr(request.app.state, 'effects_engine') and request.app.state.effects_engine:
-        request.app.state.effects_engine.config.auto_mode = True
-        request.app.state.effects_engine.enable_pro_lighting(True)
+        effects_engine = request.app.state.effects_engine
+        # Use deterministic live-reactive baseline (movement always active).
+        effects_engine.config.auto_mode = False
+        # Live reactive mode: ensure dynamic layers are enabled.
+        effects_engine.config.movement_enabled = True
+        effects_engine.config.dimmer_enabled = True
+        effects_engine.config.strobe_enabled = True
+        effects_engine.enable_pro_lighting(False)
+        # Bootstrap from UNKNOWN section so movement patterns become active immediately.
+        try:
+            effects_engine.set_section(SongSection.VERSE, immediate=True)
+        except Exception:
+            pass
+        try:
+            effects_engine.set_movement(
+                MovementType.TRUE_CIRCLE,
+                base_look=StaticLook.ALL_CENTER,
+                pan_speed=0.22,
+                tilt_speed=0.22,
+                pan_amplitude=55.0,
+                tilt_amplitude=35.0,
+            )
+            effects_engine.set_dimmer_effect(
+                DimmerType.SINE_PULSE,
+                speed=0.7,
+                min_intensity=0.2,
+                base_intensity=0.7,
+            )
+        except Exception as e:
+            warning = f"Started capture, but failed to apply baseline movement profile: {e}"
 
-    return {"status": "started", "device": capture.device_name}
+    response = {"status": "started", "device": capture.device_name}
+    if warning:
+        response["warning"] = warning
+    return response
 
 
 @router.post("/capture/stop")

@@ -333,6 +333,9 @@ export interface AudioCaptureStatus {
   device_name: string | null;
   capture_method: string;
   available: boolean;
+  chunk_count?: number;
+  last_rms?: number;
+  last_peak?: number;
 }
 
 export const audioApi = {

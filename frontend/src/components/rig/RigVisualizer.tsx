@@ -1,13 +1,19 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Box, IconButton, Typography, Card, CardContent } from '@mui/material';
-import { ArrowBack as BackIcon } from '@mui/icons-material';
+import {
+  Box, IconButton, Typography, Card, CardContent,
+} from '@mui/material';
+import {
+  ArrowBack as BackIcon,
+} from '@mui/icons-material';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { rigsApi } from '../../services/api';
 import type { Rig, RigFixture } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
+import { audioWebSocket } from '../../services/websocket';
+import AudioDeviceChooser from '../common/AudioDeviceChooser';
 
 // ============================================================================
 // CONSTANTS
@@ -603,16 +609,63 @@ function Scene({ rig }: { rig: Rig }) {
 // MAIN EXPORT COMPONENT
 // ============================================================================
 
+// ============================================================================
+// MAIN EXPORT COMPONENT
+// ============================================================================
+
 export default function RigVisualizer() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [rig, setRig] = useState<Rig | null>(null);
   const [loading, setLoading] = useState(true);
   const proLighting = useDMXStore((state) => state.proLighting);
+  const isDemo = !id; // No rig ID = demo mode
+
+  const {
+    setUniverse,
+    setFixtureStates,
+    setEffectsInfo,
+    setGenre,
+    setSection,
+    setActiveEffects,
+    setKeyLightingZones,
+    setEmotionVector,
+    setBeatPhrase,
+  } = useDMXStore();
+
+  // Connect to WebSocket for real-time DMX data
+  useEffect(() => {
+    const handleAnalysis = (data: any) => {
+      const msg = data as any;
+      if (msg.lighting) {
+        const l = msg.lighting;
+        if (l.dmx_frame) setUniverse(0, l.dmx_frame);
+        if (l.fixtures) setFixtureStates(l.fixtures);
+        if (l.state) setEffectsInfo(l.state, l.movement || 'none', l.dimmer || 'none');
+        if (l.genre) setGenre(l.genre);
+        if (l.section) setSection(l.section, l.section_intensity ?? 0);
+        if (l.pro_effects) setActiveEffects(l.pro_effects);
+        if (l.key_zones) setKeyLightingZones(l.key_zones);
+        if (l.emotion_vector) setEmotionVector(l.emotion_vector);
+        if (l.beat_phrase !== undefined) setBeatPhrase(l.beat_phrase, l.beats_per_phrase ?? 4);
+      }
+    };
+
+    audioWebSocket.on('analysis', handleAnalysis);
+    audioWebSocket.connect().catch((err: any) => {
+      console.warn('WebSocket connect failed, will retry:', err);
+    });
+
+    return () => {
+      audioWebSocket.off('analysis', handleAnalysis);
+    };
+  }, [setUniverse, setFixtureStates, setEffectsInfo, setGenre, setSection, setActiveEffects, setKeyLightingZones, setEmotionVector, setBeatPhrase]);
 
   useEffect(() => {
     if (id) {
       fetchRig(Number(id));
+    } else {
+      fetchDemoRig();
     }
   }, [id]);
 
@@ -628,8 +681,21 @@ export default function RigVisualizer() {
     }
   };
 
+  const fetchDemoRig = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/demo/rig?preset=medium_venue');
+      const data = await response.json();
+      setRig(data);
+    } catch (error) {
+      console.error('Failed to fetch demo rig:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (loading) {
-    return <Typography>Loading...</Typography>;
+    return <Typography>Loading visualizer...</Typography>;
   }
 
   if (!rig) {
@@ -639,11 +705,16 @@ export default function RigVisualizer() {
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
-      <Box sx={{ display: 'flex', alignItems: 'center', mb: 2, gap: 2 }}>
-        <IconButton onClick={() => navigate(`/rigs/${rig.id}`)}>
+      <Box sx={{ display: 'flex', alignItems: 'center', mb: 1, gap: 2, flexWrap: 'wrap' }}>
+        <IconButton onClick={() => navigate(isDemo ? '/' : `/rigs/${rig.id}`)}>
           <BackIcon />
         </IconButton>
-        <Typography variant="h5">{rig.name} - 3D View</Typography>
+        <Typography variant="h5">{rig.name}</Typography>
+      </Box>
+
+      {/* Audio Device Chooser */}
+      <Box sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+        <AudioDeviceChooser />
         {proLighting.genre && (
           <Box
             sx={{

@@ -109,11 +109,12 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
 
     # Get RMS and spectral flux
     rms_energy = freq.get('rms_energy', 0)
-    spectral_flux = freq.get('spectral_flux', 0)
+    spectral_flux = min(1.0, float(freq.get('spectral_flux', 0.0)) * 10.0)
 
     # Get beat info
     is_beat = beat.get('is_beat', False)
     beat_position = beat.get('beat_position', 1)
+    beat_count = beat.get('beat_count', beat_position)
     bpm = beat.get('bpm', 128)
 
     # Get mood
@@ -131,7 +132,7 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         mid=min(1.0, mid_energy),
         high=min(1.0, high_energy),
         is_beat=is_beat,
-        beat_number=beat_position,
+        beat_number=beat_count,
         valence=valence,
         arousal=arousal,
         spectral_flux=spectral_flux,

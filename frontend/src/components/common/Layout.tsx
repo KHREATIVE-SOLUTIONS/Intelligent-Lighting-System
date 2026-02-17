@@ -21,6 +21,7 @@ import {
   Theaters as ShowsIcon,
   Settings as RigsIcon,
   Lightbulb as LightbulbIcon,
+  Visibility as VisualizerIcon,
 } from '@mui/icons-material';
 import { useAudioStore } from '../../stores/audioStore';
 import { useDMXStore } from '../../stores/dmxStore';
@@ -29,6 +30,7 @@ const DRAWER_WIDTH = 240;
 
 const menuItems = [
   { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
+  { text: 'Visualizer', icon: <VisualizerIcon />, path: '/visualizer' },
   { text: 'Shows', icon: <ShowsIcon />, path: '/shows' },
   { text: 'Rigs', icon: <RigsIcon />, path: '/rigs' },
   { text: 'Fixtures', icon: <LightbulbIcon />, path: '/fixtures' },

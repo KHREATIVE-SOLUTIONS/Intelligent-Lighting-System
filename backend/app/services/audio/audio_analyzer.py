@@ -56,11 +56,15 @@ class AudioAnalyzer:
         # Beat detection state
         self.beat_history = deque(maxlen=100)
         self.onset_history = deque(maxlen=50)
+        self.rms_history = deque(maxlen=64)
+        self.bass_history = deque(maxlen=64)
         self.current_bpm = 120.0
         self.beat_confidence = 0.0
         self.last_beat_time = 0.0
         self.beat_phase = 0.0
         self.beat_position = 1
+        self.current_is_beat = False
+        self.current_is_downbeat = False
 
         # Mood state
         self.current_valence = 0.0
@@ -72,11 +76,14 @@ class AudioAnalyzer:
         self.spectral_centroid = 0.0
         self.spectral_rolloff = 0.0
         self.spectral_flux = 0.0
-        self.previous_spectrum = None
+        self.previous_beat_spectrum = None
+        self.previous_flux_spectrum = None
+        self.previous_bass_energy = 0.0
 
         # Energy state
         self.rms_energy = 0.0
         self.peak_amplitude = 0.0
+        self.beat_count = 0
 
         # Latency tracking
         self.latency_ms = 0.0
@@ -313,35 +320,75 @@ class AudioAnalyzer:
 
         Uses onset detection and autocorrelation for BPM estimation.
         """
-        # Calculate onset strength using spectral flux
+        # Calculate onset strength using beat-detection spectrum deltas
         spectrum = np.abs(np.fft.rfft(audio_data))
+        frame_rms = float(np.sqrt(np.mean(audio_data ** 2)))
+        self.rms_history.append(frame_rms)
+        current_time = datetime.utcnow().timestamp()
+        is_beat = False
 
-        if self.previous_spectrum is not None:
-            # Spectral flux (only positive differences)
-            flux = np.sum(np.maximum(0, spectrum - self.previous_spectrum))
+        # Bass-domain detector for kick-heavy material
+        freqs = np.fft.rfftfreq(len(audio_data), d=1.0 / self.sample_rate)
+        bass_mask = (freqs >= 35) & (freqs <= 220)
+        bass_energy = float(np.mean(spectrum[bass_mask])) if np.any(bass_mask) else 0.0
+        self.bass_history.append(bass_energy)
+
+        if self.previous_beat_spectrum is not None and len(self.previous_beat_spectrum) == len(spectrum):
+            # Normalized positive spectral change for onset detection
+            delta = np.maximum(0, spectrum - self.previous_beat_spectrum)
+            flux = float(np.sum(delta) / (np.sum(self.previous_beat_spectrum) + 1e-8))
             self.onset_history.append(flux)
 
-            # Detect onset (beat) with minimum interval guard
-            is_beat = False
-            if len(self.onset_history) > 3:
-                mean_flux = np.mean(list(self.onset_history))
-                threshold = mean_flux * 1.5
-                is_beat = flux > threshold and (
-                    datetime.utcnow().timestamp() - self.last_beat_time > 0.2
+            # Adaptive onset detection: combine flux and RMS rise.
+            if len(self.onset_history) >= 8 and len(self.rms_history) >= 8:
+                flux_hist = np.array(self.onset_history, dtype=np.float32)
+                rms_hist = np.array(self.rms_history, dtype=np.float32)
+
+                median_flux = float(np.median(flux_hist))
+                mad_flux = float(np.median(np.abs(flux_hist - median_flux))) + 1e-9
+                median_rms = float(np.median(rms_hist))
+                mad_rms = float(np.median(np.abs(rms_hist - median_rms))) + 1e-9
+
+                flux_z = (flux - median_flux) / (2.0 * mad_flux)
+                rms_z = (frame_rms - median_rms) / (2.5 * mad_rms)
+                onset_score = max(0.0, float(flux_z)) + max(0.0, float(rms_z))
+
+                bass_peak = False
+                if len(self.bass_history) >= 8:
+                    bass_hist = np.array(self.bass_history, dtype=np.float32)
+                    bass_med = float(np.median(bass_hist))
+                    bass_mad = float(np.median(np.abs(bass_hist - bass_med))) + 1e-9
+                    bass_rise = bass_energy - self.previous_bass_energy
+                    bass_peak = (
+                        bass_energy > (bass_med + 2.2 * bass_mad)
+                        and bass_rise > max(1e-6, 0.8 * bass_mad)
+                    )
+
+                if len(self.beat_history) >= 3:
+                    median_interval = float(np.median(np.array(self.beat_history, dtype=np.float32)))
+                else:
+                    median_interval = 60.0 / max(60.0, float(self.current_bpm))
+                min_beat_interval = max(0.22, median_interval * 0.75)
+                is_beat = (
+                    (onset_score > 1.0 or bass_peak)
+                    and frame_rms > max(0.0025, median_rms * 0.9)
+                    and (current_time - self.last_beat_time > min_beat_interval)
                 )
 
-                if is_beat:
-                    current_time = datetime.utcnow().timestamp()
-                    if self.last_beat_time > 0:
-                        interval = current_time - self.last_beat_time
-                        if 0.25 < interval < 2.0:  # 30-240 BPM range
-                            self.beat_history.append(interval)
-                    self.last_beat_time = current_time
-                    self.beat_position = (self.beat_position % 4) + 1
-        else:
-            is_beat = False
+                # Track a coarse confidence value for UI/logic gates.
+                self.beat_confidence = float(np.clip(onset_score / 3.0, 0.0, 1.0))
 
-        self.previous_spectrum = spectrum
+        self.previous_beat_spectrum = spectrum
+        self.previous_bass_energy = bass_energy
+
+        if is_beat:
+            if self.last_beat_time > 0:
+                interval = current_time - self.last_beat_time
+                if 0.25 < interval < 2.0:  # 30-240 BPM range
+                    self.beat_history.append(interval)
+            self.last_beat_time = current_time
+            self.beat_position = (self.beat_position % 4) + 1
+            self.beat_count += 1
 
         # Estimate BPM from beat history
         if len(self.beat_history) > 5:
@@ -354,20 +401,38 @@ class AudioAnalyzer:
             if len(valid_intervals) > 0:
                 avg_interval = np.mean(valid_intervals)
                 self.current_bpm = 60.0 / avg_interval
-                self.beat_confidence = min(1.0, len(valid_intervals) / 10)
+                self.beat_confidence = max(self.beat_confidence, min(1.0, len(valid_intervals) / 10))
+
+        # Fallback beat clock: keep beat-reactive systems alive when onset misses.
+        if (
+            not is_beat
+            and frame_rms > 0.002
+            and self.current_bpm > 0
+            and self.beat_confidence > 0.15
+        ):
+            beat_duration = 60.0 / self.current_bpm
+            if self.last_beat_time > 0 and (current_time - self.last_beat_time >= beat_duration):
+                is_beat = True
+                self.last_beat_time = current_time
+                self.beat_position = (self.beat_position % 4) + 1
+                self.beat_count += 1
 
         # Calculate phase within beat
         if self.current_bpm > 0:
             beat_duration = 60.0 / self.current_bpm
-            time_since_beat = datetime.utcnow().timestamp() - self.last_beat_time
+            time_since_beat = current_time - self.last_beat_time
             self.beat_phase = (time_since_beat / beat_duration) % 1.0
+
+        self.current_is_beat = bool(is_beat)
+        self.current_is_downbeat = bool(is_beat and self.beat_position == 1)
 
         return {
             "bpm": round(self.current_bpm, 1),
             "beat_confidence": round(self.beat_confidence, 2),
-            "is_beat": is_beat,
-            "is_downbeat": is_beat and self.beat_position == 1,
+            "is_beat": self.current_is_beat,
+            "is_downbeat": self.current_is_downbeat,
             "beat_position": self.beat_position,
+            "beat_count": self.beat_count,
             "time_signature": "4/4",
             "phase": round(self.beat_phase, 3),
         }
@@ -514,12 +579,15 @@ class AudioAnalyzer:
         rolloff_idx = np.searchsorted(cumulative_energy, 0.95 * cumulative_energy[-1])
         self.spectral_rolloff = freqs[min(rolloff_idx, len(freqs) - 1)]
 
-        # Spectral flux - use the same previous_spectrum as beat detection (BUG-012 fix)
-        # Note: previous_spectrum is updated in _analyze_beat which runs first
-        if self.previous_spectrum is not None and len(self.previous_spectrum) == len(spectrum):
-            self.spectral_flux = np.sum(np.maximum(0, spectrum - self.previous_spectrum))
+        # Spectral flux on its own history (do not share with beat detector state)
+        if self.previous_flux_spectrum is not None and len(self.previous_flux_spectrum) == len(spectrum):
+            delta = np.maximum(0, spectrum - self.previous_flux_spectrum)
+            mean_delta = float(np.mean(delta))
+            mean_prev = float(np.mean(self.previous_flux_spectrum)) + 1e-8
+            self.spectral_flux = min(1.0, (mean_delta / mean_prev) * 20.0)
         else:
             self.spectral_flux = 0.0
+        self.previous_flux_spectrum = spectrum
 
         # RMS energy
         self.rms_energy = np.sqrt(np.mean(audio_data ** 2))
@@ -541,8 +609,8 @@ class AudioAnalyzer:
             beat=BeatResponse(
                 bpm=self.current_bpm,
                 beat_confidence=self.beat_confidence,
-                is_beat=False,
-                is_downbeat=False,
+                is_beat=self.current_is_beat,
+                is_downbeat=self.current_is_downbeat,
                 beat_position=self.beat_position,
                 time_signature="4/4",
                 phase=self.beat_phase,
@@ -580,8 +648,8 @@ class AudioAnalyzer:
         return BeatResponse(
             bpm=self.current_bpm,
             beat_confidence=self.beat_confidence,
-            is_beat=False,
-            is_downbeat=False,
+            is_beat=self.current_is_beat,
+            is_downbeat=self.current_is_downbeat,
             beat_position=self.beat_position,
             time_signature="4/4",
             phase=self.beat_phase,

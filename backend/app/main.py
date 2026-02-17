@@ -159,11 +159,6 @@ async def lifespan(app: FastAPI):
                     ee = app.state.effects_engine
                     if ee is None:
                         continue
-                    # Only broadcast if there are connected clients
-                    audio_clients = len(manager.active_connections.get("audio", set()))
-                    dmx_clients = len(manager.active_connections.get("dmx", set()))
-                    if audio_clients == 0 and dmx_clients == 0:
-                        continue
 
                     # Build DMX frame
                     dmx_frame = ee.fixtures.get_dmx_frame(universe=0)
@@ -200,20 +195,28 @@ async def lifespan(app: FastAPI):
                             'movementType': pro_state.get('pro_movement_pattern', 'none'),
                         }
 
-                    response = convert_numpy_types({
+                    response_payload = {
                         "type": "analysis",
                         "timestamp": datetime.utcnow().isoformat(),
                         "lighting": lighting_data,
-                    })
+                    }
+                    try:
+                        current_analysis = app.state.audio_analyzer.get_current_analysis()
+                        if current_analysis:
+                            if hasattr(current_analysis, "model_dump"):
+                                response_payload.update(current_analysis.model_dump(mode="json"))
+                            elif isinstance(current_analysis, dict):
+                                response_payload.update(current_analysis)
+                    except Exception:
+                        pass
+                    response = convert_numpy_types(response_payload)
 
-                    if audio_clients > 0:
-                        await manager.broadcast("audio", response)
-                    if dmx_clients > 0:
-                        await manager.broadcast("dmx", {
-                            "type": "dmx_update",
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "data": {"universe": 0, "frame": dmx_frame},
-                        })
+                    await manager.broadcast("audio", response)
+                    await manager.broadcast("dmx", {
+                        "type": "dmx_update",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "data": {"universe": 0, "frame": dmx_frame},
+                    })
                 except asyncio.CancelledError:
                     break
                 except Exception:
@@ -314,9 +317,30 @@ async def lifespan(app: FastAPI):
                             result = fut.result()
                             if result:
                                 ml_data = result.get("ml", {})
-                                app.state.effects_engine.update_audio(result, ml_data=ml_data)
-                        except Exception:
-                            pass
+                                beat = result.get("beat", {})
+                                mood = result.get("mood", {})
+                                freq = result.get("frequency", {})
+
+                                bands = {b.get("name"): b.get("energy", 0.0) for b in freq.get("bands", [])}
+                                bass_energy = bands.get("bass", 0.0) + bands.get("sub_bass", 0.0)
+                                mid_energy = bands.get("mid", 0.0) + bands.get("low_mid", 0.0)
+                                high_energy = bands.get("high", 0.0) + bands.get("high_mid", 0.0)
+
+                                app.state.effects_engine.update_audio(
+                                    energy=min(1.0, float(freq.get("rms_energy", 0.0)) * 2.0),
+                                    bass=min(1.0, float(bass_energy)),
+                                    mid=min(1.0, float(mid_energy)),
+                                    high=min(1.0, float(high_energy)),
+                                    is_beat=bool(beat.get("is_beat", False)),
+                                    beat_number=int(beat.get("beat_count", beat.get("beat_position", 1))),
+                                    valence=float(mood.get("valence", 0.0)),
+                                    arousal=float(mood.get("arousal", 0.0)),
+                                    spectral_flux=min(1.0, float(freq.get("spectral_flux", 0.0)) * 10.0),
+                                    bpm=float(beat.get("bpm", 128.0)),
+                                    ml_data=ml_data,
+                                )
+                        except Exception as e:
+                            print(f"Audio pipeline update error: {e}")
                     future.add_done_callback(_on_result)
             except Exception:
                 _processing[0] = False
