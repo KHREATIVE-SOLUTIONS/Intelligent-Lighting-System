@@ -66,7 +66,20 @@
       "Bash(\"E:\\\\Intelligent Lighting System\\\\backend\\\\venv\\\\Scripts\\\\python.exe\" -c \"from app.api.endpoints.websocket import update_effects_engine_audio; print\\(''Imports OK''\\)\")",
       "Bash(\"venv\\\\Scripts\\\\python.exe\" -c \"from app.api.endpoints.websocket import update_effects_engine_audio; print\\(''Imports OK''\\)\")",
       "Bash(\"venv\\\\Scripts\\\\python.exe\" -c \"from app.services.effects.lfo_engine import LFOEngine; e = LFOEngine\\(\\); e.set_single_effect\\(''circle''\\); print\\(''LFO Engine OK:'', e.get_active_effects\\(\\)\\)\")",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix all 47 QA audit bugs across critical, high, medium, and low severity\n\nAddresses the complete QA audit report \\(docs/QA_AUDIT_REPORT.md\\) covering\nall severity levels: 6 critical, 14 high, 17 medium, and 10 low bugs.\n\nCritical fixes \\(BUG-001 to BUG-006\\):\n- Atomic fixture state snapshots to eliminate race conditions\n- Thread-safe effects engine with asyncio locks\n- Bounded energy history with deque to prevent memory leaks\n- Division-by-zero guard in DMX fade calculations\n- WebSocket/backend protocol translation for visualizer\n- LED bar channel layout alignment between backend and visualizer\n\nHigh severity fixes \\(BUG-007 to BUG-020\\):\n- Fade task lifecycle management with done callbacks\n- Pydantic model construction for audio config\n- Audio fingerprint deletion with proper db.commit\\(\\)\n- Numeric overflow clamping in audio analysis\n- Show cue timing with asyncio.sleep instead of blocking\n- ArtNet send error logging, socket blocking mode fix\n- Shared HTTP session for visualizer polling\n- DMX channel bounds validation\n\nMedium severity fixes \\(BUG-021 to BUG-037\\):\n- Frame-rate-independent smoothing across color mapper, movement\n  patterns, strobe controller, and dimmer effects using exponential\n  decay: 1 - \\(1 - speed\\)^\\(dt * 60\\)\n- O\\(1\\) wings order computation replacing O\\(n^2\\) list operations\n- Module-level imports for hashlib and random in hot paths\n- Improved Markov chain fallback in decision engine\n- Three.js resource disposal and reusable color objects\n- Exponential backoff for WebSocket reconnection\n- Bounded test patterns with 60s timeout\n- POST method for state-changing test pattern endpoint\n- Set snapshot for safe iteration during broadcast\n\nLow severity fixes \\(BUG-038 to BUG-047\\):\n- Lifespan context manager replacing deprecated @app.on_event\n- Logging for silenced polling errors\n- LFO output endpoints read cached values instead of advancing phase\n- Dynamic fixture count for CIRCLE_FLOOR static look\n- Implemented set_fixture_state and get_scene_state \\(were no-ops\\)\n- Exported preset constants from effects package __init__\n- Max size validation on WebSocket binary audio data\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(gh auth:*)",
+      "Bash(winget install:*)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" auth status)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" auth login --web --git-protocol https)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" repo create Intelligent-Lighting-System --private --source=. --remote=origin --push)",
+      "Bash(git rm:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "WebSearch",
+      "Bash(if not exist \"E:\\\\Intelligent Lighting System\\\\backend\\\\app\\\\services\\\\lighting\" mkdir \"E:\\\\Intelligent Lighting System\\\\backend\\\\app\\\\services\\\\lighting\")",
+      "Bash(npx tsc:*)",
+      "Bash(curl.exe:*)"
     ]
   }
 }

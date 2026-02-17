@@ -7,6 +7,7 @@ Receives Art-Net UDP packets and relays DMX/audio data to web clients via WebSoc
 import asyncio
 import json
 import logging
+import os
 import struct
 from contextlib import asynccontextmanager
 from typing import Set
@@ -34,7 +35,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ILS Visualizer", lifespan=lifespan)
 
 # ILS Backend URL
-ILS_BACKEND_URL = "http://localhost:8000"
+ILS_BACKEND_URL = os.getenv("ILS_BACKEND_URL", "http://127.0.0.1:8014")
 
 # Connected WebSocket clients
 clients: Set[WebSocket] = set()
@@ -224,6 +225,7 @@ async def data_polling_loop():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time data."""
+    global audio_data
     await websocket.accept()
     clients.add(websocket)
     print(f"Client connected. Total clients: {len(clients)}")
@@ -261,7 +263,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         "high": bands[5].get("energy", 0) if len(bands) > 5 else 0,
                         "beat": beat.get("is_beat", False),
                     }
-                    global audio_data
                     audio_data = translated
                     await broadcast_audio()
 

@@ -504,9 +504,9 @@ class ILSVisualizerOptimized {
 
     connectWebSocket() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        // Connect to the backend audio WebSocket (port 8000)
-        const backendHost = window.location.hostname + ':8000';
-        const wsUrl = `${protocol}//${backendHost}/ws/audio`;
+        // Connect to this visualizer server websocket stream
+        // (server.py relays both DMX and audio from the backend)
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
 
         this.ws = new WebSocket(wsUrl);
 
@@ -516,8 +516,6 @@ class ILSVisualizerOptimized {
                 clearTimeout(this.wsReconnectTimer);
                 this.wsReconnectTimer = null;
             }
-            // Send start message to begin receiving analysis data
-            this.ws.send(JSON.stringify({ type: 'start' }));
         };
 
         this.ws.onmessage = (event) => {
