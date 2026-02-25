@@ -55,6 +55,11 @@ class ILSVisualizerOptimized {
         this.showDebugOverlay = false;
         this.testMode = false;
         this.testPhase = 0;
+        this.diagnosticShowMode = false;
+        this.diagnosticStartTime = 0;
+        this.diagnosticDurationSeconds = 25;
+        this.diagnosticIssues = new Set();
+        this.diagnosticFrameExpectations = new Map();
 
         // WebSocket
         this.ws = null;
@@ -915,6 +920,8 @@ class ILSVisualizerOptimized {
                 }
             }
 
+            this.validateDiagnosticFrame(fixture, fixtureIndex);
+
             fixture._debugDerived = {
                 beamWidth: fixture.beamMaterial?.uniforms?.uBeamWidth?.value ?? 0,
                 intensity,
@@ -1059,6 +1066,181 @@ class ILSVisualizerOptimized {
         };
     }
 
+    logDiagnosticIssueOnce(key, message) {
+        if (this.diagnosticIssues.has(key)) return;
+        this.diagnosticIssues.add(key);
+        console.warn(`[diagnostic_show] ${message}`);
+    }
+
+    writeDiagnosticChannel(fixture, channelName, logicalValue) {
+        const channelMap = CHANNEL_MAPS[fixture.type] || {};
+        const baseAddr = fixture.address - 1;
+        const normalized = this.clamp01(logicalValue);
+        const mappedValue = Math.round(normalized * 255);
+        const expectation = {
+            logicalValue: normalized,
+            mappedValue,
+            channelIndex: null
+        };
+
+        if (channelMap[channelName] === undefined) {
+            this.logDiagnosticIssueOnce(
+                `${fixture.name}:${channelName}:missing-map`,
+                `${fixture.name} ${channelName} missing mapping (logical=${normalized.toFixed(3)}, mapped=none, rendered=unknown)`
+            );
+            return expectation;
+        }
+
+        const channelIndex = baseAddr + channelMap[channelName];
+        expectation.channelIndex = channelIndex;
+        this.dmxTarget[channelIndex] = mappedValue;
+        return expectation;
+    }
+
+    getDiagnosticStep(elapsed) {
+        const steps = [
+            { name: 'wide_pan_sweep', start: 0, duration: 5 },
+            { name: 'tilt_fan', start: 5, duration: 5 },
+            { name: 'zoom_tight_to_wide', start: 10, duration: 5 },
+            { name: 'strobe_burst', start: 15, duration: 4 },
+            { name: 'crisscross_phase_pattern', start: 19, duration: 6 }
+        ];
+        return steps.find((step) => elapsed >= step.start && elapsed < step.start + step.duration) || steps[steps.length - 1];
+    }
+
+    runDiagnosticShowMode() {
+        if (!this.diagnosticShowMode) return;
+
+        if (!this.diagnosticStartTime) {
+            this.diagnosticStartTime = this.clock.elapsedTime;
+            this.diagnosticIssues.clear();
+            console.info('[diagnostic_show] Starting 25s scripted diagnostic sequence. Use this as a regression check after fixture mapping/controller changes.');
+        }
+
+        const elapsedRaw = this.clock.elapsedTime - this.diagnosticStartTime;
+        const elapsed = elapsedRaw % this.diagnosticDurationSeconds;
+        const step = this.getDiagnosticStep(elapsed);
+        const progress = this.clamp01((elapsed - step.start) / Math.max(0.001, step.duration));
+
+        this.audioData = {
+            spectrum: new Array(32).fill(0),
+            rms: 0,
+            beat: false
+        };
+        this.diagnosticFrameExpectations.clear();
+
+        for (let i = 0; i < FIXTURES.length; i++) {
+            const fixture = FIXTURES[i];
+            const fixtureKey = `${fixture.name}:${step.name}`;
+            const role = getFixtureRole(fixture);
+            const roleIndex = i;
+            const side = fixture.position.x < 0 ? -1 : 1;
+            const fixturePhase = i / Math.max(1, FIXTURES.length - 1);
+
+            const dimmer = this.writeDiagnosticChannel(fixture, 'dimmer', 0.84);
+            const red = this.writeDiagnosticChannel(fixture, 'red', 0.45 + 0.45 * Math.sin(elapsed * 0.8 + i * 0.25));
+            const green = this.writeDiagnosticChannel(fixture, 'green', 0.45 + 0.45 * Math.sin(elapsed * 0.8 + i * 0.25 + 2.1));
+            const blue = this.writeDiagnosticChannel(fixture, 'blue', 0.45 + 0.45 * Math.sin(elapsed * 0.8 + i * 0.25 + 4.2));
+
+            const expected = { step: step.name, writes: { dimmer, red, green, blue } };
+
+            if (fixture.type !== FIXTURE_TYPES.LED_BAR) {
+                let pan = 0.5;
+                let tilt = 0.55;
+                let zoom = 0.15;
+                let shutter = 1.0;
+
+                if (step.name === 'wide_pan_sweep') {
+                    pan = 0.05 + progress * 0.9;
+                    tilt = 0.5;
+                    zoom = 0.1;
+                } else if (step.name === 'tilt_fan') {
+                    pan = 0.5 + side * 0.12;
+                    tilt = 0.2 + fixturePhase * 0.6 + Math.sin(elapsed * 2.2 + roleIndex * 0.3) * 0.08;
+                    zoom = 0.2;
+                } else if (step.name === 'zoom_tight_to_wide') {
+                    pan = 0.5 + side * 0.08;
+                    tilt = 0.52;
+                    zoom = progress;
+                } else if (step.name === 'strobe_burst') {
+                    pan = 0.5 + Math.sin(elapsed * 1.2 + roleIndex * 0.35) * 0.22;
+                    tilt = 0.5 + Math.cos(elapsed * 1.7 + roleIndex * 0.22) * 0.15;
+                    zoom = 0.4;
+                    shutter = 0.86 + 0.1 * Math.sin(elapsed * 22 + i * 0.8);
+                    this.writeDiagnosticChannel(fixture, 'dimmer', 0.95);
+                } else if (step.name === 'crisscross_phase_pattern') {
+                    const phase = elapsed * 1.8 + roleIndex * 0.45;
+                    pan = 0.5 + Math.sin(phase) * 0.32 * side;
+                    tilt = 0.55 + Math.cos(phase + side * 0.6) * 0.18;
+                    zoom = 0.5;
+                }
+
+                expected.writes.pan = this.writeDiagnosticChannel(fixture, 'pan', pan);
+                expected.writes.tilt = this.writeDiagnosticChannel(fixture, 'tilt', tilt);
+                expected.writes.zoom = this.writeDiagnosticChannel(fixture, 'zoom', zoom);
+                expected.writes.shutter = this.writeDiagnosticChannel(fixture, 'shutter', shutter);
+                expected.expectedPan = (this.clamp01(pan) - 0.5) * Math.PI * 3;
+                expected.expectedTilt = (this.clamp01(tilt) - 0.5) * Math.PI * 1.5;
+            } else if (step.name === 'strobe_burst') {
+                expected.writes.strobe = this.writeDiagnosticChannel(fixture, 'strobe', 0.85 + 0.12 * Math.sin(elapsed * 18 + i * 0.6));
+            }
+
+            if (step.name === 'crisscross_phase_pattern' && role === FIXTURE_ROLES.EFFECT) {
+                expected.writes.dimmer = this.writeDiagnosticChannel(fixture, 'dimmer', 0.65 + 0.3 * Math.sin(elapsed * 3.2 + i * 0.35));
+            }
+
+            this.diagnosticFrameExpectations.set(fixtureKey, expected);
+        }
+    }
+
+    validateDiagnosticFrame(fixture, fixtureIndex) {
+        if (!this.diagnosticShowMode) return;
+        const elapsed = (this.clock.elapsedTime - this.diagnosticStartTime) % this.diagnosticDurationSeconds;
+        const step = this.getDiagnosticStep(elapsed);
+        const fixtureKey = `${fixture.definition.name}:${step.name}`;
+        const expected = this.diagnosticFrameExpectations.get(fixtureKey);
+        if (!expected) return;
+
+        const dmx = this.dmxData;
+        const def = fixture.definition;
+
+        Object.entries(expected.writes || {}).forEach(([param, write]) => {
+            if (!write || write.channelIndex === null || write.channelIndex === undefined) return;
+            const mappedNow = dmx[write.channelIndex] ?? 0;
+            if (Math.abs(mappedNow - write.mappedValue) > 32) {
+                this.logDiagnosticIssueOnce(
+                    `${def.name}:${step.name}:${param}:mapped-mismatch`,
+                    `${def.name} ${step.name} ${param} mismatch (logical=${write.logicalValue.toFixed(3)}, mapped=${mappedNow.toFixed(1)}, rendered=pending)`
+                );
+            }
+        });
+
+        if (def.type !== FIXTURE_TYPES.LED_BAR && fixture.headGroup) {
+            const renderedPan = fixture.headGroup.rotation.y;
+            const renderedTilt = fixture.headGroup.rotation.x;
+            if (expected.expectedPan !== undefined && Math.abs(renderedPan - expected.expectedPan) > 0.35) {
+                const panWrite = expected.writes.pan;
+                const mapped = panWrite?.channelIndex !== null && panWrite?.channelIndex !== undefined
+                    ? (dmx[panWrite.channelIndex] ?? 0)
+                    : 'none';
+                this.logDiagnosticIssueOnce(
+                    `${def.name}:${step.name}:pan:render-mismatch`,
+                    `${def.name} ${step.name} pan missing visual response (logical=${panWrite?.logicalValue?.toFixed(3) ?? 'n/a'}, mapped=${mapped}, rendered=${renderedPan.toFixed(3)})`
+                );
+            }
+            if (expected.expectedTilt !== undefined && Math.abs(renderedTilt - expected.expectedTilt) > 0.28) {
+                const tiltWrite = expected.writes.tilt;
+                const mapped = tiltWrite?.channelIndex !== null && tiltWrite?.channelIndex !== undefined
+                    ? (dmx[tiltWrite.channelIndex] ?? 0)
+                    : 'none';
+                this.logDiagnosticIssueOnce(
+                    `${def.name}:${step.name}:tilt:render-mismatch`,
+                    `${def.name} ${step.name} tilt missing visual response (logical=${tiltWrite?.logicalValue?.toFixed(3) ?? 'n/a'}, mapped=${mapped}, rendered=${renderedTilt.toFixed(3)})`
+                );
+            }
+        }
+    }
+
     connectWebSocket() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         // Connect to this visualizer server websocket stream
@@ -1081,7 +1263,7 @@ class ILSVisualizerOptimized {
                 console.log('WS message:', msg.type, msg.lighting ? 'has lighting' : 'no lighting');
 
                 // Handle analysis messages (from effects engine)
-                if (msg.type === 'analysis' && !this.testMode) {
+                if (msg.type === 'analysis' && !this.testMode && !this.diagnosticShowMode) {
                     // Get DMX frame from lighting data
                     if (msg.lighting && msg.lighting.dmx_frame) {
                         const dmxFrame = msg.lighting.dmx_frame;
@@ -1119,14 +1301,14 @@ class ILSVisualizerOptimized {
                 }
 
                 // Legacy DMX message format (for backwards compatibility)
-                if (msg.type === 'dmx' && msg.data && !this.testMode) {
+                if (msg.type === 'dmx' && msg.data && !this.testMode && !this.diagnosticShowMode) {
                     for (let i = 0; i < Math.min(msg.data.length, 512); i++) {
                         this.dmxTarget[i] = msg.data[i];
                     }
                 }
 
                 // Legacy audio message format
-                if (msg.type === 'audio' && msg.data) {
+                if (msg.type === 'audio' && msg.data && !this.diagnosticShowMode) {
                     this.audioData = msg.data;
                     if (msg.data.look_spec) {
                         this.lookSpec = msg.data.look_spec;
@@ -1167,13 +1349,39 @@ class ILSVisualizerOptimized {
             this.showLabels = !this.showLabels;
         });
 
-        document.getElementById('chk-test-mode').addEventListener('change', (e) => {
+        const testModeCheckbox = document.getElementById('chk-test-mode');
+        const diagnosticCheckbox = document.getElementById('chk-diagnostic-show-mode');
+
+        const clearManualModes = () => {
+            this.dmxTarget = new Array(512).fill(0);
+            this.audioData = null;
+            this.diagnosticFrameExpectations.clear();
+        };
+
+        testModeCheckbox.addEventListener('change', (e) => {
             this.testMode = e.target.checked;
-            if (!this.testMode) {
-                this.dmxTarget = new Array(512).fill(0);
-                this.audioData = null;
+            if (this.testMode) {
+                this.diagnosticShowMode = false;
+                if (diagnosticCheckbox) diagnosticCheckbox.checked = false;
+                this.diagnosticStartTime = 0;
+            } else {
+                clearManualModes();
             }
         });
+
+        if (diagnosticCheckbox) {
+            diagnosticCheckbox.addEventListener('change', (e) => {
+                this.diagnosticShowMode = e.target.checked;
+                if (this.diagnosticShowMode) {
+                    this.testMode = false;
+                    testModeCheckbox.checked = false;
+                    this.diagnosticStartTime = 0;
+                    this.diagnosticIssues.clear();
+                } else {
+                    clearManualModes();
+                }
+            });
+        }
 
         window.addEventListener('keydown', (event) => {
             if (event.code === 'KeyD') {
@@ -1206,8 +1414,9 @@ class ILSVisualizerOptimized {
             this.drawCalls = this.renderer.info.render.calls;
         }
 
-        // Test mode
+        // Manual modes
         this.runTestMode();
+        this.runDiagnosticShowMode();
 
         // Update fixtures with interpolation
         this.updateFixtures(delta);

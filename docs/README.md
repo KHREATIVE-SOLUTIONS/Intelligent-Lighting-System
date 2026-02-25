@@ -157,6 +157,7 @@ npm test
 ## Quality Assurance
 
 - [Beam Operator QA Plan](./BEAM_OPERATOR_QA_PLAN.md)
+- [Diagnostic Show Regression Mode](./DIAGNOSTIC_SHOW_MODE.md)
 
 ## Contributing
 
