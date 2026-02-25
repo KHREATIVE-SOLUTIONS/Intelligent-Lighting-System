@@ -85,6 +85,35 @@ class EffectsConfig:
     mib_transition_ms: int = 450
     mib_pan_tilt_threshold: float = 28.0  # DMX-value delta threshold
 
+    # ML target gating for section/genre driven movement target changes
+    # (stabilizes pan/tilt target behavior when confidence jitters)
+    ml_target_gating_enabled: bool = True
+
+    # Genre switch gate
+    ml_genre_confidence_on: float = 0.48
+    ml_genre_confidence_off: float = 0.40
+    ml_genre_consecutive_frames: int = 3
+    ml_genre_min_hold_ms: int = 600
+    ml_genre_min_confidence_delta: float = 0.08
+
+    # Section switch gate
+    ml_section_confidence_on: float = 0.58
+    ml_section_confidence_off: float = 0.50
+    ml_section_consecutive_frames: int = 2
+    ml_section_min_hold_ms: int = 350
+    ml_section_min_confidence_delta: float = 0.06
+
+
+@dataclass
+class _TargetGateState:
+    """Runtime gating state for categorical ML targets (genre/section)."""
+
+    current: Optional[str] = None
+    current_confidence: float = 0.0
+    pending: Optional[str] = None
+    pending_count: int = 0
+    last_accept_time: float = -999.0
+
 
 class EffectsEngine:
     """
@@ -186,6 +215,16 @@ class EffectsEngine:
 
         # ML emotion mapping state (set by _apply_ml_data)
         self._ml_emotion_mapping = None
+
+        # Confidence gates for ML-driven target switching
+        self._ml_genre_gate = _TargetGateState(
+            current=self.genre_manager.current_genre.value,
+            current_confidence=1.0,
+        )
+        self._ml_section_gate = _TargetGateState(
+            current=self.section_manager.current_section.value,
+            current_confidence=1.0,
+        )
 
         # Set default movement pattern - visible circular motion
         self.movement.set_pattern(
@@ -465,6 +504,74 @@ class EffectsEngine:
         fixture.green = max(0.0, min(1.0, g))
         fixture.blue = max(0.0, min(1.0, b))
 
+    def _gate_target_switch(
+        self,
+        gate: _TargetGateState,
+        *,
+        candidate: str,
+        confidence: float,
+        confidence_on: float,
+        confidence_off: float,
+        consecutive_frames: int,
+        min_hold_ms: int,
+        min_confidence_delta: float,
+    ) -> bool:
+        """Return True when a candidate passes confidence/hold/hysteresis gates."""
+        if not candidate:
+            gate.pending = None
+            gate.pending_count = 0
+            return False
+
+        confidence = float(confidence)
+        now = self.time
+        min_hold_s = max(0, int(min_hold_ms)) / 1000.0
+        required_frames = max(1, int(consecutive_frames))
+
+        # Keep current target when candidate is effectively the same/too weak.
+        if gate.current == candidate:
+            if confidence >= confidence_off:
+                gate.current_confidence = max(gate.current_confidence * 0.9, confidence)
+            gate.pending = None
+            gate.pending_count = 0
+            return False
+
+        if confidence < confidence_off:
+            gate.pending = None
+            gate.pending_count = 0
+            return False
+
+        # Minimum hold duration before accepting another major target change.
+        if now - gate.last_accept_time < min_hold_s:
+            return False
+
+        # Hysteresis: require meaningful confidence margin over current target.
+        if gate.current is not None and confidence < (gate.current_confidence + min_confidence_delta):
+            gate.pending = None
+            gate.pending_count = 0
+            return False
+
+        # Require a strong candidate for N consecutive frames.
+        if confidence >= confidence_on:
+            if gate.pending == candidate:
+                gate.pending_count += 1
+            else:
+                gate.pending = candidate
+                gate.pending_count = 1
+        else:
+            gate.pending = None
+            gate.pending_count = 0
+            return False
+
+        if gate.pending_count < required_frames:
+            return False
+
+        gate.current = candidate
+        gate.current_confidence = confidence
+        gate.last_accept_time = now
+        gate.pending = None
+        gate.pending_count = 0
+        return True
+
     def _apply_ml_data(self, ml_data: dict):
         """Apply ML pipeline data (MERT emotion, structure, genre) to pro lighting modules.
 
@@ -480,8 +587,21 @@ class EffectsEngine:
         if genre_data:
             detected_genre = genre_data.get("genre", "").lower()
             confidence = genre_data.get("genre_confidence", 0.0)
-            # Only switch if confidence is reasonable
-            if confidence >= 0.4:
+            gate_passed = (
+                self._gate_target_switch(
+                    self._ml_genre_gate,
+                    candidate=detected_genre,
+                    confidence=confidence,
+                    confidence_on=self.config.ml_genre_confidence_on,
+                    confidence_off=self.config.ml_genre_confidence_off,
+                    consecutive_frames=self.config.ml_genre_consecutive_frames,
+                    min_hold_ms=self.config.ml_genre_min_hold_ms,
+                    min_confidence_delta=self.config.ml_genre_min_confidence_delta,
+                )
+                if self.config.ml_target_gating_enabled
+                else confidence >= self.config.ml_genre_confidence_on
+            )
+            if gate_passed:
                 genre_map = {
                     "edm": Genre.EDM,
                     "rock": Genre.ROCK,
@@ -507,7 +627,22 @@ class EffectsEngine:
             section_confidence = structure_data.get("section_confidence", 0.0)
             is_boundary = structure_data.get("is_section_boundary", False)
 
-            if section_confidence >= 0.5:
+            gate_passed = (
+                self._gate_target_switch(
+                    self._ml_section_gate,
+                    candidate=detected_section,
+                    confidence=section_confidence,
+                    confidence_on=self.config.ml_section_confidence_on,
+                    confidence_off=self.config.ml_section_confidence_off,
+                    consecutive_frames=self.config.ml_section_consecutive_frames,
+                    min_hold_ms=self.config.ml_section_min_hold_ms,
+                    min_confidence_delta=self.config.ml_section_min_confidence_delta,
+                )
+                if self.config.ml_target_gating_enabled
+                else section_confidence >= self.config.ml_section_confidence_on
+            )
+
+            if gate_passed:
                 section_map = {
                     "intro": SongSection.INTRO,
                     "verse": SongSection.VERSE,
