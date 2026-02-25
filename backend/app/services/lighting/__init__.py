@@ -25,6 +25,7 @@ from .beam_pattern_library import (
     allowed_transitions,
 )
 from .beam_scene_state_machine import BeamSceneStateMachine, SceneOutput, ScenePhase, SceneTiming
+from .beam_look_scheduler import BEAM_LOOK_LIBRARY, BeamLook, BeamLookScheduler
 
 __all__ = [
     'GenreProfile', 'GenreProfileManager', 'GENRE_PROFILES',
@@ -39,4 +40,5 @@ __all__ = [
     'BeamPatternName', 'BeamPatternDefinition', 'SymmetryMode', 'FocusPointAnchor',
     'BEAM_PATTERN_LIBRARY', 'FOCUS_POINT_ANCHORS', 'build_pattern_params', 'allowed_transitions',
     'BeamSceneStateMachine', 'SceneOutput', 'ScenePhase', 'SceneTiming',
+    'BeamLook', 'BeamLookScheduler', 'BEAM_LOOK_LIBRARY',
 ]

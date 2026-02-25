@@ -81,12 +81,15 @@ def build_lighting_look_spec(engine) -> LightingLookSpec:
     palette_id = "unknown"
     palette_version = int(getattr(engine, "_palette_version", 1) or 1)
     palette_locked = bool(getattr(engine, "_palette_locked", False))
+    scheduled_look = getattr(engine, "_active_beam_look", None)
     try:
         movement_pattern = engine.movement.params.pattern.value
         movement_speed = max(
             float(getattr(engine.movement.params, "pan_speed", 0.0)),
             float(getattr(engine.movement.params, "tilt_speed", 0.0)),
         )
+        if scheduled_look is not None:
+            movement_speed *= max(0.5, float(getattr(scheduled_look, "speed_multiplier", 1.0)))
         strobe_mode = engine.strobe.params.mode.value
         palette_id = getattr(getattr(engine, "_current_song_palette", None), "value", None) or engine.config.palette.value
     except Exception:
@@ -112,7 +115,7 @@ def build_lighting_look_spec(engine) -> LightingLookSpec:
 
     focus_mode = "performer" if section in {"verse", "bridge", "outro"} else "texture"
     gobo_mode = "texture" if section in {"chorus", "drop", "peak"} else "clean"
-    zoom = _clamp01(0.2 + energy * 0.6)
+    zoom = _clamp01(getattr(scheduled_look, "zoom", 0.2 + energy * 0.6))
     iris = _clamp01(0.7 - energy * 0.45)
     key_priority = 0.9 if section in {"verse", "bridge", "outro"} else 0.6
 

@@ -196,6 +196,7 @@ class EffectsEngine:
             build_pattern_params,
         )
         from ..lighting.beam_scene_state_machine import BeamSceneStateMachine
+        from ..lighting.beam_look_scheduler import BeamLookScheduler
 
         self.genre_manager = GenreProfileManager()
         self.section_manager = SectionManager(bpm=self.config.bpm)
@@ -208,6 +209,8 @@ class EffectsEngine:
         self._beam_symmetry_enum = SymmetryMode
         self._beam_focus_anchors = FOCUS_POINT_ANCHORS
         self._beam_scene_machine = BeamSceneStateMachine(initial_pattern=BeamPatternName.CENTER_FOCUS_HOLD)
+        self._beam_look_scheduler = BeamLookScheduler()
+        self._active_beam_look = self._beam_look_scheduler.active_look
         self._build_pattern_params = build_pattern_params
 
         # Pro lighting integration enabled flag
@@ -779,18 +782,24 @@ class EffectsEngine:
             self.pro_movement.set_bpm(self.config.bpm)
 
             section_key = self.section_manager.current_section.value
-            pattern_name, symmetry_mode, focus_anchor = self._select_beam_scene_pattern(section_key)
-            self._beam_scene_machine.request_transition(pattern_name)
+            active_look = self._beam_look_scheduler.select_look(
+                section=section_key,
+                energy=self.audio_features.energy,
+                bpm=self.config.bpm,
+                bars_elapsed=self.audio_state.bars_elapsed,
+            )
+            self._active_beam_look = active_look
+            self._beam_scene_machine.request_transition(active_look.pattern)
             scene_output = self._beam_scene_machine.update(delta_time)
             params = self._build_pattern_params(
                 scene_output.active_pattern,
-                symmetry_mode=symmetry_mode,
-                focus_anchor=focus_anchor,
-                amplitude_scale=scene_output.amplitude_scale,
+                symmetry_mode=active_look.symmetry,
+                focus_anchor=self._beam_focus_anchors[active_look.focus_anchor_name],
+                amplitude_scale=scene_output.amplitude_scale * active_look.speed_multiplier,
             )
             self.pro_movement.set_pattern(
                 params.pattern,
-                beat_divisor=params.beat_divisor,
+                beat_divisor=max(0.125, params.beat_divisor * active_look.speed_multiplier),
                 pan_amplitude=params.pan_amplitude,
                 tilt_amplitude=params.tilt_amplitude,
                 phase_spread=params.phase_spread,
@@ -800,6 +809,7 @@ class EffectsEngine:
             )
             self.pro_movement.update(delta_time)
             self.pro_effects.set_bpm(self.config.bpm)
+            self._apply_beam_look_effects(active_look)
             self.pro_effects.update(delta_time)
 
             # Auto-detect section from audio if no external section data
@@ -827,50 +837,22 @@ class EffectsEngine:
             frame = self.fixtures.get_dmx_frame(universe=0)
             self._dmx_callback(0, frame)
 
-    def _select_beam_scene_pattern(self, section: str):
-        """Map section context to beam pattern family, symmetry, and focus anchor."""
-        section_key = (section or "unknown").lower()
+    def _apply_beam_look_effects(self, active_look):
+        """Apply scheduler-selected look parameters as a coordinated bundle."""
+        self._current_section_intensity_scale = max(0.05, min(1.25, active_look.intensity_scale))
 
-        if section_key in {"intro", "outro"}:
-            return (
-                self._beam_pattern_enum.CENTER_FOCUS_HOLD,
-                self._beam_symmetry_enum.NONE,
-                self._beam_focus_anchors["center_stage"],
-            )
-        if section_key in {"verse"}:
-            return (
-                self._beam_pattern_enum.FAN,
-                self._beam_symmetry_enum.ALTERNATING_PARITY,
-                self._beam_focus_anchors["vocalist"],
-            )
-        if section_key in {"pre_chorus", "bridge", "buildup"}:
-            return (
-                self._beam_pattern_enum.CROSSING_SWEEPS,
-                self._beam_symmetry_enum.LEFT_RIGHT_MIRROR,
-                self._beam_focus_anchors["vocalist"],
-            )
-        if section_key in {"chorus"}:
-            return (
-                self._beam_pattern_enum.CIRCLES,
-                self._beam_symmetry_enum.ALTERNATING_PARITY,
-                self._beam_focus_anchors["center_stage"],
-            )
-        if section_key in {"drop"}:
-            return (
-                self._beam_pattern_enum.AUDIENCE_SWEEP,
-                self._beam_symmetry_enum.LEFT_RIGHT_MIRROR,
-                self._beam_focus_anchors["center_stage"],
-            )
-        if section_key in {"breakdown"}:
-            return (
-                self._beam_pattern_enum.MIRRORED_PAIRS,
-                self._beam_symmetry_enum.LEFT_RIGHT_MIRROR,
-                self._beam_focus_anchors["drummer"],
-            )
-        return (
-            self._beam_pattern_enum.FAN,
-            self._beam_symmetry_enum.LEFT_RIGHT_MIRROR,
-            self._beam_focus_anchors["center_stage"],
+        from ..lighting.pro_effects import ProStrobeMode
+
+        strobe_map = {
+            "off": ProStrobeMode.OFF,
+            "beat_locked": ProStrobeMode.BEAT_LOCKED,
+            "continuous": ProStrobeMode.CONTINUOUS,
+            "burst": ProStrobeMode.BURST,
+        }
+        self.pro_effects.strobe.set_mode(
+            strobe_map.get(active_look.strobe_mode, ProStrobeMode.OFF),
+            frequency=max(0.1, active_look.strobe_frequency_hz),
+            intensity=max(0.0, min(1.0, active_look.strobe_intensity)),
         )
 
     def _resolve_section_genre(self) -> Tuple[str, str]:
