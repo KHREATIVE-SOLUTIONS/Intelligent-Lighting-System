@@ -42,6 +42,9 @@ export default function Dashboard() {
     setKeyLightingZones,
     setEmotionVector,
     setBeatPhrase,
+    setOperatorIntentControls,
+    setDecisionWeights,
+    setActiveIntentProfile,
   } = useDMXStore();
 
   const handleAnalysisUpdate = useCallback(
@@ -92,12 +95,25 @@ export default function Dashboard() {
             analysisData.lighting.beats_per_phrase ?? 4
           );
         }
+
+        const proState = analysisData.lighting.pro_lighting;
+        if (proState?.intent_controls) {
+          setOperatorIntentControls({
+            beamAggression: proState.intent_controls.beam_aggression,
+            movementDensity: proState.intent_controls.movement_density,
+            colorVolatility: proState.intent_controls.color_volatility,
+            transitionStrictness: proState.intent_controls.transition_strictness,
+            autoRecommend: proState.intent_controls.auto_recommend,
+          });
+        }
+        if (proState?.decision_weights) setDecisionWeights(proState.decision_weights);
+        if (proState?.active_intent_profile) setActiveIntentProfile(proState.active_intent_profile);
       }
     },
     [
       updateAnalysis, setUniverse, setFixtureStates, setEffectsInfo,
       setGenre, setSection, setActiveEffects, setKeyLightingZones,
-      setEmotionVector, setBeatPhrase,
+      setEmotionVector, setBeatPhrase, setOperatorIntentControls, setDecisionWeights, setActiveIntentProfile,
     ]
   );
 

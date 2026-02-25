@@ -346,6 +346,31 @@ export interface EmotionVector {
   confidence: number;
 }
 
+export type BeamAggressionLevel = 'low' | 'medium' | 'high';
+
+export interface OperatorIntentControls {
+  beamAggression: BeamAggressionLevel;
+  movementDensity: number;
+  colorVolatility: number;
+  transitionStrictness: number;
+  autoRecommend: boolean;
+}
+
+export interface IntentDecisionWeights {
+  movement: number;
+  color: number;
+  transition: number;
+  sectionFidelity: number;
+}
+
+export interface ActiveIntentProfile {
+  label: string;
+  source: 'manual' | 'auto-recommend' | 'blended';
+  genre: Genre | null;
+  section: SongSection;
+  notes?: string;
+}
+
 export interface ProLightingState {
   genre: Genre | null;
   section: SongSection;
@@ -356,6 +381,9 @@ export interface ProLightingState {
   emotionVector: EmotionVector | null;
   beatPhrase: number;
   beatsPerPhrase: number;
+  operatorIntentControls: OperatorIntentControls;
+  decisionWeights: IntentDecisionWeights;
+  activeIntentProfile: ActiveIntentProfile;
 }
 
 // Audio Analysis Types

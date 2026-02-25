@@ -650,6 +650,16 @@ class ProBuildRequest(BaseModel):
     curve: str = Field("quadratic", description="Ramp curve: linear, quadratic, exponential")
 
 
+
+
+class ProIntentRequest(BaseModel):
+    """Operator controls for intent weighting."""
+    beam_aggression: str = Field("medium", description="low|medium|high")
+    movement_density: float = Field(0.5, ge=0.0, le=1.0)
+    color_volatility: float = Field(0.5, ge=0.0, le=1.0)
+    transition_strictness: float = Field(0.5, ge=0.0, le=1.0)
+    auto_recommend: bool = Field(False)
+
 class KeyLightZoneRequest(BaseModel):
     """Request to configure a key lighting zone."""
     zone: str = Field(..., description="Zone name: dj_booth, stage_center, etc.")
@@ -840,6 +850,21 @@ async def trigger_pro_blackout():
     engine.pro_effects.blackout()
     return {"status": "ok"}
 
+
+
+
+@router.post("/pro/intent")
+async def set_pro_intent(request: ProIntentRequest):
+    """Set operator intent controls and decision weighting biases."""
+    engine = get_effects_engine()
+    engine.set_operator_intents(
+        beam_aggression=request.beam_aggression,
+        movement_density=request.movement_density,
+        color_volatility=request.color_volatility,
+        transition_strictness=request.transition_strictness,
+        auto_recommend=request.auto_recommend,
+    )
+    return {"status": "ok", "intent": engine.get_pro_lighting_state().get("intent_controls", {})}
 
 @router.get("/pro/key-lighting")
 async def get_key_lighting_status():

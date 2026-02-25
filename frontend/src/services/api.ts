@@ -21,6 +21,7 @@ import type {
   WizardData,
   Genre,
   ProLightingState,
+  BeamAggressionLevel,
 } from '../types';
 
 const API_BASE_URL = '/api';
@@ -694,6 +695,23 @@ export const proLightingApi = {
       active,
       min_intensity: minIntensity,
       fixture_ids: fixtureIds,
+    });
+    return response.data;
+  },
+
+  setIntentControls: async (
+    beamAggression: BeamAggressionLevel,
+    movementDensity: number,
+    colorVolatility: number,
+    transitionStrictness: number,
+    autoRecommend = false,
+  ) => {
+    const response = await api.post('/effects/pro/intent', {
+      beam_aggression: beamAggression,
+      movement_density: movementDensity,
+      color_volatility: colorVolatility,
+      transition_strictness: transitionStrictness,
+      auto_recommend: autoRecommend,
     });
     return response.data;
   },

@@ -15,7 +15,7 @@ Features:
 
 from collections import deque
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable
 from dataclasses import dataclass, field
 import random
 import time
@@ -225,6 +225,17 @@ class EffectSelection:
     use_static_look: bool = False
     strobe_on_drop: bool = False
 
+
+
+
+@dataclass
+class OperatorIntentControls:
+    """Operator-facing control values that bias decision weighting."""
+    beam_aggression: str = "medium"
+    movement_density: float = 0.5
+    color_volatility: float = 0.5
+    transition_strictness: float = 0.5
+    auto_recommend: bool = False
 
 class CooldownTimer:
     """Prevents effect repetition."""
@@ -479,6 +490,7 @@ class DecisionEngine:
         # v2: Genre awareness
         self._genre: str = "edm"
         self._section: str = "unknown"
+        self.operator_intents = OperatorIntentControls()
 
         # v2: Bar/phrase boundary timing
         self._total_bars: int = 0
@@ -495,6 +507,53 @@ class DecisionEngine:
         self._anticipation_active: bool = False
         self._anticipation_target_state: Optional[LightingState] = None
         self._pre_drop_blackout_triggered: bool = False
+
+
+    def set_operator_intents(
+        self,
+        beam_aggression: Optional[str] = None,
+        movement_density: Optional[float] = None,
+        color_volatility: Optional[float] = None,
+        transition_strictness: Optional[float] = None,
+        auto_recommend: Optional[bool] = None,
+    ):
+        """Set operator intent controls used to bias effect choices."""
+        if beam_aggression is not None:
+            self.operator_intents.beam_aggression = str(beam_aggression).lower()
+        if movement_density is not None:
+            self.operator_intents.movement_density = max(0.0, min(1.0, float(movement_density)))
+        if color_volatility is not None:
+            self.operator_intents.color_volatility = max(0.0, min(1.0, float(color_volatility)))
+        if transition_strictness is not None:
+            self.operator_intents.transition_strictness = max(0.0, min(1.0, float(transition_strictness)))
+        if auto_recommend is not None:
+            self.operator_intents.auto_recommend = bool(auto_recommend)
+
+    def get_intent_decision_weights(self) -> Dict[str, float]:
+        """Return normalized weights used for movement/color/transition decisions."""
+        aggression_map = {"low": 0.25, "medium": 0.5, "high": 0.85}
+        beam_bias = aggression_map.get(self.operator_intents.beam_aggression, 0.5)
+        movement = min(1.0, 0.35 + 0.45 * self.operator_intents.movement_density + 0.2 * beam_bias)
+        color = min(1.0, 0.4 + 0.6 * self.operator_intents.color_volatility)
+        transition = min(1.0, 0.25 + 0.75 * self.operator_intents.transition_strictness)
+        section_fidelity = min(1.0, 0.4 + 0.6 * self.operator_intents.transition_strictness)
+        return {
+            "movement": round(movement, 3),
+            "color": round(color, 3),
+            "transition": round(transition, 3),
+            "sectionFidelity": round(section_fidelity, 3),
+        }
+
+    def _weighted_choice(self, options: List[Any], density_bias: float) -> Any:
+        if not options:
+            return None
+        if len(options) == 1:
+            return options[0]
+        weights = []
+        for index, _ in enumerate(options):
+            freshness = (len(options) - index) / len(options)
+            weights.append(max(0.05, (1.0 - density_bias) * freshness + density_bias * (index + 1) / len(options)))
+        return random.choices(options, weights=weights, k=1)[0]
 
     def set_genre(self, genre: str):
         """Set the active genre for decision weighting."""
@@ -548,6 +607,8 @@ class DecisionEngine:
         Professional timing: changes only on bar/phrase boundaries.
         """
         min_bars = GENRE_MIN_CHANGE_BARS.get(self._genre, 4)
+        transition_weight = self.get_intent_decision_weights()["transition"]
+        min_bars = max(1, int(round(min_bars * (1.35 - transition_weight))))
 
         if change_type == "movement":
             return (self._total_bars - self._last_movement_change_bar) >= max(min_bars, 8)
@@ -566,9 +627,10 @@ class DecisionEngine:
         dimmer_options = section_effects.get("dimmer", [DimmerType.SINE_PULSE])
         strobe_options = section_effects.get("strobe", [StrobeMode.OFF])
 
-        self.selection.movement = random.choice(movement_options) if movement_options else MovementType.NONE
-        self.selection.dimmer = random.choice(dimmer_options) if dimmer_options else DimmerType.SINE_PULSE
-        self.selection.strobe = random.choice(strobe_options) if strobe_options else StrobeMode.OFF
+        weights = self.get_intent_decision_weights()
+        self.selection.movement = self._weighted_choice(movement_options, weights["movement"]) or MovementType.NONE
+        self.selection.dimmer = self._weighted_choice(dimmer_options, weights["transition"]) or DimmerType.SINE_PULSE
+        self.selection.strobe = self._weighted_choice(strobe_options, weights["color"]) or StrobeMode.OFF
 
         # Map movement to preset name
         preset_map = {

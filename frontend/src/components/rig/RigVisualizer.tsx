@@ -631,6 +631,9 @@ export default function RigVisualizer() {
     setKeyLightingZones,
     setEmotionVector,
     setBeatPhrase,
+    setOperatorIntentControls,
+    setDecisionWeights,
+    setActiveIntentProfile,
   } = useDMXStore();
 
   // Connect to WebSocket for real-time DMX data
@@ -648,6 +651,18 @@ export default function RigVisualizer() {
         if (l.key_zones) setKeyLightingZones(l.key_zones);
         if (l.emotion_vector) setEmotionVector(l.emotion_vector);
         if (l.beat_phrase !== undefined) setBeatPhrase(l.beat_phrase, l.beats_per_phrase ?? 4);
+        const proState = l.pro_lighting;
+        if (proState?.intent_controls) {
+          setOperatorIntentControls({
+            beamAggression: proState.intent_controls.beam_aggression,
+            movementDensity: proState.intent_controls.movement_density,
+            colorVolatility: proState.intent_controls.color_volatility,
+            transitionStrictness: proState.intent_controls.transition_strictness,
+            autoRecommend: proState.intent_controls.auto_recommend,
+          });
+        }
+        if (proState?.decision_weights) setDecisionWeights(proState.decision_weights);
+        if (proState?.active_intent_profile) setActiveIntentProfile(proState.active_intent_profile);
       }
     };
 
@@ -659,7 +674,7 @@ export default function RigVisualizer() {
     return () => {
       audioWebSocket.off('analysis', handleAnalysis);
     };
-  }, [setUniverse, setFixtureStates, setEffectsInfo, setGenre, setSection, setActiveEffects, setKeyLightingZones, setEmotionVector, setBeatPhrase]);
+  }, [setUniverse, setFixtureStates, setEffectsInfo, setGenre, setSection, setActiveEffects, setKeyLightingZones, setEmotionVector, setBeatPhrase, setOperatorIntentControls, setDecisionWeights, setActiveIntentProfile]);
 
   useEffect(() => {
     if (id) {

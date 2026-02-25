@@ -225,6 +225,46 @@ class EffectsEngine:
         # Sync to decision engine
         self.decision.set_section(section.value if hasattr(section, 'value') else str(section))
 
+    def set_operator_intents(
+        self,
+        beam_aggression: Optional[str] = None,
+        movement_density: Optional[float] = None,
+        color_volatility: Optional[float] = None,
+        transition_strictness: Optional[float] = None,
+        auto_recommend: Optional[bool] = None,
+    ):
+        """Set operator-facing intent controls used by decision weighting."""
+        self.decision.set_operator_intents(
+            beam_aggression=beam_aggression,
+            movement_density=movement_density,
+            color_volatility=color_volatility,
+            transition_strictness=transition_strictness,
+            auto_recommend=auto_recommend,
+        )
+
+    def apply_auto_recommend_intents(self):
+        """Auto-adjust intent controls by detected genre and section when enabled."""
+        intents = self.decision.operator_intents
+        if not intents.auto_recommend:
+            return
+
+        genre = self.genre_manager.current_genre.value
+        section = self.section_manager.current_section.value
+
+        genre_density = {"edm": 0.85, "rock": 0.65, "pop": 0.55, "hip_hop": 0.5, "jazz": 0.3}
+        section_strictness = {"intro": 0.55, "verse": 0.7, "pre_chorus": 0.82, "chorus": 0.75, "drop": 0.95, "breakdown": 0.5, "bridge": 0.65, "outro": 0.6}
+        target_density = genre_density.get(genre, 0.5)
+        target_strict = section_strictness.get(section, 0.6)
+        target_volatility = min(1.0, 0.4 + target_density * 0.5)
+        target_aggression = "high" if target_density > 0.75 else "medium" if target_density > 0.45 else "low"
+
+        self.decision.set_operator_intents(
+            beam_aggression=target_aggression,
+            movement_density=(intents.movement_density * 0.5) + (target_density * 0.5),
+            color_volatility=(intents.color_volatility * 0.5) + (target_volatility * 0.5),
+            transition_strictness=(intents.transition_strictness * 0.5) + (target_strict * 0.5),
+        )
+
     def update_audio(
         self,
         energy: float = 0.5,
@@ -483,6 +523,7 @@ class EffectsEngine:
 
         # Update decision engine - genre-aware mode when pro lighting is active
         if self.config.auto_mode and self._pro_lighting_enabled:
+            self.apply_auto_recommend_intents()
             # Sync genre and section from pro lighting modules to decision engine
             self.decision.set_genre(self.genre_manager.current_genre.value)
             self.decision.set_section(self.section_manager.current_section.value)
@@ -1006,6 +1047,21 @@ class EffectsEngine:
             "pro_build_active": self.pro_effects.build.is_active,
             "key_lighting_zones": [z.value for z in self.key_lighting.get_active_zones()],
             "strobe_budget_remaining": self.pro_effects.strobe.strobe_budget_remaining,
+            "intent_controls": {
+                "beam_aggression": self.decision.operator_intents.beam_aggression,
+                "movement_density": round(self.decision.operator_intents.movement_density, 3),
+                "color_volatility": round(self.decision.operator_intents.color_volatility, 3),
+                "transition_strictness": round(self.decision.operator_intents.transition_strictness, 3),
+                "auto_recommend": self.decision.operator_intents.auto_recommend,
+            },
+            "decision_weights": self.decision.get_intent_decision_weights(),
+            "active_intent_profile": {
+                "label": f"{self.genre_manager.current_genre.value.upper()} · {self.section_manager.current_section.value.replace('_', ' ').title()}",
+                "source": "auto-recommend" if self.decision.operator_intents.auto_recommend else "manual",
+                "genre": self.genre_manager.current_genre.value.upper(),
+                "section": self.section_manager.current_section.value.upper(),
+                "notes": "Auto-adapted by genre/section" if self.decision.operator_intents.auto_recommend else "Operator-driven intent controls",
+            },
         }
         # Include ML emotion data if available
         if self._ml_emotion_mapping is not None:

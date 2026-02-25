@@ -359,6 +359,18 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                             # Broadcast to all audio websocket clients (including visualizer)
                             await manager.broadcast("audio", response)
 
+                    elif msg_type == "pro_intent_control":
+                        if effects_engine:
+                            payload = message.get("data", {})
+                            effects_engine.set_operator_intents(
+                                beam_aggression=payload.get("beam_aggression"),
+                                movement_density=payload.get("movement_density"),
+                                color_volatility=payload.get("color_volatility"),
+                                transition_strictness=payload.get("transition_strictness"),
+                                auto_recommend=payload.get("auto_recommend"),
+                            )
+                        await websocket.send_json({"type": "pro_intent_updated"})
+
                     elif msg_type == "reactive_on":
                         # Enable reactive lighting mode
                         reactive_mode = True

@@ -6,6 +6,9 @@ import type {
   KeyLightingZone,
   EmotionVector,
   ProLightingState,
+  OperatorIntentControls,
+  ActiveIntentProfile,
+  IntentDecisionWeights,
 } from '../types';
 
 // Fixture state from effects engine
@@ -59,9 +62,37 @@ interface DMXState {
   setEmotionVector: (emotion: EmotionVector | null) => void;
   setBeatPhrase: (phrase: number, beatsPerPhrase: number) => void;
   updateProLighting: (data: Partial<ProLightingState>) => void;
+  setOperatorIntentControls: (controls: Partial<OperatorIntentControls>) => void;
+  setAutoRecommendIntent: (enabled: boolean) => void;
+  setDecisionWeights: (weights: Partial<IntentDecisionWeights>) => void;
+  setActiveIntentProfile: (profile: Partial<ActiveIntentProfile>) => void;
   clearAll: () => void;
 }
 
+
+
+const defaultOperatorIntentControls: OperatorIntentControls = {
+  beamAggression: 'medium',
+  movementDensity: 0.5,
+  colorVolatility: 0.5,
+  transitionStrictness: 0.5,
+  autoRecommend: false,
+};
+
+const defaultIntentDecisionWeights: IntentDecisionWeights = {
+  movement: 0.5,
+  color: 0.5,
+  transition: 0.5,
+  sectionFidelity: 0.6,
+};
+
+const defaultActiveIntentProfile: ActiveIntentProfile = {
+  label: 'Manual Neutral',
+  source: 'manual',
+  genre: null,
+  section: 'UNKNOWN',
+  notes: 'Balanced defaults',
+};
 const defaultProEffect: ProEffect = {
   strobeMode: 'off',
   chaseType: 'off',
@@ -81,6 +112,9 @@ const defaultProLighting: ProLightingState = {
   emotionVector: null,
   beatPhrase: 0,
   beatsPerPhrase: 4,
+  operatorIntentControls: { ...defaultOperatorIntentControls },
+  decisionWeights: { ...defaultIntentDecisionWeights },
+  activeIntentProfile: { ...defaultActiveIntentProfile },
 };
 
 export const useDMXStore = create<DMXState>((set) => ({
@@ -196,6 +230,38 @@ export const useDMXStore = create<DMXState>((set) => ({
   updateProLighting: (data) =>
     set((state) => ({
       proLighting: { ...state.proLighting, ...data },
+    })),
+
+  setOperatorIntentControls: (controls) =>
+    set((state) => ({
+      proLighting: {
+        ...state.proLighting,
+        operatorIntentControls: { ...state.proLighting.operatorIntentControls, ...controls },
+      },
+    })),
+
+  setAutoRecommendIntent: (enabled) =>
+    set((state) => ({
+      proLighting: {
+        ...state.proLighting,
+        operatorIntentControls: { ...state.proLighting.operatorIntentControls, autoRecommend: enabled },
+      },
+    })),
+
+  setDecisionWeights: (weights) =>
+    set((state) => ({
+      proLighting: {
+        ...state.proLighting,
+        decisionWeights: { ...state.proLighting.decisionWeights, ...weights },
+      },
+    })),
+
+  setActiveIntentProfile: (profile) =>
+    set((state) => ({
+      proLighting: {
+        ...state.proLighting,
+        activeIntentProfile: { ...state.proLighting.activeIntentProfile, ...profile },
+      },
     })),
 
   clearAll: () =>
