@@ -9,6 +9,7 @@ import asyncio
 import json
 import random
 import math
+from dataclasses import dataclass, asdict
 from typing import Set, Dict, Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
 from datetime import datetime
@@ -84,6 +85,128 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+@dataclass
+class ReactiveMotionConfig:
+    """Runtime-tunable modulation pipeline parameters for legacy reactive mode."""
+
+    # Deadband thresholds for small audio variations
+    deadband_bass: float = 0.02
+    deadband_mid: float = 0.02
+
+    # Motion smoothing / low-pass constants (0-1, higher = snappier)
+    sweep_smoothing: float = 0.24
+    lowpass_pan: float = 0.32
+    lowpass_tilt: float = 0.30
+
+    # Beat / phrase modulation depth
+    beat_mod_depth_pan: float = 5.0
+    beat_mod_depth_tilt: float = 3.5
+    phrase_mod_depth_pan: float = 10.0
+    phrase_mod_depth_tilt: float = 7.0
+
+    # Overall motion range for moving heads
+    pan_range: float = 1.25
+    tilt_range: float = 1.20
+
+    # Per-section gain scaling
+    section_gain_default: float = 1.0
+    section_gain_verse: float = 0.85
+    section_gain_pre_chorus: float = 1.0
+    section_gain_chorus: float = 1.28
+    section_gain_drop: float = 1.40
+    section_gain_bridge: float = 0.90
+    section_gain_breakdown: float = 0.82
+    section_gain_peak: float = 1.45
+
+
+REACTIVE_PRESETS: Dict[str, ReactiveMotionConfig] = {
+    "subtle": ReactiveMotionConfig(
+        deadband_bass=0.03,
+        deadband_mid=0.03,
+        sweep_smoothing=0.19,
+        lowpass_pan=0.26,
+        lowpass_tilt=0.24,
+        beat_mod_depth_pan=3.0,
+        beat_mod_depth_tilt=2.0,
+        phrase_mod_depth_pan=6.0,
+        phrase_mod_depth_tilt=4.5,
+        pan_range=1.0,
+        tilt_range=1.0,
+        section_gain_verse=0.8,
+        section_gain_chorus=1.15,
+        section_gain_drop=1.22,
+    ),
+    "concert": ReactiveMotionConfig(),
+    "festival": ReactiveMotionConfig(
+        deadband_bass=0.01,
+        deadband_mid=0.01,
+        sweep_smoothing=0.32,
+        lowpass_pan=0.40,
+        lowpass_tilt=0.38,
+        beat_mod_depth_pan=8.0,
+        beat_mod_depth_tilt=5.5,
+        phrase_mod_depth_pan=16.0,
+        phrase_mod_depth_tilt=11.0,
+        pan_range=1.65,
+        tilt_range=1.5,
+        section_gain_verse=0.82,
+        section_gain_chorus=1.45,
+        section_gain_drop=1.6,
+        section_gain_peak=1.7,
+    ),
+}
+
+
+def _clamp(value: float, min_value: float, max_value: float) -> float:
+    return max(min_value, min(max_value, value))
+
+
+def _apply_deadband(value: float, threshold: float) -> float:
+    if abs(value) <= threshold:
+        return 0.0
+    return math.copysign((abs(value) - threshold) / max(1e-6, 1.0 - threshold), value)
+
+
+def _get_reactive_section(analysis: dict) -> str:
+    section = (
+        analysis.get("ml", {})
+        .get("structure", {})
+        .get("section", "unknown")
+    )
+    if not isinstance(section, str):
+        return "unknown"
+    return section.lower()
+
+
+def _section_gain(config: ReactiveMotionConfig, section: str) -> float:
+    mapping = {
+        "verse": config.section_gain_verse,
+        "pre_chorus": config.section_gain_pre_chorus,
+        "chorus": config.section_gain_chorus,
+        "drop": config.section_gain_drop,
+        "bridge": config.section_gain_bridge,
+        "breakdown": config.section_gain_breakdown,
+        "peak": config.section_gain_peak,
+    }
+    return mapping.get(section, config.section_gain_default)
+
+
+def _resolve_reactive_config(message: dict | None) -> ReactiveMotionConfig:
+    if not message:
+        return ReactiveMotionConfig()
+
+    preset_name = str(message.get("preset", "concert")).lower()
+    base = REACTIVE_PRESETS.get(preset_name, REACTIVE_PRESETS["concert"])
+    merged = asdict(base)
+
+    overrides = message.get("params", {})
+    if isinstance(overrides, dict):
+        for key, value in overrides.items():
+            if key in merged and isinstance(value, (int, float)):
+                merged[key] = float(value)
+    return ReactiveMotionConfig(**merged)
 
 
 def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
@@ -243,7 +366,6 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
     # Reactive lighting state
     reactive_mode = False
     reactive_rig_id = None
-    last_beat_flash = 0
 
     try:
         # Get services from app state
@@ -364,9 +486,45 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                         # Enable reactive lighting mode
                         reactive_mode = True
                         reactive_rig_id = message.get("rig_id")
+                        resolved = _resolve_reactive_config(message)
+                        if hasattr(apply_reactive_lighting, '_state'):
+                            apply_reactive_lighting._state['config'] = resolved
                         await websocket.send_json({
                             "type": "reactive_enabled",
-                            "rig_id": reactive_rig_id
+                            "rig_id": reactive_rig_id,
+                            "preset": message.get("preset", "concert"),
+                            "params": asdict(resolved),
+                        })
+
+                    elif msg_type == "reactive_config":
+                        resolved = _resolve_reactive_config(message)
+                        state = getattr(apply_reactive_lighting, '_state', None)
+                        if state is None:
+                            apply_reactive_lighting._state = {
+                                'look_family': 'performer_focus',
+                                'bar_direction': 1.0,
+                                'sweep_pan': 0.0,
+                                'sweep_tilt': 0.0,
+                                'pan_mod': 0.0,
+                                'tilt_mod': 0.0,
+                                'last_bar_count': -1,
+                                'last_phrase_count': -1,
+                                'phase': 0.0,
+                                'phrase_phase': 0.0,
+                                'config': resolved,
+                            }
+                        else:
+                            state['config'] = resolved
+                        await websocket.send_json({
+                            "type": "reactive_config_updated",
+                            "preset": message.get("preset", "concert"),
+                            "params": asdict(resolved),
+                        })
+
+                    elif msg_type == "reactive_presets":
+                        await websocket.send_json({
+                            "type": "reactive_presets",
+                            "presets": {name: asdict(cfg) for name, cfg in REACTIVE_PRESETS.items()},
                         })
 
                     elif msg_type == "reactive_off":
@@ -426,17 +584,25 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
             'bar_direction': 1.0,
             'sweep_pan': 0.0,
             'sweep_tilt': 0.0,
+            'pan_mod': 0.0,
+            'tilt_mod': 0.0,
             'last_bar_count': -1,
             'last_phrase_count': -1,
             'phase': 0.0,
+            'phrase_phase': 0.0,
+            'config': REACTIVE_PRESETS['concert'],
         }
         apply_reactive_lighting._state = state
+
+    config: ReactiveMotionConfig = state.get('config', REACTIVE_PRESETS['concert'])
 
     # Get energy levels from frequency bands
     bands = {b['name']: b['energy'] for b in freq.get('bands', [])}
     bass_energy = bands.get('bass', 0) + bands.get('sub_bass', 0)
     mid_energy = bands.get('mid', 0) + bands.get('low_mid', 0)
     high_energy = bands.get('high', 0) + bands.get('high_mid', 0)
+    bass_mod = _apply_deadband(bass_energy, config.deadband_bass)
+    mid_mod = _apply_deadband(mid_energy, config.deadband_mid)
 
     # Overall energy
     rms_energy = float(freq.get('rms_energy', 0))
@@ -471,6 +637,8 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
     beat_position = int(beat.get('beat_position', 1))
     bar_count = int(beat.get('bar_count', 0))
     phrase_count = int(beat.get('phrase_count', 0))
+    section = _get_reactive_section(analysis)
+    section_gain = _section_gain(config, section)
 
     # Phrase/section-level look family selection (slow lane)
     if (is_section or is_phrase) and phrase_count != state['last_phrase_count']:
@@ -481,6 +649,7 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
         else:
             state['look_family'] = 'performer_focus'
         state['last_phrase_count'] = phrase_count
+        state['phrase_phase'] = (state['phrase_phase'] + (math.pi / 2.0)) % (math.pi * 2)
 
     # Bar-level moderate directional change (medium lane)
     if is_bar and bar_count != state['last_bar_count']:
@@ -503,33 +672,40 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
     b = int(min(255, base_b * intensity_mult))
 
     # Smooth trajectory + intensity-based sweep scaling
-    sweep_scale = 0.35 + (energy_level * 0.95)
+    sweep_scale = (0.35 + (energy_level * 0.95)) * section_gain
     if state['look_family'] == 'ambient_wash':
         pan_base = 128
         tilt_base = 120
-        pan_amp = 22 * sweep_scale
-        tilt_amp = 14 * sweep_scale
+        pan_amp = 22 * sweep_scale * config.pan_range
+        tilt_amp = 14 * sweep_scale * config.tilt_range
     elif state['look_family'] == 'performer_focus':
         pan_base = 128
         tilt_base = 110
-        pan_amp = 34 * sweep_scale
-        tilt_amp = 22 * sweep_scale
+        pan_amp = 34 * sweep_scale * config.pan_range
+        tilt_amp = 22 * sweep_scale * config.tilt_range
     else:  # big_air
         pan_base = 128
         tilt_base = 100
-        pan_amp = 52 * sweep_scale
-        tilt_amp = 30 * sweep_scale
+        pan_amp = 52 * sweep_scale * config.pan_range
+        tilt_amp = 30 * sweep_scale * config.tilt_range
 
     # Use bar cadence to bias direction, but keep continuity with smoothing
-    target_sweep_pan = state['bar_direction'] * (0.35 + bass_energy * 0.65) * pan_amp
-    target_sweep_tilt = (0.2 + mid_energy * 0.8) * tilt_amp
-    state['sweep_pan'] += (target_sweep_pan - state['sweep_pan']) * 0.12
-    state['sweep_tilt'] += (target_sweep_tilt - state['sweep_tilt']) * 0.12
+    target_sweep_pan = state['bar_direction'] * (0.35 + bass_mod * 0.65) * pan_amp
+    target_sweep_tilt = (0.2 + mid_mod * 0.8) * tilt_amp
+    state['sweep_pan'] += (target_sweep_pan - state['sweep_pan']) * config.sweep_smoothing
+    state['sweep_tilt'] += (target_sweep_tilt - state['sweep_tilt']) * config.sweep_smoothing
 
     # Beat micro-oscillation is intentionally tiny and additive
     state['phase'] = (state['phase'] + 0.18) % (math.pi * 2)
-    micro_pan = math.sin(state['phase']) * 3.0 * beat_micro
-    micro_tilt = math.cos(state['phase']) * 2.0 * beat_micro
+    phrase_pan = math.sin(state['phrase_phase']) * config.phrase_mod_depth_pan * (1.0 if (is_phrase or is_section) else 0.35)
+    phrase_tilt = math.cos(state['phrase_phase']) * config.phrase_mod_depth_tilt * (1.0 if (is_phrase or is_section) else 0.35)
+    micro_pan = math.sin(state['phase']) * config.beat_mod_depth_pan * beat_micro
+    micro_tilt = math.cos(state['phase']) * config.beat_mod_depth_tilt * beat_micro
+
+    pan_signal = state['sweep_pan'] + micro_pan + phrase_pan
+    tilt_signal = state['sweep_tilt'] + micro_tilt + phrase_tilt
+    state['pan_mod'] += (pan_signal - state['pan_mod']) * config.lowpass_pan
+    state['tilt_mod'] += (tilt_signal - state['tilt_mod']) * config.lowpass_tilt
 
     # Open shutter
     shutter_open = 255
@@ -541,8 +717,10 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
             is_left = i < 4
             mirror = 1 if is_left else -1
 
-            pan = int(max(0, min(255, pan_base + mirror * state['sweep_pan'] + micro_pan)))
-            tilt = int(max(0, min(255, tilt_base + state['sweep_tilt'] + micro_tilt)))
+            pan_unclamped = pan_base + mirror * state['pan_mod']
+            tilt_unclamped = tilt_base + state['tilt_mod']
+            pan = int(_clamp(pan_unclamped, 0, 255))
+            tilt = int(_clamp(tilt_unclamped, 0, 255))
 
             await dmx_controller.set_channel(0, addr + 0, pan)
             await dmx_controller.set_channel(0, addr + 2, tilt)
@@ -556,8 +734,10 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
         for i, addr in enumerate(wash_addresses):
             is_left = i < 3
             mirror = 1 if is_left else -1
-            wash_pan = int(max(0, min(255, pan_base + mirror * state['sweep_pan'] * 0.5)))
-            wash_tilt = int(max(0, min(255, 118 + state['sweep_tilt'] * 0.35)))
+            wash_pan_unclamped = pan_base + mirror * state['pan_mod'] * 0.5
+            wash_tilt_unclamped = 118 + state['tilt_mod'] * 0.35
+            wash_pan = int(_clamp(wash_pan_unclamped, 0, 255))
+            wash_tilt = int(_clamp(wash_tilt_unclamped, 0, 255))
             zoom = int(128 + arousal * 100)
 
             await dmx_controller.set_channel(0, addr + 0, wash_pan)
