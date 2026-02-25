@@ -15,6 +15,7 @@ from app.schemas.lighting_look import (
     SpotLookParams,
     TransitionLookParams,
 )
+from app.services.lighting.beam_choreography import compute_beam_width_target
 from app.services.lighting.fixture_capabilities import DEFAULT_CAPABILITY_PROFILES
 from app.services.lighting.section_templates import get_section_template
 
@@ -39,22 +40,6 @@ def _section_and_genre(engine) -> tuple[str, str]:
     return section, genre
 
 
-def _beam_angle_for_section(section: str) -> float:
-    section_map = {
-        "intro": 8.0,
-        "verse": 6.5,
-        "pre_chorus": 5.0,
-        "buildup": 4.2,
-        "chorus": 3.8,
-        "drop": 3.2,
-        "peak": 3.2,
-        "bridge": 6.0,
-        "breakdown": 7.5,
-        "outro": 8.5,
-    }
-    return section_map.get(section, 6.0)
-
-
 def _palette_colors(palette_id: str) -> tuple[str, str]:
     palette_map = {
         "edm": ("cyan", "magenta"),
@@ -66,6 +51,17 @@ def _palette_colors(palette_id: str) -> tuple[str, str]:
         "forest": ("green", "amber"),
     }
     return palette_map.get(palette_id, ("blue", "amber"))
+
+
+def _beat_number_from_engine(engine) -> int:
+    beat_number = 0
+    try:
+        beat_number = int(getattr(engine.audio_state, "beat_number", 0) or 0)
+    except Exception:
+        beat_number = 0
+    if beat_number <= 0:
+        beat_number = int(getattr(engine, "beat_count", 0) or 0)
+    return max(1, beat_number)
 
 
 def build_lighting_look_spec(engine) -> LightingLookSpec:
@@ -94,6 +90,20 @@ def build_lighting_look_spec(engine) -> LightingLookSpec:
     except Exception:
         pass
 
+    beat_number = _beat_number_from_engine(engine)
+    buildup_progress = 0.0
+    if getattr(engine, "_pro_lighting_enabled", False):
+        try:
+            buildup_progress = float(engine.section_manager.get_buildup_progress())
+        except Exception:
+            buildup_progress = 0.0
+
+    beam_width_target = compute_beam_width_target(
+        section=section,
+        beat_number=beat_number,
+        buildup_progress=buildup_progress,
+    )
+
     dominant_color, accent_color = _palette_colors(palette_id)
     beam_density = _clamp01(0.35 + energy * 0.65)
     template = get_section_template(genre, section)
@@ -114,7 +124,10 @@ def build_lighting_look_spec(engine) -> LightingLookSpec:
         energy=energy,
         bpm=bpm,
         beam=BeamLookParams(
-            beam_angle_deg=_beam_angle_for_section(section),
+            beam_angle_deg=beam_width_target.beam_angle_deg,
+            beam_width_normalized=beam_width_target.normalized_width,
+            beam_width_profile=beam_width_target.beam_width_profile,
+            phrase_phase=beam_width_target.phrase_phase,
             density=beam_density,
             strobe_mode=strobe_mode,
             movement_pattern=movement_pattern,

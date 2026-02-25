@@ -13,6 +13,7 @@ from .movement_patterns import (
 )
 from .pro_effects import ProEffects, ProStrobe, ProColorWash, ProChase, ProBuildEffect
 from .key_lighting import KeyLightingManager, PerformerZone, KeyLightConfig
+from .beam_choreography import BeamWidthTarget, compute_beam_width_target
 
 __all__ = [
     'GenreProfile', 'GenreProfileManager', 'GENRE_PROFILES',
@@ -23,4 +24,5 @@ __all__ = [
     'degrees_to_dmx_pan', 'degrees_to_dmx_tilt',
     'ProEffects', 'ProStrobe', 'ProColorWash', 'ProChase', 'ProBuildEffect',
     'KeyLightingManager', 'PerformerZone', 'KeyLightConfig',
+    'BeamWidthTarget', 'compute_beam_width_target',
 ]

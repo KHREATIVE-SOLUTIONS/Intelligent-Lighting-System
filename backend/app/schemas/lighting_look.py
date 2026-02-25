@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field
 
 class BeamLookParams(BaseModel):
     beam_angle_deg: float = Field(..., ge=1.0, le=60.0)
+    beam_width_normalized: float = Field(..., ge=0.0, le=1.0)
+    beam_width_profile: str = "balanced"
+    phrase_phase: float = Field(..., ge=0.0, le=1.0)
     density: float = Field(..., ge=0.0, le=1.0)
     strobe_mode: str
     movement_pattern: str
