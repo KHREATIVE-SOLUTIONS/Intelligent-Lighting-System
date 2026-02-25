@@ -35,6 +35,7 @@ from .decision_engine import (
 )
 from .lfo_engine import LFOEngine
 from ..lighting.section_templates import get_section_template
+from ..lighting.fixture_capabilities import get_capability_profile_for_fixture
 
 # Professional lighting modules - imported lazily in __init__ to avoid circular imports
 # (lighting modules import from effects submodules, which triggers effects/__init__.py,
@@ -841,9 +842,18 @@ class EffectsEngine:
 
                         # Pro movement (adds to existing movement)
                         if self.config.movement_enabled:
+                            profile = get_capability_profile_for_fixture(
+                                getattr(fixture, "fixture_type", None)
+                            )
                             pan_off, tilt_off = self.pro_movement.get_position(
-                                fixture.id, i, total,
-                                fixture.x, fixture.y, fixture.z,
+                                fixture.id,
+                                i,
+                                total,
+                                fixture.x,
+                                fixture.y,
+                                fixture.z,
+                                role=profile.role,
+                                movement_speed_class=profile.movement_speed_class,
                             )
                             # Scale by section movement energy
                             move_energy = self.section_manager.get_movement_energy()

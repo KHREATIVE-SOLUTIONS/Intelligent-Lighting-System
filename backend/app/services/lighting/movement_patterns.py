@@ -109,6 +109,62 @@ class ProMovementParams:
     snap_positions: List[Tuple[float, float]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class MovementLanePolicy:
+    """Per-role movement lane envelope and motion limits."""
+    speed_multiplier: float
+    pan_amplitude_multiplier: float
+    tilt_amplitude_multiplier: float
+    pan_rate_limit_deg_per_s: float
+    tilt_rate_limit_deg_per_s: float
+    phase_nudge: float = 0.0
+
+
+LANE_MOVEMENT_POLICIES: Dict[str, MovementLanePolicy] = {
+    # Beam lane: faster amplitude, sharper accents, tighter zoom moments
+    "beam": MovementLanePolicy(
+        speed_multiplier=1.35,
+        pan_amplitude_multiplier=1.2,
+        tilt_amplitude_multiplier=1.0,
+        pan_rate_limit_deg_per_s=220.0,
+        tilt_rate_limit_deg_per_s=180.0,
+        phase_nudge=0.02,
+    ),
+    # Spot lane: key-position support + texture patterns
+    "spot": MovementLanePolicy(
+        speed_multiplier=0.95,
+        pan_amplitude_multiplier=0.85,
+        tilt_amplitude_multiplier=0.9,
+        pan_rate_limit_deg_per_s=150.0,
+        tilt_rate_limit_deg_per_s=125.0,
+        phase_nudge=0.0,
+    ),
+    # Wash lane: slower sweeps, scene fill, less jitter
+    "wash": MovementLanePolicy(
+        speed_multiplier=0.65,
+        pan_amplitude_multiplier=0.7,
+        tilt_amplitude_multiplier=0.75,
+        pan_rate_limit_deg_per_s=95.0,
+        tilt_rate_limit_deg_per_s=80.0,
+        phase_nudge=-0.02,
+    ),
+    "effect": MovementLanePolicy(
+        speed_multiplier=0.5,
+        pan_amplitude_multiplier=0.4,
+        tilt_amplitude_multiplier=0.4,
+        pan_rate_limit_deg_per_s=60.0,
+        tilt_rate_limit_deg_per_s=60.0,
+    ),
+}
+
+MOVEMENT_SPEED_CLASS_MULTIPLIERS: Dict[str, float] = {
+    "fast": 1.15,
+    "medium": 1.0,
+    "slow": 0.8,
+    "static": 0.0,
+}
+
+
 class ProMovementEngine:
     """
     Professional movement pattern engine with BPM-locked timing,
@@ -122,6 +178,7 @@ class ProMovementEngine:
 
         # Per-fixture smoothed output
         self._current_positions: Dict[str, Tuple[float, float]] = {}
+        self._rate_limited_positions: Dict[str, Tuple[float, float]] = {}
 
         # Beat tracking
         self._beat_time = 0.0
@@ -269,9 +326,46 @@ class ProMovementEngine:
 
         return (index / total) * spread
 
+    def _resolve_lane_policy(self, role: Optional[str]) -> MovementLanePolicy:
+        lane = (role or "beam").lower()
+        return LANE_MOVEMENT_POLICIES.get(lane, LANE_MOVEMENT_POLICIES["beam"])
+
+    def _resolve_speed_multiplier(self, movement_speed_class: Optional[str]) -> float:
+        if movement_speed_class is None:
+            return 1.0
+        speed_class = movement_speed_class.lower()
+        return MOVEMENT_SPEED_CLASS_MULTIPLIERS.get(speed_class, 1.0)
+
+    def _apply_motion_rate_limit(
+        self,
+        fixture_id: str,
+        target_pan: float,
+        target_tilt: float,
+        pan_rate_limit_deg_per_s: float,
+        tilt_rate_limit_deg_per_s: float,
+    ) -> Tuple[float, float]:
+        previous = self._rate_limited_positions.get(fixture_id)
+        if previous is None:
+            self._rate_limited_positions[fixture_id] = (target_pan, target_tilt)
+            return (target_pan, target_tilt)
+
+        prev_pan, prev_tilt = previous
+        dt = max(self._delta_time, 1e-3)
+        max_pan_step = max(0.0, pan_rate_limit_deg_per_s * dt)
+        max_tilt_step = max(0.0, tilt_rate_limit_deg_per_s * dt)
+
+        pan_delta = max(-max_pan_step, min(max_pan_step, target_pan - prev_pan))
+        tilt_delta = max(-max_tilt_step, min(max_tilt_step, target_tilt - prev_tilt))
+
+        limited = (prev_pan + pan_delta, prev_tilt + tilt_delta)
+        self._rate_limited_positions[fixture_id] = limited
+        return limited
+
     def get_position(self, fixture_id: str, index: int, total: int,
                      fixture_x: float = 0.0, fixture_y: float = 0.0,
-                     fixture_z: float = 0.0) -> Tuple[float, float]:
+                     fixture_z: float = 0.0,
+                     role: Optional[str] = None,
+                     movement_speed_class: Optional[str] = None) -> Tuple[float, float]:
         """
         Calculate pan/tilt offset for a fixture.
 
@@ -280,6 +374,8 @@ class ProMovementEngine:
             index: Fixture index in the rig
             total: Total fixtures
             fixture_x, y, z: Physical position
+            role: Fixture role lane (beam/spot/wash/effect)
+            movement_speed_class: Movement speed class (fast/medium/slow/static)
 
         Returns:
             (pan_offset, tilt_offset) in degrees
@@ -288,11 +384,16 @@ class ProMovementEngine:
         if pattern == ProMovementPattern.STATIC:
             return self._smooth_output(fixture_id, 0.0, 0.0)
 
-        speed = self._get_bpm_speed()
+        lane_policy = self._resolve_lane_policy(role)
+        speed_class_mult = self._resolve_speed_multiplier(movement_speed_class)
+        if speed_class_mult <= 0.0:
+            return self._smooth_output(fixture_id, 0.0, 0.0)
+
+        speed = self._get_bpm_speed() * lane_policy.speed_multiplier * speed_class_mult
         t = self.time
-        phase = self._get_fixture_phase(index, total, fixture_x)
-        pan_amp = self.params.pan_amplitude * self.params.direction
-        tilt_amp = self.params.tilt_amplitude
+        phase = self._get_fixture_phase(index, total, fixture_x) + lane_policy.phase_nudge
+        pan_amp = self.params.pan_amplitude * self.params.direction * lane_policy.pan_amplitude_multiplier
+        tilt_amp = self.params.tilt_amplitude * lane_policy.tilt_amplitude_multiplier
 
         pan_offset = 0.0
         tilt_offset = 0.0
@@ -450,6 +551,31 @@ class ProMovementEngine:
             side_phase = phase if is_left else phase + 0.5
             pan_offset = self._wave(t * speed + side_phase) * pan_amp * direction
             tilt_offset = self._wave(t * speed * 0.5 + side_phase) * tilt_amp * 0.4
+
+        # Lane accent shaping for role-specific envelopes.
+        lane_key = (role or "beam").lower()
+        if lane_key == "beam":
+            accent = 0.82 + 0.18 * (1.0 if self._wave(t * speed + phase) > 0.5 else 0.0)
+            pan_offset *= accent
+            # tighter zoom moments emulate narrower beam feel by reducing tilt travel near center
+            if abs(pan_offset) < abs(pan_amp) * 0.35:
+                tilt_offset *= 0.65
+        elif lane_key == "spot":
+            # preserve key positions by biasing toward center with gentle texture modulation
+            pan_offset *= 0.75
+            tilt_offset = tilt_offset * 0.85 + self._wave(t * speed * 0.5 + phase) * tilt_amp * 0.12
+        elif lane_key == "wash":
+            # smooth scene fill with reduced jitter
+            pan_offset *= 0.72
+            tilt_offset *= 0.78
+
+        pan_offset, tilt_offset = self._apply_motion_rate_limit(
+            fixture_id,
+            pan_offset,
+            tilt_offset,
+            lane_policy.pan_rate_limit_deg_per_s,
+            lane_policy.tilt_rate_limit_deg_per_s,
+        )
 
         return self._smooth_output(fixture_id, pan_offset, tilt_offset)
 
