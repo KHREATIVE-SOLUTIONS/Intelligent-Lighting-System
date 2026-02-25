@@ -14,6 +14,17 @@ from .movement_patterns import (
 from .pro_effects import ProEffects, ProStrobe, ProColorWash, ProChase, ProBuildEffect
 from .key_lighting import KeyLightingManager, PerformerZone, KeyLightConfig
 from .beam_choreography import BeamWidthTarget, compute_beam_width_target
+from .beam_pattern_library import (
+    BeamPatternName,
+    BeamPatternDefinition,
+    SymmetryMode,
+    FocusPointAnchor,
+    BEAM_PATTERN_LIBRARY,
+    FOCUS_POINT_ANCHORS,
+    build_pattern_params,
+    allowed_transitions,
+)
+from .beam_scene_state_machine import BeamSceneStateMachine, SceneOutput, ScenePhase, SceneTiming
 
 __all__ = [
     'GenreProfile', 'GenreProfileManager', 'GENRE_PROFILES',
@@ -25,4 +36,7 @@ __all__ = [
     'ProEffects', 'ProStrobe', 'ProColorWash', 'ProChase', 'ProBuildEffect',
     'KeyLightingManager', 'PerformerZone', 'KeyLightConfig',
     'BeamWidthTarget', 'compute_beam_width_target',
+    'BeamPatternName', 'BeamPatternDefinition', 'SymmetryMode', 'FocusPointAnchor',
+    'BEAM_PATTERN_LIBRARY', 'FOCUS_POINT_ANCHORS', 'build_pattern_params', 'allowed_transitions',
+    'BeamSceneStateMachine', 'SceneOutput', 'ScenePhase', 'SceneTiming',
 ]

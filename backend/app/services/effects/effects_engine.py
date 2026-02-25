@@ -160,12 +160,26 @@ class EffectsEngine:
         from ..lighting.movement_patterns import ProMovementEngine
         from ..lighting.pro_effects import ProEffects
         from ..lighting.key_lighting import KeyLightingManager
+        from ..lighting.beam_pattern_library import (
+            BeamPatternName,
+            FOCUS_POINT_ANCHORS,
+            SymmetryMode,
+            build_pattern_params,
+        )
+        from ..lighting.beam_scene_state_machine import BeamSceneStateMachine
 
         self.genre_manager = GenreProfileManager()
         self.section_manager = SectionManager(bpm=self.config.bpm)
         self.pro_movement = ProMovementEngine()
         self.pro_effects = ProEffects(bpm=self.config.bpm)
         self.key_lighting = KeyLightingManager()
+
+        # Beam pattern library + scene timing state machine (pro movement layer)
+        self._beam_pattern_enum = BeamPatternName
+        self._beam_symmetry_enum = SymmetryMode
+        self._beam_focus_anchors = FOCUS_POINT_ANCHORS
+        self._beam_scene_machine = BeamSceneStateMachine(initial_pattern=BeamPatternName.CENTER_FOCUS_HOLD)
+        self._build_pattern_params = build_pattern_params
 
         # Pro lighting integration enabled flag
         self._pro_lighting_enabled = False
@@ -628,6 +642,27 @@ class EffectsEngine:
                 is_beat=self.audio_features.is_beat,
             )
             self.pro_movement.set_bpm(self.config.bpm)
+
+            section_key = self.section_manager.current_section.value
+            pattern_name, symmetry_mode, focus_anchor = self._select_beam_scene_pattern(section_key)
+            self._beam_scene_machine.request_transition(pattern_name)
+            scene_output = self._beam_scene_machine.update(delta_time)
+            params = self._build_pattern_params(
+                scene_output.active_pattern,
+                symmetry_mode=symmetry_mode,
+                focus_anchor=focus_anchor,
+                amplitude_scale=scene_output.amplitude_scale,
+            )
+            self.pro_movement.set_pattern(
+                params.pattern,
+                beat_divisor=params.beat_divisor,
+                pan_amplitude=params.pan_amplitude,
+                tilt_amplitude=params.tilt_amplitude,
+                phase_spread=params.phase_spread,
+                grouping=params.grouping,
+                smoothing=params.smoothing,
+                snap_positions=list(params.snap_positions),
+            )
             self.pro_movement.update(delta_time)
             self.pro_effects.set_bpm(self.config.bpm)
             self.pro_effects.update(delta_time)
@@ -656,6 +691,52 @@ class EffectsEngine:
         if self._dmx_callback:
             frame = self.fixtures.get_dmx_frame(universe=0)
             self._dmx_callback(0, frame)
+
+    def _select_beam_scene_pattern(self, section: str):
+        """Map section context to beam pattern family, symmetry, and focus anchor."""
+        section_key = (section or "unknown").lower()
+
+        if section_key in {"intro", "outro"}:
+            return (
+                self._beam_pattern_enum.CENTER_FOCUS_HOLD,
+                self._beam_symmetry_enum.NONE,
+                self._beam_focus_anchors["center_stage"],
+            )
+        if section_key in {"verse"}:
+            return (
+                self._beam_pattern_enum.FAN,
+                self._beam_symmetry_enum.ALTERNATING_PARITY,
+                self._beam_focus_anchors["vocalist"],
+            )
+        if section_key in {"pre_chorus", "bridge", "buildup"}:
+            return (
+                self._beam_pattern_enum.CROSSING_SWEEPS,
+                self._beam_symmetry_enum.LEFT_RIGHT_MIRROR,
+                self._beam_focus_anchors["vocalist"],
+            )
+        if section_key in {"chorus"}:
+            return (
+                self._beam_pattern_enum.CIRCLES,
+                self._beam_symmetry_enum.ALTERNATING_PARITY,
+                self._beam_focus_anchors["center_stage"],
+            )
+        if section_key in {"drop"}:
+            return (
+                self._beam_pattern_enum.AUDIENCE_SWEEP,
+                self._beam_symmetry_enum.LEFT_RIGHT_MIRROR,
+                self._beam_focus_anchors["center_stage"],
+            )
+        if section_key in {"breakdown"}:
+            return (
+                self._beam_pattern_enum.MIRRORED_PAIRS,
+                self._beam_symmetry_enum.LEFT_RIGHT_MIRROR,
+                self._beam_focus_anchors["drummer"],
+            )
+        return (
+            self._beam_pattern_enum.FAN,
+            self._beam_symmetry_enum.LEFT_RIGHT_MIRROR,
+            self._beam_focus_anchors["center_stage"],
+        )
 
     def _resolve_section_genre(self) -> Tuple[str, str]:
         """Resolve current section/genre for template selection."""
