@@ -226,6 +226,10 @@ class EffectsEngine:
             current_confidence=1.0,
         )
 
+        # Fixture phase choreography controls
+        self._leader_follower_enabled: bool = True
+        self._leader_follower_delay: float = 0.08  # phase cycles per follower step
+
         # Set default movement pattern - visible circular motion
         self.movement.set_pattern(
             MovementType.TRUE_CIRCLE,
@@ -1046,10 +1050,70 @@ class EffectsEngine:
             # Outro - stop all pro effects
             self.pro_effects.blackout()
 
+    def _build_fixture_phase_offsets(self, fixtures: List[Fixture]) -> Dict[str, Tuple[float, float]]:
+        """Build coordinated per-fixture phase offsets for motion and effect layers."""
+        total = len(fixtures)
+        if total <= 0:
+            return {}
+
+        mover_indices = [i for i, fx in enumerate(fixtures) if getattr(fx, "fixture_type", "mover") == "mover"]
+        if not mover_indices:
+            mover_indices = list(range(total))
+
+        movers = [fixtures[i] for i in mover_indices]
+        mover_count = len(movers)
+        if mover_count <= 0:
+            return {}
+
+        phase_map: Dict[str, Tuple[float, float]] = {}
+        quad_template = (0.0, 0.25, 0.5, 0.75)
+
+        center_x = sum(fx.x for fx in movers) / mover_count
+        left = [fx for fx in movers if fx.x < center_x]
+        right = [fx for fx in movers if fx.x >= center_x]
+        left_sorted = sorted(left, key=lambda fx: abs(fx.x - center_x))
+        right_sorted = sorted(right, key=lambda fx: abs(fx.x - center_x))
+        left_rank = {fx.id: idx for idx, fx in enumerate(left_sorted)}
+        right_rank = {fx.id: idx for idx, fx in enumerate(right_sorted)}
+        side_size = max(1, max(len(left_sorted), len(right_sorted)))
+
+        leader = min(movers, key=lambda fx: (abs(fx.x - center_x), fx.id))
+        follower_sorted = sorted(movers, key=lambda fx: (abs(fx.x - leader.x), fx.id))
+        follower_rank = {fx.id: idx for idx, fx in enumerate(follower_sorted)}
+
+        for local_idx, fx in enumerate(movers):
+            base_phase = local_idx / mover_count
+
+            if fx.id in left_rank:
+                rank = left_rank[fx.id]
+                mirror_phase = (rank / side_size) * 0.5
+            else:
+                rank = right_rank.get(fx.id, 0)
+                mirrored_rank = max(0, side_size - 1 - rank)
+                mirror_phase = (mirrored_rank / side_size) * 0.5 + 0.5
+
+            template_phase = quad_template[local_idx % 4]
+            odd_even_phase = 0.25 if local_idx % 2 else 0.0
+            motion_phase = (0.35 * base_phase + 0.35 * mirror_phase + 0.30 * template_phase + odd_even_phase) % 1.0
+
+            if self._leader_follower_enabled:
+                motion_phase = (motion_phase + follower_rank[fx.id] * self._leader_follower_delay) % 1.0
+
+            effect_phase = (motion_phase + 0.125 + template_phase * 0.5 + (0.125 if local_idx % 2 else 0.0)) % 1.0
+            phase_map[fx.id] = (motion_phase, effect_phase)
+
+        for i, fx in enumerate(fixtures):
+            if fx.id not in phase_map:
+                base = i / total
+                phase_map[fx.id] = (base, (base + 0.125) % 1.0)
+
+        return phase_map
+
     def _update_fixtures(self, delta_time: float):
         """Update all fixture values from effect layers."""
         all_fixtures = self.fixtures.get_fixtures_in_group("all")
         total = len(all_fixtures)
+        phase_offsets = self._build_fixture_phase_offsets(all_fixtures)
 
         # =====================================================================
         # TRAINING MODE: LFO Engine takes priority for manual control
@@ -1066,7 +1130,9 @@ class EffectsEngine:
 
         section, _ = self._resolve_section_genre()
         for i, fixture in enumerate(all_fixtures):
-            phase_offset = i / max(1, total)
+            motion_phase_offset, effect_phase_offset = phase_offsets.get(
+                fixture.id, (i / max(1, total), i / max(1, total))
+            )
 
             # Check if LFO has output for this fixture
             lfo_vals = lfo_outputs.get(i, {})
@@ -1125,7 +1191,7 @@ class EffectsEngine:
                         pan, tilt = self.movement.get_position(
                             fixture.id,
                             fixture.x, fixture.y, fixture.z,
-                            i, phase_offset
+                            i, motion_phase_offset
                         )
                         fixture.pan = pan
                         fixture.tilt = tilt
@@ -1134,7 +1200,7 @@ class EffectsEngine:
                     dimmer_multiplier = 1.0
                     if self.config.dimmer_enabled:
                         dimmer_multiplier = self.dimmer.get_intensity(
-                            fixture.id, i, phase_offset,
+                            fixture.id, i, effect_phase_offset,
                             energy=self.audio_features.energy
                         )
 
@@ -1142,7 +1208,7 @@ class EffectsEngine:
                     strobe_value = 0.0
                     if self.config.strobe_enabled and self.strobe.is_active():
                         strobe_value = self.strobe.get_strobe_value(
-                            fixture.id, i, total, phase_offset
+                            fixture.id, i, total, effect_phase_offset
                         )
 
                     # Combine layers for final intensity
@@ -1154,7 +1220,7 @@ class EffectsEngine:
                     # Color from audio (using locked palette)
                     if self.config.color_enabled:
                         color = self.color.get_color(
-                            self.audio_features, i, phase_offset
+                            self.audio_features, i, effect_phase_offset
                         )
                         fixture.red = color.r
                         fixture.green = color.g
@@ -1204,7 +1270,7 @@ class EffectsEngine:
 
                         # Pro strobe overlay
                         if self.section_manager.is_strobe_allowed():
-                            pro_strobe = self.pro_effects.strobe.get_value(i, total, phase_offset)
+                            pro_strobe = self.pro_effects.strobe.get_value(i, total, effect_phase_offset)
                             if pro_strobe > 0:
                                 fixture.dimmer = max(fixture.dimmer, pro_strobe)
 
