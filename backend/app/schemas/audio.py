@@ -27,6 +27,13 @@ class BeatResponse(BaseModel):
     is_beat: bool = False
     is_downbeat: bool = False
     beat_position: int = Field(default=1, ge=1, le=16)  # Position in bar
+    bar_count: int = Field(default=0, ge=0)
+    is_bar: bool = False
+    bar_phase: float = Field(default=0.0, ge=0, le=1)
+    phrase_count: int = Field(default=0, ge=0)
+    phrase_length_bars: int = Field(default=8, ge=1, le=32)
+    is_phrase: bool = False
+    is_section: bool = False
     time_signature: str = "4/4"
     phase: float = Field(default=0.0, ge=0, le=1)  # Phase within beat
 

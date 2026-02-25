@@ -65,6 +65,13 @@ class AudioAnalyzer:
         self.beat_position = 1
         self.current_is_beat = False
         self.current_is_downbeat = False
+        self.current_is_bar = False
+        self.current_bar_count = 0
+        self.bar_phase = 0.0
+        self.current_is_phrase = False
+        self.current_is_section = False
+        self.phrase_count = 0
+        self.phrase_length_bars = 8
 
         # Mood state
         self.current_valence = 0.0
@@ -381,6 +388,10 @@ class AudioAnalyzer:
         self.previous_beat_spectrum = spectrum
         self.previous_bass_energy = bass_energy
 
+        self.current_is_bar = False
+        self.current_is_phrase = False
+        self.current_is_section = False
+
         if is_beat:
             if self.last_beat_time > 0:
                 interval = current_time - self.last_beat_time
@@ -389,6 +400,16 @@ class AudioAnalyzer:
             self.last_beat_time = current_time
             self.beat_position = (self.beat_position % 4) + 1
             self.beat_count += 1
+            self.current_is_bar = self.beat_position == 1
+            if self.current_is_bar:
+                self.current_bar_count += 1
+                bars_per_phrase = max(1, int(self.phrase_length_bars))
+                self.current_is_phrase = (self.current_bar_count - 1) % bars_per_phrase == 0
+                # Slowest hierarchy: section/look family cadence every 2 phrases (16 bars by default)
+                section_bars = max(1, bars_per_phrase * 2)
+                self.current_is_section = (self.current_bar_count - 1) % section_bars == 0
+                if self.current_is_phrase:
+                    self.phrase_count += 1
 
         # Estimate BPM from beat history
         if len(self.beat_history) > 5:
@@ -416,6 +437,15 @@ class AudioAnalyzer:
                 self.last_beat_time = current_time
                 self.beat_position = (self.beat_position % 4) + 1
                 self.beat_count += 1
+                self.current_is_bar = self.beat_position == 1
+                if self.current_is_bar:
+                    self.current_bar_count += 1
+                    bars_per_phrase = max(1, int(self.phrase_length_bars))
+                    self.current_is_phrase = (self.current_bar_count - 1) % bars_per_phrase == 0
+                    section_bars = max(1, bars_per_phrase * 2)
+                    self.current_is_section = (self.current_bar_count - 1) % section_bars == 0
+                    if self.current_is_phrase:
+                        self.phrase_count += 1
 
         # Calculate phase within beat
         if self.current_bpm > 0:
@@ -425,6 +455,8 @@ class AudioAnalyzer:
 
         self.current_is_beat = bool(is_beat)
         self.current_is_downbeat = bool(is_beat and self.beat_position == 1)
+        self.current_is_bar = bool(self.current_is_bar)
+        self.bar_phase = ((max(self.beat_position - 1, 0) + self.beat_phase) / 4.0) % 1.0
 
         return {
             "bpm": round(self.current_bpm, 1),
@@ -433,6 +465,13 @@ class AudioAnalyzer:
             "is_downbeat": self.current_is_downbeat,
             "beat_position": self.beat_position,
             "beat_count": self.beat_count,
+            "is_bar": self.current_is_bar,
+            "bar_count": self.current_bar_count,
+            "bar_phase": round(self.bar_phase, 3),
+            "is_phrase": bool(self.current_is_phrase),
+            "is_section": bool(self.current_is_section),
+            "phrase_count": self.phrase_count,
+            "phrase_length_bars": self.phrase_length_bars,
             "time_signature": "4/4",
             "phase": round(self.beat_phase, 3),
         }
@@ -612,6 +651,13 @@ class AudioAnalyzer:
                 is_beat=self.current_is_beat,
                 is_downbeat=self.current_is_downbeat,
                 beat_position=self.beat_position,
+                bar_count=self.current_bar_count,
+                is_bar=self.current_is_bar,
+                bar_phase=self.bar_phase,
+                phrase_count=self.phrase_count,
+                phrase_length_bars=self.phrase_length_bars,
+                is_phrase=self.current_is_phrase,
+                is_section=self.current_is_section,
                 time_signature="4/4",
                 phase=self.beat_phase,
             ),
@@ -651,6 +697,13 @@ class AudioAnalyzer:
             is_beat=self.current_is_beat,
             is_downbeat=self.current_is_downbeat,
             beat_position=self.beat_position,
+            bar_count=self.current_bar_count,
+            is_bar=self.current_is_bar,
+            bar_phase=self.bar_phase,
+            phrase_count=self.phrase_count,
+            phrase_length_bars=self.phrase_length_bars,
+            is_phrase=self.current_is_phrase,
+            is_section=self.current_is_section,
             time_signature="4/4",
             phase=self.beat_phase,
         )

@@ -8,6 +8,7 @@ Real-time communication for audio streaming and updates.
 import asyncio
 import json
 import random
+import math
 from typing import Set, Dict, Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
 from datetime import datetime
@@ -406,16 +407,30 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
 
 async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = None):
     """
-    Apply reactive lighting based on audio analysis.
+    Apply reactive lighting based on hierarchical timing events.
 
-    Uses the ILS Demo Rig fixture layout:
-    - Moving Heads (16ch): addresses 1, 17, 33, 49, 65, 81, 97, 113
-    - Washes (14ch): addresses 129, 143, 157, 171, 185, 199
-    - LED Bars (12ch): addresses 213, 225, 237, 249
+    Timing hierarchy:
+    - Beat events (fast): subtle modulation only (micro oscillation + dimmer accent)
+    - Bar/downbeat events (medium): moderate directional changes
+    - Phrase/section events (slow): choose scene/look family
     """
     beat = analysis.get('beat', {})
     mood = analysis.get('mood', {})
     freq = analysis.get('frequency', {})
+
+    # Function-scoped controller state (persists between calls in this process)
+    state = getattr(apply_reactive_lighting, '_state', None)
+    if state is None:
+        state = {
+            'look_family': 'performer_focus',
+            'bar_direction': 1.0,
+            'sweep_pan': 0.0,
+            'sweep_tilt': 0.0,
+            'last_bar_count': -1,
+            'last_phrase_count': -1,
+            'phase': 0.0,
+        }
+        apply_reactive_lighting._state = state
 
     # Get energy levels from frequency bands
     bands = {b['name']: b['energy'] for b in freq.get('bands', [])}
@@ -424,7 +439,8 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
     high_energy = bands.get('high', 0) + bands.get('high_mid', 0)
 
     # Overall energy
-    rms_energy = freq.get('rms_energy', 0)
+    rms_energy = float(freq.get('rms_energy', 0))
+    energy_level = max(0.0, min(1.0, rms_energy * 2.5))
 
     # Mood affects color
     valence = mood.get('valence', 0)
@@ -433,146 +449,144 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
     # Map mood to color (valence-arousal model)
     if arousal > 0.3:
         if valence > 0.2:
-            # Excited/Happy - warm bright colors (orange/yellow)
             base_r, base_g, base_b = 255, int(180 + valence * 75), 0
         else:
-            # Angry/Tense - red/magenta
             base_r, base_g, base_b = 255, 0, int(100 + abs(valence) * 100)
     elif arousal < -0.2:
         if valence > 0.2:
-            # Relaxed/Calm - soft cyan/green
             base_r, base_g, base_b = 50, 255, int(200 + valence * 55)
         else:
-            # Sad/Melancholic - deep blue/purple
             base_r, base_g, base_b = int(80 + abs(valence) * 50), 0, 255
     else:
-        # Neutral - white with slight tint based on valence
         base_r = int(220 + valence * 35)
         base_g = 255
         base_b = int(220 - valence * 35)
 
-    # Arousal affects overall intensity
+    # Timing events from analyzer hierarchy
+    is_beat = bool(beat.get('is_beat', False))
+    is_downbeat = bool(beat.get('is_downbeat', False))
+    is_bar = bool(beat.get('is_bar', is_downbeat))
+    is_phrase = bool(beat.get('is_phrase', False))
+    is_section = bool(beat.get('is_section', False))
+    beat_position = int(beat.get('beat_position', 1))
+    bar_count = int(beat.get('bar_count', 0))
+    phrase_count = int(beat.get('phrase_count', 0))
+
+    # Phrase/section-level look family selection (slow lane)
+    if (is_section or is_phrase) and phrase_count != state['last_phrase_count']:
+        if energy_level > 0.72:
+            state['look_family'] = 'big_air'
+        elif energy_level < 0.32:
+            state['look_family'] = 'ambient_wash'
+        else:
+            state['look_family'] = 'performer_focus'
+        state['last_phrase_count'] = phrase_count
+
+    # Bar-level moderate directional change (medium lane)
+    if is_bar and bar_count != state['last_bar_count']:
+        state['bar_direction'] *= -1.0
+        state['last_bar_count'] = bar_count
+
+    # Base dimmer from RMS energy + arousal
     intensity_mult = 0.4 + abs(arousal) * 0.6
-
-    # Beat detection
-    is_beat = beat.get('is_beat', False)
-    is_downbeat = beat.get('is_downbeat', False)
-    beat_position = beat.get('beat_position', 1)
-
-    # Base dimmer from RMS energy
     base_dimmer = int(min(255, rms_energy * 400 * intensity_mult))
-
-    # Ensure minimum visibility
     base_dimmer = max(30, base_dimmer)
 
-    # Flash brighter on beat
-    if is_beat:
-        dimmer = min(255, base_dimmer + 80)
-    else:
-        dimmer = base_dimmer
-
-    if is_downbeat:
-        dimmer = 255
+    # Beat-level subtle modulation only (no full target rewrites)
+    beat_accent = 22 if is_beat else 0
+    beat_micro = 1.0 + (0.08 if is_beat else 0.0)
+    dimmer = max(0, min(255, base_dimmer + beat_accent))
 
     # Apply color with intensity
     r = int(min(255, base_r * intensity_mult))
     g = int(min(255, base_g * intensity_mult))
     b = int(min(255, base_b * intensity_mult))
 
+    # Smooth trajectory + intensity-based sweep scaling
+    sweep_scale = 0.35 + (energy_level * 0.95)
+    if state['look_family'] == 'ambient_wash':
+        pan_base = 128
+        tilt_base = 120
+        pan_amp = 22 * sweep_scale
+        tilt_amp = 14 * sweep_scale
+    elif state['look_family'] == 'performer_focus':
+        pan_base = 128
+        tilt_base = 110
+        pan_amp = 34 * sweep_scale
+        tilt_amp = 22 * sweep_scale
+    else:  # big_air
+        pan_base = 128
+        tilt_base = 100
+        pan_amp = 52 * sweep_scale
+        tilt_amp = 30 * sweep_scale
+
+    # Use bar cadence to bias direction, but keep continuity with smoothing
+    target_sweep_pan = state['bar_direction'] * (0.35 + bass_energy * 0.65) * pan_amp
+    target_sweep_tilt = (0.2 + mid_energy * 0.8) * tilt_amp
+    state['sweep_pan'] += (target_sweep_pan - state['sweep_pan']) * 0.12
+    state['sweep_tilt'] += (target_sweep_tilt - state['sweep_tilt']) * 0.12
+
+    # Beat micro-oscillation is intentionally tiny and additive
+    state['phase'] = (state['phase'] + 0.18) % (math.pi * 2)
+    micro_pan = math.sin(state['phase']) * 3.0 * beat_micro
+    micro_tilt = math.cos(state['phase']) * 2.0 * beat_micro
+
     # Open shutter
     shutter_open = 255
 
     try:
-        # =====================================================================
-        # MOVING HEADS (16ch each) - addresses 1, 17, 33, 49, 65, 81, 97, 113
-        # Channel layout: Pan(0), PanFine(1), Tilt(2), TiltFine(3), Speed(4),
-        #                 Dimmer(5), Shutter(6), R(7), G(8), B(9), W(10), ...
-        # =====================================================================
         mover_addresses = [1, 17, 33, 49, 65, 81, 97, 113]
 
         for i, addr in enumerate(mover_addresses):
-            # Determine if left or right side (for mirrored movement)
             is_left = i < 4
             mirror = 1 if is_left else -1
 
-            # Pan - base position with bass-reactive movement
-            pan_base = 128
-            pan_movement = int(bass_energy * 60 * mirror)
-            pan = max(0, min(255, pan_base + pan_movement))
+            pan = int(max(0, min(255, pan_base + mirror * state['sweep_pan'] + micro_pan)))
+            tilt = int(max(0, min(255, tilt_base + state['sweep_tilt'] + micro_tilt)))
 
-            # Tilt - mid-frequency reactive
-            tilt_base = 128
-            tilt_movement = int(mid_energy * 40)
-            tilt = max(0, min(255, tilt_base + tilt_movement))
+            await dmx_controller.set_channel(0, addr + 0, pan)
+            await dmx_controller.set_channel(0, addr + 2, tilt)
+            await dmx_controller.set_channel(0, addr + 5, dimmer)
+            await dmx_controller.set_channel(0, addr + 6, shutter_open)
+            await dmx_controller.set_channel(0, addr + 7, r)
+            await dmx_controller.set_channel(0, addr + 8, g)
+            await dmx_controller.set_channel(0, addr + 9, b)
 
-            # On downbeat, snap to center
-            if is_downbeat:
-                pan = 128
-                tilt = 100  # Slightly forward
-
-            await dmx_controller.set_channel(0, addr + 0, pan)       # Pan
-            await dmx_controller.set_channel(0, addr + 2, tilt)      # Tilt
-            await dmx_controller.set_channel(0, addr + 5, dimmer)    # Dimmer
-            await dmx_controller.set_channel(0, addr + 6, shutter_open)  # Shutter
-            await dmx_controller.set_channel(0, addr + 7, r)         # Red
-            await dmx_controller.set_channel(0, addr + 8, g)         # Green
-            await dmx_controller.set_channel(0, addr + 9, b)         # Blue
-
-        # =====================================================================
-        # WASHES (14ch each) - addresses 129, 143, 157, 171, 185, 199
-        # Channel layout: Pan(0), PanFine(1), Tilt(2), TiltFine(3), Speed(4),
-        #                 Dimmer(5), Shutter(6), R(7), G(8), B(9), W(10), A(11), Zoom(12)
-        # =====================================================================
         wash_addresses = [129, 143, 157, 171, 185, 199]
-
         for i, addr in enumerate(wash_addresses):
             is_left = i < 3
             mirror = 1 if is_left else -1
-
-            # Washes move more smoothly, less reactive
-            pan_base = 128
-            pan_movement = int(bass_energy * 30 * mirror)
-            pan = max(0, min(255, pan_base + pan_movement))
-
-            tilt = 128 + int(high_energy * 20)
-
-            # Zoom based on arousal (wide when energetic)
+            wash_pan = int(max(0, min(255, pan_base + mirror * state['sweep_pan'] * 0.5)))
+            wash_tilt = int(max(0, min(255, 118 + state['sweep_tilt'] * 0.35)))
             zoom = int(128 + arousal * 100)
 
-            await dmx_controller.set_channel(0, addr + 0, pan)       # Pan
-            await dmx_controller.set_channel(0, addr + 2, tilt)      # Tilt
-            await dmx_controller.set_channel(0, addr + 5, dimmer)    # Dimmer
-            await dmx_controller.set_channel(0, addr + 6, shutter_open)  # Shutter
-            await dmx_controller.set_channel(0, addr + 7, r)         # Red
-            await dmx_controller.set_channel(0, addr + 8, g)         # Green
-            await dmx_controller.set_channel(0, addr + 9, b)         # Blue
-            await dmx_controller.set_channel(0, addr + 12, zoom)     # Zoom
+            await dmx_controller.set_channel(0, addr + 0, wash_pan)
+            await dmx_controller.set_channel(0, addr + 2, wash_tilt)
+            await dmx_controller.set_channel(0, addr + 5, dimmer)
+            await dmx_controller.set_channel(0, addr + 6, shutter_open)
+            await dmx_controller.set_channel(0, addr + 7, r)
+            await dmx_controller.set_channel(0, addr + 8, g)
+            await dmx_controller.set_channel(0, addr + 9, b)
+            await dmx_controller.set_channel(0, addr + 12, zoom)
 
-        # =====================================================================
-        # LED BARS (12ch each) - addresses 213, 225, 237, 249
-        # Channel layout: Dimmer(0), Strobe(1), R(2), G(3), B(4), W(5), A(6), UV(7)
-        # (BUG-010 fix: aligned with visualizer/js/fixtures.js channel map)
-        # =====================================================================
         bar_addresses = [213, 225, 237, 249]
-
         for i, addr in enumerate(bar_addresses):
-            # Bars pulse on beat
-            bar_dimmer = dimmer
-            if is_beat and (i % 2 == beat_position % 2):
-                bar_dimmer = 255
+            # Beat accents are mild; avoid full-on hard flashes.
+            parity_match = (i % 2) == (beat_position % 2)
+            accent = 18 if (is_beat and parity_match) else 0
+            bar_dimmer = int(max(0, min(255, dimmer + accent)))
 
-            # Strobe on high energy sections
             strobe = 0
-            if arousal > 0.6 and is_beat:
-                strobe = 100
+            if arousal > 0.75 and is_section:
+                strobe = 80
 
-            await dmx_controller.set_channel(0, addr + 0, bar_dimmer)  # Dimmer
-            await dmx_controller.set_channel(0, addr + 1, strobe)      # Strobe
-            await dmx_controller.set_channel(0, addr + 2, r)           # Red
-            await dmx_controller.set_channel(0, addr + 3, g)           # Green
-            await dmx_controller.set_channel(0, addr + 4, b)           # Blue
+            await dmx_controller.set_channel(0, addr + 0, bar_dimmer)
+            await dmx_controller.set_channel(0, addr + 1, strobe)
+            await dmx_controller.set_channel(0, addr + 2, r)
+            await dmx_controller.set_channel(0, addr + 3, g)
+            await dmx_controller.set_channel(0, addr + 4, b)
 
-    except Exception as e:
+    except Exception:
         pass  # Ignore errors in reactive mode
 
 
