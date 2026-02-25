@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import type { MutableRefObject } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Box, IconButton, Typography, Card, CardContent,
@@ -14,6 +15,19 @@ import type { Rig, RigFixture } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
 import { audioWebSocket } from '../../services/websocket';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
+
+type BeamDebugSnapshot = {
+  fixtureId: number;
+  fixtureLabel: string;
+  targetPanDeg: number;
+  targetTiltDeg: number;
+  currentPanDeg: number;
+  currentTiltDeg: number;
+  panVelocityDegPerSec: number;
+  tiltVelocityDegPerSec: number;
+  signalConfidence: number;
+  hold: boolean;
+};
 
 // ============================================================================
 // CONSTANTS
@@ -134,10 +148,12 @@ function Fixture3D({
   fixture,
   dmxData,
   fixtureIndex,
+  onDebugUpdate,
 }: {
   fixture: RigFixture;
   dmxData: number[];
   fixtureIndex: number;
+  onDebugUpdate?: (snapshot: BeamDebugSnapshot) => void;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const headRef = useRef<THREE.Group>(null);
@@ -147,7 +163,25 @@ function Fixture3D({
   const channelMapRef = useRef(buildChannelMap(fixture));
 
   // Smoothed values to avoid jitter
-  const smoothed = useRef({ intensity: 0, r: 1, g: 1, b: 1, pan: 0, tilt: 0 });
+  const smoothed = useRef({ intensity: 0, r: 1, g: 1, b: 1 });
+
+  const FIXED_CONTROL_DT = 1 / 60;
+  const MAX_STABLE_DELTA = 1 / 20;
+  const DELTA_SPIKE_FACTOR = 2.2;
+  const controlAccumulator = useRef(0);
+  const stableDeltaEstimate = useRef(FIXED_CONTROL_DT);
+
+  const orientationState = useRef({
+    previousPanRad: 0,
+    previousTiltRad: 0,
+    currentPanRad: 0,
+    currentTiltRad: 0,
+    targetPanRad: 0,
+    targetTiltRad: 0,
+    panVelocityRadPerSec: 0,
+    tiltVelocityRadPerSec: 0,
+    holdDurationSec: 0,
+  });
 
   const beamAngle = fixture.fixture?.beam_angle || 25;
   const fixtureType = fixture.fixture?.fixture_type || 'other';
@@ -159,10 +193,15 @@ function Fixture3D({
   const [beamColor] = useState(() => new THREE.Color(1, 1, 1));
   const [beamIntensity, setBeamIntensity] = useState(0);
 
-  useFrame((_, delta) => {
+  useFrame((_, rawDelta) => {
     const baseAddr = fixture.dmx_address - 1;
     const chMap = channelMapRef.current;
-    const lerp = Math.min(1, delta * 15); // Smooth factor
+    const delta = Math.min(rawDelta, MAX_STABLE_DELTA);
+
+    // Smooth and clamp noisy frame spikes before they enter the control loop.
+    stableDeltaEstimate.current = THREE.MathUtils.lerp(stableDeltaEstimate.current, delta, 0.15);
+    const spikeLimit = Math.max(FIXED_CONTROL_DT * 1.5, stableDeltaEstimate.current * DELTA_SPIKE_FACTOR);
+    const stableDelta = Math.min(delta, spikeLimit);
 
     // Read DMX values
     const rawDimmer = chMap.dimmer !== undefined
@@ -177,12 +216,10 @@ function Fixture3D({
     const rawB = chMap.blue !== undefined
       ? (dmxData[baseAddr + chMap.blue] || 0) / 255
       : 1;
-    const rawPan = chMap.pan !== undefined
-      ? dmxData[baseAddr + chMap.pan] || 128
-      : 128;
-    const rawTilt = chMap.tilt !== undefined
-      ? dmxData[baseAddr + chMap.tilt] || 128
-      : 128;
+    const coarsePan = chMap.pan !== undefined ? dmxData[baseAddr + chMap.pan] || 128 : 128;
+    const finePan = chMap.pan_fine !== undefined ? dmxData[baseAddr + chMap.pan_fine] || 0 : 0;
+    const coarseTilt = chMap.tilt !== undefined ? dmxData[baseAddr + chMap.tilt] || 128 : 128;
+    const fineTilt = chMap.tilt_fine !== undefined ? dmxData[baseAddr + chMap.tilt_fine] || 0 : 0;
     const strobe = chMap.strobe !== undefined
       ? (dmxData[baseAddr + chMap.strobe] || 0) / 255
       : 0;
@@ -190,8 +227,16 @@ function Fixture3D({
       ? (dmxData[baseAddr + chMap.zoom] || 128) / 255
       : 0.5;
 
+    const panNormalized = chMap.pan_fine !== undefined
+      ? ((coarsePan << 8) | finePan) / 65535
+      : coarsePan / 255;
+    const tiltNormalized = chMap.tilt_fine !== undefined
+      ? ((coarseTilt << 8) | fineTilt) / 65535
+      : coarseTilt / 255;
+
     // Smooth interpolation
     const s = smoothed.current;
+    const lerp = Math.min(1, stableDelta * 15);
     s.intensity += (rawDimmer - s.intensity) * lerp;
     s.r += (rawR - s.r) * lerp;
     s.g += (rawG - s.g) * lerp;
@@ -225,17 +270,71 @@ function Fixture3D({
     }
 
     // Pan/tilt for moving heads
-    if (headRef.current && isMovingHead) {
+    if (isMovingHead) {
       const panRange = fixture.fixture?.pan_range || 540;
       const tiltRange = fixture.fixture?.tilt_range || 270;
-      const targetPan = (rawPan / 255) * (panRange * Math.PI / 180) - (panRange * Math.PI / 360);
-      const targetTilt = (rawTilt / 255) * (tiltRange * Math.PI / 180) - (tiltRange * Math.PI / 360);
+      const panRangeRad = THREE.MathUtils.degToRad(panRange);
+      const tiltRangeRad = THREE.MathUtils.degToRad(tiltRange);
+      const targetPan = panNormalized * panRangeRad - (panRangeRad / 2);
+      const targetTilt = tiltNormalized * tiltRangeRad - (tiltRangeRad / 2);
 
-      s.pan += (targetPan - s.pan) * lerp;
-      s.tilt += (targetTilt - s.tilt) * lerp;
+      controlAccumulator.current += stableDelta;
+      let stepCount = 0;
+      const o = orientationState.current;
+      while (controlAccumulator.current >= FIXED_CONTROL_DT && stepCount < 5) {
+        o.previousPanRad = o.currentPanRad;
+        o.previousTiltRad = o.currentTiltRad;
+        o.targetPanRad = targetPan;
+        o.targetTiltRad = targetTilt;
 
-      headRef.current.rotation.y = s.pan;
-      headRef.current.rotation.x = s.tilt;
+        // Keep movement physically plausible and stable under variable frame cadence.
+        const panNext = THREE.MathUtils.damp(o.currentPanRad, o.targetPanRad, 16, FIXED_CONTROL_DT);
+        const tiltNext = THREE.MathUtils.damp(o.currentTiltRad, o.targetTiltRad, 16, FIXED_CONTROL_DT);
+        o.panVelocityRadPerSec = (panNext - o.currentPanRad) / FIXED_CONTROL_DT;
+        o.tiltVelocityRadPerSec = (tiltNext - o.currentTiltRad) / FIXED_CONTROL_DT;
+        o.currentPanRad = panNext;
+        o.currentTiltRad = tiltNext;
+
+        const panErr = Math.abs(o.targetPanRad - o.currentPanRad);
+        const tiltErr = Math.abs(o.targetTiltRad - o.currentTiltRad);
+        if (panErr < THREE.MathUtils.degToRad(0.15) && tiltErr < THREE.MathUtils.degToRad(0.15)) {
+          o.holdDurationSec += FIXED_CONTROL_DT;
+        } else {
+          o.holdDurationSec = 0;
+        }
+
+        controlAccumulator.current -= FIXED_CONTROL_DT;
+        stepCount += 1;
+      }
+
+      if (stepCount === 5 && controlAccumulator.current >= FIXED_CONTROL_DT) {
+        // Prevent spiral-of-death if rendering starves for too long.
+        controlAccumulator.current = 0;
+      }
+
+      if (headRef.current) {
+        const alpha = Math.min(1, controlAccumulator.current / FIXED_CONTROL_DT);
+        headRef.current.rotation.y = THREE.MathUtils.lerp(o.previousPanRad, o.currentPanRad, alpha);
+        headRef.current.rotation.x = THREE.MathUtils.lerp(o.previousTiltRad, o.currentTiltRad, alpha);
+      }
+
+      const panErrorNorm = Math.min(1, Math.abs(o.targetPanRad - o.currentPanRad) / Math.max(0.0001, panRangeRad));
+      const tiltErrorNorm = Math.min(1, Math.abs(o.targetTiltRad - o.currentTiltRad) / Math.max(0.0001, tiltRangeRad));
+      const spikePenalty = Math.min(0.5, Math.max(0, (rawDelta - stableDelta) * 5));
+      const confidence = Math.max(0, 1 - ((panErrorNorm + tiltErrorNorm) * 0.5 + spikePenalty));
+
+      onDebugUpdate?.({
+        fixtureId: fixture.id,
+        fixtureLabel: fixture.name || fixture.fixture?.model || `Fixture ${fixture.id}`,
+        targetPanDeg: THREE.MathUtils.radToDeg(o.targetPanRad),
+        targetTiltDeg: THREE.MathUtils.radToDeg(o.targetTiltRad),
+        currentPanDeg: THREE.MathUtils.radToDeg(o.currentPanRad),
+        currentTiltDeg: THREE.MathUtils.radToDeg(o.currentTiltRad),
+        panVelocityDegPerSec: THREE.MathUtils.radToDeg(o.panVelocityRadPerSec),
+        tiltVelocityDegPerSec: THREE.MathUtils.radToDeg(o.tiltVelocityRadPerSec),
+        signalConfidence: confidence,
+        hold: o.holdDurationSec > 0.2,
+      });
     }
   });
 
@@ -550,7 +649,13 @@ function HazeParticles({ count, spread }: { count: number; spread: [number, numb
 // MAIN SCENE COMPONENT
 // ============================================================================
 
-function Scene({ rig }: { rig: Rig }) {
+function Scene({
+  rig,
+  debugBuffer,
+}: {
+  rig: Rig;
+  debugBuffer: MutableRefObject<Record<number, BeamDebugSnapshot>>;
+}) {
   const dmxData = useDMXStore((state) => {
     const universeData = state.universes.get(0);
     return universeData || new Array(512).fill(0);
@@ -596,6 +701,9 @@ function Scene({ rig }: { rig: Rig }) {
           fixture={fixture}
           dmxData={dmxData}
           fixtureIndex={index}
+          onDebugUpdate={(snapshot) => {
+            debugBuffer.current[snapshot.fixtureId] = snapshot;
+          }}
         />
       ))}
 
@@ -619,6 +727,8 @@ export default function RigVisualizer() {
   const [rig, setRig] = useState<Rig | null>(null);
   const [loading, setLoading] = useState(true);
   const proLighting = useDMXStore((state) => state.proLighting);
+  const beamDebugBuffer = useRef<Record<number, BeamDebugSnapshot>>({});
+  const [beamDebugRows, setBeamDebugRows] = useState<BeamDebugSnapshot[]>([]);
   const isDemo = !id; // No rig ID = demo mode
 
   const {
@@ -668,6 +778,16 @@ export default function RigVisualizer() {
       fetchDemoRig();
     }
   }, [id]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const rows = Object.values(beamDebugBuffer.current)
+        .sort((a, b) => a.fixtureId - b.fixtureId);
+      setBeamDebugRows(rows);
+    }, 120);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   const fetchRig = async (rigId: number) => {
     setLoading(true);
@@ -761,9 +881,35 @@ export default function RigVisualizer() {
           }}
           dpr={[1, 1.5]}
         >
-          <Scene rig={rig} />
+          <Scene rig={rig} debugBuffer={beamDebugBuffer} />
         </Canvas>
       </Box>
+
+      {/* Beam debug overlay to separate control jitter from render jitter */}
+      <Card sx={{ mt: 2, maxHeight: 220, overflow: 'auto' }}>
+        <CardContent sx={{ py: 1.25 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Beam Debug Overlay (target/current/velocity/confidence/hold)
+          </Typography>
+          {beamDebugRows.length === 0 ? (
+            <Typography variant="caption" color="text.secondary">
+              Waiting for moving-head fixture updates...
+            </Typography>
+          ) : (
+            <Box sx={{ display: 'grid', gap: 0.3, fontFamily: 'monospace' }}>
+              {beamDebugRows.map((row) => (
+                <Typography key={row.fixtureId} variant="caption" component="div">
+                  {row.fixtureLabel.padEnd(18, ' ')} | tgt P/T {row.targetPanDeg.toFixed(1)}°/{row.targetTiltDeg.toFixed(1)}°
+                  {' '}| cur P/T {row.currentPanDeg.toFixed(1)}°/{row.currentTiltDeg.toFixed(1)}°
+                  {' '}| vel P/T {row.panVelocityDegPerSec.toFixed(1)}/{row.tiltVelocityDegPerSec.toFixed(1)} °/s
+                  {' '}| conf {(row.signalConfidence * 100).toFixed(0)}%
+                  {' '}| {row.hold ? 'HOLD' : 'TRACK'}
+                </Typography>
+              ))}
+            </Box>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Info Panel */}
       <Card sx={{ mt: 2 }}>
