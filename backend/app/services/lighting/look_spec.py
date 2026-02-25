@@ -79,6 +79,8 @@ def build_lighting_look_spec(engine) -> LightingLookSpec:
     movement_speed = 0.0
     strobe_mode = "off"
     palette_id = "unknown"
+    palette_version = int(getattr(engine, "_palette_version", 1) or 1)
+    palette_locked = bool(getattr(engine, "_palette_locked", False))
     try:
         movement_pattern = engine.movement.params.pattern.value
         movement_speed = max(
@@ -86,7 +88,7 @@ def build_lighting_look_spec(engine) -> LightingLookSpec:
             float(getattr(engine.movement.params, "tilt_speed", 0.0)),
         )
         strobe_mode = engine.strobe.params.mode.value
-        palette_id = engine.config.palette.value
+        palette_id = getattr(getattr(engine, "_current_song_palette", None), "value", None) or engine.config.palette.value
     except Exception:
         pass
 
@@ -114,6 +116,15 @@ def build_lighting_look_spec(engine) -> LightingLookSpec:
     iris = _clamp01(0.7 - energy * 0.45)
     key_priority = 0.9 if section in {"verse", "bridge", "outro"} else 0.6
 
+    section_saturation_mult = 1.0
+    section_white_offset = 0.0
+    if section in {"chorus", "drop", "peak"}:
+        section_saturation_mult = 1.2
+        section_white_offset = -0.04
+    elif section in {"breakdown", "bridge"}:
+        section_saturation_mult = 0.75
+        section_white_offset = 0.08
+
     transition_ms = 260 if section in {"chorus", "drop", "peak"} else 700
     blackout_policy = template.blackout_policy if template else ("button" if section in {"outro", "peak"} else "phrase_boundary")
 
@@ -123,6 +134,8 @@ def build_lighting_look_spec(engine) -> LightingLookSpec:
         genre=genre,
         energy=energy,
         bpm=bpm,
+        palette_version=palette_version,
+        palette_locked=palette_locked,
         beam=BeamLookParams(
             beam_angle_deg=beam_width_target.beam_angle_deg,
             beam_width_normalized=beam_width_target.normalized_width,
@@ -144,8 +157,8 @@ def build_lighting_look_spec(engine) -> LightingLookSpec:
             palette_id=palette_id,
             dominant_color=dominant_color,
             accent_color=accent_color,
-            saturation=_clamp01(0.35 + energy * 0.6),
-            white_level=_clamp01(0.15 + energy * 0.35),
+            saturation=_clamp01((0.35 + energy * 0.6) * section_saturation_mult),
+            white_level=_clamp01(0.15 + energy * 0.35 + section_white_offset),
         ),
         transition=TransitionLookParams(
             mib_enabled=template.enable_mib if template else True,

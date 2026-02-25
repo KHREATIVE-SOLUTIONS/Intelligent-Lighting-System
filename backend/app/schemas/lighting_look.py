@@ -59,6 +59,8 @@ class LightingLookSpec(BaseModel):
     genre: str
     energy: float = Field(..., ge=0.0, le=1.0)
     bpm: float = Field(..., ge=0.0, le=300.0)
+    palette_version: int = Field(default=1, ge=1)
+    palette_locked: bool = False
     beam: BeamLookParams
     spot: SpotLookParams
     color: ColorLookParams
