@@ -124,8 +124,13 @@ class EffectsEngine:
         self._silence_start_time: Optional[float] = None
         self._current_song_palette: ColorPalette = self.config.palette
         self._palette_locked: bool = False
+        self._palette_version: int = 1
         self._available_palettes = list(ColorPalette)
         self._palette_index = 0
+        self._song_transition_marker: Optional[str] = None
+        self._pending_palette_reseed: bool = False
+        self._pending_palette_reseed_at: float = 0.0
+        self._last_palette_reseed_time: float = -999.0
 
         # White strobe flash state
         self._white_strobe_flash = False
@@ -288,15 +293,55 @@ class EffectsEngine:
 
         # Song change detection for palette locking
         if self.config.lock_palette_per_song:
-            self._detect_song_change(energy)
+            self._detect_song_change(energy, ml_data)
 
         # Process ML pipeline data when pro lighting is enabled
         if ml_data and self._pro_lighting_enabled:
             self._apply_ml_data(ml_data)
 
-    def _detect_song_change(self, energy: float):
-        """Detect song changes via silence and switch color palette."""
+    def _detect_song_change(self, energy: float, ml_data: dict = None):
+        """Detect song changes (silence + ML transition cues) and switch color palette."""
         current_time = self.time
+
+        # --- ML-aware song transition detection (preferred over silence heuristics) ---
+        structure_data = ml_data.get("structure", {}) if isinstance(ml_data, dict) else {}
+        if structure_data:
+            section = str(structure_data.get("section", "unknown")).lower()
+            is_boundary = bool(structure_data.get("is_section_boundary", False))
+            transition = structure_data.get("transition", {}) if isinstance(structure_data.get("transition", {}), dict) else {}
+            transition_window_s = float(structure_data.get("transition_window_s", transition.get("window_s", 1.25)) or 1.25)
+            transition_prob = float(
+                structure_data.get("song_transition_probability",
+                structure_data.get("transition_probability",
+                transition.get("song_change_probability", 0.0))) or 0.0
+            )
+            explicit_transition = bool(
+                structure_data.get("is_song_transition")
+                or structure_data.get("new_song")
+                or transition.get("is_song_transition")
+            )
+            song_marker = structure_data.get("song_id") or structure_data.get("track_id")
+            marker_changed = bool(song_marker and song_marker != self._song_transition_marker)
+            transition_candidate = explicit_transition or transition_prob >= 0.8 or marker_changed
+
+            if song_marker:
+                self._song_transition_marker = song_marker
+
+            if transition_candidate:
+                self._pending_palette_reseed = True
+                self._pending_palette_reseed_at = current_time + max(0.3, transition_window_s)
+
+            phrase_boundary = (self.audio_state.beat_number > 0 and self.audio_state.beat_number % 16 == 0)
+            safe_boundary = is_boundary or phrase_boundary or section in {"intro", "outro", "breakdown"}
+            if self._pending_palette_reseed and (
+                (current_time >= self._pending_palette_reseed_at and safe_boundary)
+                or current_time >= self._pending_palette_reseed_at + 0.75
+            ):
+                if current_time - self._last_palette_reseed_time > 2.0:
+                    self._pending_palette_reseed = False
+                    self._last_palette_reseed_time = current_time
+                    self._on_song_change()
+                    return
 
         if energy < self.config.silence_threshold:
             # Audio is silent
@@ -320,6 +365,8 @@ class EffectsEngine:
         self._palette_index = (self._palette_index + 1) % len(self._available_palettes)
         self._current_song_palette = self._available_palettes[self._palette_index]
         self._palette_locked = False  # Will lock on next audio
+        self._palette_version += 1
+        self._pending_palette_reseed = False
 
         # Apply the new palette
         self.color.set_palette(self._current_song_palette)
@@ -340,6 +387,68 @@ class EffectsEngine:
         self._mib_states.clear()
 
         print(f"[Effects] Song changed! New palette: {self._current_song_palette.value}")
+
+    def _get_palette_narrative_variant(self, section: str) -> Dict[str, float]:
+        """Section-aware palette narrative controls for one-song palette identity."""
+        section = (section or "unknown").lower()
+        base_variant = {
+            "accent_swap": 0.0,
+            "sat_mult": 1.0,
+            "white_mix": 0.08,
+            "color_count": 3.0,
+        }
+        if section in {"intro", "verse"}:
+            return base_variant
+        if section in {"chorus", "drop", "peak"}:
+            return {
+                "accent_swap": 1.0,
+                "sat_mult": 1.2,
+                "white_mix": 0.04,
+                "color_count": 3.0,
+            }
+        if section in {"breakdown", "bridge"}:
+            return {
+                "accent_swap": 0.0,
+                "sat_mult": 0.75,
+                "white_mix": 0.18,
+                "color_count": 1.0,
+            }
+        return {
+            "accent_swap": 0.0,
+            "sat_mult": 0.92,
+            "white_mix": 0.11,
+            "color_count": 2.0,
+        }
+
+    def _apply_palette_narrative_to_fixture(self, fixture: Fixture, fixture_index: int, section: str):
+        """Apply section-level palette variants while preserving song-level palette identity."""
+        variant = self._get_palette_narrative_variant(section)
+
+        r, g, b = fixture.red, fixture.green, fixture.blue
+        avg = (r + g + b) / 3.0
+
+        sat_mult = max(0.0, float(variant["sat_mult"]))
+        r = avg + (r - avg) * sat_mult
+        g = avg + (g - avg) * sat_mult
+        b = avg + (b - avg) * sat_mult
+
+        if variant["color_count"] <= 1.0:
+            r = g = b = avg
+        elif variant["color_count"] <= 2.0:
+            if fixture_index % 2:
+                r, b = b, r
+
+        if variant["accent_swap"] >= 0.5 and fixture_index % 2:
+            r, b = b, r
+
+        white_mix = max(0.0, min(0.4, float(variant["white_mix"])))
+        r = r * (1.0 - white_mix) + white_mix
+        g = g * (1.0 - white_mix) + white_mix
+        b = b * (1.0 - white_mix) + white_mix
+
+        fixture.red = max(0.0, min(1.0, r))
+        fixture.green = max(0.0, min(1.0, g))
+        fixture.blue = max(0.0, min(1.0, b))
 
     def _apply_ml_data(self, ml_data: dict):
         """Apply ML pipeline data (MERT emotion, structure, genre) to pro lighting modules.
@@ -738,6 +847,7 @@ class EffectsEngine:
             # Get LFO outputs for all fixtures
             lfo_outputs = self._lfo_engine.update()
 
+        section, _ = self._resolve_section_genre()
         for i, fixture in enumerate(all_fixtures):
             phase_offset = i / max(1, total)
 
@@ -940,6 +1050,10 @@ class EffectsEngine:
                             fixture.green = key_override["g"]
                             fixture.blue = key_override["b"]
 
+                    # Song-level palette lock with section-level narrative variants
+                    if self.config.color_enabled:
+                        self._apply_palette_narrative_to_fixture(fixture, i, section)
+
             # Apply section template intensity scale across all non-training paths
             fixture.dimmer *= self._current_section_intensity_scale
 
@@ -997,6 +1111,9 @@ class EffectsEngine:
             "enabled": True,
             "genre": self.genre_manager.current_genre.value,
             "section": self.section_manager.current_section.value,
+            "palette_version": self._palette_version,
+            "palette_locked": self._palette_locked,
+            "palette": self._current_song_palette.value,
             "section_intensity": round(self.section_manager.get_intensity(), 3),
             "movement_energy": round(self.section_manager.get_movement_energy(), 3),
             "strobe_allowed": self.section_manager.is_strobe_allowed(),
