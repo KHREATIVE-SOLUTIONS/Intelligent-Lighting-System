@@ -154,6 +154,10 @@ cd frontend
 npm test
 ```
 
+## Quality Assurance
+
+- [Beam Operator QA Plan](./BEAM_OPERATOR_QA_PLAN.md)
+
 ## Contributing
 
 1. Fork the repository
