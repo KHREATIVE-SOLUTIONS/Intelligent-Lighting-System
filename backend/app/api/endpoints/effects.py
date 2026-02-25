@@ -114,6 +114,23 @@ class PresetRequest(BaseModel):
     preset: str = Field(..., description="Preset name")
 
 
+class MLTargetGatingRequest(BaseModel):
+    """Request to tune ML confidence gates for target switching."""
+    enabled: Optional[bool] = None
+
+    genre_confidence_on: Optional[float] = Field(None, ge=0.0, le=1.0)
+    genre_confidence_off: Optional[float] = Field(None, ge=0.0, le=1.0)
+    genre_consecutive_frames: Optional[int] = Field(None, ge=1, le=30)
+    genre_min_hold_ms: Optional[int] = Field(None, ge=0, le=5000)
+    genre_min_confidence_delta: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+    section_confidence_on: Optional[float] = Field(None, ge=0.0, le=1.0)
+    section_confidence_off: Optional[float] = Field(None, ge=0.0, le=1.0)
+    section_consecutive_frames: Optional[int] = Field(None, ge=1, le=30)
+    section_min_hold_ms: Optional[int] = Field(None, ge=0, le=5000)
+    section_min_confidence_delta: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+
 # === Endpoints ===
 
 @router.get("/status", response_model=EffectsStatus)
@@ -164,6 +181,65 @@ async def stop_effects():
     engine.stop()
     return {"status": "stopped"}
 
+
+
+
+@router.get("/ml-target-gating")
+async def get_ml_target_gating(request: Request):
+    """Get ML confidence-gating config for section/genre target switching."""
+    engine = getattr(request.app.state, "effects_engine", None) or get_effects_engine()
+    cfg = engine.config
+    return {
+        "enabled": cfg.ml_target_gating_enabled,
+        "genre": {
+            "confidence_on": cfg.ml_genre_confidence_on,
+            "confidence_off": cfg.ml_genre_confidence_off,
+            "consecutive_frames": cfg.ml_genre_consecutive_frames,
+            "min_hold_ms": cfg.ml_genre_min_hold_ms,
+            "min_confidence_delta": cfg.ml_genre_min_confidence_delta,
+        },
+        "section": {
+            "confidence_on": cfg.ml_section_confidence_on,
+            "confidence_off": cfg.ml_section_confidence_off,
+            "consecutive_frames": cfg.ml_section_consecutive_frames,
+            "min_hold_ms": cfg.ml_section_min_hold_ms,
+            "min_confidence_delta": cfg.ml_section_min_confidence_delta,
+        },
+    }
+
+
+@router.post("/ml-target-gating")
+async def set_ml_target_gating(payload: MLTargetGatingRequest, request: Request):
+    """Update ML confidence-gating config for section/genre target switching."""
+    engine = getattr(request.app.state, "effects_engine", None) or get_effects_engine()
+    cfg = engine.config
+
+    if payload.enabled is not None:
+        cfg.ml_target_gating_enabled = payload.enabled
+
+    if payload.genre_confidence_on is not None:
+        cfg.ml_genre_confidence_on = payload.genre_confidence_on
+    if payload.genre_confidence_off is not None:
+        cfg.ml_genre_confidence_off = payload.genre_confidence_off
+    if payload.genre_consecutive_frames is not None:
+        cfg.ml_genre_consecutive_frames = payload.genre_consecutive_frames
+    if payload.genre_min_hold_ms is not None:
+        cfg.ml_genre_min_hold_ms = payload.genre_min_hold_ms
+    if payload.genre_min_confidence_delta is not None:
+        cfg.ml_genre_min_confidence_delta = payload.genre_min_confidence_delta
+
+    if payload.section_confidence_on is not None:
+        cfg.ml_section_confidence_on = payload.section_confidence_on
+    if payload.section_confidence_off is not None:
+        cfg.ml_section_confidence_off = payload.section_confidence_off
+    if payload.section_consecutive_frames is not None:
+        cfg.ml_section_consecutive_frames = payload.section_consecutive_frames
+    if payload.section_min_hold_ms is not None:
+        cfg.ml_section_min_hold_ms = payload.section_min_hold_ms
+    if payload.section_min_confidence_delta is not None:
+        cfg.ml_section_min_confidence_delta = payload.section_min_confidence_delta
+
+    return await get_ml_target_gating(request)
 
 @router.post("/auto-mode")
 async def set_auto_mode(request: AutoModeRequest):
