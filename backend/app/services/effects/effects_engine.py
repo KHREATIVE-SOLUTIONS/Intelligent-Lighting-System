@@ -1003,6 +1003,7 @@ class EffectsEngine:
         """Get current professional lighting state for API/WebSocket."""
         if not self._pro_lighting_enabled:
             return {"enabled": False}
+        timing_debug = self.decision.get_transition_debug()
         state = {
             "enabled": True,
             "genre": self.genre_manager.current_genre.value,
@@ -1016,6 +1017,10 @@ class EffectsEngine:
             "pro_build_active": self.pro_effects.build.is_active,
             "key_lighting_zones": [z.value for z in self.key_lighting.get_active_zones()],
             "strobe_budget_remaining": self.pro_effects.strobe.strobe_budget_remaining,
+            "pending_effect": timing_debug["pending_effect"],
+            "commit_in_bars": timing_debug["commit_in_bars"],
+            "last_commit_bar": timing_debug["last_commit_bar"],
+            "pre_cue_active": timing_debug["pre_cue_active"],
         }
         # Include ML emotion data if available
         if self._ml_emotion_mapping is not None:

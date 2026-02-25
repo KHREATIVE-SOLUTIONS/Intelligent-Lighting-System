@@ -17,11 +17,18 @@ from collections import deque
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Callable
 from dataclasses import dataclass, field
+import copy
 import random
 import time
 import math
 
 from .movement_patterns import MovementType, StaticLook, MOVEMENT_PRESETS
+from ..lighting.section_manager import (
+    bars_until_boundary,
+    is_downbeat,
+    is_impact_event,
+    next_musical_boundary_bar,
+)
 from .dimmer_effects import DimmerType, DIMMER_PRESETS, BEAT_PATTERNS
 from .strobe_controller import StrobeMode, STROBE_PRESETS
 
@@ -496,21 +503,31 @@ class DecisionEngine:
         self._anticipation_target_state: Optional[LightingState] = None
         self._pre_drop_blackout_triggered: bool = False
 
+        # Boundary-based pre-cue/commit state
+        self._pending_selection: Optional[EffectSelection] = None
+        self._pending_effect_name: Optional[str] = None
+        self._pending_commit_bar: Optional[int] = None
+        self._pending_section: Optional[str] = None
+        self._pending_state: Optional[LightingState] = None
+        self._pre_cue_active: bool = False
+        self._last_commit_bar: int = 0
+
     def set_genre(self, genre: str):
         """Set the active genre for decision weighting."""
         self._genre = genre.lower()
 
     def set_section(self, section: str):
         """Set the current song section (from SectionManager)."""
+        normalized = section.lower()
         old_section = self._section
-        self._section = section.lower()
-        if old_section != self._section:
-            # Section changed - this is the primary trigger for effect changes
-            self._on_section_change(old_section, self._section)
+        if old_section == normalized:
+            return
 
-    def _on_section_change(self, old_section: str, new_section: str):
-        """Handle section transition as the primary effect-change trigger."""
-        # Map sections to lighting states
+        self._section = normalized
+        self._on_section_change(old_section, normalized)
+
+    def _resolve_state_for_section(self, section: str) -> LightingState:
+        """Map section names to lighting states."""
         section_state_map = {
             "intro": LightingState.INTRO,
             "verse": LightingState.SUSTAIN,
@@ -522,43 +539,94 @@ class DecisionEngine:
             "outro": LightingState.OUTRO,
             "buildup": LightingState.BUILDUP,
         }
-        new_state = section_state_map.get(new_section, self.state)
+        return section_state_map.get(section, self.state)
+
+    def _on_section_change(self, old_section: str, new_section: str):
+        """Handle section transition with boundary commit + pre-cue staging."""
+        new_state = self._resolve_state_for_section(new_section)
+        impact_event = is_impact_event(new_section)
+
+        if impact_event:
+            self._clear_pending_transition()
+            self._commit_section_change(new_section, new_state)
+            return
+
+        commit_bar = next_musical_boundary_bar(self._total_bars)
+        self._pending_selection = self._build_genre_selection(new_section)
+        self._pending_effect_name = self._pending_selection.movement.value
+        self._pending_commit_bar = commit_bar
+        self._pending_section = new_section
+        self._pending_state = new_state
+        self._pre_cue_active = bars_until_boundary(self._total_bars) <= 1
+
+    def _commit_section_change(self, section: str, new_state: LightingState):
+        """Commit pending/immediate section transitions."""
         if new_state != self.state:
             self.previous_state = self.state
             self.state = new_state
             self.state_start_time = time.time()
             self.bars_in_state = 0
-            self._last_effect_change_bar = self._total_bars
 
-            # Track drops for anti-fatigue
             if new_state == LightingState.PEAK:
                 self._drop_count += 1
-                # Vary drop intensity: first drop 100%, subsequent drops 85-100%
-                if self._drop_count > 1:
-                    self._drop_intensity_variation = random.uniform(0.0, 0.15)
-                else:
-                    self._drop_intensity_variation = 0.0
+                self._drop_intensity_variation = random.uniform(0.0, 0.15) if self._drop_count > 1 else 0.0
 
-        # Select effects for the new section
-        self._select_genre_effects(new_section)
+        if self._pending_selection is not None:
+            self.selection = copy.deepcopy(self._pending_selection)
+        else:
+            self.selection = self._build_genre_selection(section)
+
+        self._last_effect_change_bar = self._total_bars
+        self._last_movement_change_bar = self._total_bars
+        self._last_color_change_bar = self._total_bars
+        self._last_commit_bar = self._total_bars + 1 if self.audio.is_beat and is_downbeat(self.audio.beat_number) else self._total_bars
+        self._clear_pending_transition()
+
+    def _clear_pending_transition(self):
+        self._pending_selection = None
+        self._pending_effect_name = None
+        self._pending_commit_bar = None
+        self._pending_section = None
+        self._pending_state = None
+        self._pre_cue_active = False
+
+    def _update_pre_cue_state(self):
+        if self._pending_commit_bar is None:
+            self._pre_cue_active = False
+            return
+        self._pre_cue_active = (self._pending_commit_bar - self._total_bars) <= 1
+
+    def _commit_pending_on_downbeat(self):
+        if self._pending_commit_bar is None:
+            return
+        if not (self.audio.is_beat and is_downbeat(self.audio.beat_number)):
+            return
+
+        current_bar = self._total_bars + 1
+        if current_bar >= self._pending_commit_bar and self._pending_state is not None and self._pending_section is not None:
+            self._commit_section_change(self._pending_section, self._pending_state)
+
+    def _is_phrase_boundary(self) -> bool:
+        current_bar = self._total_bars + 1
+        return any(current_bar % size == 0 for size in (4, 8, 16))
 
     def _can_change_effect(self, change_type: str = "general") -> bool:
-        """Check if effect change is allowed at current bar position.
-
-        Professional timing: changes only on bar/phrase boundaries.
-        """
+        """Check if effect change is allowed at current bar/phrase boundary."""
         min_bars = GENRE_MIN_CHANGE_BARS.get(self._genre, 4)
+        if not self._is_phrase_boundary():
+            return False
 
         if change_type == "movement":
             return (self._total_bars - self._last_movement_change_bar) >= max(min_bars, 8)
-        elif change_type == "color":
-            # Color changes only on section boundaries (handled by _on_section_change)
-            return False
-        else:
+        if change_type == "color":
+            return (self._total_bars - self._last_color_change_bar) >= max(min_bars, 8)
+        if change_type == "strobe":
             return (self._total_bars - self._last_effect_change_bar) >= min_bars
+        return (self._total_bars - self._last_effect_change_bar) >= min_bars
 
-    def _select_genre_effects(self, section: str):
-        """Select effects from genre-specific palettes for the given section."""
+    def _build_genre_selection(self, section: str) -> EffectSelection:
+        """Build effect selection from genre-specific palettes for a section."""
+        selection = copy.deepcopy(self.selection)
         genre_effects = GENRE_SECTION_EFFECTS.get(self._genre, GENRE_SECTION_EFFECTS["edm"])
         section_effects = genre_effects.get(section, genre_effects.get("verse", {}))
 
@@ -566,11 +634,10 @@ class DecisionEngine:
         dimmer_options = section_effects.get("dimmer", [DimmerType.SINE_PULSE])
         strobe_options = section_effects.get("strobe", [StrobeMode.OFF])
 
-        self.selection.movement = random.choice(movement_options) if movement_options else MovementType.NONE
-        self.selection.dimmer = random.choice(dimmer_options) if dimmer_options else DimmerType.SINE_PULSE
-        self.selection.strobe = random.choice(strobe_options) if strobe_options else StrobeMode.OFF
+        selection.movement = random.choice(movement_options) if movement_options else MovementType.NONE
+        selection.dimmer = random.choice(dimmer_options) if dimmer_options else DimmerType.SINE_PULSE
+        selection.strobe = random.choice(strobe_options) if strobe_options else StrobeMode.OFF
 
-        # Map movement to preset name
         preset_map = {
             MovementType.HORIZONTAL_SWEEP: "slow_sweep",
             MovementType.TRUE_CIRCLE: "circle_slow",
@@ -583,9 +650,8 @@ class DecisionEngine:
             MovementType.ALTERNATING: "alternating_sweep",
             MovementType.TILT_CHASE: "tilt_wave",
         }
-        self.selection.movement_preset = preset_map.get(self.selection.movement, "")
+        selection.movement_preset = preset_map.get(selection.movement, "")
 
-        # Map dimmer to preset
         dimmer_preset_map = {
             DimmerType.SINE_PULSE: "breathing",
             DimmerType.BEAT_SYNC: "beat_kick",
@@ -593,31 +659,38 @@ class DecisionEngine:
             DimmerType.RAMP_UP: "build_up",
             DimmerType.RAMP_DOWN: "fade_out",
         }
-        self.selection.dimmer_preset = dimmer_preset_map.get(self.selection.dimmer, "breathing")
+        selection.dimmer_preset = dimmer_preset_map.get(selection.dimmer, "breathing")
 
-        # Beat pattern for beat-sync
-        if self.selection.dimmer in (DimmerType.BEAT_SYNC, DimmerType.KICK_FOLLOWER):
-            if section in ("drop", "chorus"):
-                self.selection.beat_pattern = BEAT_PATTERNS.get("four_on_floor", [])
-            else:
-                self.selection.beat_pattern = BEAT_PATTERNS.get("half_time", [])
+        if selection.dimmer in (DimmerType.BEAT_SYNC, DimmerType.KICK_FOLLOWER):
+            selection.beat_pattern = BEAT_PATTERNS.get("four_on_floor", []) if section in ("drop", "chorus") else BEAT_PATTERNS.get("half_time", [])
 
-        # Strobe only on drop (handled by section check)
         if section == "drop":
-            self.selection.strobe_on_drop = True
-            self.selection.strobe_preset = "drop_burst"
+            selection.strobe_on_drop = True
+            selection.strobe_preset = "drop_burst"
         else:
-            self.selection.strobe_on_drop = False
+            selection.strobe_on_drop = False
+            selection.strobe_preset = "none"
 
-        # Static look chance on breakdown/intro
+        selection.use_static_look = False
         if section in ("breakdown", "intro"):
-            self.selection.use_static_look = random.random() < 0.5
-            if self.selection.use_static_look:
-                self.selection.static_look = self._pick_static_look()
-                self.selection.movement = MovementType.NONE
+            selection.use_static_look = random.random() < 0.5
+            if selection.use_static_look:
+                selection.static_look = self._pick_static_look()
+                selection.movement = MovementType.NONE
 
-        self._last_effect_change_bar = self._total_bars
-        self._last_movement_change_bar = self._total_bars
+        return selection
+
+    def get_transition_debug(self) -> Dict[str, Optional[object]]:
+        """Expose pending/commit timing for UI debug overlays."""
+        commit_in_bars = None
+        if self._pending_commit_bar is not None:
+            commit_in_bars = max(0, self._pending_commit_bar - self._total_bars)
+        return {
+            "pending_effect": self._pending_effect_name,
+            "commit_in_bars": commit_in_bars,
+            "last_commit_bar": self._last_commit_bar,
+            "pre_cue_active": self._pre_cue_active,
+        }
 
     def get_dynamic_intensity_scale(self) -> float:
         """Get intensity scale factor for dynamic range enforcement.
@@ -670,6 +743,10 @@ class DecisionEngine:
         # Track total bars
         if audio.is_beat and audio.beat_number % 4 == 0:
             self._total_bars += 1
+
+        # Pre-cue stage starts one bar before commit; actual commit only on downbeat.
+        self._update_pre_cue_state()
+        self._commit_pending_on_downbeat()
 
         # Detect song structure changes
         self._detect_structure_changes()
@@ -849,6 +926,8 @@ class DecisionEngine:
                 )
                 s.movement = MovementType(next_move)
             self.cooldowns.set_cooldown("pattern_change", 8, audio.bpm)
+            self._last_movement_change_bar = self._total_bars
+            self._last_effect_change_bar = self._total_bars
 
         # Dimmer: beat-sync kick pattern
         s.dimmer = DimmerType.BEAT_SYNC
@@ -892,6 +971,8 @@ class DecisionEngine:
                 )
                 s.movement = MovementType(next_move)
             self.cooldowns.set_cooldown("pattern_change", 8, audio.bpm)
+            self._last_movement_change_bar = self._total_bars
+            self._last_effect_change_bar = self._total_bars
 
         # Dimmer: beat-sync
         s.dimmer = DimmerType.BEAT_SYNC

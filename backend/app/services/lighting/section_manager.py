@@ -17,6 +17,34 @@ from enum import Enum
 from typing import Dict, List, Optional, Tuple, Callable
 
 
+# Shared musical timing rules used by section/effect systems.
+ALLOWED_MUSICAL_BOUNDARIES: Tuple[int, ...] = (4, 8, 16)
+IMPACT_SECTIONS = {"drop"}
+
+
+def is_downbeat(beat_number: int) -> bool:
+    """Return True when beat number represents a bar downbeat."""
+    return beat_number > 0 and beat_number % 4 == 1
+
+
+def next_musical_boundary_bar(completed_bars: int) -> int:
+    """Get next allowed commit bar based on 4/8/16 phrase boundaries."""
+    candidate = completed_bars + 1
+    while not any(candidate % bars == 0 for bars in ALLOWED_MUSICAL_BOUNDARIES):
+        candidate += 1
+    return candidate
+
+
+def bars_until_boundary(completed_bars: int) -> int:
+    """How many bars remain until the next allowed boundary."""
+    return max(0, next_musical_boundary_bar(completed_bars) - completed_bars)
+
+
+def is_impact_event(section_name: str) -> bool:
+    """Impact sections bypass normal boundary waiting."""
+    return section_name.lower() in IMPACT_SECTIONS
+
+
 class SongSection(Enum):
     """Song structure sections."""
     INTRO = "intro"
