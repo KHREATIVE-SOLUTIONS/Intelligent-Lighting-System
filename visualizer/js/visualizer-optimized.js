@@ -28,9 +28,12 @@ class ILSVisualizerOptimized {
         this.lookProfile = {
             beamWidth: 0.5,
             beamDensity: 0.9,
+            beamFalloff: 0.8,
             spotScale: 1.0,
             movementSmoothing: 0.15,
-            strobeGate: 1.0
+            strobeGate: 1.0,
+            strobePhase: 0.0,
+            transitionAlpha: 0.2
         };
         this.visualizerSettings = {
             haze_level: 1.0,
@@ -49,6 +52,7 @@ class ILSVisualizerOptimized {
         // UI state
         this.showGrid = true;
         this.showLabels = true;
+        this.showDebugOverlay = false;
         this.testMode = false;
         this.testPhase = 0;
 
@@ -57,6 +61,15 @@ class ILSVisualizerOptimized {
         this.wsReconnectTimer = null;
 
         this.init();
+    }
+
+    getTransitionMs() {
+        return Math.max(80, Math.min(4000, this.lookSpec?.transition?.transition_ms ?? 500));
+    }
+
+    getTransitionAlpha(delta, responseScale = 1.0) {
+        const transitionSeconds = (this.getTransitionMs() / 1000) * responseScale;
+        return 1 - Math.exp(-delta / Math.max(0.03, transitionSeconds));
     }
 
     async init() {
@@ -180,6 +193,7 @@ class ILSVisualizerOptimized {
             ]);
             this.scene.add(new THREE.Line(geo, trussMat));
         });
+
     }
 
     createFixtures() {
@@ -306,6 +320,7 @@ class ILSVisualizerOptimized {
         `;
         document.getElementById('container').appendChild(this.audioCanvas);
         this.audioCtx = this.audioCanvas.getContext('2d');
+        this.createDebugOverlay();
 
         const label = document.createElement('div');
         label.style.cssText = `
@@ -350,6 +365,48 @@ class ILSVisualizerOptimized {
         }
     }
 
+    getStrobePhase(time) {
+        const mode = this.lookSpec?.beam?.strobe_mode || 'off';
+        const freqByMode = {
+            off: 0.0,
+            beat_sync: 2.0,
+            slow_pulse: 1.0,
+            fast_strobe: 9.0,
+            burst: 6.0
+        };
+        const freq = freqByMode[mode] ?? 2.0;
+        return freq === 0 ? 0 : (time * freq) % 1;
+    }
+
+    readSemanticChannel(dmx, def, channelName, lookFallback = 0.5) {
+        const channelMap = CHANNEL_MAPS[def.type] || {};
+        if (channelMap[channelName] !== undefined) {
+            return getChannelValue(dmx, def, channelName) / 255;
+        }
+        return this.clamp01(lookFallback);
+    }
+
+    getSemanticFixtureControls(dmx, def, caps) {
+        const zoomLook = this.lookSpec?.spot?.zoom ?? 0.5;
+        const focusMode = this.lookSpec?.spot?.focus_mode || 'texture';
+        const goboMode = this.lookSpec?.spot?.gobo_mode || 'clean';
+
+        const zoom = this.readSemanticChannel(dmx, def, 'zoom', zoomLook);
+        const frostLook = focusMode === 'performer' ? 0.2 : 0.55;
+        const frost = this.readSemanticChannel(dmx, def, 'frost', frostLook);
+        const irisLook = focusMode === 'performer' ? 0.72 : 0.45;
+        const iris = this.readSemanticChannel(dmx, def, 'iris', irisLook);
+        const goboLook = goboMode === 'texture' ? 0.75 : 0.12;
+        const gobo = this.readSemanticChannel(dmx, def, 'gobo', goboLook);
+
+        return {
+            zoom: caps.supports_zoom ? zoom : this.lerp(zoomLook, zoom, 0.35),
+            frost: caps.supports_frost ? frost : this.lerp(frostLook, frost, 0.25),
+            iris: caps.supports_iris ? iris : this.lerp(irisLook, iris, 0.35),
+            gobo: caps.supports_gobo ? gobo : this.lerp(goboLook, gobo, 0.4)
+        };
+    }
+
     applyVisualizerSettingsFromPayload(payload) {
         if (!payload || typeof payload !== 'object') return;
         const settings = payload.visualizer_settings || payload.settings;
@@ -359,7 +416,7 @@ class ILSVisualizerOptimized {
         this.visualizerSettings.blackout_threshold = Math.max(0.0, Math.min(0.2, settings.blackout_threshold ?? 0.02));
     }
 
-    updateLookProfile(time) {
+    updateLookProfile(time, delta) {
         if (!this.lookSpec) return;
 
         const section = this.lookSpec.section || 'unknown';
@@ -374,6 +431,7 @@ class ILSVisualizerOptimized {
         const beamWidthTarget = this.lerp(0.26, 1.15, angleT);
 
         const beamDensityTarget = this.lerp(0.35, 1.2, this.lookSpec.beam?.density ?? 0.6);
+        const beamFalloffTarget = this.lerp(0.45, 1.6, this.lookSpec.beam?.density ?? 0.6);
         const spotScaleTarget = this.lerp(0.5, 1.8, this.lookSpec.spot?.zoom ?? 0.5);
 
         // Movement smoothing responds to spec movement speed:
@@ -382,11 +440,15 @@ class ILSVisualizerOptimized {
         const moveSpeedT = this.clamp01(speedHz / 2.0);
         const smoothingTarget = this.lerp(0.09, 0.24, moveSpeedT);
 
-        this.lookProfile.beamWidth = this.lerp(this.lookProfile.beamWidth, beamWidthTarget, 0.12);
-        this.lookProfile.beamDensity = this.lerp(this.lookProfile.beamDensity, beamDensityTarget, 0.12);
-        this.lookProfile.spotScale = this.lerp(this.lookProfile.spotScale, spotScaleTarget, 0.1);
-        this.lookProfile.movementSmoothing = this.lerp(this.lookProfile.movementSmoothing, smoothingTarget, 0.1);
+        const profileAlpha = this.getTransitionAlpha(delta, 0.65);
+        this.lookProfile.transitionAlpha = profileAlpha;
+        this.lookProfile.beamWidth = this.lerp(this.lookProfile.beamWidth, beamWidthTarget, profileAlpha);
+        this.lookProfile.beamDensity = this.lerp(this.lookProfile.beamDensity, beamDensityTarget, profileAlpha);
+        this.lookProfile.beamFalloff = this.lerp(this.lookProfile.beamFalloff, beamFalloffTarget, profileAlpha);
+        this.lookProfile.spotScale = this.lerp(this.lookProfile.spotScale, spotScaleTarget, profileAlpha);
+        this.lookProfile.movementSmoothing = this.lerp(this.lookProfile.movementSmoothing, smoothingTarget, profileAlpha);
         this.lookProfile.strobeGate = this.getLookStrobeGate(time);
+        this.lookProfile.strobePhase = this.getStrobePhase(time);
     }
 
     resolveSectionPattern() {
@@ -471,7 +533,7 @@ class ILSVisualizerOptimized {
 
     updateFixtures(delta) {
         const time = this.clock.elapsedTime;
-        this.updateLookProfile(time);
+        this.updateLookProfile(time, delta);
         const sectionPattern = this.resolveSectionPattern();
         const beamTotal = this.fixtures.filter((f) => getFixtureRole(f.definition) === FIXTURE_ROLES.BEAM).length;
         const spotTotal = this.fixtures.filter((f) => getFixtureRole(f.definition) === FIXTURE_ROLES.SPOT).length;
@@ -479,8 +541,9 @@ class ILSVisualizerOptimized {
         let spotIndex = 0;
 
         // Interpolate DMX values for smooth animation
+        const dmxAlpha = this.getTransitionAlpha(delta, 0.45);
         for (let i = 0; i < 512; i++) {
-            this.dmxData[i] += (this.dmxTarget[i] - this.dmxData[i]) * Math.min(1, delta * 15);
+            this.dmxData[i] += (this.dmxTarget[i] - this.dmxData[i]) * dmxAlpha;
         }
 
         this.fixtures.forEach((fixture, fixtureIndex) => {
@@ -488,6 +551,7 @@ class ILSVisualizerOptimized {
             const dmx = this.dmxData;
             const role = getFixtureRole(def);
             const caps = getFixtureCapabilities(def);
+            const semantic = this.getSemanticFixtureControls(dmx, def, caps);
             const roleIndex = role === FIXTURE_ROLES.BEAM ? beamIndex : spotIndex;
             const roleTotal = role === FIXTURE_ROLES.BEAM ? beamTotal : (role === FIXTURE_ROLES.SPOT ? spotTotal : 1);
             if (role === FIXTURE_ROLES.BEAM) beamIndex += 1;
@@ -586,6 +650,7 @@ class ILSVisualizerOptimized {
                     if (fixture._mibUntil && time < fixture._mibUntil) {
                         smooth = Math.max(0.32, smooth);
                     }
+                    smooth = Math.min(0.55, smooth + this.getTransitionAlpha(delta, 0.9) * 0.45);
                     fixture.headGroup.rotation.y += (pan - fixture.headGroup.rotation.y) * smooth;
                     fixture.headGroup.rotation.x += (tilt - fixture.headGroup.rotation.x) * smooth;
                 }
@@ -608,8 +673,10 @@ class ILSVisualizerOptimized {
                     beamColor.b = Math.max(0.4, beamColor.b);
                     fixture.beamMaterial.uniforms.uColor.value.copy(beamColor);
 
-                    const beamWidthScale = caps.supports_zoom ? 1.25 : 1.0;
+                    const beamWidthScale = caps.supports_zoom ? this.lerp(0.9, 1.35, semantic.zoom) : 1.0;
                     const beamDensityScale = def.type === FIXTURE_TYPES.MOVER ? 1.0 : 0.85;
+                    const frostDensityScale = this.lerp(1.05, 0.55, semantic.frost);
+                    const irisWidthScale = this.lerp(1.25, 0.7, semantic.iris);
                     const sectionEnergy = this.lookSpec?.energy ?? this.audioData?.rms ?? 0;
                     const beamBoost = 0.85 + sectionEnergy * 0.5;
                     const hazeLevel = this.visualizerSettings.haze_level ?? 1.0;
@@ -618,10 +685,10 @@ class ILSVisualizerOptimized {
 
                     fixture.beamMaterial.uniforms.uIntensity.value = intensity * 2.1 * beamBoost * hazeBeamBoost + 0.08;
                     fixture.beamMaterial.uniforms.uTime.value = time;
-                    fixture.beamMaterial.uniforms.uDensity.value = this.lookProfile.beamDensity * beamDensityScale * hazeDensityBoost;
-                    fixture.beamMaterial.uniforms.uBeamWidth.value = this.lookProfile.beamWidth * beamWidthScale;
+                    fixture.beamMaterial.uniforms.uDensity.value = this.lookProfile.beamDensity * beamDensityScale * hazeDensityBoost * frostDensityScale;
+                    fixture.beamMaterial.uniforms.uBeamWidth.value = this.lookProfile.beamWidth * beamWidthScale * irisWidthScale;
                     fixture.beamMaterial.uniforms.uBeamLength.value = 30;  // Long beam
-                    fixture.beamMaterial.uniforms.uFalloff.value = 0.8;
+                    fixture.beamMaterial.uniforms.uFalloff.value = this.lookProfile.beamFalloff;
 
                     if (fixture.beam) {
                         fixture.beam.visible = intensity > 0.01;
@@ -655,28 +722,79 @@ class ILSVisualizerOptimized {
                         const goboPulse = (caps.supports_gobo && goboMode === 'texture')
                             ? (0.86 + 0.14 * Math.sin(time * 6 + fixtureIndex * 0.35))
                             : 1.0;
-                        const zoomSupportScale = caps.supports_zoom ? 1.15 : 0.85;
+                        const zoomSupportScale = caps.supports_zoom ? this.lerp(0.7, 1.25, semantic.zoom) : 0.85;
                         const focusSupportScale = caps.supports_focus ? 1.0 : 1.2;
-                        const spotScale = this.lookProfile.spotScale * focusTightness * zoomSupportScale * focusSupportScale;
+                        const frostBlurScale = this.lerp(0.85, 1.35, semantic.frost);
+                        const irisTightness = this.lerp(1.25, 0.6, semantic.iris);
+                        const spotScale = this.lookProfile.spotScale * focusTightness * zoomSupportScale * focusSupportScale * frostBlurScale * irisTightness;
                         fixture.floorSpot.scale.set(spotScale, spotScale, 1);
 
                         // Update spot color and intensity
                         fixture.floorSpotMaterial.uniforms.uColor.value.copy(threeColor);
-                        const spotIntensity = intensity * goboPulse * (0.9 + keyPriority * 0.4);
+                        const strobePulse = 0.5 + 0.5 * Math.sin((this.lookProfile.strobePhase * Math.PI * 2) + fixtureIndex * 0.35);
+                        const goboMask = this.lerp(1.0, 0.76, semantic.gobo);
+                        const spotIntensity = intensity * goboPulse * goboMask * (0.9 + keyPriority * 0.4) * this.lerp(0.75, 1.0, strobePulse);
                         fixture.floorSpotMaterial.uniforms.uIntensity.value = spotIntensity;
                         fixture.floorSpotMaterial.uniforms.uTime.value = time;
-                        fixture.floorSpot.visible = intensity > 0.05;
+                        fixture.floorSpot.visible = intensity > 0.05 && this.lookProfile.strobeGate > 0.03;
                     } else {
                         fixture.floorSpot.visible = false;
                     }
                 }
             }
 
+            fixture._debugDerived = {
+                beamWidth: fixture.beamMaterial?.uniforms?.uBeamWidth?.value ?? 0,
+                intensity,
+                strobePhase: this.lookProfile.strobePhase,
+                movementMode: fixture._mibUntil && time < fixture._mibUntil ? 'mib' : sectionPattern
+            };
+
             // Label visibility
             if (fixture.label) {
                 fixture.label.visible = this.showLabels;
             }
         });
+
+        this.updateDebugOverlay();
+    }
+
+    createDebugOverlay() {
+        this.debugOverlay = document.createElement('div');
+        this.debugOverlay.style.cssText = `
+            position: absolute;
+            top: 70px;
+            left: 20px;
+            max-height: 50vh;
+            overflow: auto;
+            min-width: 320px;
+            background: rgba(4, 6, 10, 0.86);
+            border: 1px solid rgba(110, 140, 255, 0.25);
+            border-radius: 8px;
+            color: #bcd;
+            font: 11px/1.35 monospace;
+            padding: 10px;
+            pointer-events: none;
+            white-space: pre;
+            display: none;
+            z-index: 15;
+        `;
+        document.getElementById('container').appendChild(this.debugOverlay);
+    }
+
+    updateDebugOverlay() {
+        if (!this.debugOverlay) return;
+        this.debugOverlay.style.display = this.showDebugOverlay ? 'block' : 'none';
+        if (!this.showDebugOverlay) return;
+
+        const lines = ['Derived fixture values (toggle: D)'];
+        this.fixtures.forEach((fixture) => {
+            const d = fixture._debugDerived || {};
+            lines.push(
+                `${fixture.definition.name.padEnd(8)} | width ${Number(d.beamWidth || 0).toFixed(2)} | I ${Number(d.intensity || 0).toFixed(2)} | phase ${Number(d.strobePhase || 0).toFixed(2)} | ${d.movementMode || 'static'}`
+            );
+        });
+        this.debugOverlay.textContent = lines.join('\n');
     }
 
     updateAudioMonitor() {
@@ -882,6 +1000,12 @@ class ILSVisualizerOptimized {
             if (!this.testMode) {
                 this.dmxTarget = new Array(512).fill(0);
                 this.audioData = null;
+            }
+        });
+
+        window.addEventListener('keydown', (event) => {
+            if (event.code === 'KeyD') {
+                this.showDebugOverlay = !this.showDebugOverlay;
             }
         });
     }

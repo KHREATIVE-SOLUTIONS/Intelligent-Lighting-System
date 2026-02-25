@@ -54,14 +54,15 @@ const VolumetricBeamShader = {
             // Sharp edge falloff for tight beam
             float edgeFalloff = 1.0 - smoothstep(coneRadius * 0.7, coneRadius, distFromAxis);
 
-            // Minimal distance falloff - beam stays bright all the way down
-            float distanceFalloff = 1.0 - pow(progress, uFalloff) * 0.4;
+            // Density/falloff shaped by look profile to avoid overly static beams
+            float distanceFalloff = exp(-progress * (0.7 + uFalloff * 1.35));
 
             // Bright center core
             float coreIntensity = 1.0 - smoothstep(0.0, coneRadius * 0.5, distFromAxis);
 
             // Combine effects - strong beam throughout
-            float alpha = (edgeFalloff * distanceFalloff + coreIntensity * 0.5) * uDensity * uIntensity;
+            float densityGain = mix(0.6, 1.6, clamp(uDensity, 0.0, 1.5));
+            float alpha = (edgeFalloff * distanceFalloff + coreIntensity * 0.5) * densityGain * uIntensity;
 
             // Subtle dust particle noise
             float noise = 0.9 + 0.1 * sin(vLocalPosition.y * 3.0 + uTime * 2.0);
