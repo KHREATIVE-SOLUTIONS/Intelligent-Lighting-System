@@ -60,6 +60,9 @@ class ILSVisualizerOptimized {
         this.ws = null;
         this.wsReconnectTimer = null;
 
+        // Motion planning state per moving fixture axis
+        this.motionStates = new Map();
+
         this.init();
     }
 
@@ -203,10 +206,12 @@ class ILSVisualizerOptimized {
 
         FIXTURES.forEach((def, index) => {
             const fixture = this.createFixture(def, beamGeometry, floorSpotGeometry, beamLength);
-            this.fixtures.push({
+            const fixtureData = {
                 definition: def,
                 ...fixture
-            });
+            };
+            this.fixtures.push(fixtureData);
+            this.initializeFixtureMotionState(fixtureData);
         });
     }
 
@@ -346,6 +351,178 @@ class ILSVisualizerOptimized {
 
     lerp(a, b, t) {
         return a + (b - a) * t;
+    }
+
+
+    initializeFixtureMotionState(fixture) {
+        if (!fixture.headGroup) return;
+
+        const limits = getFixtureMotionLimits(fixture.definition);
+        this.motionStates.set(fixture.definition.name, {
+            pan: this.createAxisMotionState(0, limits.pan),
+            tilt: this.createAxisMotionState(0, limits.tilt),
+            limits
+        });
+    }
+
+    createAxisMotionState(position, limits) {
+        return {
+            position,
+            velocity: 0,
+            acceleration: 0,
+            target: position,
+            plan: null,
+            limits
+        };
+    }
+
+    planAxisTrajectory(axisState, target, nowSeconds) {
+        const position = axisState.position;
+        const velocity = axisState.velocity;
+        const acceleration = axisState.acceleration;
+        const delta = target - position;
+        const distance = Math.abs(delta);
+
+        axisState.target = target;
+
+        if (distance < 1e-4) {
+            axisState.plan = null;
+            return;
+        }
+
+        const direction = Math.sign(delta);
+        const maxVelocity = Math.max(0.15, axisState.limits.maxVelocity || 0.15);
+        const maxAcceleration = Math.max(0.3, axisState.limits.maxAcceleration || 0.3);
+        const maxJerk = Math.max(1.0, axisState.limits.maxJerk || 1.0);
+
+        const shortMoveThreshold = (maxVelocity * maxVelocity) / Math.max(maxAcceleration, 0.01) * 0.65;
+        const useSCurve = distance <= shortMoveThreshold;
+
+        const tAccelNominal = maxVelocity / maxAcceleration;
+        const distanceAccelDecel = maxAcceleration * tAccelNominal * tAccelNominal;
+
+        let peakVelocity = maxVelocity;
+        let tAccel = tAccelNominal;
+        let tCruise = 0;
+
+        if (distance <= distanceAccelDecel) {
+            tAccel = Math.sqrt(distance / Math.max(maxAcceleration, 0.01));
+            peakVelocity = maxAcceleration * tAccel;
+        } else {
+            tCruise = (distance - distanceAccelDecel) / maxVelocity;
+        }
+
+        const tJerk = Math.min(tAccel * 0.48, maxAcceleration / maxJerk);
+        const duration = Math.max(0.06, useSCurve ? (2 * tAccel + tCruise) : (2 * tAccel + tCruise));
+
+        axisState.plan = {
+            startTime: nowSeconds,
+            startPos: position,
+            startVel: velocity,
+            startAcc: acceleration,
+            target,
+            direction,
+            distance,
+            duration,
+            tAccel,
+            tCruise,
+            peakVelocity,
+            tJerk,
+            useSCurve
+        };
+    }
+
+    evaluateAxisPlan(plan, elapsed) {
+        const t = Math.max(0, Math.min(plan.duration, elapsed));
+        const progress = plan.duration > 0 ? t / plan.duration : 1;
+
+        if (plan.useSCurve) {
+            const p = progress;
+            const smooth = p * p * p * (10 - 15 * p + 6 * p * p);
+            const smoothVelNorm = (30 * p * p - 60 * p * p * p + 30 * p * p * p * p);
+            const smoothAccNorm = (60 * p - 180 * p * p + 120 * p * p * p);
+
+            return {
+                position: plan.startPos + (plan.target - plan.startPos) * smooth,
+                velocity: (plan.target - plan.startPos) * smoothVelNorm / Math.max(plan.duration, 0.001),
+                acceleration: (plan.target - plan.startPos) * smoothAccNorm / Math.max(plan.duration * plan.duration, 0.001),
+                done: progress >= 1
+            };
+        }
+
+        const d = plan.direction;
+        const a = plan.peakVelocity / Math.max(plan.tAccel, 0.001);
+        const t1 = plan.tAccel;
+        const t2 = t1 + plan.tCruise;
+        const t3 = plan.duration;
+
+        let moved;
+        let velocity;
+        let acceleration;
+
+        if (t <= t1) {
+            moved = 0.5 * a * t * t;
+            velocity = a * t;
+            acceleration = a;
+        } else if (t <= t2) {
+            const dt = t - t1;
+            moved = 0.5 * a * t1 * t1 + plan.peakVelocity * dt;
+            velocity = plan.peakVelocity;
+            acceleration = 0;
+        } else {
+            const dt = t - t2;
+            const decelStart = 0.5 * a * t1 * t1 + plan.peakVelocity * plan.tCruise;
+            moved = decelStart + plan.peakVelocity * dt - 0.5 * a * dt * dt;
+            velocity = Math.max(0, plan.peakVelocity - a * dt);
+            acceleration = -a;
+        }
+
+        return {
+            position: plan.startPos + d * moved,
+            velocity: d * velocity,
+            acceleration: d * acceleration,
+            done: t >= t3
+        };
+    }
+
+    updateFixtureMotionTrajectory(fixture, targetPan, targetTilt, nowSeconds) {
+        const state = this.motionStates.get(fixture.definition.name);
+        if (!state || !fixture.headGroup) {
+            return { pan: targetPan, tilt: targetTilt };
+        }
+
+        const panState = state.pan;
+        const tiltState = state.tilt;
+
+        const targetChangedPan = Math.abs(targetPan - panState.target) > 1e-3;
+        const targetChangedTilt = Math.abs(targetTilt - tiltState.target) > 1e-3;
+
+        if (targetChangedPan) {
+            this.planAxisTrajectory(panState, targetPan, nowSeconds);
+        }
+        if (targetChangedTilt) {
+            this.planAxisTrajectory(tiltState, targetTilt, nowSeconds);
+        }
+
+        for (const axisState of [panState, tiltState]) {
+            if (axisState.plan) {
+                const result = this.evaluateAxisPlan(axisState.plan, nowSeconds - axisState.plan.startTime);
+                axisState.position = result.position;
+                axisState.velocity = result.velocity;
+                axisState.acceleration = result.acceleration;
+                if (result.done) {
+                    axisState.position = axisState.plan.target;
+                    axisState.velocity = 0;
+                    axisState.acceleration = 0;
+                    axisState.plan = null;
+                }
+            }
+        }
+
+        return {
+            pan: panState.position,
+            tilt: tiltState.position
+        };
     }
 
     getLookStrobeGate(time) {
@@ -645,14 +822,9 @@ class ILSVisualizerOptimized {
                 const currentTilt = fixture.headGroup ? fixture.headGroup.rotation.x : 0;
 
                 if (fixture.headGroup) {
-                    // Smooth pan/tilt
-                    let smooth = this.lookProfile.movementSmoothing;
-                    if (fixture._mibUntil && time < fixture._mibUntil) {
-                        smooth = Math.max(0.32, smooth);
-                    }
-                    smooth = Math.min(0.55, smooth + this.getTransitionAlpha(delta, 0.9) * 0.45);
-                    fixture.headGroup.rotation.y += (pan - fixture.headGroup.rotation.y) * smooth;
-                    fixture.headGroup.rotation.x += (tilt - fixture.headGroup.rotation.x) * smooth;
+                    const planned = this.updateFixtureMotionTrajectory(fixture, pan, tilt, time);
+                    fixture.headGroup.rotation.y = planned.pan;
+                    fixture.headGroup.rotation.x = planned.tilt;
                 }
 
                 // Emitter glow

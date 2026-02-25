@@ -45,6 +45,37 @@ const CAPABILITY_PROFILES = {
     }
 };
 
+const MOTION_LIMIT_DEFAULTS = {
+    mover: {
+        pan: {
+            maxVelocity: 4.2,      // ~240°/s
+            maxAcceleration: 10.5, // ~600°/s²
+            maxJerk: 65.0          // ~3700°/s³
+        },
+        tilt: {
+            maxVelocity: 3.5,      // ~200°/s
+            maxAcceleration: 8.8,  // ~500°/s²
+            maxJerk: 55.0          // ~3150°/s³
+        }
+    },
+    wash: {
+        pan: {
+            maxVelocity: 3.4,
+            maxAcceleration: 7.0,
+            maxJerk: 38.0
+        },
+        tilt: {
+            maxVelocity: 2.8,
+            maxAcceleration: 5.9,
+            maxJerk: 30.0
+        }
+    },
+    bar: {
+        pan: { maxVelocity: 0, maxAcceleration: 0, maxJerk: 0 },
+        tilt: { maxVelocity: 0, maxAcceleration: 0, maxJerk: 0 }
+    }
+};
+
 // Channel mappings for each fixture type
 const CHANNEL_MAPS = {
     // Moving Head - 16 channels
@@ -214,4 +245,20 @@ function getFixtureRole(fixture) {
 function getFixtureCapabilities(fixture) {
     const role = getFixtureRole(fixture);
     return CAPABILITY_PROFILES[role] || CAPABILITY_PROFILES.effect;
+}
+
+function getFixtureMotionLimits(fixture) {
+    const defaults = MOTION_LIMIT_DEFAULTS[fixture.type] || MOTION_LIMIT_DEFAULTS.bar;
+    const custom = fixture.motion_limits || {};
+
+    return {
+        pan: {
+            ...defaults.pan,
+            ...(custom.pan || {})
+        },
+        tilt: {
+            ...defaults.tilt,
+            ...(custom.tilt || {})
+        }
+    };
 }
