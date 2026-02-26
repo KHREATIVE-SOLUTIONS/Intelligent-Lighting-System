@@ -27,6 +27,17 @@ type BeamDebugSnapshot = {
   tiltVelocityDegPerSec: number;
   signalConfidence: number;
   hold: boolean;
+  strobeLogical: number;
+  strobeChannelValue: number;
+  strobeChannelIndex?: number;
+  strobeSource: 'strobe' | 'shutter' | 'fallback';
+  zoomLogical: number;
+  zoomChannelValue: number;
+  zoomChannelIndex?: number;
+  zoomSource: 'zoom' | 'beam_angle' | 'fallback';
+  finalIntensity: number;
+  finalSpotAngleDeg: number;
+  capabilityWarnings: string[];
 };
 
 // ============================================================================
@@ -161,6 +172,7 @@ function Fixture3D({
   const spotRef = useRef<THREE.SpotLight>(null);
 
   const channelMapRef = useRef(buildChannelMap(fixture));
+  const fallbackWarningRef = useRef<Set<string>>(new Set());
 
   // Smoothed values to avoid jitter
   const smoothed = useRef({ intensity: 0, r: 1, g: 1, b: 1 });
@@ -185,13 +197,20 @@ function Fixture3D({
 
   const beamAngle = fixture.fixture?.beam_angle || 25;
   const fixtureType = fixture.fixture?.fixture_type || 'other';
-  const isMovingHead = fixtureType === 'moving_head' || fixtureType === 'spot' || fixtureType === 'beam';
+  const isMovingHead = fixtureType === 'moving_head' || fixtureType === 'spot' || fixtureType === 'beam' || fixtureType === 'wash';
 
   // Beam length scales with fixture height (fixtures on truss beam to floor)
   const beamLength = fixture.position_y > 0 ? fixture.position_y : 3;
 
   const [beamColor] = useState(() => new THREE.Color(1, 1, 1));
   const [beamIntensity, setBeamIntensity] = useState(0);
+
+  const emitFallbackWarning = (key: string, message: string) => {
+    if (fallbackWarningRef.current.has(key)) return;
+    fallbackWarningRef.current.add(key);
+    // Explicit signal that we are using fallback behavior instead of silently no-oping.
+    console.warn(message);
+  };
 
   useFrame((_, rawDelta) => {
     const baseAddr = fixture.dmx_address - 1;
@@ -220,12 +239,57 @@ function Fixture3D({
     const finePan = chMap.pan_fine !== undefined ? dmxData[baseAddr + chMap.pan_fine] || 0 : 0;
     const coarseTilt = chMap.tilt !== undefined ? dmxData[baseAddr + chMap.tilt] || 128 : 128;
     const fineTilt = chMap.tilt_fine !== undefined ? dmxData[baseAddr + chMap.tilt_fine] || 0 : 0;
-    const strobe = chMap.strobe !== undefined
-      ? (dmxData[baseAddr + chMap.strobe] || 0) / 255
-      : 0;
-    const zoom = chMap.zoom !== undefined
-      ? (dmxData[baseAddr + chMap.zoom] || 128) / 255
-      : 0.5;
+    let strobe = 0;
+    let strobeSource: BeamDebugSnapshot['strobeSource'] = 'fallback';
+    let strobeChannelValue = 0;
+    let strobeChannelIndex: number | undefined;
+    if (chMap.strobe !== undefined) {
+      strobeChannelValue = dmxData[baseAddr + chMap.strobe] || 0;
+      strobe = strobeChannelValue / 255;
+      strobeSource = 'strobe';
+      strobeChannelIndex = chMap.strobe + 1;
+    } else if (chMap.shutter !== undefined) {
+      strobeChannelValue = dmxData[baseAddr + chMap.shutter] || 0;
+      strobe = THREE.MathUtils.clamp((strobeChannelValue - 64) / (223 - 64), 0, 1);
+      strobeSource = 'shutter';
+      strobeChannelIndex = chMap.shutter + 1;
+      emitFallbackWarning(
+        `strobe-${fixture.id}`,
+        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no strobe channel; deriving strobe from shutter range 64-223.`
+      );
+    } else {
+      strobeSource = 'fallback';
+      emitFallbackWarning(
+        `strobe-${fixture.id}`,
+        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has neither strobe nor shutter channel; forcing strobe to 0.`
+      );
+    }
+
+    let zoom = 0.5;
+    let zoomSource: BeamDebugSnapshot['zoomSource'] = 'fallback';
+    let zoomChannelValue = 128;
+    let zoomChannelIndex: number | undefined;
+    if (chMap.zoom !== undefined) {
+      zoomChannelValue = dmxData[baseAddr + chMap.zoom] || 0;
+      zoom = zoomChannelValue / 255;
+      zoomSource = 'zoom';
+      zoomChannelIndex = chMap.zoom + 1;
+    } else if (typeof fixture.fixture?.beam_angle === 'number') {
+      const normalizedBeamAngle = THREE.MathUtils.clamp((fixture.fixture.beam_angle - 5) / 40, 0, 1);
+      zoom = normalizedBeamAngle;
+      zoomChannelValue = Math.round(normalizedBeamAngle * 255);
+      zoomSource = 'beam_angle';
+      emitFallbackWarning(
+        `zoom-${fixture.id}`,
+        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no zoom channel; deriving beam width from fixture beam_angle (${fixture.fixture.beam_angle}°).`
+      );
+    } else {
+      zoomSource = 'fallback';
+      emitFallbackWarning(
+        `zoom-${fixture.id}`,
+        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no zoom or beam_angle definition; defaulting zoom to 0.5.`
+      );
+    }
 
     const panNormalized = chMap.pan_fine !== undefined
       ? ((coarsePan << 8) | finePan) / 65535
@@ -263,11 +327,21 @@ function Fixture3D({
     }
 
     // Update spotlight for floor projection
+    const finalSpotAngleDeg = 8.6 + zoom * 22.9;
     if (spotRef.current) {
       spotRef.current.color.setRGB(s.r, s.g, s.b);
       spotRef.current.intensity = effectiveIntensity * 8;
-      spotRef.current.angle = 0.15 + zoom * 0.4; // Narrower to wider with zoom
+      spotRef.current.angle = THREE.MathUtils.degToRad(finalSpotAngleDeg); // Narrower to wider with zoom
     }
+
+    let targetPanDeg = 0;
+    let targetTiltDeg = 0;
+    let currentPanDeg = 0;
+    let currentTiltDeg = 0;
+    let panVelocityDegPerSec = 0;
+    let tiltVelocityDegPerSec = 0;
+    let signalConfidence = 1;
+    let hold = true;
 
     // Pan/tilt for moving heads
     if (isMovingHead) {
@@ -323,19 +397,42 @@ function Fixture3D({
       const spikePenalty = Math.min(0.5, Math.max(0, (rawDelta - stableDelta) * 5));
       const confidence = Math.max(0, 1 - ((panErrorNorm + tiltErrorNorm) * 0.5 + spikePenalty));
 
-      onDebugUpdate?.({
-        fixtureId: fixture.id,
-        fixtureLabel: fixture.name || fixture.fixture?.model || `Fixture ${fixture.id}`,
-        targetPanDeg: THREE.MathUtils.radToDeg(o.targetPanRad),
-        targetTiltDeg: THREE.MathUtils.radToDeg(o.targetTiltRad),
-        currentPanDeg: THREE.MathUtils.radToDeg(o.currentPanRad),
-        currentTiltDeg: THREE.MathUtils.radToDeg(o.currentTiltRad),
-        panVelocityDegPerSec: THREE.MathUtils.radToDeg(o.panVelocityRadPerSec),
-        tiltVelocityDegPerSec: THREE.MathUtils.radToDeg(o.tiltVelocityRadPerSec),
-        signalConfidence: confidence,
-        hold: o.holdDurationSec > 0.2,
-      });
+      targetPanDeg = THREE.MathUtils.radToDeg(o.targetPanRad);
+      targetTiltDeg = THREE.MathUtils.radToDeg(o.targetTiltRad);
+      currentPanDeg = THREE.MathUtils.radToDeg(o.currentPanRad);
+      currentTiltDeg = THREE.MathUtils.radToDeg(o.currentTiltRad);
+      panVelocityDegPerSec = THREE.MathUtils.radToDeg(o.panVelocityRadPerSec);
+      tiltVelocityDegPerSec = THREE.MathUtils.radToDeg(o.tiltVelocityRadPerSec);
+      signalConfidence = confidence;
+      hold = o.holdDurationSec > 0.2;
     }
+
+    onDebugUpdate?.({
+      fixtureId: fixture.id,
+      fixtureLabel: fixture.name || fixture.fixture?.model || `Fixture ${fixture.id}`,
+      targetPanDeg,
+      targetTiltDeg,
+      currentPanDeg,
+      currentTiltDeg,
+      panVelocityDegPerSec,
+      tiltVelocityDegPerSec,
+      signalConfidence,
+      hold,
+      strobeLogical: strobe,
+      strobeChannelValue,
+      strobeChannelIndex,
+      strobeSource,
+      zoomLogical: zoom,
+      zoomChannelValue,
+      zoomChannelIndex,
+      zoomSource,
+      finalIntensity: effectiveIntensity,
+      finalSpotAngleDeg,
+      capabilityWarnings: [
+        strobeSource === 'fallback' ? 'missing strobe/shutter capability' : '',
+        zoomSource === 'fallback' ? 'missing zoom/beam_angle capability' : '',
+      ].filter(Boolean),
+    });
   });
 
   // Fixture body geometry based on type
@@ -889,7 +986,7 @@ export default function RigVisualizer() {
       <Card sx={{ mt: 2, maxHeight: 220, overflow: 'auto' }}>
         <CardContent sx={{ py: 1.25 }}>
           <Typography variant="subtitle2" sx={{ mb: 1 }}>
-            Beam Debug Overlay (target/current/velocity/confidence/hold)
+            Beam Debug Overlay (movement + logical strobe/zoom mapping)
           </Typography>
           {beamDebugRows.length === 0 ? (
             <Typography variant="caption" color="text.secondary">
@@ -903,7 +1000,11 @@ export default function RigVisualizer() {
                   {' '}| cur P/T {row.currentPanDeg.toFixed(1)}°/{row.currentTiltDeg.toFixed(1)}°
                   {' '}| vel P/T {row.panVelocityDegPerSec.toFixed(1)}/{row.tiltVelocityDegPerSec.toFixed(1)} °/s
                   {' '}| conf {(row.signalConfidence * 100).toFixed(0)}%
+                  {' '}| strobe {row.strobeLogical.toFixed(2)} ({row.strobeSource} {row.strobeChannelIndex ? `ch${row.strobeChannelIndex}=${row.strobeChannelValue}` : 'no-channel'})
+                  {' '}| zoom {row.zoomLogical.toFixed(2)} ({row.zoomSource} {row.zoomChannelIndex ? `ch${row.zoomChannelIndex}=${row.zoomChannelValue}` : `dmx=${row.zoomChannelValue}`})
+                  {' '}| out I {row.finalIntensity.toFixed(2)} angle {row.finalSpotAngleDeg.toFixed(1)}°
                   {' '}| {row.hold ? 'HOLD' : 'TRACK'}
+                  {row.capabilityWarnings.length > 0 ? ` | WARN: ${row.capabilityWarnings.join(', ')}` : ''}
                 </Typography>
               ))}
             </Box>
