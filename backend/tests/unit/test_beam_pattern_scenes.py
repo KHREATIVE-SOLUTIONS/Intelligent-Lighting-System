@@ -6,6 +6,7 @@ from app.services.lighting.beam_pattern_library import (
     build_pattern_params,
 )
 from app.services.lighting.beam_scene_state_machine import BeamSceneStateMachine, ScenePhase
+from app.services.lighting.beam_look_scheduler import BeamLookScheduler
 from app.services.lighting.movement_patterns import FixtureGrouping, ProMovementPattern
 
 
@@ -60,3 +61,38 @@ def test_scene_state_machine_enforces_allowed_transitions_and_cooldowns():
 
     # Immediate back-transition should be blocked by cooldown.
     assert not machine.request_transition(BeamPatternName.FAN)
+
+
+def test_beam_look_scheduler_uses_section_and_energy_with_hold_constraints(monkeypatch):
+    scheduler = BeamLookScheduler()
+
+    timeline = iter([0.0, 0.5, 8.0, 9.0, 30.0])
+    monkeypatch.setattr("app.services.lighting.beam_look_scheduler.time.time", lambda: next(timeline))
+
+    intro = scheduler.select_look(section="intro", energy=0.2, bpm=120.0, bars_elapsed=0)
+    quick_change_blocked = scheduler.select_look(section="drop", energy=0.95, bpm=128.0, bars_elapsed=1)
+    section_change_allowed = scheduler.select_look(section="drop", energy=0.95, bpm=128.0, bars_elapsed=8)
+    cooldown_blocks = scheduler.select_look(section="chorus", energy=0.8, bpm=128.0, bars_elapsed=9)
+    low_energy_rotation = scheduler.select_look(section="verse", energy=0.2, bpm=120.0, bars_elapsed=30)
+
+    assert intro.name in {"center_punch", "fan", "opposing_sweeps"}
+    assert quick_change_blocked.name == intro.name
+    assert section_change_allowed.name in {"audience_sweeps", "crisscross"}
+    assert cooldown_blocks.name == section_change_allowed.name
+    assert low_energy_rotation.name in {"center_punch", "fan", "opposing_sweeps"}
+
+
+def test_beam_look_scheduler_bar_rotation_prefers_8_or_16_bar_boundaries(monkeypatch):
+    scheduler = BeamLookScheduler()
+
+    timeline = iter([0.0, 20.0, 21.0])
+    monkeypatch.setattr("app.services.lighting.beam_look_scheduler.time.time", lambda: next(timeline))
+
+    first = scheduler.select_look(section="verse", energy=0.3, bpm=120.0, bars_elapsed=0)
+    # Low energy -> 16-bar cadence, so 8 bars should not rotate.
+    same = scheduler.select_look(section="verse", energy=0.3, bpm=120.0, bars_elapsed=8)
+    # At 16+ bars, rotation is allowed.
+    rotated = scheduler.select_look(section="verse", energy=0.3, bpm=120.0, bars_elapsed=17)
+
+    assert same.name == first.name
+    assert rotated.name in {"center_punch", "fan", "opposing_sweeps"}
