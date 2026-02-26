@@ -823,6 +823,15 @@ PRO_MOVEMENT_PRESETS: Dict[str, ProMovementParams] = {
         grouping=FixtureGrouping.ALL,
         smoothing=0.25,
     ),
+    "tilt_cross_home": ProMovementParams(
+        pattern=ProMovementPattern.MIRROR_SWEEP,
+        beat_divisor=0.5,
+        pan_amplitude=34.0,
+        tilt_amplitude=42.0,
+        phase_spread=0.8,
+        grouping=FixtureGrouping.LEFT_RIGHT,
+        smoothing=0.22,
+    ),
 
     # === Chase sequence presets ===
     "sequential_chase": ProMovementParams(

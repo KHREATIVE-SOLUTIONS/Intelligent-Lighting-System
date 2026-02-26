@@ -16,6 +16,7 @@ from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
 from app.models.fixture import FixtureMode
 from app.services.rig.patching_service import PatchingService
+from app.services.rig.programming_audit import build_programming_audit
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,7 +31,10 @@ def _get_rig_fixtures_with_channels(rig_id: int, db: Session):
     rig_fixtures = (
         db.query(RigFixture)
         .filter(RigFixture.rig_id == rig_id)
-        .options(joinedload(RigFixture.mode))
+        .options(
+            joinedload(RigFixture.fixture),
+            joinedload(RigFixture.mode).joinedload(FixtureMode.channels),
+        )
         .all()
     )
 
@@ -47,6 +51,17 @@ def _get_rig_fixtures_with_channels(rig_id: int, db: Session):
             "channel_count": channel_count,
             "is_address_locked": rf.is_address_locked,
             "name": rf.name,
+            "fixture_type": (
+                rf.fixture.fixture_type.value
+                if rf.fixture and getattr(rf.fixture, "fixture_type", None)
+                else "other"
+            ),
+            "has_mode": rf.mode is not None,
+            "mode_name": rf.mode.name if rf.mode else None,
+            "channel_types": [
+                str(ch.channel_type.value if getattr(ch, "channel_type", None) else "other")
+                for ch in (rf.mode.channels if rf.mode else [])
+            ],
         })
 
     return rig, rig_fixtures, fixtures_data
@@ -135,3 +150,13 @@ async def get_next_available_address(
         "address": address,
         "channel_count": channel_count,
     }
+
+
+@router.get("/{rig_id}/programming-audit")
+async def get_programming_audit(
+    rig_id: int,
+    db: Session = Depends(get_db),
+):
+    """Run a professional programming-practices audit on a rig patch."""
+    _, _, fixtures_data = _get_rig_fixtures_with_channels(rig_id, db)
+    return build_programming_audit(fixtures_data)

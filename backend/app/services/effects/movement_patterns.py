@@ -244,8 +244,9 @@ class MovementEngine:
         target_x, target_y, target_z = 0, 0, 0
 
         if look == StaticLook.ALL_CENTER:
-            # All point to center stage floor
-            target_x, target_y, target_z = 0, 0, 2
+            # True home position in this engine's convention.
+            # pan=0, tilt=0 should point straight down in the visualizer.
+            return (0.0, 0.0)
 
         elif look == StaticLook.X_PATTERN:
             # Cross pattern - left fixtures point right, right point left

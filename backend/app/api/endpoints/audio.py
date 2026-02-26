@@ -16,8 +16,6 @@ from app.schemas.audio import (
     AudioStreamConfig, AudioAnalysisResponse, AudioAnalysisHistoryResponse,
     AudioFingerprintResponse, BeatResponse, MoodResponse, FrequencyResponse,
 )
-from app.services.effects.movement_patterns import MovementType, StaticLook
-from app.services.effects.dimmer_effects import DimmerType
 from app.services.lighting.section_manager import SongSection
 
 router = APIRouter()
@@ -354,44 +352,20 @@ async def start_capture(
     if not success:
         raise HTTPException(500, "Failed to start audio capture. Check device availability.")
 
-    # Enable auto mode + pro lighting
-    warning = None
+    # Enable AI busker mode and keep reactive layers active.
     if hasattr(request.app.state, 'effects_engine') and request.app.state.effects_engine:
         effects_engine = request.app.state.effects_engine
-        # Use deterministic live-reactive baseline (movement always active).
-        effects_engine.config.auto_mode = False
-        # Live reactive mode: ensure dynamic layers are enabled.
+        effects_engine.config.auto_mode = True
         effects_engine.config.movement_enabled = True
         effects_engine.config.dimmer_enabled = True
-        effects_engine.config.strobe_enabled = True
-        effects_engine.enable_pro_lighting(False)
-        # Bootstrap from UNKNOWN section so movement patterns become active immediately.
+        effects_engine.config.strobe_enabled = False
+        effects_engine.enable_pro_lighting(True)
         try:
             effects_engine.set_section(SongSection.VERSE, immediate=True)
         except Exception:
             pass
-        try:
-            effects_engine.set_movement(
-                MovementType.TRUE_CIRCLE,
-                base_look=StaticLook.ALL_CENTER,
-                pan_speed=0.22,
-                tilt_speed=0.22,
-                pan_amplitude=55.0,
-                tilt_amplitude=35.0,
-            )
-            effects_engine.set_dimmer_effect(
-                DimmerType.SINE_PULSE,
-                speed=0.7,
-                min_intensity=0.2,
-                base_intensity=0.7,
-            )
-        except Exception as e:
-            warning = f"Started capture, but failed to apply baseline movement profile: {e}"
 
-    response = {"status": "started", "device": capture.device_name}
-    if warning:
-        response["warning"] = warning
-    return response
+    return {"status": "started", "device": capture.device_name}
 
 
 @router.post("/capture/stop")

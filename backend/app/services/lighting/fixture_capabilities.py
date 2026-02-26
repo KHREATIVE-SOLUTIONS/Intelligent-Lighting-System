@@ -27,7 +27,7 @@ DEFAULT_CAPABILITY_PROFILES: dict[str, FixtureCapabilityProfile] = {
         supports_zoom=True,
         supports_focus=True,
         supports_iris=True,
-        movement_speed_class="medium",
+        movement_speed_class="slow",
     ),
     "effect": FixtureCapabilityProfile(
         role="effect",

@@ -198,23 +198,19 @@ class ColorMapper:
         if len(hue_ranges) == 1:
             hue_min, hue_max = hue_ranges[0]
         else:
-            # Use bass for primary/secondary color selection
-            if features.bass > 0.6:
-                hue_min, hue_max = hue_ranges[0]  # Primary color on bass
-            else:
-                hue_min, hue_max = hue_ranges[-1]  # Secondary color
+            # Two-color discipline: alternate fixture families between primary/secondary
+            # and bias toward primary on stronger musical moments.
+            primary_on = features.bass > 0.6 or features.energy > 0.72
+            use_primary = primary_on if (fixture_index % 2 == 0) else (not primary_on)
+            hue_min, hue_max = hue_ranges[0] if use_primary else hue_ranges[-1]
 
-        # Map energy to position within hue range
+        # Map valence to position within hue range for mood-driven shifts
         hue_range = hue_max - hue_min
-        energy_hue = hue_min + features.energy * hue_range
+        energy_hue = hue_min + features.valence * hue_range
 
-        # Add time-based drift for visual interest
-        drift = math.sin(self.time * 0.2 + phase_offset * math.pi * 2) * 15
-
-        # Add fixture variation
-        fixture_offset = (fixture_index * 30) % 360
-
-        hue = (energy_hue + drift + fixture_offset * 0.3) % 360
+        # Keep drift subtle to avoid random rainbow noise.
+        drift = math.sin(self.time * 0.12 + phase_offset * math.pi * 2) * 4
+        hue = (energy_hue + drift) % 360
         return hue
 
     def get_bass_color(self, bass_energy: float) -> RGB:

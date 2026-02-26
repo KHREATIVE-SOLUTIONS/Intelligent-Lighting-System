@@ -72,14 +72,14 @@ async def lifespan(app: FastAPI):
         app.state.dmx_controller = None
 
     try:
-        # Initialize Effects Engine - TRAINING MODE (no auto-reactivity)
+        # Initialize Effects Engine - AI busker mode (autonomous show control)
         print(" Creating effects engine...")
         app.state.effects_engine = EffectsEngine(EffectsConfig(
             fps=60.0,
-            auto_mode=False,  # Disabled for training - human operates manually
-            movement_enabled=False,  # Use LFO engine instead
-            dimmer_enabled=False,    # Manual control only
-            strobe_enabled=False,    # Manual triggers only
+            auto_mode=True,
+            movement_enabled=True,
+            dimmer_enabled=True,
+            strobe_enabled=False,  # Keep off by default for cleaner looks
         ))
 
         # Connect effects engine to DMX controller
@@ -118,16 +118,17 @@ async def lifespan(app: FastAPI):
             )
         )
 
-        # Pro lighting starts disabled - enable via API when ready
-        print("Professional lighting modules initialized (use API to enable)")
+        # Keep pro lighting enabled by default so section/chase logic is always active.
+        app.state.effects_engine.enable_pro_lighting(True)
+        print("Professional lighting modules initialized and enabled")
 
         # Wire effects engine to demo module
         from app.api.endpoints.demo import set_demo_effects_engine
         set_demo_effects_engine(app.state.effects_engine)
 
-        # Auto-apply medium venue preset so the demo rig has fixtures
+        # Auto-apply pro beam-room preset so visualizer starts with the new top-down rig
         from app.services.demo.venue_presets import create_venue_rig
-        manager, preset = create_venue_rig("medium_venue")
+        manager, preset = create_venue_rig("pro_beam_room")
         if manager:
             app.state.effects_engine.fixtures = manager
             for zone_spec in preset.key_zones:
@@ -141,7 +142,7 @@ async def lifespan(app: FastAPI):
                     app.state.effects_engine.key_lighting.assign_fixtures(zone, zone_spec.fixture_ids)
                 except (ValueError, Exception):
                     pass
-            print(f"Auto-applied medium_venue preset ({len(preset.fixtures)} fixtures)")
+            print(f"Auto-applied pro_beam_room preset ({len(preset.fixtures)} fixtures)")
 
         # Start the effects engine async loop (BUG-016 fix: store task reference)
         import asyncio

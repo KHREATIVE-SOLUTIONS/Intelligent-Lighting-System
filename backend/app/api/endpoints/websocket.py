@@ -211,7 +211,7 @@ def _resolve_reactive_config(message: dict | None) -> ReactiveMotionConfig:
 
 def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
     """
-    TRAINING MODE: Process audio and record training data.
+    Process audio and update effects engine state.
 
     - Extracts audio features for training data recording
     - Updates effects engine with audio/BPM info
@@ -248,7 +248,7 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
     # Extract ML pipeline data if available
     ml_data = analysis.get('ml', None)
 
-    # Update effects engine with audio data (for BPM sync and training recording)
+    # Update effects engine with audio data
     # Note: LFO effects are applied by the effects engine's main loop
     effects_engine.update_audio(
         energy=min(1.0, rms_energy * 2),
@@ -275,6 +275,7 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         for fixture in effects_engine.fixtures.fixtures.values():
             fixture_states.append({
                 'id': fixture.id,
+                'dmx_address': int(getattr(fixture, 'dmx_address', 0) or 0),
                 'pan': fixture.pan,
                 'tilt': fixture.tilt,
                 'dimmer': fixture.dimmer,
@@ -328,7 +329,7 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
     result = {
         'dmx_frame': dmx_frame,
         'fixtures': fixture_states,
-        'state': 'training',  # Always in training mode
+        'state': 'auto' if effects_engine.config.auto_mode else 'manual',
         'movement': active_lfo,  # Show active LFO effect
         'dimmer': 'manual'
     }

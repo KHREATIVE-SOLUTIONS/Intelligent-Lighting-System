@@ -11,12 +11,14 @@ import type {
 // Fixture state from effects engine
 interface FixtureState {
   id: string;
+  dmx_address?: number;
   pan: number;
   tilt: number;
   dimmer: number;
   r: number;
   g: number;
   b: number;
+  _updatedAt?: number;
 }
 
 const MAX_SECTION_HISTORY = 50;
@@ -124,8 +126,9 @@ export const useDMXStore = create<DMXState>((set) => ({
   setFixtureStates: (fixtures) =>
     set(() => {
       const newStates = new Map<string, FixtureState>();
+      const now = Date.now();
       for (const fixture of fixtures) {
-        newStates.set(fixture.id, fixture);
+        newStates.set(String(fixture.id), { ...fixture, _updatedAt: now });
       }
       return { fixtureStates: newStates };
     }),

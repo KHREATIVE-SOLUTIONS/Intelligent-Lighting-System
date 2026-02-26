@@ -19,6 +19,7 @@ from enum import Enum
 class VenueSize(Enum):
     SMALL_NIGHTCLUB = "small_nightclub"
     MEDIUM_VENUE = "medium_venue"
+    PRO_BEAM_ROOM = "pro_beam_room"
     LARGE_CONCERT = "large_concert"
     FESTIVAL_MAINSTAGE = "festival_mainstage"
 
@@ -178,51 +179,30 @@ def _build_small_nightclub() -> VenuePreset:
 
 
 def _build_medium_venue() -> VenuePreset:
-    """Medium venue: 8 movers, 8 bars, 4 strobes, 2 spots."""
+    """Medium venue: rebuilt all-mover rig for clear pan/tilt busking motion."""
     stage = StageSpec(width=12.0, depth=8.0, height=5.0, truss_lines=2)
     fixtures = []
     addr = 1
 
-    # 4 movers front truss
-    for i, (x, y, z) in enumerate(_distribute_positions(4, (-5.0, 5.0), 4.5, -3.0)):
+    # 7 movers front truss
+    for i, (x, y, z) in enumerate(_distribute_positions(7, (-5.2, 5.2), 4.5, -1.1)):
         fixtures.append(FixtureSpec("mover", f"mover_f{i+1}", f"Mover Front {i+1}", addr, 0, x, y, z))
         addr += MOVER_CH_COUNT
 
-    # 4 movers rear truss
-    for i, (x, y, z) in enumerate(_distribute_positions(4, (-5.0, 5.0), 4.5, 3.0)):
+    # 7 movers rear truss
+    for i, (x, y, z) in enumerate(_distribute_positions(7, (-5.2, 5.2), 4.5, 1.1)):
         fixtures.append(FixtureSpec("mover", f"mover_r{i+1}", f"Mover Rear {i+1}", addr, 0, x, y, z))
         addr += MOVER_CH_COUNT
 
-    # 4 bars floor
-    for i, (x, y, z) in enumerate(_distribute_positions(4, (-4.0, 4.0), 0.5, -3.5)):
-        fixtures.append(FixtureSpec("bar", f"bar_floor{i+1}", f"Bar Floor {i+1}", addr, 0, x, y, z))
-        addr += BAR_CH_COUNT
-
-    # 4 bars truss
-    for i, (x, y, z) in enumerate(_distribute_positions(4, (-4.0, 4.0), 4.0, 0.0)):
-        fixtures.append(FixtureSpec("bar", f"bar_truss{i+1}", f"Bar Truss {i+1}", addr, 0, x, y, z))
-        addr += BAR_CH_COUNT
-
-    # 4 strobes
-    for i, (x, y, z) in enumerate(_distribute_positions(4, (-5.0, 5.0), 4.5, -1.0)):
-        fixtures.append(FixtureSpec("strobe", f"strobe{i+1}", f"Strobe {i+1}", addr, 0, x, y, z))
-        addr += STROBE_CH_COUNT
-
-    # 2 spots (DJ + stage center)
-    fixtures.append(FixtureSpec("spot", "spot_dj", "DJ Spot", addr, 0, 0.0, 4.0, -3.5))
-    addr += SPOT_CH_COUNT
-    fixtures.append(FixtureSpec("spot", "spot_center", "Center Spot", addr, 0, 0.0, 4.5, 0.0))
-    addr += SPOT_CH_COUNT
-
     key_zones = [
-        KeyZoneSpec("dj_booth", ["spot_dj", "mover_f2", "mover_f3"], active=True, min_intensity=0.4),
-        KeyZoneSpec("stage_center", ["spot_center", "mover_r2", "mover_r3"], active=True, min_intensity=0.35),
+        KeyZoneSpec("dj_booth", ["mover_f3", "mover_f4", "mover_f5"], active=True, min_intensity=0.4),
+        KeyZoneSpec("stage_center", ["mover_r3", "mover_r4", "mover_r5"], active=True, min_intensity=0.35),
     ]
 
     return VenuePreset(
         name="medium_venue",
         display_name="Medium Venue",
-        description="Mid-size venue with 8 movers, 8 LED bars, 4 strobes, and 2 spots. 12x8m stage, 5m truss.",
+        description="Two parallel trusses with 14 symmetric movers for fully dynamic pan/tilt busking looks.",
         size=VenueSize.MEDIUM_VENUE,
         stage=stage,
         fixtures=fixtures,
@@ -294,6 +274,67 @@ def _build_large_concert() -> VenuePreset:
         key_zones=key_zones,
         default_genre="rock",
         default_bpm=120.0,
+    )
+
+
+def _build_pro_beam_room() -> VenuePreset:
+    """Professional beam-only room rig with multiple truss rows."""
+    stage = StageSpec(width=24.0, depth=16.0, height=10.0, truss_lines=5)
+    fixtures = []
+    addr = 1
+    universe = 0
+
+    def next_addr(ch_count):
+        nonlocal addr, universe
+        if addr + ch_count > 512:
+            universe += 1
+            addr = 1
+        current = addr
+        addr += ch_count
+        return current, universe
+
+    truss_rows = [
+        ("f", "Front", -7.0, 10),
+        ("ff", "Front Fill", -3.5, 10),
+        ("m", "Mid", 0.0, 12),
+        ("rr", "Rear Fill", 3.5, 10),
+        ("r", "Rear", 7.0, 10),
+    ]
+
+    for row_key, row_name, z, count in truss_rows:
+        for i, (x, y, zz) in enumerate(_distribute_positions(count, (-10.5, 10.5), 9.2, z)):
+            a, u = next_addr(MOVER_CH_COUNT)
+            fixtures.append(
+                FixtureSpec(
+                    "mover",
+                    f"beam_{row_key}{i+1}",
+                    f"Beam {row_name} {i+1}",
+                    a,
+                    u,
+                    x,
+                    y,
+                    zz,
+                )
+            )
+
+    key_zones = [
+        KeyZoneSpec("dj_booth", ["beam_f5", "beam_f6", "beam_ff5", "beam_ff6"], active=True, min_intensity=0.45),
+        KeyZoneSpec("stage_center", ["beam_m5", "beam_m6", "beam_m7", "beam_m8"], active=True, min_intensity=0.40),
+    ]
+
+    return VenuePreset(
+        name="pro_beam_room",
+        display_name="Pro Beam Room",
+        description=(
+            "Beam-only top-down room rig with 5 truss rows and full-depth canopy coverage "
+            "for immersive whole-room looks."
+        ),
+        size=VenueSize.PRO_BEAM_ROOM,
+        stage=stage,
+        fixtures=fixtures,
+        key_zones=key_zones,
+        default_genre="edm",
+        default_bpm=128.0,
     )
 
 
@@ -397,6 +438,7 @@ def _build_festival_mainstage() -> VenuePreset:
 VENUE_PRESETS: Dict[str, VenuePreset] = {
     "small_nightclub": _build_small_nightclub(),
     "medium_venue": _build_medium_venue(),
+    "pro_beam_room": _build_pro_beam_room(),
     "large_concert": _build_large_concert(),
     "festival_mainstage": _build_festival_mainstage(),
 }

@@ -112,11 +112,11 @@ async def stop_demo():
     demo = get_demo()
     demo.stop()
 
-    # Restore to training mode defaults
+    # Restore default AI busker runtime after demo ends
     if _effects_engine:
-        _effects_engine.config.auto_mode = False
-        _effects_engine.config.movement_enabled = False
-        _effects_engine.config.dimmer_enabled = False
+        _effects_engine.config.auto_mode = True
+        _effects_engine.config.movement_enabled = True
+        _effects_engine.config.dimmer_enabled = True
         _effects_engine.config.strobe_enabled = False
 
     return {"status": "stopped"}
@@ -262,7 +262,7 @@ async def get_venue_preset(preset_name: str):
 
 
 @router.get("/demo/rig")
-async def get_demo_rig(preset: str = "medium_venue"):
+async def get_demo_rig(preset: str = "pro_beam_room"):
     """Get a demo rig as a Rig-compatible JSON for the 3D visualizer.
 
     This returns fixture data shaped like the frontend's Rig type so the

@@ -2,13 +2,13 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import type { MutableRefObject } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Box, IconButton, Typography, Card, CardContent,
+  Box, IconButton, Typography, Card, CardContent, ButtonGroup, Button,
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
 } from '@mui/icons-material';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Grid, PerspectiveCamera } from '@react-three/drei';
+import { OrbitControls, Grid, PerspectiveCamera, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { rigsApi } from '../../services/api';
 import type { Rig, RigFixture } from '../../types';
@@ -38,7 +38,24 @@ type BeamDebugSnapshot = {
   finalIntensity: number;
   finalSpotAngleDeg: number;
   capabilityWarnings: string[];
+  motionSource: string;
+  sourceStaleMs?: number;
 };
+
+type LiveFixtureState = {
+  id: string;
+  dmx_address?: number;
+  pan?: number;
+  tilt?: number;
+  dimmer?: number;
+  r?: number;
+  g?: number;
+  b?: number;
+  _updatedAt?: number;
+};
+
+type CameraMode = 'iso' | 'top' | 'front' | 'audience';
+type QualityMode = 'performance' | 'balanced' | 'ultra';
 
 // ============================================================================
 // CONSTANTS
@@ -59,7 +76,7 @@ const BEAM_FRAGMENT_SHADER = `
   varying float vIntensity;
   void main() {
     float falloff = smoothstep(0.0, 1.0, 1.0 - vIntensity);
-    float alpha = falloff * beamIntensity * 0.2;
+    float alpha = falloff * beamIntensity * 0.42;
     gl_FragColor = vec4(beamColor, alpha);
   }
 `;
@@ -77,6 +94,45 @@ const ZONE_POSITIONS: Record<string, { x: number; z: number }> = {
   DSR: { x: 0.33, z: 0.33 },
 };
 
+type FixtureModelSpec = {
+  base: [number, number, number];
+  yoke: [number, number, number];
+  head: [number, number, number];
+  lens: [number, number, number];
+  lensPosY: number;
+};
+
+type MotionInertiaProfile = {
+  panMaxVelDegPerSec: number;
+  tiltMaxVelDegPerSec: number;
+  panMaxAccelDegPerSec2: number;
+  tiltMaxAccelDegPerSec2: number;
+  damping: number;
+};
+
+const FIXTURE_MODEL_LIBRARY: Record<string, FixtureModelSpec> = {
+  moving_head: { base: [0.28, 0.12, 0.26], yoke: [0.06, 0.18, 0.28], head: [0.24, 0.30, 0.26], lens: [0.08, 0.10, 0.04], lensPosY: -0.17 },
+  mover: { base: [0.28, 0.12, 0.26], yoke: [0.06, 0.18, 0.28], head: [0.24, 0.30, 0.26], lens: [0.08, 0.10, 0.04], lensPosY: -0.17 },
+  beam: { base: [0.30, 0.12, 0.28], yoke: [0.06, 0.20, 0.30], head: [0.22, 0.28, 0.24], lens: [0.09, 0.11, 0.05], lensPosY: -0.16 },
+  spot: { base: [0.30, 0.12, 0.30], yoke: [0.06, 0.18, 0.30], head: [0.25, 0.34, 0.28], lens: [0.08, 0.10, 0.04], lensPosY: -0.18 },
+  wash: { base: [0.24, 0.10, 0.24], yoke: [0.05, 0.14, 0.24], head: [0.20, 0.24, 0.20], lens: [0.09, 0.10, 0.03], lensPosY: -0.13 },
+  led_par: { base: [0.22, 0.12, 0.22], yoke: [0.04, 0.10, 0.22], head: [0.20, 0.18, 0.20], lens: [0.09, 0.10, 0.03], lensPosY: -0.11 },
+  led_bar: { base: [0.80, 0.10, 0.15], yoke: [0.03, 0.08, 0.15], head: [0.80, 0.10, 0.15], lens: [0.07, 0.08, 0.02], lensPosY: -0.06 },
+  strobe: { base: [0.32, 0.10, 0.16], yoke: [0.03, 0.07, 0.16], head: [0.32, 0.10, 0.16], lens: [0.09, 0.10, 0.02], lensPosY: -0.06 },
+  other: { base: [0.20, 0.20, 0.20], yoke: [0.04, 0.10, 0.20], head: [0.20, 0.20, 0.20], lens: [0.07, 0.08, 0.03], lensPosY: -0.10 },
+};
+
+const FIXTURE_MOTION_PROFILES: Record<string, MotionInertiaProfile> = {
+  moving_head: { panMaxVelDegPerSec: 220, tiltMaxVelDegPerSec: 180, panMaxAccelDegPerSec2: 540, tiltMaxAccelDegPerSec2: 420, damping: 0.88 },
+  mover: { panMaxVelDegPerSec: 220, tiltMaxVelDegPerSec: 180, panMaxAccelDegPerSec2: 540, tiltMaxAccelDegPerSec2: 420, damping: 0.88 },
+  beam: { panMaxVelDegPerSec: 260, tiltMaxVelDegPerSec: 220, panMaxAccelDegPerSec2: 720, tiltMaxAccelDegPerSec2: 560, damping: 0.86 },
+  spot: { panMaxVelDegPerSec: 180, tiltMaxVelDegPerSec: 150, panMaxAccelDegPerSec2: 420, tiltMaxAccelDegPerSec2: 340, damping: 0.90 },
+  wash: { panMaxVelDegPerSec: 170, tiltMaxVelDegPerSec: 150, panMaxAccelDegPerSec2: 360, tiltMaxAccelDegPerSec2: 300, damping: 0.91 },
+  profile: { panMaxVelDegPerSec: 175, tiltMaxVelDegPerSec: 150, panMaxAccelDegPerSec2: 380, tiltMaxAccelDegPerSec2: 320, damping: 0.90 },
+  hybrid: { panMaxVelDegPerSec: 220, tiltMaxVelDegPerSec: 180, panMaxAccelDegPerSec2: 520, tiltMaxAccelDegPerSec2: 420, damping: 0.88 },
+  default: { panMaxVelDegPerSec: 130, tiltMaxVelDegPerSec: 110, panMaxAccelDegPerSec2: 260, tiltMaxAccelDegPerSec2: 220, damping: 0.92 },
+};
+
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
@@ -92,8 +148,24 @@ function buildChannelMap(fixture: RigFixture): Record<string, number> {
 
   if (!mode?.channels) return map;
 
+  const canonicalMap = (raw: string): string => {
+    const key = raw.toLowerCase().replace(/[\s-]+/g, '_');
+    if (key === 'pan' || key === 'pan_coarse' || key === 'pan_16bit' || key === 'pan_course') return 'pan';
+    if (key === 'pan_fine' || key === 'pan_fine_16bit' || key === 'fine_pan') return 'pan_fine';
+    if (key === 'tilt' || key === 'tilt_coarse' || key === 'tilt_16bit' || key === 'tilt_course') return 'tilt';
+    if (key === 'tilt_fine' || key === 'tilt_fine_16bit' || key === 'fine_tilt') return 'tilt_fine';
+    if (key === 'dimmer' || key === 'intensity' || key === 'master_dimmer') return 'dimmer';
+    if (key === 'strobe' || key === 'shutter' || key === 'shutter_strobe') return key.includes('strobe') ? 'strobe' : 'shutter';
+    if (key === 'red' || key === 'green' || key === 'blue' || key === 'white' || key === 'zoom') return key;
+    return key;
+  };
+
   for (const ch of mode.channels) {
-    map[ch.channel_type] = ch.channel_number - 1;
+    const offset = ch.channel_number - 1;
+    const primary = canonicalMap(String(ch.channel_type || ''));
+    if (!(primary in map)) map[primary] = offset;
+    const byName = canonicalMap(String(ch.name || ''));
+    if (!(byName in map)) map[byName] = offset;
   }
   return map;
 }
@@ -107,11 +179,13 @@ function BeamCone({
   intensity,
   beamAngle,
   beamLength,
+  segments,
 }: {
   color: THREE.Color;
   intensity: number;
   beamAngle: number;
   beamLength: number;
+  segments: number;
 }) {
   const materialRef = useRef<THREE.ShaderMaterial>(null);
 
@@ -132,11 +206,11 @@ function BeamCone({
 
   const topRadius = Math.tan((beamAngle * Math.PI) / 360) * beamLength;
 
-  if (intensity < 0.05) return null;
+  if (intensity < 0.015) return null;
 
   return (
     <mesh position={[0, -beamLength / 2, 0]}>
-      <coneGeometry args={[topRadius, beamLength, 16, 1, true]} />
+      <coneGeometry args={[topRadius, beamLength, segments, 1, true]} />
       <shaderMaterial
         ref={materialRef}
         vertexShader={BEAM_VERTEX_SHADER}
@@ -158,12 +232,18 @@ function BeamCone({
 function Fixture3D({
   fixture,
   dmxData,
+  liveBinding,
   fixtureIndex,
+  spotCap,
+  beamSegments,
   onDebugUpdate,
 }: {
   fixture: RigFixture;
   dmxData: number[];
+  liveBinding?: { state?: LiveFixtureState; source: string; staleMs?: number };
   fixtureIndex: number;
+  spotCap: number;
+  beamSegments: number;
   onDebugUpdate?: (snapshot: BeamDebugSnapshot) => void;
 }) {
   const groupRef = useRef<THREE.Group>(null);
@@ -186,6 +266,8 @@ function Fixture3D({
   const orientationState = useRef({
     previousPanRad: 0,
     previousTiltRad: 0,
+    previousTargetPanRad: 0,
+    previousTargetTiltRad: 0,
     currentPanRad: 0,
     currentTiltRad: 0,
     targetPanRad: 0,
@@ -195,9 +277,23 @@ function Fixture3D({
     holdDurationSec: 0,
   });
 
-  const beamAngle = fixture.fixture?.beam_angle || 25;
   const fixtureType = fixture.fixture?.fixture_type || 'other';
-  const isMovingHead = fixtureType === 'moving_head' || fixtureType === 'spot' || fixtureType === 'beam' || fixtureType === 'wash';
+  const hasPanTiltChannels =
+    channelMapRef.current.pan !== undefined && channelMapRef.current.tilt !== undefined;
+  const isMovingHead = hasPanTiltChannels || (
+    fixtureType === 'moving_head' ||
+    fixtureType === 'mover' ||
+    fixtureType === 'spot' ||
+    fixtureType === 'beam' ||
+    fixtureType === 'wash' ||
+    fixtureType === 'profile' ||
+    fixtureType === 'hybrid'
+  );
+  const isBeamLike = fixtureType === 'beam' || fixtureType === 'moving_head' || fixtureType === 'mover';
+  const isSpotLike = fixtureType === 'spot';
+  const defaultBeamAngleDeg = isSpotLike ? 18.0 : 5.0;
+  const fixtureModel = FIXTURE_MODEL_LIBRARY[fixtureType] || FIXTURE_MODEL_LIBRARY.other;
+  const motionProfile = FIXTURE_MOTION_PROFILES[fixtureType] || FIXTURE_MOTION_PROFILES.default;
 
   // Beam length scales with fixture height (fixtures on truss beam to floor)
   const beamLength = fixture.position_y > 0 ? fixture.position_y : 3;
@@ -213,6 +309,7 @@ function Fixture3D({
   };
 
   useFrame((_, rawDelta) => {
+    const liveState = liveBinding?.state;
     const baseAddr = fixture.dmx_address - 1;
     const chMap = channelMapRef.current;
     const delta = Math.min(rawDelta, MAX_STABLE_DELTA);
@@ -223,18 +320,26 @@ function Fixture3D({
     const stableDelta = Math.min(delta, spikeLimit);
 
     // Read DMX values
-    const rawDimmer = chMap.dimmer !== undefined
-      ? (dmxData[baseAddr + chMap.dimmer] || 0) / 255
-      : 1;
-    const rawR = chMap.red !== undefined
-      ? (dmxData[baseAddr + chMap.red] || 0) / 255
-      : 1;
-    const rawG = chMap.green !== undefined
-      ? (dmxData[baseAddr + chMap.green] || 0) / 255
-      : 1;
-    const rawB = chMap.blue !== undefined
-      ? (dmxData[baseAddr + chMap.blue] || 0) / 255
-      : 1;
+    const rawDimmer = liveState?.dimmer ?? (
+      chMap.dimmer !== undefined
+        ? (dmxData[baseAddr + chMap.dimmer] || 0) / 255
+        : 1
+    );
+    const rawR = liveState?.r ?? (
+      chMap.red !== undefined
+        ? (dmxData[baseAddr + chMap.red] || 0) / 255
+        : 1
+    );
+    const rawG = liveState?.g ?? (
+      chMap.green !== undefined
+        ? (dmxData[baseAddr + chMap.green] || 0) / 255
+        : 1
+    );
+    const rawB = liveState?.b ?? (
+      chMap.blue !== undefined
+        ? (dmxData[baseAddr + chMap.blue] || 0) / 255
+        : 1
+    );
     const coarsePan = chMap.pan !== undefined ? dmxData[baseAddr + chMap.pan] || 128 : 128;
     const finePan = chMap.pan_fine !== undefined ? dmxData[baseAddr + chMap.pan_fine] || 0 : 0;
     const coarseTilt = chMap.tilt !== undefined ? dmxData[baseAddr + chMap.tilt] || 128 : 128;
@@ -245,12 +350,24 @@ function Fixture3D({
     let strobeChannelIndex: number | undefined;
     if (chMap.strobe !== undefined) {
       strobeChannelValue = dmxData[baseAddr + chMap.strobe] || 0;
-      strobe = strobeChannelValue / 255;
+      // Many fixtures use low/high values as open/no-strobe and middle bands for strobe rates.
+      // Treat extremes as non-strobe so we do not simulate constant flicker from open shutter values.
+      if (strobeChannelValue <= 8 || strobeChannelValue >= 240) {
+        strobe = 0;
+      } else {
+        strobe = THREE.MathUtils.clamp((strobeChannelValue - 16) / 208, 0, 1);
+      }
       strobeSource = 'strobe';
       strobeChannelIndex = chMap.strobe + 1;
     } else if (chMap.shutter !== undefined) {
       strobeChannelValue = dmxData[baseAddr + chMap.shutter] || 0;
-      strobe = THREE.MathUtils.clamp((strobeChannelValue - 64) / (223 - 64), 0, 1);
+      // Typical shutter map:
+      // 0-31 closed, 32-63 open, 64-223 strobe (slow->fast), 224-255 open.
+      if (strobeChannelValue >= 64 && strobeChannelValue <= 223) {
+        strobe = THREE.MathUtils.clamp((strobeChannelValue - 64) / (223 - 64), 0, 1);
+      } else {
+        strobe = 0;
+      }
       strobeSource = 'shutter';
       strobeChannelIndex = chMap.shutter + 1;
       emitFallbackWarning(
@@ -265,7 +382,7 @@ function Fixture3D({
       );
     }
 
-    let zoom = 0.5;
+    let zoom = isSpotLike ? 0.45 : 0.12;
     let zoomSource: BeamDebugSnapshot['zoomSource'] = 'fallback';
     let zoomChannelValue = 128;
     let zoomChannelIndex: number | undefined;
@@ -287,16 +404,28 @@ function Fixture3D({
       zoomSource = 'fallback';
       emitFallbackWarning(
         `zoom-${fixture.id}`,
-        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no zoom or beam_angle definition; defaulting zoom to 0.5.`
+        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no zoom or beam_angle definition; defaulting to narrow beam zoom.`
       );
     }
 
-    const panNormalized = chMap.pan_fine !== undefined
-      ? ((coarsePan << 8) | finePan) / 65535
-      : coarsePan / 255;
-    const tiltNormalized = chMap.tilt_fine !== undefined
-      ? ((coarseTilt << 8) | fineTilt) / 65535
-      : coarseTilt / 255;
+    const hasLivePan = Number.isFinite(Number(liveState?.pan));
+    const hasLiveTilt = Number.isFinite(Number(liveState?.tilt));
+    const panNormalizedFromState = hasLivePan
+      ? THREE.MathUtils.clamp((Number(liveState?.pan) + 270) / 540, 0, 1)
+      : undefined;
+    const tiltNormalizedFromState = hasLiveTilt
+      ? THREE.MathUtils.clamp((Number(liveState?.tilt) + 135) / 270, 0, 1)
+      : undefined;
+    const panNormalized = panNormalizedFromState ?? (
+      chMap.pan_fine !== undefined
+        ? ((coarsePan << 8) | finePan) / 65535
+        : coarsePan / 255
+    );
+    const tiltNormalized = tiltNormalizedFromState ?? (
+      chMap.tilt_fine !== undefined
+        ? ((coarseTilt << 8) | fineTilt) / 65535
+        : coarseTilt / 255
+    );
 
     // Smooth interpolation
     const s = smoothed.current;
@@ -314,20 +443,46 @@ function Fixture3D({
       effectiveIntensity = strobePhase < 0.5 ? s.intensity : 0;
     }
 
+    // Previz visibility floor so beam-heavy room looks read clearly on all fixtures.
+    // This boosts volumetric readability without forcing floor projection intensity.
+    const hasOutputSignal =
+      rawDimmer > 0.01 || rawR > 0.01 || rawG > 0.01 || rawB > 0.01 || strobe > 0.01;
+    const activeFloor = isBeamLike ? 0.16 : 0.08;
+    const idleFloor = isBeamLike ? 0.055 : 0.0;
+    const volumetricIntensity = hasOutputSignal
+      ? Math.max(effectiveIntensity, activeFloor)
+      : idleFloor;
+
     // Update beam color
-    beamColor.setRGB(s.r, s.g, s.b);
-    setBeamIntensity(effectiveIntensity);
+    const luminance = 0.2126 * s.r + 0.7152 * s.g + 0.0722 * s.b;
+    if (isBeamLike && luminance < 0.09) {
+      // Keep dark palettes moody but still visible in haze previs.
+      const lift = (0.09 - luminance) / 0.09;
+      beamColor.setRGB(
+        THREE.MathUtils.clamp(s.r + 0.25 * lift, 0, 1),
+        THREE.MathUtils.clamp(s.g + 0.30 * lift, 0, 1),
+        THREE.MathUtils.clamp(s.b + 0.40 * lift, 0, 1)
+      );
+    } else {
+      beamColor.setRGB(s.r, s.g, s.b);
+    }
+    setBeamIntensity(volumetricIntensity);
 
     // Update lens glow emissive
     if (lensRef.current) {
       const lensMat = lensRef.current.material as THREE.MeshStandardMaterial;
       lensMat.emissive.setRGB(s.r, s.g, s.b);
-      lensMat.emissiveIntensity = effectiveIntensity * 3;
+      lensMat.emissiveIntensity = volumetricIntensity * 3;
       lensMat.color.setRGB(s.r * 0.5, s.g * 0.5, s.b * 0.5);
     }
 
     // Update spotlight for floor projection
-    const finalSpotAngleDeg = 8.6 + zoom * 22.9;
+    const finalSpotAngleDeg = isSpotLike
+      ? (10.0 + zoom * 40.0)
+      : (2.5 + zoom * 9.0);
+    const finalBeamAngleDeg = isSpotLike
+      ? THREE.MathUtils.clamp(finalSpotAngleDeg, 10.0, 50.0)
+      : THREE.MathUtils.clamp(finalSpotAngleDeg, 2.5, 11.5);
     if (spotRef.current) {
       spotRef.current.color.setRGB(s.r, s.g, s.b);
       spotRef.current.intensity = effectiveIntensity * 8;
@@ -341,12 +496,12 @@ function Fixture3D({
     let panVelocityDegPerSec = 0;
     let tiltVelocityDegPerSec = 0;
     let signalConfidence = 1;
-    let hold = true;
+    let hold = false;
 
     // Pan/tilt for moving heads
     if (isMovingHead) {
-      const panRange = fixture.fixture?.pan_range || 540;
-      const tiltRange = fixture.fixture?.tilt_range || 270;
+      const panRange = fixture.fixture?.pan_range || (hasPanTiltChannels ? 540 : 0);
+      const tiltRange = fixture.fixture?.tilt_range || (hasPanTiltChannels ? 270 : 0);
       const panRangeRad = THREE.MathUtils.degToRad(panRange);
       const tiltRangeRad = THREE.MathUtils.degToRad(tiltRange);
       const targetPan = panNormalized * panRangeRad - (panRangeRad / 2);
@@ -358,20 +513,54 @@ function Fixture3D({
       while (controlAccumulator.current >= FIXED_CONTROL_DT && stepCount < 5) {
         o.previousPanRad = o.currentPanRad;
         o.previousTiltRad = o.currentTiltRad;
+        o.previousTargetPanRad = o.targetPanRad;
+        o.previousTargetTiltRad = o.targetTiltRad;
         o.targetPanRad = targetPan;
         o.targetTiltRad = targetTilt;
 
-        // Keep movement physically plausible and stable under variable frame cadence.
-        const panNext = THREE.MathUtils.damp(o.currentPanRad, o.targetPanRad, 16, FIXED_CONTROL_DT);
-        const tiltNext = THREE.MathUtils.damp(o.currentTiltRad, o.targetTiltRad, 16, FIXED_CONTROL_DT);
-        o.panVelocityRadPerSec = (panNext - o.currentPanRad) / FIXED_CONTROL_DT;
-        o.tiltVelocityRadPerSec = (tiltNext - o.currentTiltRad) / FIXED_CONTROL_DT;
-        o.currentPanRad = panNext;
-        o.currentTiltRad = tiltNext;
+        // Fixture-specific inertia profile: velocity/accel clamps + damping.
+        const panErrorRad = o.targetPanRad - o.currentPanRad;
+        const tiltErrorRad = o.targetTiltRad - o.currentTiltRad;
+
+        const panDesiredVel = THREE.MathUtils.clamp(
+          panErrorRad / FIXED_CONTROL_DT,
+          -THREE.MathUtils.degToRad(motionProfile.panMaxVelDegPerSec),
+          THREE.MathUtils.degToRad(motionProfile.panMaxVelDegPerSec)
+        );
+        const tiltDesiredVel = THREE.MathUtils.clamp(
+          tiltErrorRad / FIXED_CONTROL_DT,
+          -THREE.MathUtils.degToRad(motionProfile.tiltMaxVelDegPerSec),
+          THREE.MathUtils.degToRad(motionProfile.tiltMaxVelDegPerSec)
+        );
+
+        const panVelDelta = panDesiredVel - o.panVelocityRadPerSec;
+        const tiltVelDelta = tiltDesiredVel - o.tiltVelocityRadPerSec;
+        const panMaxDelta = THREE.MathUtils.degToRad(motionProfile.panMaxAccelDegPerSec2) * FIXED_CONTROL_DT;
+        const tiltMaxDelta = THREE.MathUtils.degToRad(motionProfile.tiltMaxAccelDegPerSec2) * FIXED_CONTROL_DT;
+
+        o.panVelocityRadPerSec += THREE.MathUtils.clamp(panVelDelta, -panMaxDelta, panMaxDelta);
+        o.tiltVelocityRadPerSec += THREE.MathUtils.clamp(tiltVelDelta, -tiltMaxDelta, tiltMaxDelta);
+        o.panVelocityRadPerSec *= motionProfile.damping;
+        o.tiltVelocityRadPerSec *= motionProfile.damping;
+
+        o.currentPanRad += o.panVelocityRadPerSec * FIXED_CONTROL_DT;
+        o.currentTiltRad += o.tiltVelocityRadPerSec * FIXED_CONTROL_DT;
+
+        o.currentPanRad = THREE.MathUtils.clamp(o.currentPanRad, -panRangeRad / 2, panRangeRad / 2);
+        o.currentTiltRad = THREE.MathUtils.clamp(o.currentTiltRad, -tiltRangeRad / 2, tiltRangeRad / 2);
 
         const panErr = Math.abs(o.targetPanRad - o.currentPanRad);
         const tiltErr = Math.abs(o.targetTiltRad - o.currentTiltRad);
-        if (panErr < THREE.MathUtils.degToRad(0.15) && tiltErr < THREE.MathUtils.degToRad(0.15)) {
+        const targetPanDelta = Math.abs(o.targetPanRad - o.previousTargetPanRad);
+        const targetTiltDelta = Math.abs(o.targetTiltRad - o.previousTargetTiltRad);
+        const targetStable = targetPanDelta < THREE.MathUtils.degToRad(0.08) && targetTiltDelta < THREE.MathUtils.degToRad(0.08);
+        const canShowHold = effectiveIntensity > 0.08;
+        if (
+          canShowHold &&
+          targetStable &&
+          panErr < THREE.MathUtils.degToRad(0.15) &&
+          tiltErr < THREE.MathUtils.degToRad(0.15)
+        ) {
           o.holdDurationSec += FIXED_CONTROL_DT;
         } else {
           o.holdDurationSec = 0;
@@ -404,7 +593,7 @@ function Fixture3D({
       panVelocityDegPerSec = THREE.MathUtils.radToDeg(o.panVelocityRadPerSec);
       tiltVelocityDegPerSec = THREE.MathUtils.radToDeg(o.tiltVelocityRadPerSec);
       signalConfidence = confidence;
-      hold = o.holdDurationSec > 0.2;
+      hold = o.holdDurationSec > 0.35;
     }
 
     onDebugUpdate?.({
@@ -432,27 +621,10 @@ function Fixture3D({
         strobeSource === 'fallback' ? 'missing strobe/shutter capability' : '',
         zoomSource === 'fallback' ? 'missing zoom/beam_angle capability' : '',
       ].filter(Boolean),
+      motionSource: liveBinding?.source || 'dmx',
+      sourceStaleMs: liveBinding?.staleMs,
     });
   });
-
-  // Fixture body geometry based on type
-  const bodyGeometry = useMemo(() => {
-    switch (fixtureType) {
-      case 'moving_head':
-      case 'spot':
-      case 'beam':
-        return <boxGeometry args={[0.25, 0.35, 0.3]} />;
-      case 'led_par':
-      case 'wash':
-        return <cylinderGeometry args={[0.15, 0.18, 0.2, 8]} />;
-      case 'led_bar':
-        return <boxGeometry args={[0.8, 0.1, 0.15]} />;
-      case 'strobe':
-        return <boxGeometry args={[0.3, 0.1, 0.15]} />;
-      default:
-        return <boxGeometry args={[0.2, 0.2, 0.2]} />;
-    }
-  }, [fixtureType]);
 
   // SpotLight target position
   const targetPos = useMemo(
@@ -462,17 +634,37 @@ function Fixture3D({
 
   return (
     <group ref={groupRef} position={[fixture.position_x, fixture.position_y, fixture.position_z]}>
+      {/* Base */}
+      <mesh castShadow position={[0, 0, 0]}>
+        <boxGeometry args={fixtureModel.base} />
+        <meshStandardMaterial color="#252525" metalness={0.9} roughness={0.16} />
+      </mesh>
+
+      {/* Yokes */}
+      {isMovingHead && (
+        <>
+          <mesh castShadow position={[-fixtureModel.head[0] * 0.52, fixtureModel.yoke[1] * 0.55, 0]}>
+            <boxGeometry args={fixtureModel.yoke} />
+            <meshStandardMaterial color="#2f2f2f" metalness={0.82} roughness={0.22} />
+          </mesh>
+          <mesh castShadow position={[fixtureModel.head[0] * 0.52, fixtureModel.yoke[1] * 0.55, 0]}>
+            <boxGeometry args={fixtureModel.yoke} />
+            <meshStandardMaterial color="#2f2f2f" metalness={0.82} roughness={0.22} />
+          </mesh>
+        </>
+      )}
+
       {/* Head group (rotates for moving heads) */}
-      <group ref={headRef}>
-        {/* Fixture body */}
+      <group ref={headRef} position={[0, Math.max(0.12, fixtureModel.yoke[1] * 0.75), 0]}>
+        {/* Fixture head */}
         <mesh castShadow>
-          {bodyGeometry}
+          <boxGeometry args={fixtureModel.head} />
           <meshStandardMaterial color="#2a2a2a" metalness={0.9} roughness={0.15} />
         </mesh>
 
         {/* Lens */}
-        <mesh ref={lensRef} position={[0, -0.18, 0]}>
-          <cylinderGeometry args={[0.08, 0.1, 0.04, 16]} />
+        <mesh ref={lensRef} position={[0, fixtureModel.lensPosY, 0]}>
+          <cylinderGeometry args={[fixtureModel.lens[0], fixtureModel.lens[1], fixtureModel.lens[2], 18]} />
           <meshStandardMaterial
             color="#111"
             emissive={beamColor}
@@ -485,16 +677,17 @@ function Fixture3D({
         <BeamCone
           color={beamColor}
           intensity={beamIntensity}
-          beamAngle={beamAngle}
+          beamAngle={defaultBeamAngleDeg}
           beamLength={beamLength}
+          segments={beamSegments}
         />
 
-        {/* SpotLight for floor color projection (only first 16 fixtures for performance) */}
-        {fixtureIndex < 16 && beamIntensity > 0.1 && (
+        {/* SpotLight for floor color projection (cap count for performance) */}
+        {fixtureIndex < spotCap && beamIntensity > 0.08 && (
           <>
             <spotLight
               ref={spotRef}
-              position={[0, -0.2, 0]}
+              position={[0, fixtureModel.lensPosY - 0.02, 0]}
               angle={0.3}
               penumbra={0.6}
               intensity={beamIntensity * 8}
@@ -510,13 +703,30 @@ function Fixture3D({
         )}
       </group>
 
-      {/* Yoke (static, visible for moving heads) */}
-      {isMovingHead && (
-        <mesh position={[0, 0.2, 0]}>
-          <boxGeometry args={[0.05, 0.15, 0.3]} />
-          <meshStandardMaterial color="#333" metalness={0.8} roughness={0.2} />
-        </mesh>
-      )}
+      {/* Fixture ID label for quick patch/debug identification */}
+      <Html
+        position={[0, 0.55, 0]}
+        center
+        occlude={false}
+        distanceFactor={12}
+        style={{ pointerEvents: 'none' }}
+      >
+        <div
+          style={{
+            padding: '2px 6px',
+            borderRadius: 4,
+            background: 'rgba(0,0,0,0.65)',
+            color: '#f0f4ff',
+            fontSize: '10px',
+            fontFamily: 'Consolas, monospace',
+            lineHeight: 1.1,
+            whiteSpace: 'nowrap',
+            border: '1px solid rgba(255,255,255,0.2)',
+          }}
+        >
+          {fixture.id}
+        </div>
+      </Html>
     </group>
   );
 }
@@ -574,16 +784,18 @@ function Stage({
 
       {/* Key lighting zone highlights on stage floor */}
       {keyZones
-        .filter((z) => z.active && ZONE_POSITIONS[z.zone])
+        .filter((z: any) => z && z.active && z.zone && ZONE_POSITIONS[z.zone])
         .map((zone) => {
           const pos = ZONE_POSITIONS[zone.zone];
           const worldX = pos.x * width;
           const worldZ = pos.z * depth;
+          const colorSafe = zone.color ?? { r: 160, g: 180, b: 255 };
           const zoneColor = new THREE.Color(
-            zone.color.r / 255,
-            zone.color.g / 255,
-            zone.color.b / 255
+            Number(colorSafe.r ?? 160) / 255,
+            Number(colorSafe.g ?? 180) / 255,
+            Number(colorSafe.b ?? 255) / 255
           );
+          const zoneIntensity = Number.isFinite(Number(zone.intensity)) ? Number(zone.intensity) : 0.35;
           return (
             <mesh
               key={zone.zone}
@@ -594,9 +806,9 @@ function Stage({
               <meshStandardMaterial
                 color={zoneColor}
                 emissive={zoneColor}
-                emissiveIntensity={zone.intensity * 0.5}
+                emissiveIntensity={zoneIntensity * 0.5}
                 transparent
-                opacity={zone.intensity * 0.3}
+                opacity={zoneIntensity * 0.3}
               />
             </mesh>
           );
@@ -613,65 +825,93 @@ function Truss({ width, height, depth }: { width: number; height: number; depth:
   // Truss chord parameters
   const chordRadius = 0.025;
   const segments = 8;
+  const trussGap = Math.max(1.4, Math.min(2.2, depth * 0.25));
 
   return (
     <group position={[0, height, 0]}>
-      {/* Front truss - main chord */}
-      <mesh position={[0, 0, -depth / 2 + 0.5]}>
+      {/* Two close parallel overhead trusses */}
+      <mesh position={[0, 0, -trussGap / 2]}>
         <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
         <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
       </mesh>
-      {/* Front truss - bottom chord */}
-      <mesh position={[0, -0.12, -depth / 2 + 0.5]}>
+      <mesh position={[0, -0.12, -trussGap / 2]}>
         <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
         <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
       </mesh>
-      {/* Rotate cylinders to be horizontal */}
-      <group rotation={[0, 0, Math.PI / 2]}>
-        {/* (Note: cylinder default axis is Y, rotated to X for horizontal) */}
-      </group>
-
-      {/* Back truss */}
-      <mesh position={[0, 0, depth / 2 - 0.5]}>
+      <mesh position={[0, 0, trussGap / 2]}>
         <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
         <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
       </mesh>
-      <mesh position={[0, -0.12, depth / 2 - 0.5]}>
+      <mesh position={[0, -0.12, trussGap / 2]}>
         <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
         <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
       </mesh>
+    </group>
+  );
+}
 
-      {/* Side trusses */}
-      <mesh position={[-width / 2 + 0.5, 0, 0]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[chordRadius, chordRadius, depth, segments]} />
-        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
-      </mesh>
-      <mesh position={[width / 2 - 0.5, 0, 0]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[chordRadius, chordRadius, depth, segments]} />
-        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
-      </mesh>
+function TrussNetwork({
+  rig,
+}: {
+  rig: Rig;
+}) {
+  const rows = useMemo(() => {
+    const fixtures = (rig.fixtures || []).filter((f) => Number.isFinite(f.position_z));
+    if (!fixtures.length) return [];
 
-      {/* Vertical support legs (4 corners) */}
-      {[
-        [-width / 2 + 0.5, -depth / 2 + 0.5],
-        [width / 2 - 0.5, -depth / 2 + 0.5],
-        [-width / 2 + 0.5, depth / 2 - 0.5],
-        [width / 2 - 0.5, depth / 2 - 0.5],
-      ].map(([x, z], i) => (
-        <mesh key={i} position={[x, -height / 2, z]}>
-          <cylinderGeometry args={[0.04, 0.04, height, 6]} />
-          <meshStandardMaterial color="#555" metalness={0.8} roughness={0.2} />
-        </mesh>
-      ))}
+    const sorted = [...fixtures].sort((a, b) => a.position_z - b.position_z);
+    const threshold = Math.max(0.8, rig.stage_depth * 0.06);
+    const clusters: Array<{ z: number; y: number; xMin: number; xMax: number; count: number }> = [];
 
-      {/* Cross braces on front truss (diagonal elements) */}
-      {Array.from({ length: Math.floor(width / 1.5) }, (_, i) => {
-        const x = -width / 2 + 1 + i * 1.5;
+    for (const fx of sorted) {
+      const last = clusters[clusters.length - 1];
+      if (!last || Math.abs(fx.position_z - last.z) > threshold) {
+        clusters.push({
+          z: fx.position_z,
+          y: fx.position_y,
+          xMin: fx.position_x,
+          xMax: fx.position_x,
+          count: 1,
+        });
+      } else {
+        const n = last.count + 1;
+        last.z = (last.z * last.count + fx.position_z) / n;
+        last.y = (last.y * last.count + fx.position_y) / n;
+        last.xMin = Math.min(last.xMin, fx.position_x);
+        last.xMax = Math.max(last.xMax, fx.position_x);
+        last.count = n;
+      }
+    }
+    return clusters;
+  }, [rig]);
+
+  const chordRadius = 0.022;
+  const segments = 10;
+
+  return (
+    <group>
+      {rows.map((row, idx) => {
+        const width = Math.max(2.0, (row.xMax - row.xMin) + 1.0);
+        const xCenter = (row.xMax + row.xMin) / 2;
+        const y = row.y + 0.08;
+        const z = row.z;
         return (
-          <group key={`brace-${i}`} position={[x, -0.06, -depth / 2 + 0.5]}>
-            <mesh rotation={[0, 0, Math.PI / 4]}>
-              <cylinderGeometry args={[0.01, 0.01, 0.2, 4]} />
-              <meshStandardMaterial color="#555" metalness={0.8} roughness={0.3} />
+          <group key={`truss-row-${idx}`} position={[xCenter, y, z]}>
+            <mesh position={[0, 0.0, -0.10]}>
+              <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
+              <meshStandardMaterial color="#7a7a7a" metalness={0.92} roughness={0.14} />
+            </mesh>
+            <mesh position={[0, -0.12, -0.10]}>
+              <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
+              <meshStandardMaterial color="#7a7a7a" metalness={0.92} roughness={0.14} />
+            </mesh>
+            <mesh position={[0, 0.0, 0.10]}>
+              <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
+              <meshStandardMaterial color="#7a7a7a" metalness={0.92} roughness={0.14} />
+            </mesh>
+            <mesh position={[0, -0.12, 0.10]}>
+              <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
+              <meshStandardMaterial color="#7a7a7a" metalness={0.92} roughness={0.14} />
             </mesh>
           </group>
         );
@@ -742,6 +982,30 @@ function HazeParticles({ count, spread }: { count: number; spread: [number, numb
   );
 }
 
+function AtmosphereLayers({ width, depth, height }: { width: number; depth: number; height: number }) {
+  const layers = [0.22, 0.45, 0.66, 0.84];
+  return (
+    <group>
+      {layers.map((t, i) => (
+        <mesh
+          key={`atm-${i}`}
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[0, Math.max(0.7, t * height), 0]}
+        >
+          <planeGeometry args={[width * 1.15, depth * 1.15]} />
+          <meshBasicMaterial
+            color={new THREE.Color(0.28 + t * 0.22, 0.36 + t * 0.18, 0.52 + t * 0.12)}
+            transparent
+            opacity={0.012 + t * 0.012}
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 // ============================================================================
 // MAIN SCENE COMPONENT
 // ============================================================================
@@ -749,29 +1013,121 @@ function HazeParticles({ count, spread }: { count: number; spread: [number, numb
 function Scene({
   rig,
   debugBuffer,
+  cameraMode,
+  qualityMode,
 }: {
   rig: Rig;
   debugBuffer: MutableRefObject<Record<number, BeamDebugSnapshot>>;
+  cameraMode: CameraMode;
+  qualityMode: QualityMode;
 }) {
   const dmxData = useDMXStore((state) => {
     const universeData = state.universes.get(0);
     return universeData || new Array(512).fill(0);
   });
   const keyLightingZones = useDMXStore((state) => state.proLighting.keyLightingZones);
+  const fixtureStates = useDMXStore((state) => state.fixtureStates);
+  const liveBindings = useMemo(() => {
+    const now = Date.now();
+    const byAddress = new Map<number, LiveFixtureState>();
+    const byId = new Map<string, LiveFixtureState>();
+    const allStates: LiveFixtureState[] = [];
+
+    fixtureStates.forEach((value) => {
+      const state = value as LiveFixtureState;
+      allStates.push(state);
+      byId.set(String(state.id), state);
+      const addr = Number(state?.dmx_address);
+      if (Number.isFinite(addr) && addr > 0) byAddress.set(addr, state);
+    });
+
+    const rigSorted = [...(rig.fixtures || [])].sort((a, b) => a.dmx_address - b.dmx_address);
+    const stateSorted = [...allStates]
+      .filter((s) => Number.isFinite(Number(s.dmx_address)))
+      .sort((a, b) => Number(a.dmx_address) - Number(b.dmx_address));
+    const ordinalFallback = new Map<number, LiveFixtureState>();
+    const n = Math.min(rigSorted.length, stateSorted.length);
+    for (let i = 0; i < n; i += 1) {
+      ordinalFallback.set(rigSorted[i].id, stateSorted[i]);
+    }
+
+    const bindings = new Map<number, { state?: LiveFixtureState; source: string; staleMs?: number }>();
+    for (const fx of rig.fixtures || []) {
+      let state: LiveFixtureState | undefined;
+      let source = 'dmx';
+
+      if (byAddress.has(fx.dmx_address)) {
+        state = byAddress.get(fx.dmx_address);
+        source = 'state:dmx_address';
+      } else if (byId.has(String(fx.id))) {
+        state = byId.get(String(fx.id));
+        source = 'state:fixture_id';
+      } else if (fx.name && byId.has(String(fx.name))) {
+        state = byId.get(String(fx.name));
+        source = 'state:name';
+      } else if (ordinalFallback.has(fx.id)) {
+        state = ordinalFallback.get(fx.id);
+        source = 'state:ordinal_fallback';
+      }
+
+      const staleMs = state?._updatedAt ? Math.max(0, now - Number(state._updatedAt)) : undefined;
+      bindings.set(fx.id, { state, source, staleMs });
+    }
+
+    return bindings;
+  }, [fixtureStates, rig]);
+
+  const quality = useMemo(() => {
+    if (qualityMode === 'performance') return { hazeCount: 120, beamSegments: 10, spotCap: 12 };
+    if (qualityMode === 'ultra') return { hazeCount: 360, beamSegments: 24, spotCap: 40 };
+    return { hazeCount: 220, beamSegments: 16, spotCap: 24 };
+  }, [qualityMode]);
+
+  const camera = useMemo(() => {
+    const baseTarget: [number, number, number] = [0, rig.stage_height * 0.45, 0];
+    if (cameraMode === 'top') {
+      return {
+        position: [0, rig.stage_height + 7, 0.01] as [number, number, number],
+        target: [0, 0, 0] as [number, number, number],
+        maxPolar: Math.PI,
+      };
+    }
+    if (cameraMode === 'front') {
+      return {
+        position: [0, rig.stage_height * 0.55, rig.stage_depth * 1.65] as [number, number, number],
+        target: baseTarget,
+        maxPolar: Math.PI / 1.95,
+      };
+    }
+    if (cameraMode === 'audience') {
+      return {
+        position: [0, 2.5, rig.stage_depth * 1.95] as [number, number, number],
+        target: [0, 2.8, 0] as [number, number, number],
+        maxPolar: Math.PI / 2.05,
+      };
+    }
+    return {
+      position: [0, rig.stage_height * 0.8, rig.stage_depth * 1.15] as [number, number, number],
+      target: baseTarget,
+      maxPolar: Math.PI / 2,
+    };
+  }, [cameraMode, rig.stage_depth, rig.stage_height]);
 
   return (
     <>
-      <PerspectiveCamera makeDefault position={[0, 8, 15]} fov={50} />
+      <PerspectiveCamera key={`cam-${cameraMode}`} makeDefault position={camera.position} fov={50} />
       <OrbitControls
         enablePan
         enableZoom
         enableRotate
-        target={[0, rig.stage_height / 2, 0]}
-        maxPolarAngle={Math.PI / 2}
+        target={camera.target}
+        maxPolarAngle={camera.maxPolar}
       />
 
-      {/* Minimal ambient - let beams and spots be the light sources */}
-      <ambientLight intensity={0.03} />
+      {/* Keep a visible baseline so scene never appears as a blank black page. */}
+      <ambientLight intensity={0.24} />
+      <hemisphereLight args={['#6f8cff', '#1b1b1b', 0.28]} />
+      <directionalLight position={[6, 10, 4]} intensity={0.35} color="#9db4ff" />
 
       {/* Stage environment */}
       <Stage
@@ -784,12 +1140,11 @@ function Scene({
         height={rig.stage_height - 1}
         depth={rig.stage_depth - 1}
       />
+      <TrussNetwork rig={rig} />
 
       {/* Haze particles for atmospheric effect */}
-      <HazeParticles
-        count={200}
-        spread={[rig.stage_width, rig.stage_height, rig.stage_depth]}
-      />
+      <AtmosphereLayers width={rig.stage_width} depth={rig.stage_depth} height={rig.stage_height} />
+      <HazeParticles count={quality.hazeCount} spread={[rig.stage_width, rig.stage_height, rig.stage_depth]} />
 
       {/* Fixtures */}
       {rig.fixtures?.map((fixture, index) => (
@@ -797,7 +1152,10 @@ function Scene({
           key={fixture.id}
           fixture={fixture}
           dmxData={dmxData}
+          liveBinding={liveBindings.get(fixture.id)}
           fixtureIndex={index}
+          spotCap={quality.spotCap}
+          beamSegments={quality.beamSegments}
           onDebugUpdate={(snapshot) => {
             debugBuffer.current[snapshot.fixtureId] = snapshot;
           }}
@@ -805,9 +1163,14 @@ function Scene({
       ))}
 
       {/* Exponential fog for haze effect */}
-      <fogExp2 attach="fog" args={['#000000', 0.025]} />
+      <fogExp2 attach="fog" args={['#05070a', 0.006]} />
     </>
   );
+}
+
+function fmt(value: unknown, digits = 1): string {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : '0.0';
 }
 
 // ============================================================================
@@ -823,9 +1186,12 @@ export default function RigVisualizer() {
   const navigate = useNavigate();
   const [rig, setRig] = useState<Rig | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const proLighting = useDMXStore((state) => state.proLighting);
   const beamDebugBuffer = useRef<Record<number, BeamDebugSnapshot>>({});
   const [beamDebugRows, setBeamDebugRows] = useState<BeamDebugSnapshot[]>([]);
+  const [cameraMode, setCameraMode] = useState<CameraMode>('iso');
+  const [qualityMode, setQualityMode] = useState<QualityMode>('balanced');
   const isDemo = !id; // No rig ID = demo mode
 
   const {
@@ -888,11 +1254,13 @@ export default function RigVisualizer() {
 
   const fetchRig = async (rigId: number) => {
     setLoading(true);
+    setLoadError(null);
     try {
       const data = await rigsApi.get(rigId);
       setRig(data);
     } catch (error) {
       console.error('Failed to fetch rig:', error);
+      setLoadError('Failed to load rig data.');
     } finally {
       setLoading(false);
     }
@@ -900,12 +1268,38 @@ export default function RigVisualizer() {
 
   const fetchDemoRig = async () => {
     setLoading(true);
+    setLoadError(null);
     try {
-      const response = await fetch('/api/demo/rig?preset=medium_venue');
-      const data = await response.json();
+      const ts = Date.now();
+      const candidates = [
+        `/api/demo/rig?preset=pro_beam_room&t=${ts}`,
+        `http://127.0.0.1:8000/api/demo/rig?preset=pro_beam_room&t=${ts}`,
+        `http://localhost:8000/api/demo/rig?preset=pro_beam_room&t=${ts}`,
+      ];
+
+      let lastErr = 'Unknown demo rig fetch error';
+      let data: any = null;
+      for (const url of candidates) {
+        try {
+          const response = await fetch(url);
+          if (!response.ok) {
+            lastErr = `Demo rig request failed (${response.status}) via ${url}`;
+            continue;
+          }
+          data = await response.json();
+          break;
+        } catch (err: any) {
+          lastErr = `${err?.message || 'Network error'} via ${url}`;
+        }
+      }
+
+      if (!data) {
+        throw new Error(lastErr);
+      }
       setRig(data);
     } catch (error) {
       console.error('Failed to fetch demo rig:', error);
+      setLoadError(`Failed to load demo rig: ${(error as any)?.message || 'unknown error'}`);
     } finally {
       setLoading(false);
     }
@@ -916,7 +1310,13 @@ export default function RigVisualizer() {
   }
 
   if (!rig) {
-    return <Typography>Rig not found</Typography>;
+    return (
+      <Box sx={{ p: 2 }}>
+        <Typography color="error.main">
+          {loadError || 'Rig not found'}
+        </Typography>
+      </Box>
+    );
   }
 
   return (
@@ -927,6 +1327,17 @@ export default function RigVisualizer() {
           <BackIcon />
         </IconButton>
         <Typography variant="h5">{rig.name}</Typography>
+        <ButtonGroup size="small" variant="outlined" sx={{ ml: 1 }}>
+          <Button variant={cameraMode === 'iso' ? 'contained' : 'outlined'} onClick={() => setCameraMode('iso')}>Iso</Button>
+          <Button variant={cameraMode === 'top' ? 'contained' : 'outlined'} onClick={() => setCameraMode('top')}>Top</Button>
+          <Button variant={cameraMode === 'front' ? 'contained' : 'outlined'} onClick={() => setCameraMode('front')}>Front</Button>
+          <Button variant={cameraMode === 'audience' ? 'contained' : 'outlined'} onClick={() => setCameraMode('audience')}>Audience</Button>
+        </ButtonGroup>
+        <ButtonGroup size="small" variant="outlined">
+          <Button variant={qualityMode === 'performance' ? 'contained' : 'outlined'} onClick={() => setQualityMode('performance')}>Perf</Button>
+          <Button variant={qualityMode === 'balanced' ? 'contained' : 'outlined'} onClick={() => setQualityMode('balanced')}>Balanced</Button>
+          <Button variant={qualityMode === 'ultra' ? 'contained' : 'outlined'} onClick={() => setQualityMode('ultra')}>Ultra</Button>
+        </ButtonGroup>
       </Box>
 
       {/* Audio Device Chooser */}
@@ -974,11 +1385,11 @@ export default function RigVisualizer() {
           gl={{
             antialias: true,
             toneMapping: THREE.ACESFilmicToneMapping,
-            toneMappingExposure: 1.2,
+            toneMappingExposure: qualityMode === 'ultra' ? 1.32 : 1.2,
           }}
-          dpr={[1, 1.5]}
+          dpr={qualityMode === 'ultra' ? [1.2, 2] : qualityMode === 'performance' ? [1, 1.2] : [1, 1.5]}
         >
-          <Scene rig={rig} debugBuffer={beamDebugBuffer} />
+          <Scene rig={rig} debugBuffer={beamDebugBuffer} cameraMode={cameraMode} qualityMode={qualityMode} />
         </Canvas>
       </Box>
 
@@ -996,13 +1407,14 @@ export default function RigVisualizer() {
             <Box sx={{ display: 'grid', gap: 0.3, fontFamily: 'monospace' }}>
               {beamDebugRows.map((row) => (
                 <Typography key={row.fixtureId} variant="caption" component="div">
-                  {row.fixtureLabel.padEnd(18, ' ')} | tgt P/T {row.targetPanDeg.toFixed(1)}°/{row.targetTiltDeg.toFixed(1)}°
-                  {' '}| cur P/T {row.currentPanDeg.toFixed(1)}°/{row.currentTiltDeg.toFixed(1)}°
-                  {' '}| vel P/T {row.panVelocityDegPerSec.toFixed(1)}/{row.tiltVelocityDegPerSec.toFixed(1)} °/s
-                  {' '}| conf {(row.signalConfidence * 100).toFixed(0)}%
-                  {' '}| strobe {row.strobeLogical.toFixed(2)} ({row.strobeSource} {row.strobeChannelIndex ? `ch${row.strobeChannelIndex}=${row.strobeChannelValue}` : 'no-channel'})
-                  {' '}| zoom {row.zoomLogical.toFixed(2)} ({row.zoomSource} {row.zoomChannelIndex ? `ch${row.zoomChannelIndex}=${row.zoomChannelValue}` : `dmx=${row.zoomChannelValue}`})
-                  {' '}| out I {row.finalIntensity.toFixed(2)} angle {row.finalSpotAngleDeg.toFixed(1)}°
+                  {String(row.fixtureLabel ?? `Fixture ${row.fixtureId}`).padEnd(18, ' ')} | tgt P/T {fmt(row.targetPanDeg)}°/{fmt(row.targetTiltDeg)}°
+                  {' '}| cur P/T {fmt(row.currentPanDeg)}°/{fmt(row.currentTiltDeg)}°
+                  {' '}| vel P/T {fmt(row.panVelocityDegPerSec)}/{fmt(row.tiltVelocityDegPerSec)} °/s
+                  {' '}| conf {fmt((row.signalConfidence ?? 0) * 100, 0)}%
+                  {' '}| strobe {fmt(row.strobeLogical, 2)} ({row.strobeSource} {row.strobeChannelIndex ? `ch${row.strobeChannelIndex}=${row.strobeChannelValue}` : 'no-channel'})
+                  {' '}| zoom {fmt(row.zoomLogical, 2)} ({row.zoomSource} {row.zoomChannelIndex ? `ch${row.zoomChannelIndex}=${row.zoomChannelValue}` : `dmx=${row.zoomChannelValue}`})
+                  {' '}| out I {fmt(row.finalIntensity, 2)} angle {fmt(row.finalSpotAngleDeg)}°
+                  {' '}| src {row.motionSource}{row.sourceStaleMs !== undefined ? ` (${Math.round(row.sourceStaleMs)}ms)` : ''}
                   {' '}| {row.hold ? 'HOLD' : 'TRACK'}
                   {row.capabilityWarnings.length > 0 ? ` | WARN: ${row.capabilityWarnings.join(', ')}` : ''}
                 </Typography>

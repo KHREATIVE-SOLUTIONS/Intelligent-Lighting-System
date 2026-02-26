@@ -15,11 +15,11 @@ start "ILS Backend" cmd /k "call venv\Scripts\activate.bat && python -m uvicorn 
 echo Waiting for backend to start...
 timeout /t 3 /nobreak > nul
 
-echo [2/3] Starting Visualizer Server (port 8080)...
-cd /d "%ROOT_DIR%\visualizer"
-start "ILS Visualizer" cmd /k "python -m http.server 8080"
+echo [2/3] Starting Frontend Dashboard (port 5173)...
+cd /d "%ROOT_DIR%\frontend"
+start "ILS Frontend" cmd /k "npm run dev -- --host 0.0.0.0 --port 5173"
 
-echo Waiting for visualizer to start...
+echo Waiting for frontend to start...
 timeout /t 2 /nobreak > nul
 
 echo [3/3] Starting Audio Capture...
@@ -33,12 +33,12 @@ echo ========================================
 echo.
 echo Backend API:    http://localhost:8000
 echo API Docs:       http://localhost:8000/docs
-echo Visualizer:     http://localhost:8080
+echo Dashboard:      http://localhost:5173
 echo Debug Pipeline: http://localhost:8000/api/effects/debug/pipeline
 echo.
-echo Opening visualizer in browser...
+echo Opening dashboard in browser...
 timeout /t 2 /nobreak > nul
-start http://localhost:8080
+start http://localhost:5173
 
 echo.
 echo Press any key to open debug pipeline endpoint...

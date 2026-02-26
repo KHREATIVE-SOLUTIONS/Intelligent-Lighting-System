@@ -114,6 +114,13 @@ class PresetRequest(BaseModel):
     preset: str = Field(..., description="Preset name")
 
 
+class SafetyProfileRequest(BaseModel):
+    """Request to apply a research-pack safety profile."""
+    profile: str = Field("performance", description="no_strobe | conservative | performance")
+    camera_mode: Optional[bool] = Field(None, description="Enable stricter anti-flicker camera mode")
+    venue_mode: Optional[str] = Field(None, description="theatre | broadcast | corporate | concert | club")
+
+
 class MLTargetGatingRequest(BaseModel):
     """Request to tune ML confidence gates for target switching."""
     enabled: Optional[bool] = None
@@ -510,6 +517,60 @@ async def trigger_restore():
     return {"status": "ok", "trigger": "restore"}
 
 
+@router.post("/trigger/clean-stage")
+async def trigger_clean_stage():
+    """Clean-stage macro: stop FX/strobes and return to safe readable base."""
+    engine = get_effects_engine()
+    engine.clean_stage()
+    return {"status": "ok", "trigger": "clean_stage"}
+
+
+@router.get("/safety")
+async def get_safety_settings(request: Request):
+    """Get current safety profile and active constraints."""
+    engine = getattr(request.app.state, "effects_engine", None) or get_effects_engine()
+    state = engine.get_pro_lighting_state() if engine._pro_lighting_enabled else {"constraints": {}}
+    return state.get("constraints", {})
+
+
+@router.post("/safety/profile")
+async def set_safety_profile(payload: SafetyProfileRequest, request: Request):
+    """Apply safety profile presets from the busking research pack."""
+    engine = getattr(request.app.state, "effects_engine", None) or get_effects_engine()
+    return engine.set_safety_profile(
+        profile=payload.profile,
+        camera_mode=payload.camera_mode,
+        venue_mode=payload.venue_mode,
+    )
+
+
+@router.get("/programming/artifacts")
+async def get_programming_artifacts(request: Request, safety_limit: int = 50):
+    """Expose programming artifacts recommended by professional workflow research."""
+    engine = getattr(request.app.state, "effects_engine", None) or get_effects_engine()
+    return {
+        "ownership_priority_map": {
+            "intensity": {"blend": "HTP", "layers": ["base", "dimmer", "strobe", "key"]},
+            "color_position_beam": {"blend": "LTP", "layers": ["palette", "movement", "effects", "manual_override"]},
+        },
+        "palette_index": {
+            "current": engine.config.palette.value,
+            "available": [p.value for p in ColorPalette],
+            "palette_locked": bool(getattr(engine, "_palette_locked", False)),
+            "palette_version": int(getattr(engine, "_palette_version", 1)),
+        },
+        "effect_library_sheet": {
+            "movement_presets": sorted(list(MOVEMENT_PRESETS.keys())),
+            "dimmer_presets": sorted(list(DIMMER_PRESETS.keys())),
+            "strobe_presets": sorted(list(STROBE_PRESETS.keys())),
+            "pro_movement_presets": sorted(list(PRO_MOVEMENT_PRESETS.keys())),
+            "pro_strobe_modes": [m.value for m in ProStrobeMode],
+            "safety_macros": ["clean_stage", "blackout", "restore", "pro/blackout"],
+        },
+        "safety_policy_log": engine.get_safety_events(limit=safety_limit),
+    }
+
+
 # === Presets ===
 
 @router.get("/presets")
@@ -592,7 +653,7 @@ async def get_debug_frame():
     return {
         "non_zero_channels": non_zero,
         "first_50_channels": frame[:50],
-        "fixtures": fixtures[:4],  # First 4 fixtures
+        "fixtures": fixtures,
         "audio_energy": engine.audio_features.energy,
         "callback_set": engine._dmx_callback is not None
     }
@@ -683,7 +744,7 @@ async def get_debug_pipeline():
             "if_dimmer_0": "Check if audio capture is running and sending data",
             "if_no_audio": "Run: python scripts/audio_capture.py",
             "if_colors_black": "Check RGB values in fixtures_sample",
-            "visualizer_url": "http://localhost:8080",
+            "visualizer_url": "http://localhost:5173/",
         }
     }
 

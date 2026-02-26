@@ -78,7 +78,7 @@ BEAM_LOOK_LIBRARY: Dict[str, BeamLook] = {
     "center_punch": BeamLook(
         name="center_punch",
         pattern=BeamPatternName.CENTER_FOCUS_HOLD,
-        symmetry=SymmetryMode.NONE,
+        symmetry=SymmetryMode.LEFT_RIGHT_MIRROR,
         focus_anchor_name="center_stage",
         intensity_scale=0.72,
         strobe_mode="off",
@@ -95,7 +95,7 @@ class BeamLookScheduler:
 
     def __init__(self):
         self._rng = random.Random(42)
-        self._active_look: BeamLook = BEAM_LOOK_LIBRARY["center_punch"]
+        self._active_look: BeamLook = BEAM_LOOK_LIBRARY["opposing_sweeps"]
         self._last_switch_time = 0.0
         self._last_switch_bar = 0
         self._cooldown_until = 0.0
@@ -147,16 +147,16 @@ class BeamLookScheduler:
         """Energy-aware look selection with section bias."""
         high_energy = ["audience_sweeps", "crisscross"]
         medium_energy = ["fan", "opposing_sweeps", "crisscross"]
-        low_energy = ["center_punch", "fan", "opposing_sweeps"]
+        low_energy = ["fan", "opposing_sweeps", "crisscross"]
 
         if section in {"intro", "outro", "breakdown"}:
-            pool = ["center_punch", "fan", "opposing_sweeps"]
+            pool = ["fan", "opposing_sweeps", "center_punch"]
         elif section in {"drop", "peak"}:
             pool = ["audience_sweeps", "crisscross"]
         elif section in {"chorus", "buildup", "pre_chorus"}:
             pool = ["crisscross", "fan", "audience_sweeps"]
         elif section in {"verse", "bridge"}:
-            pool = ["fan", "opposing_sweeps", "center_punch"]
+            pool = ["opposing_sweeps", "fan", "crisscross"]
         elif energy >= 0.72:
             pool = high_energy
         elif energy <= 0.38:

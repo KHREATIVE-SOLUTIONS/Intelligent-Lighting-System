@@ -11,6 +11,7 @@ Outputs DMX values combining all layers.
 
 import asyncio
 import copy
+import math
 import time
 from typing import Dict, List, Optional, Callable, Tuple
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from .decision_engine import (
 from .lfo_engine import LFOEngine
 from ..lighting.section_templates import get_section_template
 from ..lighting.fixture_capabilities import get_capability_profile_for_fixture
+from ..lighting.movement_patterns import PRO_MOVEMENT_PRESETS
 
 # Professional lighting modules - imported lazily in __init__ to avoid circular imports
 # (lighting modules import from effects submodules, which triggers effects/__init__.py,
@@ -47,15 +49,14 @@ class EffectsConfig:
     """
     Configuration for the effects engine.
 
-    TRAINING MODE: By default, auto_mode is disabled. The system learns
-    from human operators using the LFO effects and manual controls.
-    Audio analysis is captured for training data but doesn't control lights.
+    AI BUSKER MODE: By default, auto_mode is enabled so the decision engine
+    drives show behavior directly from live audio analysis.
     """
     # Update rate
     fps: float = 60.0
 
-    # Auto-pilot mode (use decision engine) - DISABLED for training
-    auto_mode: bool = False
+    # Auto-pilot mode (use decision engine)
+    auto_mode: bool = True
 
     # Manual overrides
     manual_movement: Optional[MovementType] = None
@@ -74,6 +75,8 @@ class EffectsConfig:
     dimmer_enabled: bool = True
     strobe_enabled: bool = True
     color_enabled: bool = True
+    movement_music_reactive: bool = False
+    movement_rotation_bars: int = 16
 
     # Color stability - lock palette per song
     lock_palette_per_song: bool = True
@@ -102,6 +105,22 @@ class EffectsConfig:
     ml_section_consecutive_frames: int = 2
     ml_section_min_hold_ms: int = 350
     ml_section_min_confidence_delta: float = 0.06
+
+    # Safety constraints (research-aligned defaults, runtime configurable)
+    strobe_hz_cap: float = 24.0
+    strobe_max_duty_cycle: float = 0.42
+    strobe_burst_max_s: float = 0.70
+    strobe_refractory_s: float = 0.16
+    audience_intensity_cap: float = 1.00
+    movement_when_bright: bool = True
+    bright_movement_dimmer_threshold: float = 0.82
+    bright_movement_pan_tilt_cap_deg: float = 55.0
+
+    # Research-pack runtime context flags
+    accessibility_mode: str = "no_strobe"     # no_strobe | conservative | performance
+    venue_mode: str = "concert"               # theatre | broadcast | corporate | concert | club
+    camera_mode: bool = False
+    major_change_min_bars: int = 2
 
 
 @dataclass
@@ -165,6 +184,9 @@ class EffectsEngine:
         # White strobe flash state
         self._white_strobe_flash = False
         self._white_strobe_decay = 0.0
+        self._last_drop_strobe_time: float = -999.0
+        self._safety_events: List[Dict] = []
+        self._safety_event_last_time: Dict[str, float] = {}
 
         # Section template engine
         self._section_templates_enabled = True
@@ -196,7 +218,7 @@ class EffectsEngine:
             build_pattern_params,
         )
         from ..lighting.beam_scene_state_machine import BeamSceneStateMachine
-        from ..lighting.beam_look_scheduler import BeamLookScheduler
+        from ..lighting.beam_look_scheduler import BeamLookScheduler, BEAM_LOOK_LIBRARY
 
         self.genre_manager = GenreProfileManager()
         self.section_manager = SectionManager(bpm=self.config.bpm)
@@ -210,8 +232,53 @@ class EffectsEngine:
         self._beam_focus_anchors = FOCUS_POINT_ANCHORS
         self._beam_scene_machine = BeamSceneStateMachine(initial_pattern=BeamPatternName.CENTER_FOCUS_HOLD)
         self._beam_look_scheduler = BeamLookScheduler()
+        self._beam_look_library = BEAM_LOOK_LIBRARY
         self._active_beam_look = self._beam_look_scheduler.active_look
         self._build_pattern_params = build_pattern_params
+        self._clocked_symmetry_look_cycle = ["opposing_sweeps", "fan", "crisscross"]
+        self._clocked_symmetry_preset_cycle = [
+            "mirror_slow",
+            "split_sweep_slow",
+            "tilt_cross_home",
+            "figure_8_chase",
+            "circle_spread",
+            "tilt_wave_slow",
+            "mirror_fast",
+        ]
+        self._clocked_symmetry_active_preset: Optional[str] = None
+        self._clocked_chase_cycle = [
+            ("forward", "whole", 1, 0, 0.88),
+            ("backward", "whole", 1, 0, 0.88),
+            ("forward", "half", 1, 0, 0.92),
+            ("backward", "half", 1, 0, 0.92),
+        ]
+        self._clocked_chase_active_index: int = -1
+        self._clocked_chase_last_intensity: float = -1.0
+        self._smoothed_movement_bpm: float = float(self.config.bpm)
+        self._smoothed_valence: float = 0.5
+        self._smoothed_arousal: float = 0.5
+        self._white_accent_level: float = 0.0
+        self._drop_candidate_frames: int = 0
+        self._last_forced_drop_time: float = -999.0
+        self._prev_energy: float = 0.0
+        self._prev_bass: float = 0.0
+        self._busker_section_hint: str = "verse"
+        self._busker_drop_until: float = -999.0
+        self._busker_last_section_change_time: float = -999.0
+        self._busker_low_energy_accum: float = 0.0
+        self._rebuild_busker_enabled: bool = True
+        self._rebuild_section: str = "verse"
+        self._rebuild_section_changed_at: float = 0.0
+        self._rebuild_drop_until: float = -999.0
+        self._rebuild_last_impact: float = -999.0
+        self._rebuild_prev_energy: float = 0.0
+        self._rebuild_prev_bass: float = 0.0
+        self._rebuild_color_hold_until: float = 0.0
+        self._rebuild_base_color: RGB = RGB(1.0, 1.0, 1.0)
+        self._rebuild_snare_strobe_until: float = -999.0
+        self._rebuild_snare_last_trigger: float = -999.0
+        self._rebuild_active_pattern: str = "tilt_cross"
+        self._rebuild_pattern_hold_until_bar: int = 0
 
         # Pro lighting integration enabled flag
         self._pro_lighting_enabled = False
@@ -233,17 +300,631 @@ class EffectsEngine:
         self._leader_follower_enabled: bool = True
         self._leader_follower_delay: float = 0.08  # phase cycles per follower step
 
-        # Set default movement pattern - visible circular motion
+        # Base layer home look; pro movement layer provides the live symmetric motion.
         self.movement.set_pattern(
-            MovementType.TRUE_CIRCLE,
+            MovementType.NONE,
             base_look=StaticLook.ALL_CENTER,
-            pan_amplitude=60.0,   # Wider pan sweep
-            tilt_amplitude=40.0,  # More tilt movement
-            pan_speed=0.25,       # Faster, more visible
-            tilt_speed=0.25,
-            phase_spread=1.0,
-            smoothing=0.15        # Faster response
         )
+
+    def _select_clocked_symmetric_look(self):
+        """Select a symmetric movement look by bar clock, not music energy/section."""
+        bars = max(0, int(getattr(self.audio_state, "bars_elapsed", 0) or 0))
+        stride = max(4, int(self.config.movement_rotation_bars or 16))
+        idx = (bars // stride) % len(self._clocked_symmetry_look_cycle)
+        name = self._clocked_symmetry_look_cycle[idx]
+        return self._beam_look_library.get(name, self._active_beam_look)
+
+    def _apply_clocked_symmetric_preset(self):
+        """Apply a strict BPM-locked symmetric movement preset rotation."""
+        bars = max(0, int(getattr(self.audio_state, "bars_elapsed", 0) or 0))
+        stride = max(4, int(self.config.movement_rotation_bars or 16))
+        idx = (bars // stride) % len(self._clocked_symmetry_preset_cycle)
+        preset_name = self._clocked_symmetry_preset_cycle[idx]
+        if preset_name == self._clocked_symmetry_active_preset:
+            return
+        preset = PRO_MOVEMENT_PRESETS.get(preset_name)
+        if preset is None:
+            return
+        self._clocked_symmetry_active_preset = preset_name
+        self.pro_movement.set_pattern(
+            preset.pattern,
+            beat_divisor=max(0.125, preset.beat_divisor),
+            pan_amplitude=preset.pan_amplitude,
+            tilt_amplitude=preset.tilt_amplitude,
+            phase_spread=preset.phase_spread,
+            grouping=preset.grouping,
+            smoothing=max(0.12, min(0.22, preset.smoothing)),
+            snap_positions=list(preset.snap_positions),
+        )
+
+    def _compute_clocked_chase_intensity(self) -> float:
+        """Return a musical chase intensity for non-reactive busking mode."""
+        section = self._busker_section_hint or "unknown"
+        if self._pro_lighting_enabled:
+            section = (self._busker_section_hint or str(self.section_manager.current_section.value or "unknown")).lower()
+
+        energy = max(0.0, min(1.0, float(self.audio_features.energy)))
+        # Section rules requested:
+        # - verse: chase on
+        # - buildup/pre-chorus: chase on stronger
+        # - drop: no chase (strobe owns drop accents)
+        # - breakdown: no chase (slow/emotional)
+        if section in {"breakdown", "bridge", "intro", "outro"}:
+            return 0.0
+        if section in {"drop", "peak"}:
+            return 0.0
+        if section in {"unknown"}:
+            return 0.72 if energy > 0.3 else 0.62
+        if section in {"buildup", "pre_chorus"}:
+            return 0.90 if energy > 0.45 else 0.80
+        if section in {"verse"}:
+            return 0.78 if energy > 0.35 else 0.68
+        if section in {"chorus"}:
+            return 0.62 if energy > 0.5 else 0.52
+        return 0.0
+
+    def _update_busker_section_intent(self, delta_time: float):
+        """Fast reactive section intent: verse/buildup/drop/breakdown with musical hysteresis."""
+        energy = float(self.audio_features.energy)
+        bass = float(self.audio_features.bass)
+        flux = float(getattr(self.audio_state, "spectral_flux", 0.0) or 0.0)
+        is_beat = bool(self.audio_features.is_beat)
+        now = self.time
+
+        energy_delta = energy - self._prev_energy
+        bass_delta = bass - self._prev_bass
+
+        # High-impact downbeat detector -> short protected DROP window.
+        impact_drop = (
+            is_beat
+            and energy > 0.52
+            and bass > 0.60
+            and (flux > 0.055 or energy_delta > 0.055 or bass_delta > 0.08)
+        )
+        if impact_drop:
+            self._busker_drop_until = now + 1.5
+
+        if energy < 0.24 and bass < 0.30:
+            self._busker_low_energy_accum += max(0.0, float(delta_time))
+        else:
+            self._busker_low_energy_accum = max(0.0, self._busker_low_energy_accum - max(0.0, float(delta_time)) * 0.5)
+
+        if now < self._busker_drop_until:
+            target = "drop"
+        elif self._busker_low_energy_accum > 1.2:
+            target = "breakdown"
+        elif energy > 0.62 and (flux > 0.07 or energy_delta > 0.03):
+            target = "buildup"
+        elif energy > 0.68 and bass > 0.52:
+            target = "chorus"
+        else:
+            target = "verse"
+
+        # Short hold to prevent jittery thrashing.
+        min_hold = 0.45 if target == "drop" else 0.85
+        if target != self._busker_section_hint and (now - self._busker_last_section_change_time) >= min_hold:
+            self._busker_section_hint = target
+            self._busker_last_section_change_time = now
+
+            if self._pro_lighting_enabled:
+                from ..lighting.section_manager import SongSection
+                map_section = {
+                    "verse": SongSection.VERSE,
+                    "buildup": SongSection.BUILDUP,
+                    "chorus": SongSection.CHORUS,
+                    "drop": SongSection.DROP,
+                    "breakdown": SongSection.BREAKDOWN,
+                }
+                s = map_section.get(self._busker_section_hint)
+                if s is not None:
+                    self.section_manager.trigger_section(s, immediate=True)
+
+        self._prev_energy = energy
+        self._prev_bass = bass
+
+    def _apply_non_reactive_strobe(self, chase_intensity: float = 0.0):
+        """Use strobe only on drops, never during chase/breakdown."""
+        from ..lighting.pro_effects import ProStrobeMode
+
+        # Hard separation: no strobe while chase is active.
+        if float(chase_intensity) > 0.01:
+            self.pro_effects.strobe.set_mode(
+                ProStrobeMode.OFF,
+                frequency=0.1,
+                intensity=0.0,
+            )
+            return
+
+        section = (self._busker_section_hint or str(self.section_manager.current_section.value or "unknown")).lower()
+        if section in {"drop"}:
+            # Aggressive white drop strobe only for high-energy drops.
+            in_fresh_drop_window = (time.time() - self.section_manager._section_start_time) < 1.25
+            if in_fresh_drop_window or self.audio_features.energy >= 0.58 or self.audio_features.bass >= 0.62:
+                self.pro_effects.strobe.set_mode(
+                    ProStrobeMode.CONTINUOUS,
+                    frequency=20.0,
+                    intensity=1.0,
+                )
+            else:
+                self.pro_effects.strobe.set_mode(
+                    ProStrobeMode.OFF,
+                    frequency=0.1,
+                    intensity=0.0,
+                )
+            return
+        self.pro_effects.strobe.set_mode(
+            ProStrobeMode.OFF,
+            frequency=0.1,
+            intensity=0.0,
+        )
+
+    def _rebuild_set_section(self, section_name: str):
+        """Set rebuilt busker section and sync section manager immediately."""
+        section_name = (section_name or "verse").lower()
+        if section_name == self._rebuild_section:
+            return
+        self._rebuild_section = section_name
+        self._rebuild_section_changed_at = self.time
+        if self._pro_lighting_enabled:
+            from ..lighting.section_manager import SongSection
+            section_map = {
+                "verse": SongSection.VERSE,
+                "buildup": SongSection.BUILDUP,
+                "chorus": SongSection.CHORUS,
+                "drop": SongSection.DROP,
+                "breakdown": SongSection.BREAKDOWN,
+            }
+            s = section_map.get(section_name, SongSection.VERSE)
+            self.section_manager.trigger_section(s, immediate=True)
+
+    def _rebuild_update_intent(self, delta_time: float):
+        """Clean-slate reactive section detector for live busking."""
+        e = float(self.audio_features.energy)
+        b = float(self.audio_features.bass)
+        f = float(getattr(self.audio_state, "spectral_flux", 0.0) or 0.0)
+        beat = bool(self.audio_features.is_beat)
+        de = e - self._rebuild_prev_energy
+        db = b - self._rebuild_prev_bass
+        now = self.time
+
+        impact = beat and e > 0.48 and b > 0.54 and (de > 0.04 or db > 0.06 or f > 0.04)
+        if impact and (now - self._rebuild_last_impact) > 1.8:
+            self._rebuild_last_impact = now
+            self._rebuild_drop_until = now + 1.55
+
+        if now < self._rebuild_drop_until:
+            self._rebuild_set_section("drop")
+        elif e < 0.22 and b < 0.28:
+            self._rebuild_set_section("breakdown")
+        elif e > 0.58 and (f > 0.05 or de > 0.015):
+            self._rebuild_set_section("buildup")
+        elif e > 0.64 and b > 0.48:
+            self._rebuild_set_section("chorus")
+        else:
+            self._rebuild_set_section("verse")
+
+        self._rebuild_prev_energy = e
+        self._rebuild_prev_bass = b
+
+    def _update_fixtures_rebuild(self, delta_time: float):
+        """Scratch-built pro busker rendering pipeline (single source of truth)."""
+        all_fixtures = self.fixtures.get_fixtures_in_group("all")
+        total = len(all_fixtures)
+        if total <= 0:
+            self._fixture_state_snapshot = []
+            return
+
+        section = (self._rebuild_section or "verse").lower()
+        bpm = max(60.0, min(190.0, float(self._smoothed_movement_bpm)))
+        energy = max(0.0, min(1.0, float(self.audio_features.energy)))
+        bass = max(0.0, min(1.0, float(self.audio_features.bass)))
+        high = max(0.0, min(1.0, float(self.audio_features.high)))
+        flux = float(getattr(self.audio_state, "spectral_flux", 0.0) or 0.0)
+        beat = bool(self.audio_features.is_beat)
+        beat_phase = (self.time * (bpm / 60.0)) % 1.0
+
+        def _is_motion_capable(fx: Fixture) -> bool:
+            ftype = str(getattr(fx, "fixture_type", "") or "").lower()
+            if ftype in {"mover", "moving_head", "beam", "spot", "wash", "profile", "hybrid"}:
+                return True
+            channels = getattr(fx, "channels", {}) or {}
+            return ("pan" in channels) and ("tilt" in channels)
+
+        movers = [f for f in all_fixtures if _is_motion_capable(f)]
+        if not movers:
+            movers = all_fixtures
+
+        # Use all truss rows so every motion-capable fixture participates.
+        row_map: Dict[float, List[Fixture]] = {}
+        for f in movers:
+            row_map.setdefault(round(float(getattr(f, "z", 0.0)), 2), []).append(f)
+        row_keys = sorted(row_map.keys())
+        selected_rows: Dict[int, List[Fixture]] = {}
+        for ridx, rk in enumerate(row_keys):
+            selected_rows[ridx] = sorted(
+                row_map[rk],
+                key=lambda x: (float(getattr(x, "x", 0.0)), str(getattr(x, "id", ""))),
+            )
+
+        # Precompute stable membership so paired fixtures always get distinct phase slots.
+        row_membership: Dict[str, Tuple[int, int, int]] = {}
+        for row_i, row_fixtures in selected_rows.items():
+            count = len(row_fixtures)
+            for local_i, fx in enumerate(row_fixtures):
+                row_membership[str(fx.id)] = (row_i, local_i, count)
+
+        # Stable fixture order for MA-style linear chase.
+        chase_order: List[Fixture] = []
+        for ridx in sorted(selected_rows.keys()):
+            chase_order.extend(selected_rows[ridx])
+        chase_index = {fx.id: idx for idx, fx in enumerate(chase_order)}
+
+        # Movement patterns are BPM-locked and section-aware, with circle-heavy busker looks.
+        bar_clock = int(math.floor((self.time * (bpm / 60.0)) / 4.0))
+        section_pattern_pool = {
+            "breakdown": ["pan_wave", "tilt_circle", "circle"],
+            "verse": ["tilt_cross", "circle", "pan_wave", "figure8"],
+            "buildup": ["tilt_circle", "circle", "figure8", "odd_even"],
+            "chorus": ["circle", "tilt_circle", "figure8", "pan_wave"],
+            "drop": ["tilt_circle", "circle", "odd_even", "figure8"],
+        }
+        pattern_pool = section_pattern_pool.get(section, ["tilt_cross", "circle", "pan_wave", "figure8", "odd_even"])
+        target_pattern = pattern_pool[bar_clock % len(pattern_pool)]
+        if bar_clock >= self._rebuild_pattern_hold_until_bar:
+            if target_pattern != self._rebuild_active_pattern:
+                self._rebuild_active_pattern = target_pattern
+            hold_bars = max(1, int(getattr(self.config, "major_change_min_bars", 2) or 2))
+            self._rebuild_pattern_hold_until_bar = bar_clock + hold_bars
+        pattern = self._rebuild_active_pattern
+
+        pan_amp = 22.0
+        tilt_amp = 12.0
+        move_speed = 0.45
+        base_floor = 0.62
+        chase_floor = 0.26
+        chase_steps_per_beat = 1.5
+        chase_heads = 2
+        chase_falloff = 0.26
+
+        if section == "breakdown":
+            pan_amp = 12.0
+            tilt_amp = 9.0
+            move_speed = 0.28
+            base_floor = 0.26
+            chase_floor = 0.18
+            chase_steps_per_beat = 1.0
+            chase_heads = 1
+            chase_falloff = 0.22
+        elif section == "verse":
+            pan_amp = 20.0
+            tilt_amp = 14.0
+            move_speed = 0.42
+            base_floor = 0.68
+            chase_floor = 0.24
+            chase_steps_per_beat = 1.8
+            chase_heads = 2
+            chase_falloff = 0.24
+        elif section == "buildup":
+            pan_amp = 30.0
+            tilt_amp = 22.0
+            move_speed = 0.70
+            base_floor = 0.74
+            chase_floor = 0.20
+            chase_steps_per_beat = 3.0
+            chase_heads = 3
+            chase_falloff = 0.20
+        elif section == "chorus":
+            pan_amp = 26.0
+            tilt_amp = 19.0
+            move_speed = 0.60
+            base_floor = 0.78
+            chase_floor = 0.22
+            chase_steps_per_beat = 2.4
+            chase_heads = 3
+            chase_falloff = 0.22
+        elif section == "drop":
+            pan_amp = 34.0
+            tilt_amp = 25.0
+            move_speed = 0.85
+            base_floor = 1.0
+
+        # Drop strobes: pure white only, gated by safety policy.
+        policy = str(getattr(self.config, "accessibility_mode", "performance") or "performance").lower()
+        venue_mode = str(getattr(self.config, "venue_mode", "concert") or "concert").lower()
+        camera_mode = bool(getattr(self.config, "camera_mode", False))
+        visibility_first_mode = venue_mode in {"theatre", "broadcast", "corporate"}
+        strobe_allowed_by_policy = (policy not in {"no_strobe", "off"}) and (not camera_mode) and (not visibility_first_mode)
+        strobe_enabled_runtime = bool(self.config.strobe_enabled) and strobe_allowed_by_policy
+        drop_strobe_on = strobe_enabled_runtime and section == "drop" and self.time < self._rebuild_drop_until
+        drop_strobe_target_freq = 22.0 if energy > 0.65 else 18.0
+        drop_strobe_freq = min(float(self.config.strobe_hz_cap), drop_strobe_target_freq)
+        if drop_strobe_freq < drop_strobe_target_freq:
+            self._record_safety_event(
+                "strobe_frequency_clamped",
+                {
+                    "section": section,
+                    "requested_hz": round(drop_strobe_target_freq, 3),
+                    "applied_hz": round(drop_strobe_freq, 3),
+                    "cap_hz": round(float(self.config.strobe_hz_cap), 3),
+                },
+                throttle_s=1.0,
+                throttle_key="strobe_frequency_clamped_drop",
+            )
+        strobe_duty = max(0.15, min(float(self.config.strobe_max_duty_cycle), 0.75))
+        drop_strobe_flash = drop_strobe_on and ((self.time * drop_strobe_freq) % 1.0) < strobe_duty
+
+        # Snare strobe: very short fast white bursts on bright/transient hits.
+        snare_trigger = (
+            (section in {"verse", "buildup", "chorus", "drop"})
+            and high > 0.58
+            and flux > 0.055
+            and (beat or high > 0.72)
+        )
+        now = self.time
+        if snare_trigger and (now - self._rebuild_snare_last_trigger) > max(0.05, float(self.config.strobe_refractory_s)):
+            self._rebuild_snare_last_trigger = now
+            snare_burst_s = min(0.11, max(0.05, float(self.config.strobe_burst_max_s)))
+            self._rebuild_snare_strobe_until = now + snare_burst_s
+        snare_strobe_on = strobe_enabled_runtime and (not drop_strobe_on) and (now < self._rebuild_snare_strobe_until)
+        snare_strobe_target_freq = 30.0 if high > 0.72 else 24.0
+        snare_strobe_freq = min(float(self.config.strobe_hz_cap), snare_strobe_target_freq)
+        if snare_strobe_freq < snare_strobe_target_freq:
+            self._record_safety_event(
+                "strobe_frequency_clamped",
+                {
+                    "section": section,
+                    "requested_hz": round(snare_strobe_target_freq, 3),
+                    "applied_hz": round(snare_strobe_freq, 3),
+                    "cap_hz": round(float(self.config.strobe_hz_cap), 3),
+                },
+                throttle_s=1.0,
+                throttle_key="strobe_frequency_clamped_snare",
+            )
+        snare_strobe_flash = snare_strobe_on and ((now * snare_strobe_freq) % 1.0) < strobe_duty
+
+        strobe_on = drop_strobe_on or snare_strobe_on
+        strobe_flash = drop_strobe_flash or snare_strobe_flash
+
+        # Hold base color for musical phrases so mood color is stable.
+        if self.time >= self._rebuild_color_hold_until:
+            palette_color = self.color.get_color(self.audio_features, 0, 0.0)
+            emotional_color = self._rebuild_get_emotional_color(section)
+            section_emotion_mix = {
+                "breakdown": 0.66,
+                "verse": 0.36,
+                "buildup": 0.48,
+                "chorus": 0.56,
+                "drop": 0.62,
+            }.get(section, 0.42)
+            self._rebuild_base_color = palette_color.blend(emotional_color, section_emotion_mix)
+            phrase_s = max(2.4, min(6.0, (8.0 * 60.0) / max(60.0, bpm)))
+            self._rebuild_color_hold_until = self.time + phrase_s
+
+        # Gentle continuous blend toward current emotional target avoids abrupt color jumps.
+        live_emotional = self._rebuild_get_emotional_color(section)
+        self._rebuild_base_color = self._rebuild_base_color.blend(live_emotional, 0.018)
+        base_color = self._rebuild_base_color
+        white_accent = 0.0
+        if not strobe_on:
+            # Decay persistent accent envelope (lets bass hits "hang" briefly).
+            self._white_accent_level = max(0.0, self._white_accent_level - max(0.0, float(delta_time)) * 1.9)
+            if beat and section in {"verse", "buildup", "chorus"}:
+                white_accent = 0.16 if section == "buildup" else 0.10
+            # Bass-driven punch: more white on hard low-end hits.
+            if bass >= 0.62:
+                bass_punch = (min(1.0, bass) - 0.62) / 0.38
+                bass_hit = 0.10 + 0.24 * bass_punch
+                if beat:
+                    bass_hit += 0.08
+                self._white_accent_level = max(self._white_accent_level, min(0.42, bass_hit))
+            # Extra "pro busker" white lift on high-energy movement peaks.
+            # Keeps color identity while adding punch in energetic phrases.
+            if section in {"buildup", "chorus", "drop"} and energy > 0.68:
+                motion_peak = 0.5 + 0.5 * math.sin(2.0 * math.pi * beat_phase)
+                white_accent += 0.04 + 0.10 * motion_peak
+            white_accent += self._white_accent_level
+            white_accent = max(0.0, min(0.40, white_accent))
+
+        chase_active = section in {"verse", "buildup", "chorus"}
+        chase_head = -1
+        chase_dir = 1
+        if chase_active and chase_order:
+            chase_len = len(chase_order)
+            chase_tick = int(math.floor(self.time * (bpm / 60.0) * chase_steps_per_beat))
+            # Reverse direction every 2 bars for a busker-style sweep/bounce feel.
+            chase_dir = -1 if (bar_clock % 4) >= 2 else 1
+            chase_head = chase_tick % chase_len if chase_dir > 0 else (chase_len - 1 - (chase_tick % chase_len))
+
+        snapshot = []
+        for i, fixture in enumerate(all_fixtures):
+            ftype = str(getattr(fixture, "fixture_type", "") or "").lower()
+            is_mover = _is_motion_capable(fixture)
+
+            # Symmetric BPM movement around home look (pan=0, tilt=0/down-home).
+            if is_mover:
+                ridx, local_idx, row_count = row_membership.get(str(fixture.id), (0, 0, 1))
+
+                # Global phase slot prevents "every other pair looks static" artifacts.
+                global_idx = chase_index.get(fixture.id, local_idx)
+                global_count = max(1, len(chase_order))
+                global_frac = (global_idx / max(1, global_count - 1)) if global_count > 1 else 0.5
+                frac = global_frac
+                row_sign = -1.0 if ridx % 2 == 0 else 1.0
+                phase = ((self.time * (bpm / 60.0) * move_speed) + frac) % 1.0
+
+                pan = 0.0
+                tilt = 0.0
+                if pattern == "tilt_cross":
+                    pan = row_sign * (8.0 + pan_amp * (2.0 * frac - 1.0)) * math.sin(2.0 * math.pi * phase)
+                    tilt = tilt_amp * math.sin(2.0 * math.pi * phase + (0.0 if ridx == 0 else math.pi))
+                elif pattern == "pan_wave":
+                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
+                    tilt = tilt_amp * (0.42 + 0.33 * math.cos(2.0 * math.pi * phase))
+                elif pattern == "circle":
+                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
+                    tilt = tilt_amp * (0.25 + 0.75 * math.cos(2.0 * math.pi * phase))
+                elif pattern == "tilt_circle":
+                    pan = row_sign * (pan_amp * 0.65) * math.sin(2.0 * math.pi * phase)
+                    tilt = (tilt_amp * 1.25) * (0.15 + 0.85 * math.cos(2.0 * math.pi * phase))
+                elif pattern == "figure8":
+                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
+                    tilt = tilt_amp * math.sin(4.0 * math.pi * phase)
+                else:  # odd_even
+                    parity_phase = phase if (local_idx % 2 == 0) else (phase + 0.5)
+                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * parity_phase)
+                    tilt = tilt_amp * math.cos(2.0 * math.pi * parity_phase)
+
+                fixture.pan = max(-270.0, min(270.0, float(pan)))
+                fixture.tilt = max(-135.0, min(135.0, float(tilt)))
+            else:
+                fixture.pan = 0.0
+                fixture.tilt = 0.0
+
+            # Dimmer policy: chase in verse/buildup/chorus, strobe on drop, calm breakdown.
+            if section == "breakdown":
+                dim = 0.24 + energy * 0.16
+            elif drop_strobe_on:
+                dim = 1.0 if strobe_flash else 0.06
+            elif snare_strobe_on:
+                dim = 1.0 if snare_strobe_flash else max(chase_floor, 0.16)
+            elif chase_active and is_mover and chase_head >= 0 and fixture.id in chase_index:
+                idx = chase_index[fixture.id]
+                chase_len = max(1, len(chase_order))
+                # Multi-head chase with short tails for stronger fixture-to-fixture bumps.
+                best_peak = 0.0
+                spacing = max(1, chase_len // max(1, chase_heads))
+                for h in range(max(1, chase_heads)):
+                    head = (chase_head + (h * spacing * chase_dir)) % chase_len
+                    dist = min((idx - head) % chase_len, (head - idx) % chase_len)
+                    peak = max(0.0, 1.0 - dist * chase_falloff)
+                    if peak > best_peak:
+                        best_peak = peak
+                beat_bump = 0.88 + 0.22 * (0.5 + 0.5 * math.sin(2.0 * math.pi * beat_phase))
+                dim = max(chase_floor, min(1.0, chase_floor + best_peak * beat_bump))
+            else:
+                dim = base_floor + energy * 0.20
+            fixture.dimmer = max(0.0, min(1.0, dim))
+            audience_cap = max(0.0, min(1.0, float(self.config.audience_intensity_cap)))
+            if fixture.dimmer > audience_cap:
+                self._record_safety_event(
+                    "audience_intensity_clamped",
+                    {
+                        "fixture_id": fixture.id,
+                        "requested": round(float(fixture.dimmer), 3),
+                        "applied": round(float(audience_cap), 3),
+                    },
+                    throttle_s=1.0,
+                    throttle_key="audience_intensity_clamped",
+                )
+            fixture.dimmer = min(fixture.dimmer, audience_cap)
+            if visibility_first_mode and (not strobe_on):
+                fixture.dimmer = max(fixture.dimmer, 0.48)
+
+            # Optional "move-in-brightness restraint" policy for cleaner live looks.
+            if (
+                not self.config.movement_when_bright
+                and (not strobe_on)
+                and fixture.dimmer >= float(self.config.bright_movement_dimmer_threshold)
+            ):
+                cap = max(0.0, float(self.config.bright_movement_pan_tilt_cap_deg))
+                fixture.pan = max(-cap, min(cap, fixture.pan))
+                fixture.tilt = max(-cap, min(cap, fixture.tilt))
+
+            # Color policy: stable mood color + beat accents, pure white only on strobe flash.
+            if strobe_on and strobe_flash:
+                fixture.red = 1.0
+                fixture.green = 1.0
+                fixture.blue = 1.0
+            else:
+                fixture.red = max(0.0, min(1.0, base_color.r * (1.0 - white_accent) + white_accent))
+                fixture.green = max(0.0, min(1.0, base_color.g * (1.0 - white_accent) + white_accent))
+                fixture.blue = max(0.0, min(1.0, base_color.b * (1.0 - white_accent) + white_accent))
+                # Apply section narrative shaping (saturation/whiteness/accent behavior).
+                self._apply_palette_narrative_to_fixture(fixture, i, section)
+
+            snapshot.append({
+                'id': fixture.id,
+                'dmx_address': int(getattr(fixture, 'dmx_address', 0) or 0),
+                'pan': fixture.pan,
+                'tilt': fixture.tilt,
+                'dimmer': fixture.dimmer,
+                'r': fixture.red,
+                'g': fixture.green,
+                'b': fixture.blue,
+            })
+        self._fixture_state_snapshot = snapshot
+
+    def _rebuild_get_emotional_color(self, section: str) -> RGB:
+        """Return mood color from valence/arousal with section-aware warmth/coolth shaping."""
+        v = max(0.0, min(1.0, float(self.audio_features.valence)))
+        a = max(0.0, min(1.0, float(self.audio_features.arousal)))
+
+        calm_sad = RGB(0.24, 0.22, 0.48)      # cool violet
+        calm_happy = RGB(0.30, 0.56, 0.94)    # airy blue
+        hype_sad = RGB(0.92, 0.22, 0.34)      # tense red
+        hype_happy = RGB(0.98, 0.52, 0.20)    # euphoric amber
+
+        low = calm_sad.blend(calm_happy, v)
+        high = hype_sad.blend(hype_happy, v)
+        mood = low.blend(high, a)
+
+        section = (section or "verse").lower()
+        if section in {"breakdown", "bridge"}:
+            return mood.blend(RGB(0.85, 0.88, 1.0), 0.14)
+        if section in {"buildup"}:
+            return mood.blend(RGB(1.0, 0.62, 0.26), 0.08)
+        if section in {"drop", "chorus"}:
+            return mood.blend(RGB(1.0, 0.92, 0.86), 0.05)
+        return mood
+
+    def _apply_clocked_chase_pattern(self, chase_intensity: float = 0.0):
+        """Apply deterministic, in-order fixture chases for non-reactive busking mode."""
+        bars = max(0, int(getattr(self.audio_state, "bars_elapsed", 0) or 0))
+        stride = max(4, int(self.config.movement_rotation_bars or 16) // 2)
+        idx = (bars // stride) % len(self._clocked_chase_cycle)
+
+        direction_name, speed_name, width, tail, intensity = self._clocked_chase_cycle[idx]
+        from ..lighting.pro_effects import ChaseDirection, ChaseSpeed
+
+        direction_map = {
+            "forward": ChaseDirection.FORWARD,
+            "backward": ChaseDirection.BACKWARD,
+            "bounce": ChaseDirection.BOUNCE,
+            "center_out": ChaseDirection.CENTER_OUT,
+        }
+        speed_map = {
+            "quarter": ChaseSpeed.QUARTER_NOTE,
+            "eighth": ChaseSpeed.EIGHTH_NOTE,
+            "half": ChaseSpeed.HALF_NOTE,
+            "whole": ChaseSpeed.WHOLE_NOTE,
+        }
+
+        idx_changed = idx != self._clocked_chase_active_index
+        if idx_changed:
+            self._clocked_chase_active_index = idx
+            self.pro_effects.chase.set_params(
+                direction=direction_map.get(direction_name, ChaseDirection.FORWARD),
+                width=int(width),
+                tail_length=int(tail),
+            )
+            self.pro_effects.chase.set_bpm_locked_speed(
+                speed_map.get(speed_name, ChaseSpeed.QUARTER_NOTE)
+            )
+
+        target_intensity = max(0.0, min(1.0, float(chase_intensity) * float(intensity)))
+        if idx_changed or abs(target_intensity - self._clocked_chase_last_intensity) > 0.01:
+            self._clocked_chase_last_intensity = target_intensity
+            self.pro_effects.chase.set_params(intensity=target_intensity)
+
+    def _get_chase_bump_level(self) -> float:
+        """BPM-locked bump envelope for active chase steps (keeps them alive, not static)."""
+        bpm = max(60.0, min(200.0, float(self._smoothed_movement_bpm)))
+        beat_phase = (self.time * (bpm / 60.0)) % 1.0
+        # Fast peak at beat start, then smooth decay.
+        if beat_phase < 0.22:
+            peak = 1.0 - (beat_phase / 0.22)
+            return 0.72 + 0.28 * peak
+        return 0.72
 
     def set_dmx_callback(self, callback: Callable[[int, List[int]], None]):
         """
@@ -321,14 +1002,46 @@ class EffectsEngine:
             bpm: Detected BPM
             ml_data: ML pipeline output (emotion_vector, emotion_mapping, structure, genre)
         """
+        # Mood values may arrive as either [0..1] or [-1..1] depending on source.
+        # Normalize once here so color logic is stable and explicit.
+        raw_valence = float(valence)
+        raw_arousal = float(arousal)
+        if isinstance(ml_data, dict):
+            ev = ml_data.get("emotion_vector", {})
+            if isinstance(ev, dict):
+                raw_valence = float(ev.get("valence", raw_valence))
+                raw_arousal = float(ev.get("arousal", raw_arousal))
+
+        def _norm_mood(v: float) -> float:
+            if v < -0.01 or v > 1.01:
+                v = (v + 1.0) * 0.5
+            return max(0.0, min(1.0, v))
+
+        norm_valence = _norm_mood(raw_valence)
+        norm_arousal = _norm_mood(raw_arousal)
+
+        # If upstream mood is flat/absent, derive a gentle fallback so colors still move.
+        if abs(raw_valence) < 1e-6 and abs(raw_arousal) < 1e-6:
+            norm_arousal = max(norm_arousal, min(1.0, 0.25 + energy * 0.7))
+            spectral_balance = high - bass
+            norm_valence = max(0.0, min(1.0, 0.5 + spectral_balance * 0.35 + (mid - 0.5) * 0.1))
+
+        # Stabilize base song color identity: heavy smoothing + deadband on mood axes.
+        valence_diff = norm_valence - self._smoothed_valence
+        if abs(valence_diff) > 0.015:
+            self._smoothed_valence += valence_diff * 0.03
+        arousal_diff = norm_arousal - self._smoothed_arousal
+        if abs(arousal_diff) > 0.015:
+            self._smoothed_arousal += arousal_diff * 0.05
+
         # Update audio features for color mapping
         self.audio_features = AudioFeatures(
             energy=energy,
             bass=bass,
             mid=mid,
             high=high,
-            valence=valence,
-            arousal=arousal,
+            valence=max(0.0, min(1.0, self._smoothed_valence)),
+            arousal=max(0.0, min(1.0, self._smoothed_arousal)),
             is_beat=is_beat,
             beat_intensity=bass if is_beat else 0.0
         )
@@ -343,8 +1056,16 @@ class EffectsEngine:
         self.audio_state.beat_number = beat_number
         self.audio_state.bpm = bpm
 
-        # Update BPM
+        # Update BPM (raw for reactive layers)
         self.config.bpm = bpm
+
+        # Smooth BPM for non-reactive movement clock to avoid jitter from detector noise.
+        target_bpm = max(60.0, min(200.0, float(bpm)))
+        if self.config.movement_music_reactive:
+            self._smoothed_movement_bpm = target_bpm
+        else:
+            # Heavy low-pass keeps movement steady while still following long-term tempo drift.
+            self._smoothed_movement_bpm += (target_bpm - self._smoothed_movement_bpm) * 0.02
 
         # Handle beat triggers
         if is_beat and beat_number != self.beat_count:
@@ -455,7 +1176,7 @@ class EffectsEngine:
         base_variant = {
             "accent_swap": 0.0,
             "sat_mult": 1.0,
-            "white_mix": 0.08,
+            "white_mix": 0.03,
             "color_count": 3.0,
         }
         if section in {"intro", "verse"}:
@@ -464,20 +1185,20 @@ class EffectsEngine:
             return {
                 "accent_swap": 1.0,
                 "sat_mult": 1.2,
-                "white_mix": 0.04,
+                "white_mix": 0.02,
                 "color_count": 3.0,
             }
         if section in {"breakdown", "bridge"}:
             return {
                 "accent_swap": 0.0,
                 "sat_mult": 0.75,
-                "white_mix": 0.18,
+                "white_mix": 0.12,
                 "color_count": 1.0,
             }
         return {
             "accent_swap": 0.0,
             "sat_mult": 0.92,
-            "white_mix": 0.11,
+            "white_mix": 0.06,
             "color_count": 2.0,
         }
 
@@ -715,7 +1436,8 @@ class EffectsEngine:
 
         # Forward beat to pro lighting modules
         if self._pro_lighting_enabled:
-            self.pro_movement.trigger_beat()
+            if self.config.movement_music_reactive:
+                self.pro_movement.trigger_beat()
             self.pro_effects.trigger_beat(beat_number)
             self.section_manager.trigger_beat(beat_number)
 
@@ -728,6 +1450,17 @@ class EffectsEngine:
             # Trigger a short white strobe burst on drops/climaxes
             self._white_strobe_flash = True
             self._white_strobe_decay = 0.08  # 80ms flash
+
+        # Subtle reactive white accent (LD-style): brief beat lift, never full-time white.
+        # Keep white accents subtle so base color remains dominant.
+        accent = 0.0
+        if self.audio_features.bass > 0.72:
+            accent += 0.03
+        if self.audio_features.energy > 0.82:
+            accent += 0.03
+        if beat_number % 4 == 0 and self.audio_features.energy > 0.7:
+            accent += 0.02
+        self._white_accent_level = max(self._white_accent_level, min(0.08, accent))
 
         # Update bars counter
         if beat_number % 4 == 0:
@@ -756,8 +1489,9 @@ class EffectsEngine:
             selection = self.decision.get_selection()
             self._apply_selection(selection)
 
-            # Trigger pro effects based on section transitions
-            self._trigger_pro_effects_from_decision()
+            # Transition flash/blackout effects are only for reactive mode.
+            if self.config.movement_music_reactive:
+                self._trigger_pro_effects_from_decision()
         elif self.config.auto_mode:
             self.decision.update(self.audio_state, delta_time)
             selection = self.decision.get_selection()
@@ -775,6 +1509,16 @@ class EffectsEngine:
         self.strobe.update(delta_time)
         self.color.update(delta_time)
 
+        # Clean-slate runtime path: one renderer only, avoids conflicting overlays.
+        # Respect auto/manual mode so manual controls still work when auto is disabled.
+        if self.config.auto_mode and self._rebuild_busker_enabled:
+            self._rebuild_update_intent(delta_time)
+            self._update_fixtures_rebuild(delta_time)
+            if self._dmx_callback:
+                frame = self.fixtures.get_dmx_frame(universe=0)
+                self._dmx_callback(0, frame)
+            return
+
         # Update pro lighting modules
         if self._pro_lighting_enabled:
             self.genre_manager.update(delta_time)
@@ -783,47 +1527,136 @@ class EffectsEngine:
                 energy=self.audio_features.energy,
                 is_beat=self.audio_features.is_beat,
             )
-            self.pro_movement.set_bpm(self.config.bpm)
+            movement_bpm = self.config.bpm if self.config.movement_music_reactive else self._smoothed_movement_bpm
+            self.pro_movement.set_bpm(movement_bpm)
 
-            section_key = self.section_manager.current_section.value
-            active_look = self._beam_look_scheduler.select_look(
-                section=section_key,
-                energy=self.audio_features.energy,
-                bpm=self.config.bpm,
-                bars_elapsed=self.audio_state.bars_elapsed,
-            )
-            self._active_beam_look = active_look
-            self._beam_scene_machine.request_transition(active_look.pattern)
-            scene_output = self._beam_scene_machine.update(delta_time)
-            params = self._build_pattern_params(
-                scene_output.active_pattern,
-                symmetry_mode=active_look.symmetry,
-                focus_anchor=self._beam_focus_anchors[active_look.focus_anchor_name],
-                amplitude_scale=scene_output.amplitude_scale * active_look.speed_multiplier,
-            )
-            self.pro_movement.set_pattern(
-                params.pattern,
-                beat_divisor=max(0.125, params.beat_divisor * active_look.speed_multiplier),
-                pan_amplitude=params.pan_amplitude,
-                tilt_amplitude=params.tilt_amplitude,
-                phase_spread=params.phase_spread,
-                grouping=params.grouping,
-                smoothing=params.smoothing,
-                snap_positions=list(params.snap_positions),
-            )
+            if self.config.movement_music_reactive:
+                section_key = self.section_manager.current_section.value
+                active_look = self._beam_look_scheduler.select_look(
+                    section=section_key,
+                    energy=self.audio_features.energy,
+                    bpm=self.config.bpm,
+                    bars_elapsed=self.audio_state.bars_elapsed,
+                )
+                self._active_beam_look = active_look
+                self._beam_scene_machine.request_transition(active_look.pattern)
+                scene_output = self._beam_scene_machine.update(delta_time)
+                params = self._build_pattern_params(
+                    scene_output.active_pattern,
+                    symmetry_mode=active_look.symmetry,
+                    focus_anchor=self._beam_focus_anchors[active_look.focus_anchor_name],
+                    amplitude_scale=scene_output.amplitude_scale * active_look.speed_multiplier,
+                )
+                self.pro_movement.set_pattern(
+                    params.pattern,
+                    beat_divisor=max(0.125, params.beat_divisor * active_look.speed_multiplier),
+                    pan_amplitude=params.pan_amplitude,
+                    tilt_amplitude=params.tilt_amplitude,
+                    phase_spread=params.phase_spread,
+                    grouping=params.grouping,
+                    smoothing=params.smoothing,
+                    snap_positions=list(params.snap_positions),
+                )
+                self._apply_beam_look_effects(active_look)
+            else:
+                # Strict BPM-clocked symmetry presets; no audio-energy/section movement selection.
+                self._update_busker_section_intent(delta_time)
+                self._apply_clocked_symmetric_preset()
+                chase_intensity = self._compute_clocked_chase_intensity()
+                self._apply_clocked_chase_pattern(
+                    chase_intensity=chase_intensity
+                )
+                # Keep non-reactive busking clean: no lingering build modulation.
+                self.pro_effects.build.stop()
+                self._apply_non_reactive_strobe(chase_intensity=chase_intensity)
+                active_look = self._select_clocked_symmetric_look()
+                self._active_beam_look = active_look
             self.pro_movement.update(delta_time)
-            self.pro_effects.set_bpm(self.config.bpm)
-            self._apply_beam_look_effects(active_look)
+            pro_effects_bpm = self.config.bpm if self.config.movement_music_reactive else self._smoothed_movement_bpm
+            self.pro_effects.set_bpm(pro_effects_bpm)
             self.pro_effects.update(delta_time)
 
-            # Auto-detect section from audio if no external section data
+            # Auto-detect section from audio if no external section data.
+            # Section data can still drive dimmer/effect dynamics while movement stays clocked.
+            beat_number = int(getattr(self.audio_state, "beat_number", 0) or 0)
+            bars_elapsed = int(getattr(self.audio_state, "bars_elapsed", 0) or 0)
             detected = self.section_manager.detect_section_from_energy(
                 self.audio_features.energy,
                 self.audio_features.bass,
                 getattr(self.audio_state, 'spectral_flux', 0.0),
+                is_beat=bool(self.audio_features.is_beat),
+                beat_number=beat_number,
+                bars_elapsed=bars_elapsed,
+                is_downbeat_event=bool(self.audio_features.is_beat and beat_number > 0 and beat_number % 4 == 1),
             )
+
+            # Fallback structure detector for purely reactive mode:
+            # if auto/ML structure is weak, still catch drops and avoid lingering "unknown".
+            from ..lighting.section_manager import SongSection
+            spectral_flux = float(getattr(self.audio_state, "spectral_flux", 0.0) or 0.0)
+            strong_impact = (
+                self.audio_features.energy > 0.56
+                and self.audio_features.bass > 0.62
+                and (self.audio_features.is_beat or spectral_flux > 0.05)
+            )
+            if strong_impact:
+                self._drop_candidate_frames += 1
+            else:
+                self._drop_candidate_frames = max(0, self._drop_candidate_frames - 1)
+
+            if (
+                detected is None
+                and self._drop_candidate_frames >= 2
+                and (self.time - self._last_forced_drop_time) > 3.0
+            ):
+                detected = SongSection.DROP
+                self._last_forced_drop_time = self.time
+                self._drop_candidate_frames = 0
+
+            if detected is None and self.section_manager.current_section == SongSection.UNKNOWN:
+                if self.audio_features.energy > 0.66:
+                    detected = SongSection.CHORUS
+                elif self.audio_features.energy > 0.35:
+                    detected = SongSection.VERSE
+                elif self.audio_features.energy < 0.22:
+                    detected = SongSection.BREAKDOWN
+
+            # Direct impact detector for reactive drop triggering (beat + bass/energy onset).
+            spectral_flux = float(getattr(self.audio_state, "spectral_flux", 0.0) or 0.0)
+            energy_delta = float(self.audio_features.energy - self._prev_energy)
+            bass_delta = float(self.audio_features.bass - self._prev_bass)
+            direct_impact_drop = (
+                bool(self.audio_features.is_beat)
+                and self.audio_features.energy > 0.48
+                and self.audio_features.bass > 0.56
+                and (energy_delta > 0.06 or bass_delta > 0.08 or spectral_flux > 0.05)
+            )
+            if (
+                direct_impact_drop
+                and (self.time - self._last_forced_drop_time) > 2.5
+                and self.section_manager.current_section.value != "drop"
+            ):
+                detected = SongSection.DROP
+                self._last_forced_drop_time = self.time
+                self._drop_candidate_frames = 0
+
             if detected is not None:
-                self.section_manager.trigger_section(detected)
+                current_section = self.section_manager.current_section
+                # Keep drop look alive long enough to read visually before auto-demotion.
+                if (
+                    current_section.value == "drop"
+                    and detected.value != "drop"
+                    and (time.time() - self.section_manager._section_start_time) < 2.0
+                ):
+                    detected = None
+            if detected is not None:
+                self.section_manager.trigger_section(
+                    detected,
+                    immediate=detected.value in {"drop", "buildup", "breakdown"},
+                )
+
+            self._prev_energy = float(self.audio_features.energy)
+            self._prev_bass = float(self.audio_features.bass)
 
             # Sync section and genre to decision engine
             self.decision.set_genre(self.genre_manager.current_genre.value)
@@ -905,7 +1738,11 @@ class EffectsEngine:
             return
         self._current_section_template_key = key
 
-        if self.config.movement_enabled and template.movement_preset in MOVEMENT_PRESETS:
+        if (
+            self.config.movement_enabled
+            and self.config.movement_music_reactive
+            and template.movement_preset in MOVEMENT_PRESETS
+        ):
             self.movement.params = MOVEMENT_PRESETS[template.movement_preset]
 
         if self.config.dimmer_enabled and template.dimmer_preset in DIMMER_PRESETS:
@@ -925,6 +1762,9 @@ class EffectsEngine:
 
     def _apply_mib_transition(self, fixture: Fixture, desired_dimmer: float) -> float:
         """Per-fixture move-in-black state machine for large pan/tilt moves."""
+        # In strict non-reactive busking mode we prioritize visible output over travel blackouts.
+        if not self.config.movement_music_reactive:
+            return desired_dimmer
         if not self.config.mib_enabled:
             return desired_dimmer
 
@@ -960,7 +1800,7 @@ class EffectsEngine:
     def _apply_selection(self, selection: EffectSelection):
         """Apply decision engine selection to effect layers."""
         # Movement
-        if self.config.movement_enabled:
+        if self.config.movement_enabled and self.config.movement_music_reactive:
             if selection.use_static_look:
                 self.movement.set_pattern(
                     MovementType.NONE,
@@ -971,6 +1811,9 @@ class EffectsEngine:
                 self.movement.params = preset
             else:
                 self.movement.params.pattern = selection.movement
+        elif self.config.movement_enabled:
+            # Keep base movement parked at home; pro movement layer handles symmetric motion.
+            self.movement.set_pattern(MovementType.NONE, base_look=StaticLook.ALL_CENTER)
 
         # Dimmer
         if self.config.dimmer_enabled:
@@ -1096,6 +1939,56 @@ class EffectsEngine:
         all_fixtures = self.fixtures.get_fixtures_in_group("all")
         total = len(all_fixtures)
         phase_offsets = self._build_fixture_phase_offsets(all_fixtures)
+        linear_chase_level_by_id: Dict[str, float] = {}
+
+        # Build an explicit linear chase map (full ON/OFF alternating) for non-reactive mode.
+        if (
+            self._pro_lighting_enabled
+            and (not self.config.movement_music_reactive)
+            and self._clocked_chase_last_intensity > 0.01
+        ):
+            chase_idx = self._clocked_chase_active_index if self._clocked_chase_active_index >= 0 else 0
+            _, speed_name, _, _, _ = self._clocked_chase_cycle[chase_idx]
+            steps_per_beat = {
+                "whole": 0.5,   # advance every 2 beats
+                "half": 1.0,    # advance every beat
+                "quarter": 2.0, # advance every 1/2 beat
+                "eighth": 4.0,  # advance every 1/4 beat
+            }.get(speed_name, 1.0)
+            step = int(
+                math.floor(
+                    self.time * (max(60.0, min(200.0, float(self._smoothed_movement_bpm))) / 60.0) * steps_per_beat
+                )
+            )
+
+            mover_like_types = {"mover", "moving_head", "beam", "spot"}
+            rows: Dict[float, List[Fixture]] = {}
+            for fixture in all_fixtures:
+                ftype = str(getattr(fixture, "fixture_type", "") or "").lower()
+                if ftype in mover_like_types:
+                    row_key = round(float(getattr(fixture, "z", 0.0)), 2)
+                    rows.setdefault(row_key, []).append(fixture)
+
+            sorted_row_keys = sorted(rows.keys())
+            for row_idx, row_key in enumerate(sorted_row_keys):
+                row_fixtures = rows[row_key]
+                ordered = sorted(
+                    row_fixtures,
+                    key=lambda f: (float(getattr(f, "x", 0.0)), str(getattr(f, "id", ""))),
+                )
+                row_len = len(ordered)
+                if row_len == 0:
+                    continue
+
+                # True traveling chase head by fixture ID order (MA-style linear chase).
+                # Alternate row direction for mirrored looks across the two trusses.
+                if row_idx % 2 == 0:
+                    head_idx = step % row_len
+                else:
+                    head_idx = (row_len - 1 - (step % row_len)) % row_len
+
+                head_fixture = ordered[head_idx]
+                linear_chase_level_by_id[head_fixture.id] = 1.0
 
         # =====================================================================
         # TRAINING MODE: LFO Engine takes priority for manual control
@@ -1112,6 +2005,7 @@ class EffectsEngine:
 
         section, _ = self._resolve_section_genre()
         for i, fixture in enumerate(all_fixtures):
+            strobe_white_override = False
             motion_phase_offset, effect_phase_offset = phase_offsets.get(
                 fixture.id, (i / max(1, total), i / max(1, total))
             )
@@ -1128,10 +2022,10 @@ class EffectsEngine:
                     fixture.dimmer = 1.0  # Default full brightness
 
                 if 'pan' in lfo_vals:
-                    # LFO pan is relative offset (-0.2 to +0.2), scale to pan degrees
-                    fixture.pan = max(0, min(255, 128 + lfo_vals['pan'] * 255))
+                    # Internal pan/tilt units are degrees, not DMX bytes.
+                    fixture.pan = max(-270.0, min(270.0, float(lfo_vals['pan']) * 270.0))
                 if 'tilt' in lfo_vals:
-                    fixture.tilt = max(0, min(255, 128 + lfo_vals['tilt'] * 255))
+                    fixture.tilt = max(-135.0, min(135.0, float(lfo_vals['tilt']) * 135.0))
 
                 if 'red' in lfo_vals:
                     fixture.red = max(0, min(1, lfo_vals['red']))
@@ -1157,8 +2051,8 @@ class EffectsEngine:
                 if training_mode:
                     # Training mode with no LFO active - show fixtures at defaults
                     fixture.dimmer = 1.0
-                    fixture.pan = 128  # Center
-                    fixture.tilt = 128
+                    fixture.pan = 0.0
+                    fixture.tilt = 0.0
                     # Keep existing color or set to white
                     if fixture.red == 0 and fixture.green == 0 and fixture.blue == 0:
                         fixture.red = 1.0
@@ -1229,32 +2123,39 @@ class EffectsEngine:
                                 role=profile.role,
                                 movement_speed_class=profile.movement_speed_class,
                             )
-                            # Scale by section movement energy
-                            move_energy = self.section_manager.get_movement_energy()
-                            # Modulate with MERT movement_speed if available
-                            if self._ml_emotion_mapping is not None:
-                                ml_move = self._ml_emotion_mapping.get("movement_speed", 0.5)
-                                move_energy *= 0.5 + ml_move  # 0.5x-1.5x range
+                            # Movement can run in strict BPM-clock mode (non-reactive),
+                            # while dimmer/color continue reacting to music.
+                            if self.config.movement_music_reactive:
+                                move_energy = self.section_manager.get_movement_energy()
+                                if self._ml_emotion_mapping is not None:
+                                    ml_move = self._ml_emotion_mapping.get("movement_speed", 0.5)
+                                    move_energy *= 0.5 + ml_move  # 0.5x-1.5x range
+                            else:
+                                move_energy = 1.0
                             pan_off *= move_energy
                             tilt_off *= move_energy
-                            # Add bump offset
-                            bump_pan, bump_tilt = self.pro_movement.get_bump_offset()
-                            pan_off += bump_pan
-                            tilt_off += bump_tilt
-                            # Apply as degree offsets (pan/tilt are in DMX 0-255)
-                            fixture.pan = max(0, min(255, fixture.pan + pan_off * 255 / 540))
-                            fixture.tilt = max(0, min(255, fixture.tilt + tilt_off * 255 / 270))
+                            # Beat-hit bumps are only for reactive movement mode.
+                            if self.config.movement_music_reactive:
+                                bump_pan, bump_tilt = self.pro_movement.get_bump_offset()
+                                pan_off += bump_pan
+                                tilt_off += bump_tilt
+                            # Apply as degree offsets (internal units are degrees).
+                            fixture.pan = max(-270.0, min(270.0, float(fixture.pan) + float(pan_off)))
+                            fixture.tilt = max(-135.0, min(135.0, float(fixture.tilt) + float(tilt_off)))
 
                         # Pro movement chase dimmer (chases control brightness too)
-                        chase_dim = self.pro_movement.get_chase_intensity(i, total)
-                        if chase_dim < 1.0:
-                            fixture.dimmer *= max(0.05, chase_dim)  # Floor at 5% to avoid full blackout
+                        if self.config.movement_music_reactive:
+                            chase_dim = self.pro_movement.get_chase_intensity(i, total)
+                            if chase_dim < 1.0:
+                                fixture.dimmer *= max(0.05, chase_dim)  # Floor at 5% to avoid full blackout
 
                         # Pro strobe overlay
                         if self.section_manager.is_strobe_allowed():
                             pro_strobe = self.pro_effects.strobe.get_value(i, total, effect_phase_offset)
                             if pro_strobe > 0:
                                 fixture.dimmer = max(fixture.dimmer, pro_strobe)
+                                # Defer hard white override until end of pipeline so no later layer repaints it.
+                                strobe_white_override = True
 
                         # Pro color wash overlay
                         wash_color = self.pro_effects.wash.get_color(i, total)
@@ -1267,7 +2168,21 @@ class EffectsEngine:
 
                         # Pro chase intensity overlay
                         chase_val = self.pro_effects.chase.get_intensity(i, total)
-                        if chase_val > 0:
+                        if (
+                            (not self.config.movement_music_reactive)
+                            and self._clocked_chase_last_intensity > 0.01
+                        ):
+                            low_sections = {"breakdown", "bridge", "outro"}
+                            chase_off_level = 0.08 if section in low_sections else 0.5
+                            # Explicit linear chase: one fixture head ON moving down each row.
+                            if linear_chase_level_by_id.get(fixture.id, 0.0) >= 0.5:
+                                fixture.dimmer = max(
+                                    fixture.dimmer,
+                                    1.0 * self._get_chase_bump_level()
+                                )
+                            else:
+                                fixture.dimmer = max(fixture.dimmer, chase_off_level)
+                        elif chase_val > 0:
                             fixture.dimmer = max(fixture.dimmer, chase_val * section_intensity)
 
                         # Build-up effect modulation
@@ -1302,7 +2217,7 @@ class EffectsEngine:
 
                         # Blackout/flash sequence override
                         blackout_val = self.pro_effects.get_blackout_override()
-                        if blackout_val is not None:
+                        if blackout_val is not None and self.config.movement_music_reactive:
                             if blackout_val == 0.0:
                                 # Blackout - all dark
                                 fixture.dimmer = 0.0
@@ -1314,22 +2229,37 @@ class EffectsEngine:
                                 fixture.blue = 1.0
 
                         # Key lighting final pass (ensure performers always visible)
-                        key_override = self.key_lighting.get_key_light_override(
-                            fixture.id, fixture.dimmer,
-                            fixture.red, fixture.green, fixture.blue,
-                        )
-                        if key_override is not None:
-                            fixture.dimmer = key_override["dimmer"]
-                            fixture.red = key_override["r"]
-                            fixture.green = key_override["g"]
-                            fixture.blue = key_override["b"]
+                        # In non-reactive chase mode, do not flatten chase with key-light floors.
+                        if not (
+                            (not self.config.movement_music_reactive)
+                            and self._clocked_chase_last_intensity > 0.01
+                        ):
+                            key_override = self.key_lighting.get_key_light_override(
+                                fixture.id, fixture.dimmer,
+                                fixture.red, fixture.green, fixture.blue,
+                            )
+                            if key_override is not None:
+                                fixture.dimmer = key_override["dimmer"]
+                                fixture.red = key_override["r"]
+                                fixture.green = key_override["g"]
+                                fixture.blue = key_override["b"]
 
                     # Song-level palette lock with section-level narrative variants
                     if self.config.color_enabled:
                         self._apply_palette_narrative_to_fixture(fixture, i, section)
+                        if self._white_accent_level > 0.0 and not self._white_strobe_flash:
+                            accent = max(0.0, min(0.2, self._white_accent_level))
+                            fixture.red = fixture.red * (1.0 - accent) + accent
+                            fixture.green = fixture.green * (1.0 - accent) + accent
+                            fixture.blue = fixture.blue * (1.0 - accent) + accent
 
             # Apply section template intensity scale across all non-training paths
             fixture.dimmer *= self._current_section_intensity_scale
+
+            # Keep non-breakdown busking visibly bright; only breakdown family should feel truly dim.
+            if self._pro_lighting_enabled and (not self.config.movement_music_reactive):
+                if section not in {"breakdown", "bridge", "outro"}:
+                    fixture.dimmer = max(fixture.dimmer, 0.45)
 
             # True backend move-in-black: hide major reposition travel
             if fixture.fixture_type != "bar" and fixture.id and (hasattr(fixture, "pan") and hasattr(fixture, "tilt")):
@@ -1337,10 +2267,23 @@ class EffectsEngine:
 
             # Dynamic range enforcement (anti-fatigue)
             if self._pro_lighting_enabled:
-                intensity_scale = self.decision.get_dynamic_intensity_scale()
-                if intensity_scale < 1.0:
-                    fixture.dimmer *= intensity_scale
+                if self.config.movement_music_reactive:
+                    intensity_scale = self.decision.get_dynamic_intensity_scale()
+                    if intensity_scale < 1.0:
+                        fixture.dimmer *= intensity_scale
                 self.decision.track_intensity(fixture.dimmer)
+
+            # Final master brightness lift for non-reactive busking (except breakdown family).
+            if self._pro_lighting_enabled and (not self.config.movement_music_reactive):
+                if section not in {"breakdown", "bridge", "outro"}:
+                    fixture.dimmer = max(0.38, min(1.0, fixture.dimmer * 1.9))
+
+            # FINAL pro strobe override: pure bright white must win over all color/dimmer layers.
+            if strobe_white_override:
+                fixture.dimmer = 1.0
+                fixture.red = 1.0
+                fixture.green = 1.0
+                fixture.blue = 1.0
 
             # White strobe flash override - full white, full intensity
             if self._white_strobe_flash and self._white_strobe_decay > 0:
@@ -1356,11 +2299,16 @@ class EffectsEngine:
                 self._white_strobe_flash = False
                 self._white_strobe_decay = 0
 
+        # Keep white accent very short so base song color remains dominant.
+        if self._white_accent_level > 0:
+            self._white_accent_level = max(0.0, self._white_accent_level - delta_time * 4.0)
+
         # Build atomic snapshot for concurrent WebSocket readers (BUG-001 fix)
         snapshot = []
         for fixture in all_fixtures:
             snapshot.append({
                 'id': fixture.id,
+                'dmx_address': int(getattr(fixture, 'dmx_address', 0) or 0),
                 'pan': fixture.pan,
                 'tilt': fixture.tilt,
                 'dimmer': fixture.dimmer,
@@ -1402,11 +2350,129 @@ class EffectsEngine:
             "commit_in_bars": timing_debug["commit_in_bars"],
             "last_commit_bar": timing_debug["last_commit_bar"],
             "pre_cue_active": timing_debug["pre_cue_active"],
+            "constraints": {
+                "strobe_hz_cap": float(self.config.strobe_hz_cap),
+                "strobe_max_duty_cycle": float(self.config.strobe_max_duty_cycle),
+                "strobe_burst_max_s": float(self.config.strobe_burst_max_s),
+                "strobe_refractory_s": float(self.config.strobe_refractory_s),
+                "audience_intensity_cap": float(self.config.audience_intensity_cap),
+                "movement_when_bright": bool(self.config.movement_when_bright),
+                "accessibility_mode": str(self.config.accessibility_mode),
+                "camera_mode": bool(self.config.camera_mode),
+                "venue_mode": str(self.config.venue_mode),
+            },
         }
         # Include ML emotion data if available
         if self._ml_emotion_mapping is not None:
             state["emotion_mapping"] = self._ml_emotion_mapping
         return state
+
+    def _record_safety_event(
+        self,
+        event_type: str,
+        details: Dict,
+        throttle_s: float = 0.0,
+        throttle_key: Optional[str] = None,
+    ):
+        """Append a bounded in-memory safety/audit event log."""
+        key = throttle_key or event_type
+        now = float(self.time)
+        if throttle_s > 0:
+            last = self._safety_event_last_time.get(key, -999.0)
+            if (now - last) < throttle_s:
+                return
+            self._safety_event_last_time[key] = now
+
+        self._safety_events.append(
+            {
+                "time_s": round(now, 3),
+                "event_type": str(event_type),
+                "details": dict(details or {}),
+            }
+        )
+        if len(self._safety_events) > 300:
+            self._safety_events = self._safety_events[-300:]
+
+    def get_safety_events(self, limit: int = 50) -> List[Dict]:
+        """Return most recent safety policy/clamp events."""
+        n = max(1, min(300, int(limit or 50)))
+        return list(self._safety_events[-n:])
+
+    def set_safety_profile(self, profile: str, camera_mode: Optional[bool] = None, venue_mode: Optional[str] = None) -> Dict:
+        """Apply research-pack safety profile presets."""
+        p = str(profile or "performance").lower()
+        if p in {"no_strobe", "nostrobe", "safe"}:
+            self.config.accessibility_mode = "no_strobe"
+            self.config.strobe_enabled = False
+            self.config.strobe_hz_cap = 2.0
+            self.config.strobe_max_duty_cycle = 0.30
+            self.config.strobe_burst_max_s = 0.08
+            self.config.strobe_refractory_s = 0.30
+            self.config.audience_intensity_cap = min(self.config.audience_intensity_cap, 0.85)
+        elif p in {"conservative", "broadcast"}:
+            self.config.accessibility_mode = "conservative"
+            self.config.strobe_enabled = True
+            self.config.strobe_hz_cap = 3.0
+            self.config.strobe_max_duty_cycle = 0.34
+            self.config.strobe_burst_max_s = 0.10
+            self.config.strobe_refractory_s = 0.22
+            self.config.audience_intensity_cap = min(self.config.audience_intensity_cap, 0.90)
+        else:
+            self.config.accessibility_mode = "performance"
+            self.config.strobe_enabled = True
+            self.config.strobe_hz_cap = max(self.config.strobe_hz_cap, 18.0)
+            self.config.strobe_max_duty_cycle = max(self.config.strobe_max_duty_cycle, 0.40)
+            self.config.strobe_burst_max_s = max(self.config.strobe_burst_max_s, 0.11)
+            self.config.strobe_refractory_s = min(self.config.strobe_refractory_s, 0.16)
+
+        if camera_mode is not None:
+            self.config.camera_mode = bool(camera_mode)
+            if self.config.camera_mode:
+                self.config.accessibility_mode = "conservative"
+                self.config.strobe_hz_cap = min(self.config.strobe_hz_cap, 3.0)
+                self.config.strobe_max_duty_cycle = min(self.config.strobe_max_duty_cycle, 0.34)
+
+        if venue_mode is not None:
+            self.config.venue_mode = str(venue_mode).lower()
+            if self.config.venue_mode in {"theatre", "broadcast", "corporate"}:
+                self.config.audience_intensity_cap = min(self.config.audience_intensity_cap, 0.85)
+
+        self._record_safety_event(
+            "safety_profile_applied",
+            {
+                "profile": p,
+                "camera_mode": bool(self.config.camera_mode),
+                "venue_mode": str(self.config.venue_mode),
+                "strobe_enabled": bool(self.config.strobe_enabled),
+                "strobe_hz_cap": float(self.config.strobe_hz_cap),
+                "audience_intensity_cap": float(self.config.audience_intensity_cap),
+            },
+        )
+
+        return {
+            "accessibility_mode": self.config.accessibility_mode,
+            "camera_mode": self.config.camera_mode,
+            "venue_mode": self.config.venue_mode,
+            "strobe_enabled": self.config.strobe_enabled,
+            "strobe_hz_cap": self.config.strobe_hz_cap,
+            "strobe_max_duty_cycle": self.config.strobe_max_duty_cycle,
+            "audience_intensity_cap": self.config.audience_intensity_cap,
+        }
+
+    def clean_stage(self):
+        """Research-pack 'clean stage' macro: stop risky FX and return safe readable base."""
+        self._rebuild_set_section("verse")
+        self._rebuild_drop_until = -999.0
+        self._rebuild_snare_strobe_until = -999.0
+        self._white_strobe_flash = False
+        self._white_strobe_decay = 0.0
+        self._white_accent_level = 0.0
+        self.config.strobe_enabled = False
+        self.pro_effects.strobe.stop()
+        self.pro_effects.build.stop()
+        self.pro_effects.chase.stop()
+        self._rebuild_base_color = RGB(0.95, 0.95, 0.95)
+        self._rebuild_color_hold_until = self.time + 1.0
 
     # === Manual Controls ===
 

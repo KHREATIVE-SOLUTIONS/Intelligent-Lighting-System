@@ -289,9 +289,15 @@ class FixtureGroupManager:
                 continue
 
             # Map fixture state to channels
+            pan_norm = max(0.0, min(1.0, (float(fixture.pan) + 270.0) / 540.0))
+            tilt_norm = max(0.0, min(1.0, (float(fixture.tilt) + 135.0) / 270.0))
+            pan_16 = int(round(pan_norm * 65535.0))
+            tilt_16 = int(round(tilt_norm * 65535.0))
             channel_values = {
-                'pan': int(((fixture.pan + 270) / 540) * 255),  # -270 to +270 -> 0-255
-                'tilt': int(((fixture.tilt + 135) / 270) * 255),  # -135 to +135 -> 0-255
+                'pan': (pan_16 >> 8) & 0xFF,          # coarse byte
+                'pan_fine': pan_16 & 0xFF,            # fine byte
+                'tilt': (tilt_16 >> 8) & 0xFF,        # coarse byte
+                'tilt_fine': tilt_16 & 0xFF,          # fine byte
                 'dimmer': int(fixture.dimmer * 255),
                 'red': int(fixture.red * 255),
                 'green': int(fixture.green * 255),
@@ -339,58 +345,58 @@ def create_demo_rig() -> FixtureGroupManager:
 
     fixtures = []
 
-    # Moving Heads - Left side
-    for i, (addr, z) in enumerate([(1, -4), (17, -1.5), (33, 1.5), (49, 4)]):
+    # Moving Heads - Upstage truss (single straight line)
+    for i, (addr, x) in enumerate([(1, -6), (17, -4), (33, -2), (49, 0)]):
         fixtures.append(Fixture(
             id=f"mover_l{i+1}",
             name=f"Mover L{i+1}",
             dmx_address=addr,
             channels=mover_channels.copy(),
-            x=-6, y=4, z=z,
+            x=x, y=5.2, z=-1.0,
             fixture_type="mover"
         ))
 
-    # Moving Heads - Right side
-    for i, (addr, z) in enumerate([(65, -4), (81, -1.5), (97, 1.5), (113, 4)]):
+    # Moving Heads - Upstage truss continuation
+    for i, (addr, x) in enumerate([(65, 2), (81, 4), (97, 6), (113, 8)]):
         fixtures.append(Fixture(
             id=f"mover_r{i+1}",
             name=f"Mover R{i+1}",
             dmx_address=addr,
             channels=mover_channels.copy(),
-            x=6, y=4, z=z,
+            x=x, y=5.2, z=-1.0,
             fixture_type="mover"
         ))
 
-    # Washes - Left side
-    for i, (addr, z) in enumerate([(129, -3), (143, 0), (157, 3)]):
+    # Washes - Downstage truss (single straight line)
+    for i, (addr, x) in enumerate([(129, -5), (143, -3), (157, -1)]):
         fixtures.append(Fixture(
             id=f"wash_l{i+1}",
             name=f"Wash L{i+1}",
             dmx_address=addr,
             channels=wash_channels.copy(),
-            x=-4, y=3.5, z=z,
+            x=x, y=4.6, z=1.0,
             fixture_type="wash"
         ))
 
-    # Washes - Right side
-    for i, (addr, z) in enumerate([(171, -3), (185, 0), (199, 3)]):
+    # Washes - Downstage truss continuation
+    for i, (addr, x) in enumerate([(171, 1), (185, 3), (199, 5)]):
         fixtures.append(Fixture(
             id=f"wash_r{i+1}",
             name=f"Wash R{i+1}",
             dmx_address=addr,
             channels=wash_channels.copy(),
-            x=4, y=3.5, z=z,
+            x=x, y=4.6, z=1.0,
             fixture_type="wash"
         ))
 
-    # LED Bars
+    # LED Bars - mounted on rear of downstage truss
     for i, (addr, x) in enumerate([(213, -3), (225, -1), (237, 1), (249, 3)]):
         fixtures.append(Fixture(
             id=f"bar_{i+1}",
             name=f"Bar {i+1}",
             dmx_address=addr,
             channels=bar_channels.copy(),
-            x=x, y=2, z=-5,
+            x=x, y=4.9, z=1.0,
             fixture_type="bar"
         ))
 
