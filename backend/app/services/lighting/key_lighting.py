@@ -53,8 +53,8 @@ class KeyLightConfig:
     """Configuration for key lighting in a zone."""
     zone: PerformerZone
 
-    # Minimum dimmer intensity (never go below this)
-    min_intensity: float = 0.4
+    # Minimum dimmer intensity (0 = allow full blackout)
+    min_intensity: float = 0.0
 
     # Key light color (warm white by default)
     color: RGB = field(default_factory=lambda: RGB(1.0, 0.93, 0.85))

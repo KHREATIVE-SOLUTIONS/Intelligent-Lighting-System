@@ -162,7 +162,7 @@ def _build_small_nightclub() -> VenuePreset:
         addr += STROBE_CH_COUNT
 
     key_zones = [
-        KeyZoneSpec("dj_booth", ["mover_f1", "mover_f2"], active=True, min_intensity=0.4),
+        KeyZoneSpec("dj_booth", ["mover_f1", "mover_f2"], active=True, min_intensity=0.0),
     ]
 
     return VenuePreset(
@@ -195,8 +195,8 @@ def _build_medium_venue() -> VenuePreset:
         addr += MOVER_CH_COUNT
 
     key_zones = [
-        KeyZoneSpec("dj_booth", ["mover_f3", "mover_f4", "mover_f5"], active=True, min_intensity=0.4),
-        KeyZoneSpec("stage_center", ["mover_r3", "mover_r4", "mover_r5"], active=True, min_intensity=0.35),
+        KeyZoneSpec("dj_booth", ["mover_f3", "mover_f4", "mover_f5"], active=True, min_intensity=0.0),
+        KeyZoneSpec("stage_center", ["mover_r3", "mover_r4", "mover_r5"], active=True, min_intensity=0.0),
     ]
 
     return VenuePreset(
@@ -258,10 +258,10 @@ def _build_large_concert() -> VenuePreset:
         addr += SPOT_CH_COUNT
 
     key_zones = [
-        KeyZoneSpec("dj_booth", ["spot_dj", "mover_f4", "mover_f5"], active=True, min_intensity=0.4),
-        KeyZoneSpec("stage_center", ["spot_center", "mover_r4", "mover_r5"], active=True, min_intensity=0.35),
-        KeyZoneSpec("stage_left", ["spot_left", "mover_f1", "mover_f2"], active=True, min_intensity=0.3),
-        KeyZoneSpec("stage_right", ["spot_right", "mover_f7", "mover_f8"], active=True, min_intensity=0.3),
+        KeyZoneSpec("dj_booth", ["spot_dj", "mover_f4", "mover_f5"], active=True, min_intensity=0.0),
+        KeyZoneSpec("stage_center", ["spot_center", "mover_r4", "mover_r5"], active=True, min_intensity=0.0),
+        KeyZoneSpec("stage_left", ["spot_left", "mover_f1", "mover_f2"], active=True, min_intensity=0.0),
+        KeyZoneSpec("stage_right", ["spot_right", "mover_f7", "mover_f8"], active=True, min_intensity=0.0),
     ]
 
     return VenuePreset(
@@ -318,8 +318,8 @@ def _build_pro_beam_room() -> VenuePreset:
             )
 
     key_zones = [
-        KeyZoneSpec("dj_booth", ["beam_f5", "beam_f6", "beam_ff5", "beam_ff6"], active=True, min_intensity=0.45),
-        KeyZoneSpec("stage_center", ["beam_m5", "beam_m6", "beam_m7", "beam_m8"], active=True, min_intensity=0.40),
+        KeyZoneSpec("dj_booth", ["beam_f5", "beam_f6", "beam_ff5", "beam_ff6"], active=True, min_intensity=0.0),
+        KeyZoneSpec("stage_center", ["beam_m5", "beam_m6", "beam_m7", "beam_m8"], active=True, min_intensity=0.0),
     ]
 
     return VenuePreset(
@@ -411,14 +411,14 @@ def _build_festival_mainstage() -> VenuePreset:
         fixtures.append(FixtureSpec("spot", sid, sname, a, u, sx, sy, sz))
 
     key_zones = [
-        KeyZoneSpec("dj_booth", ["spot_dj", "mover_f6", "mover_f7"], active=True, min_intensity=0.45),
+        KeyZoneSpec("dj_booth", ["spot_dj", "mover_f6", "mover_f7"], active=True, min_intensity=0.0),
         KeyZoneSpec("stage_center", ["spot_center_ds", "spot_center_us", "mover_m5", "mover_m6"],
-                    active=True, min_intensity=0.35),
+                    active=True, min_intensity=0.0),
         KeyZoneSpec("stage_left", ["spot_left_ds", "spot_left_us", "mover_f1", "mover_f2"],
-                    active=True, min_intensity=0.3),
+                    active=True, min_intensity=0.0),
         KeyZoneSpec("stage_right", ["spot_right_ds", "spot_right_us", "mover_f11", "mover_f12"],
-                    active=True, min_intensity=0.3),
-        KeyZoneSpec("drum_riser", ["spot_drum", "mover_r8", "mover_r9"], active=True, min_intensity=0.35),
+                    active=True, min_intensity=0.0),
+        KeyZoneSpec("drum_riser", ["spot_drum", "mover_r8", "mover_r9"], active=True, min_intensity=0.0),
     ]
 
     return VenuePreset(

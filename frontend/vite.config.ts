@@ -3,8 +3,8 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 
 // https://vitejs.dev/config/
-const backendHttpTarget = process.env.VITE_BACKEND_HTTP ?? 'http://127.0.0.1:8014'
-const backendWsTarget = process.env.VITE_BACKEND_WS ?? 'ws://127.0.0.1:8014'
+const backendHttpTarget = process.env.VITE_BACKEND_HTTP ?? 'http://127.0.0.1:8000'
+const backendWsTarget = process.env.VITE_BACKEND_WS ?? 'ws://127.0.0.1:8000'
 
 export default defineConfig({
   plugins: [react()],

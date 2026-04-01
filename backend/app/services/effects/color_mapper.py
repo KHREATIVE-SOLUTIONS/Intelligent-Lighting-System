@@ -75,10 +75,10 @@ class RGB:
 @dataclass
 class AudioFeatures:
     """Audio features for color mapping."""
-    energy: float = 0.5          # Overall RMS energy (0-1)
-    bass: float = 0.5            # Bass band energy (0-1)
-    mid: float = 0.5             # Mid band energy (0-1)
-    high: float = 0.5            # High band energy (0-1)
+    energy: float = 0.0          # Overall RMS energy (0-1)
+    bass: float = 0.0            # Bass band energy (0-1)
+    mid: float = 0.0             # Mid band energy (0-1)
+    high: float = 0.0            # High band energy (0-1)
     valence: float = 0.5         # Mood: 0=sad, 1=happy
     arousal: float = 0.5         # Energy: 0=calm, 1=excited
     is_beat: bool = False        # Beat detected this frame

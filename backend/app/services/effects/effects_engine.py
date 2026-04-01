@@ -781,12 +781,13 @@ class EffectsEngine:
                 fixture.tilt = 0.0
 
             # Dimmer policy: chase in verse/buildup/chorus, strobe on drop, calm breakdown.
+            # All paths scale from zero when no audio — beams form on activation.
             if section == "breakdown":
-                dim = 0.24 + energy * 0.16
+                dim = energy * 0.40
             elif drop_strobe_on:
-                dim = 1.0 if strobe_flash else 0.06
+                dim = 1.0 if strobe_flash else 0.06 * energy
             elif snare_strobe_on:
-                dim = 1.0 if snare_strobe_flash else max(chase_floor, 0.16)
+                dim = 1.0 if snare_strobe_flash else energy * 0.16
             elif chase_active and is_mover and chase_head >= 0 and fixture.id in chase_index:
                 idx = chase_index[fixture.id]
                 chase_len = max(1, len(chase_order))
@@ -800,9 +801,9 @@ class EffectsEngine:
                     if peak > best_peak:
                         best_peak = peak
                 beat_bump = 0.88 + 0.22 * (0.5 + 0.5 * math.sin(2.0 * math.pi * beat_phase))
-                dim = max(chase_floor, min(1.0, chase_floor + best_peak * beat_bump))
+                dim = min(1.0, best_peak * beat_bump * energy)
             else:
-                dim = base_floor + energy * 0.20
+                dim = energy * base_floor
             fixture.dimmer = max(0.0, min(1.0, dim))
             audience_cap = max(0.0, min(1.0, float(self.config.audience_intensity_cap)))
             if fixture.dimmer > audience_cap:
@@ -817,8 +818,6 @@ class EffectsEngine:
                     throttle_key="audience_intensity_clamped",
                 )
             fixture.dimmer = min(fixture.dimmer, audience_cap)
-            if visibility_first_mode and (not strobe_on):
-                fixture.dimmer = max(fixture.dimmer, 0.48)
 
             # Optional "move-in-brightness restraint" policy for cleaner live looks.
             if (
@@ -974,10 +973,10 @@ class EffectsEngine:
 
     def update_audio(
         self,
-        energy: float = 0.5,
-        bass: float = 0.5,
-        mid: float = 0.5,
-        high: float = 0.5,
+        energy: float = 0.0,
+        bass: float = 0.0,
+        mid: float = 0.0,
+        high: float = 0.0,
         is_beat: bool = False,
         beat_number: int = 0,
         valence: float = 0.5,
@@ -2059,8 +2058,8 @@ class EffectsEngine:
                         fixture.green = 1.0
                         fixture.blue = 1.0
                 else:
-                    # Layer 1: Base intensity from audio energy
-                    base_intensity = 0.3 + self.audio_features.energy * 0.7
+                    # Layer 1: Base intensity driven purely by audio energy
+                    base_intensity = self.audio_features.energy
 
                     # Layer 2: Movement (pan/tilt)
                     if self.config.movement_enabled:
@@ -2147,7 +2146,7 @@ class EffectsEngine:
                         if self.config.movement_music_reactive:
                             chase_dim = self.pro_movement.get_chase_intensity(i, total)
                             if chase_dim < 1.0:
-                                fixture.dimmer *= max(0.05, chase_dim)  # Floor at 5% to avoid full blackout
+                                fixture.dimmer *= chase_dim  # Allow full blackout for non-active chase fixtures
 
                         # Pro strobe overlay
                         if self.section_manager.is_strobe_allowed():
@@ -2172,16 +2171,12 @@ class EffectsEngine:
                             (not self.config.movement_music_reactive)
                             and self._clocked_chase_last_intensity > 0.01
                         ):
-                            low_sections = {"breakdown", "bridge", "outro"}
-                            chase_off_level = 0.08 if section in low_sections else 0.5
-                            # Explicit linear chase: one fixture head ON moving down each row.
+                            # Explicit linear chase: active head ON, others stay dark
                             if linear_chase_level_by_id.get(fixture.id, 0.0) >= 0.5:
                                 fixture.dimmer = max(
                                     fixture.dimmer,
                                     1.0 * self._get_chase_bump_level()
                                 )
-                            else:
-                                fixture.dimmer = max(fixture.dimmer, chase_off_level)
                         elif chase_val > 0:
                             fixture.dimmer = max(fixture.dimmer, chase_val * section_intensity)
 
@@ -2201,8 +2196,8 @@ class EffectsEngine:
                         # MERT emotion modulation (when ML pipeline is active)
                         if self._ml_emotion_mapping is not None:
                             em = self._ml_emotion_mapping
-                            # base_intensity modulates overall dimmer
-                            fixture.dimmer *= 0.5 + em.get("base_intensity", 0.5) * 0.5
+                            # base_intensity modulates overall dimmer (no additive floor)
+                            fixture.dimmer *= em.get("base_intensity", 1.0)
                             # color_saturation deepens or lightens colors
                             ml_sat = em.get("color_saturation", 0.7)
                             if ml_sat < 0.5:
@@ -2256,10 +2251,10 @@ class EffectsEngine:
             # Apply section template intensity scale across all non-training paths
             fixture.dimmer *= self._current_section_intensity_scale
 
-            # Keep non-breakdown busking visibly bright; only breakdown family should feel truly dim.
+            # Busking brightness: only boost if there's actual audio energy driving the system.
             if self._pro_lighting_enabled and (not self.config.movement_music_reactive):
-                if section not in {"breakdown", "bridge", "outro"}:
-                    fixture.dimmer = max(fixture.dimmer, 0.45)
+                if section not in {"breakdown", "bridge", "outro"} and self.audio_features.energy > 0.05:
+                    fixture.dimmer = max(fixture.dimmer, 0.45 * self.audio_features.energy)
 
             # True backend move-in-black: hide major reposition travel
             if fixture.fixture_type != "bar" and fixture.id and (hasattr(fixture, "pan") and hasattr(fixture, "tilt")):
@@ -2274,9 +2269,10 @@ class EffectsEngine:
                 self.decision.track_intensity(fixture.dimmer)
 
             # Final master brightness lift for non-reactive busking (except breakdown family).
+            # Only apply when audio is present to avoid idle glow.
             if self._pro_lighting_enabled and (not self.config.movement_music_reactive):
-                if section not in {"breakdown", "bridge", "outro"}:
-                    fixture.dimmer = max(0.38, min(1.0, fixture.dimmer * 1.9))
+                if section not in {"breakdown", "bridge", "outro"} and self.audio_features.energy > 0.05:
+                    fixture.dimmer = min(1.0, fixture.dimmer * 1.9)
 
             # FINAL pro strobe override: pure bright white must win over all color/dimmer layers.
             if strobe_white_override:

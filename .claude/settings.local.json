@@ -79,7 +79,9 @@
       "WebSearch",
       "Bash(if not exist \"E:\\\\Intelligent Lighting System\\\\backend\\\\app\\\\services\\\\lighting\" mkdir \"E:\\\\Intelligent Lighting System\\\\backend\\\\app\\\\services\\\\lighting\")",
       "Bash(npx tsc:*)",
-      "Bash(curl.exe:*)"
+      "Bash(curl.exe:*)",
+      "Bash(grep -h \"^router\\\\.\\\\|^@router\" \"/e/Intelligent Lighting System/backend/app/api/endpoints\"/*.py)",
+      "Bash(find \"/e/Intelligent Lighting System/backend/app/api/endpoints\" -name \"*.py\" -exec grep -h \"@router\\\\.\" {})"
     ]
   }
 }

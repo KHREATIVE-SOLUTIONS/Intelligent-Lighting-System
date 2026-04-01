@@ -78,7 +78,7 @@ class SectionConfig:
     beat_reactivity: float = 0.5
 
     # Dimmer floor (never go below this)
-    dimmer_floor: float = 0.1
+    dimmer_floor: float = 0.0
 
 
 # Default section configurations
@@ -89,7 +89,7 @@ DEFAULT_SECTION_CONFIGS: Dict[SongSection, SectionConfig] = {
         color_saturation=0.5,
         strobe_allowed=False,
         beat_reactivity=0.3,
-        dimmer_floor=0.15,
+        dimmer_floor=0.0,
     ),
     SongSection.VERSE: SectionConfig(
         intensity_range=(0.6, 0.85),
@@ -97,7 +97,7 @@ DEFAULT_SECTION_CONFIGS: Dict[SongSection, SectionConfig] = {
         color_saturation=0.7,
         strobe_allowed=False,
         beat_reactivity=0.65,
-        dimmer_floor=0.3,
+        dimmer_floor=0.0,
     ),
     SongSection.PRE_CHORUS: SectionConfig(
         intensity_range=(0.7, 0.95),
@@ -105,7 +105,7 @@ DEFAULT_SECTION_CONFIGS: Dict[SongSection, SectionConfig] = {
         color_saturation=0.8,
         strobe_allowed=False,
         beat_reactivity=0.72,
-        dimmer_floor=0.35,
+        dimmer_floor=0.0,
     ),
     SongSection.CHORUS: SectionConfig(
         intensity_range=(0.8, 1.0),
@@ -113,7 +113,7 @@ DEFAULT_SECTION_CONFIGS: Dict[SongSection, SectionConfig] = {
         color_saturation=0.9,
         strobe_allowed=True,
         beat_reactivity=0.7,
-        dimmer_floor=0.3,
+        dimmer_floor=0.0,
     ),
     SongSection.DROP: SectionConfig(
         intensity_range=(0.9, 1.0),
@@ -121,7 +121,7 @@ DEFAULT_SECTION_CONFIGS: Dict[SongSection, SectionConfig] = {
         color_saturation=1.0,
         strobe_allowed=True,
         beat_reactivity=0.9,
-        dimmer_floor=0.4,
+        dimmer_floor=0.0,
     ),
     SongSection.BREAKDOWN: SectionConfig(
         intensity_range=(0.25, 0.55),
@@ -129,7 +129,7 @@ DEFAULT_SECTION_CONFIGS: Dict[SongSection, SectionConfig] = {
         color_saturation=0.4,
         strobe_allowed=False,
         beat_reactivity=0.3,
-        dimmer_floor=0.18,
+        dimmer_floor=0.0,
     ),
     SongSection.BRIDGE: SectionConfig(
         intensity_range=(0.4, 0.6),
@@ -137,7 +137,7 @@ DEFAULT_SECTION_CONFIGS: Dict[SongSection, SectionConfig] = {
         color_saturation=0.6,
         strobe_allowed=False,
         beat_reactivity=0.4,
-        dimmer_floor=0.15,
+        dimmer_floor=0.0,
     ),
     SongSection.OUTRO: SectionConfig(
         intensity_range=(0.2, 0.4),
@@ -145,7 +145,7 @@ DEFAULT_SECTION_CONFIGS: Dict[SongSection, SectionConfig] = {
         color_saturation=0.4,
         strobe_allowed=False,
         beat_reactivity=0.2,
-        dimmer_floor=0.1,
+        dimmer_floor=0.0,
     ),
     SongSection.BUILDUP: SectionConfig(
         intensity_range=(0.4, 0.9),
@@ -153,7 +153,7 @@ DEFAULT_SECTION_CONFIGS: Dict[SongSection, SectionConfig] = {
         color_saturation=0.8,
         strobe_allowed=True,
         beat_reactivity=0.7,
-        dimmer_floor=0.2,
+        dimmer_floor=0.0,
     ),
     SongSection.UNKNOWN: SectionConfig(
         intensity_range=(0.55, 0.8),
@@ -161,7 +161,7 @@ DEFAULT_SECTION_CONFIGS: Dict[SongSection, SectionConfig] = {
         color_saturation=0.7,
         strobe_allowed=False,
         beat_reactivity=0.6,
-        dimmer_floor=0.25,
+        dimmer_floor=0.0,
     ),
 }
 
@@ -412,8 +412,8 @@ class SectionManager:
         config = self.section_config
         min_i, max_i = config.intensity_range
 
-        # Strongly audio-reactive base within section range.
-        base = min_i + (max_i - min_i) * (0.25 + energy * 0.75)
+        # Audio-reactive base within section range — energy drives the full span
+        base = min_i + (max_i - min_i) * energy
         intensity = base
 
         # Beat bump

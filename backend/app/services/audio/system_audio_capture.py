@@ -1,16 +1,18 @@
 """
-System Audio Capture (WASAPI Loopback)
+System Audio Capture — Cross-Platform
 ======================================
 
 Captures audio from system output with explicit device selection support.
-Backends (in priority order for auto mode):
-1) soundcard WASAPI loopback
-2) sounddevice input/loopback devices
-3) pyaudiowpatch WASAPI loopback devices
+
+Platform-specific backends:
+  Windows : pyaudiowpatch (WASAPI loopback) → sounddevice (Stereo Mix) → soundcard
+  macOS   : soundcard (CoreAudio loopback)  → sounddevice (BlackHole / virtual devices)
+  Linux   : sounddevice (PulseAudio monitor) → soundcard
 """
 
 import asyncio
 import logging
+import sys
 import threading
 from typing import Optional, Callable
 
@@ -18,16 +20,20 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Lazy imports
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
+PLATFORM = sys.platform  # "win32" | "darwin" | "linux"
+
+# ---------------------------------------------------------------------------
+# Lazy imports — each backend is imported on first use and cached.
+# ---------------------------------------------------------------------------
 _sc = None  # soundcard
 _sd = None  # sounddevice
-_pa = None  # pyaudiowpatch
-ENABLE_SOUNDCARD_BACKEND = False
+_pa = None  # pyaudiowpatch (Windows-only)
 
 
 def _get_soundcard():
-    if not ENABLE_SOUNDCARD_BACKEND:
-        return None
     global _sc
     if _sc is None:
         try:
@@ -50,6 +56,9 @@ def _get_sounddevice():
 
 
 def _get_pyaudio():
+    """pyaudiowpatch is Windows-only (WASAPI)."""
+    if PLATFORM != "win32":
+        return None
     global _pa
     if _pa is None:
         try:
@@ -58,6 +67,31 @@ def _get_pyaudio():
         except ImportError:
             _pa = False
     return _pa if _pa is not False else None
+
+
+# ---------------------------------------------------------------------------
+# Loopback name patterns per platform (for sounddevice detection)
+# ---------------------------------------------------------------------------
+_LOOPBACK_PATTERNS_WIN = ("loopback", "stereo mix", "what u hear", "wave out")
+_LOOPBACK_PATTERNS_MAC = ("blackhole", "loopback", "soundflower", "existential audio",
+                          "virtual audio", "ishowu")
+_LOOPBACK_PATTERNS_LINUX = ("monitor of", "pulse monitor", "loopback")
+
+
+def _loopback_patterns() -> tuple:
+    if PLATFORM == "darwin":
+        return _LOOPBACK_PATTERNS_MAC
+    if PLATFORM.startswith("linux"):
+        return _LOOPBACK_PATTERNS_LINUX
+    return _LOOPBACK_PATTERNS_WIN
+
+
+def _soundcard_hostapi_label() -> str:
+    if PLATFORM == "darwin":
+        return "CoreAudio Loopback (soundcard)"
+    if PLATFORM.startswith("linux"):
+        return "PulseAudio Loopback (soundcard)"
+    return "WASAPI Loopback (soundcard)"
 
 
 class SystemAudioCapture:
@@ -91,12 +125,16 @@ class SystemAudioCapture:
         self._last_rms = 0.0
         self._last_peak = 0.0
 
+    # ------------------------------------------------------------------
+    # Device enumeration
+    # ------------------------------------------------------------------
     @staticmethod
     def list_devices() -> list:
         """Return unified device list with stable API indices for this process."""
         result = []
         api_index = 0
 
+        # --- soundcard (macOS CoreAudio / Linux PulseAudio / Windows WASAPI) ---
         sc = _get_soundcard()
         if sc is not None:
             try:
@@ -108,29 +146,27 @@ class SystemAudioCapture:
                             "max_input_channels": speaker.channels,
                             "max_output_channels": speaker.channels,
                             "default_samplerate": 44100,
-                            "hostapi": "WASAPI Loopback (soundcard)",
+                            "hostapi": _soundcard_hostapi_label(),
                             "is_loopback": True,
                             "device_type": "soundcard_speaker",
                             "speaker_id": speaker.id,
+                            "platform": PLATFORM,
                         }
                     )
                     api_index += 1
             except Exception as e:
                 logger.debug(f"Error listing soundcard devices: {e}")
 
+        # --- sounddevice (cross-platform PortAudio) ---
         sd = _get_sounddevice()
         if sd is not None:
+            patterns = _loopback_patterns()
             try:
                 devices = sd.query_devices()
                 for i, dev in enumerate(devices):
                     hostapi_name = sd.query_hostapis(dev["hostapi"])["name"]
                     name_lower = dev["name"].lower()
-                    is_loopback = (
-                        "loopback" in name_lower
-                        or "stereo mix" in name_lower
-                        or "what u hear" in name_lower
-                        or "wave out" in name_lower
-                    )
+                    is_loopback = any(p in name_lower for p in patterns)
                     result.append(
                         {
                             "index": api_index,
@@ -142,12 +178,14 @@ class SystemAudioCapture:
                             "is_loopback": is_loopback and dev["max_input_channels"] > 0,
                             "device_type": "sounddevice",
                             "sd_index": i,
+                            "platform": PLATFORM,
                         }
                     )
                     api_index += 1
             except Exception as e:
                 logger.debug(f"Error listing sounddevice devices: {e}")
 
+        # --- pyaudiowpatch (Windows WASAPI loopback only) ---
         pa = _get_pyaudio()
         if pa is not None:
             p = pa.PyAudio()
@@ -166,6 +204,7 @@ class SystemAudioCapture:
                                 "is_loopback": True,
                                 "device_type": "pyaudio_loopback",
                                 "pa_index": i,
+                                "platform": PLATFORM,
                             }
                         )
                         api_index += 1
@@ -176,6 +215,9 @@ class SystemAudioCapture:
 
         return result
 
+    # ------------------------------------------------------------------
+    # Chunk dispatch
+    # ------------------------------------------------------------------
     def _dispatch_chunk(self, audio_data: np.ndarray):
         if not self.on_audio_chunk or not self._running:
             return
@@ -202,6 +244,9 @@ class SystemAudioCapture:
         except Exception as e:
             logger.debug(f"Async chunk processing error: {e}")
 
+    # ------------------------------------------------------------------
+    # soundcard backend
+    # ------------------------------------------------------------------
     def _start_soundcard_loopback(self, speaker_id: Optional[str] = None) -> bool:
         sc = _get_soundcard()
         if sc is None:
@@ -251,22 +296,23 @@ class SystemAudioCapture:
                 logger.error(f"soundcard capture loop error: {e}")
             self._running = False
 
+    # ------------------------------------------------------------------
+    # sounddevice backend
+    # ------------------------------------------------------------------
     def _find_sounddevice_input(self) -> Optional[int]:
         sd = _get_sounddevice()
         if sd is None:
             return None
         devices = sd.query_devices()
+        patterns = _loopback_patterns()
 
+        # First pass: loopback / virtual audio devices
         for i, dev in enumerate(devices):
             name_lower = dev["name"].lower()
-            if dev["max_input_channels"] > 0 and (
-                "loopback" in name_lower
-                or "stereo mix" in name_lower
-                or "what u hear" in name_lower
-                or "wave out" in name_lower
-            ):
+            if dev["max_input_channels"] > 0 and any(p in name_lower for p in patterns):
                 return i
 
+        # Fallback: default input device
         try:
             default_input = sd.default.device[0]
             if default_input is not None and default_input >= 0:
@@ -276,6 +322,7 @@ class SystemAudioCapture:
         except Exception:
             pass
 
+        # Last resort: any input device
         for i, dev in enumerate(devices):
             if dev["max_input_channels"] > 0:
                 return i
@@ -320,6 +367,9 @@ class SystemAudioCapture:
             logger.error(f"Failed to start sounddevice capture: {e}")
             return False
 
+    # ------------------------------------------------------------------
+    # pyaudiowpatch backend (Windows only)
+    # ------------------------------------------------------------------
     def _pyaudio_callback(self, in_data, frame_count, time_info, status):
         pa = _get_pyaudio()
         if not self._running or pa is None:
@@ -371,14 +421,18 @@ class SystemAudioCapture:
             self._stream = None
             return False
 
+    # ------------------------------------------------------------------
+    # Start / stop
+    # ------------------------------------------------------------------
     def start(self, device_index: Optional[int] = None, loop: Optional[asyncio.AbstractEventLoop] = None):
-        """Start capture with explicit device index or backend auto-fallback."""
+        """Start capture with explicit device index or platform-aware auto-fallback."""
         if self._running:
             logger.warning("Audio capture already running")
             return True
 
         self._loop = loop
 
+        # --- Explicit device selection ---
         if device_index is not None:
             devices = self.list_devices()
             selected = next((d for d in devices if d["index"] == device_index), None)
@@ -405,18 +459,34 @@ class SystemAudioCapture:
             logger.error(f"Unsupported device type: {dtype}")
             return False
 
-        # Auto mode (used only if explicitly desired in backend config)
-        if self._start_soundcard_loopback():
-            return True
+        # --- Auto mode: platform-aware fallback chain ---
+        if PLATFORM == "darwin":
+            # macOS: soundcard (CoreAudio loopback) → sounddevice
+            if self._start_soundcard_loopback():
+                return True
+            sd_index = self._find_sounddevice_input()
+            if sd_index is not None and self._start_sounddevice(sd_index):
+                return True
 
-        sd_index = self._find_sounddevice_input()
-        if sd_index is not None and self._start_sounddevice(sd_index):
-            return True
+        elif PLATFORM == "win32":
+            # Windows: pyaudiowpatch (WASAPI) → sounddevice (Stereo Mix) → soundcard
+            devices = self.list_devices()
+            pyaudio_entry = next((d for d in devices if d.get("device_type") == "pyaudio_loopback"), None)
+            if pyaudio_entry and self._start_pyaudio_loopback(int(pyaudio_entry["pa_index"])):
+                return True
+            sd_index = self._find_sounddevice_input()
+            if sd_index is not None and self._start_sounddevice(sd_index):
+                return True
+            if self._start_soundcard_loopback():
+                return True
 
-        devices = self.list_devices()
-        pyaudio_entry = next((d for d in devices if d.get("device_type") == "pyaudio_loopback"), None)
-        if pyaudio_entry and self._start_pyaudio_loopback(int(pyaudio_entry["pa_index"])):
-            return True
+        else:
+            # Linux: sounddevice (PulseAudio monitor) → soundcard
+            sd_index = self._find_sounddevice_input()
+            if sd_index is not None and self._start_sounddevice(sd_index):
+                return True
+            if self._start_soundcard_loopback():
+                return True
 
         logger.error("No suitable audio capture backend/device found")
         return False
@@ -468,6 +538,7 @@ class SystemAudioCapture:
             "sample_rate": self.sample_rate,
             "chunk_size": self.chunk_size,
             "channels": self.channels,
+            "platform": PLATFORM,
             "soundcard_available": _get_soundcard() is not None,
             "sounddevice_available": _get_sounddevice() is not None,
             "pyaudiowpatch_available": _get_pyaudio() is not None,

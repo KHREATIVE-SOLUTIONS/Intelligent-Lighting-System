@@ -15,6 +15,8 @@ psycopg2-binary==2.9.9
 numpy==1.26.3
 scipy==1.12.0
 librosa==0.10.1
+sounddevice>=0.4.6
+soundcard>=0.4.2
 
 # ML/AI (optional - install based on needs)
 # torch==2.1.2

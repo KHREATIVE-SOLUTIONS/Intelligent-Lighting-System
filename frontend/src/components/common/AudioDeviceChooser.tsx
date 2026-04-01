@@ -181,9 +181,13 @@ export default function AudioDeviceChooser() {
           <Chip
             label={
               status.capture_method === 'soundcard_loopback'
-                ? 'WASAPI Loopback'
+                ? status?.platform === 'darwin'
+                  ? 'CoreAudio Loopback'
+                  : 'WASAPI Loopback'
                 : status.capture_method === 'pyaudio_loopback'
                 ? 'WASAPI (PyAudio)'
+                : status.capture_method === 'sounddevice'
+                ? 'Audio Input'
                 : 'Direct Input'
             }
             size="small"

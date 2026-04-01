@@ -233,11 +233,8 @@ class DimmerEngine:
             intensity = base + noise
             intensity = max(minimum, min(1.0, intensity))
 
-        # Apply energy modulation with a minimum floor
-        # This ensures lights are always somewhat visible even with no audio
-        # Energy modulates between min_floor (no audio) and full intensity (max audio)
-        min_floor = 0.3  # Always at least 30% intensity
-        intensity *= (min_floor + (1.0 - min_floor) * energy)
+        # Apply energy modulation — beams form from zero on audio activation
+        intensity *= energy
 
         # Clamp and store
         intensity = max(0.0, min(1.0, intensity))

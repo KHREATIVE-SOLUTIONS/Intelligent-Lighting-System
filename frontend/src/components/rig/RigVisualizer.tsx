@@ -443,15 +443,9 @@ function Fixture3D({
       effectiveIntensity = strobePhase < 0.5 ? s.intensity : 0;
     }
 
-    // Previz visibility floor so beam-heavy room looks read clearly on all fixtures.
-    // This boosts volumetric readability without forcing floor projection intensity.
-    const hasOutputSignal =
-      rawDimmer > 0.01 || rawR > 0.01 || rawG > 0.01 || rawB > 0.01 || strobe > 0.01;
-    const activeFloor = isBeamLike ? 0.16 : 0.08;
-    const idleFloor = isBeamLike ? 0.055 : 0.0;
-    const volumetricIntensity = hasOutputSignal
-      ? Math.max(effectiveIntensity, activeFloor)
-      : idleFloor;
+    // Volumetric intensity follows backend dimmer directly — no artificial floors.
+    // Beams form from true darkness when audio activates.
+    const volumetricIntensity = effectiveIntensity;
 
     // Update beam color
     const luminance = 0.2126 * s.r + 0.7152 * s.g + 0.0722 * s.b;
