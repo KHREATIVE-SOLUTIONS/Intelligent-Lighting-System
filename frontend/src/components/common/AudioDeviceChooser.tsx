@@ -35,19 +35,34 @@ export default function AudioDeviceChooser() {
   const fetchDevices = useCallback(async () => {
     try {
       const captureDevices = await audioApi.getCaptureDevices();
-      const pyaudioLoopback = captureDevices.filter(
-        (d) => d.is_loopback && d.device_type === 'pyaudio_loopback'
+      // On Windows, prefer pyaudio loopback devices; on macOS/Linux show
+      // loopback (virtual audio) devices first, then all input devices.
+      const loopbackDevices = captureDevices.filter((d) => d.is_loopback);
+      const pyaudioLoopback = loopbackDevices.filter(
+        (d) => d.device_type === 'pyaudio_loopback'
       );
-      const loopbackOnly = pyaudioLoopback.length > 0
-        ? pyaudioLoopback
-        : captureDevices.filter((d) => d.is_loopback);
-      setDevices(loopbackOnly);
-      if (loopbackOnly.length > 0) {
-        setSelectedDevice((prev) => (prev >= 0 ? prev : loopbackOnly[0].index));
+      let filtered: AudioCaptureDevice[];
+      if (pyaudioLoopback.length > 0) {
+        // Windows with pyaudiowpatch — use dedicated loopback devices
+        filtered = pyaudioLoopback;
+      } else if (loopbackDevices.length > 0) {
+        // Has virtual audio devices (BlackHole, etc.)
+        filtered = loopbackDevices;
+      } else {
+        // Fallback: show all input-capable devices (macOS mics, etc.)
+        filtered = captureDevices.filter((d: any) => d.is_input || d.is_loopback);
+      }
+      setDevices(filtered);
+      if (filtered.length > 0) {
+        setSelectedDevice((prev) => (prev >= 0 ? prev : filtered[0].index));
         setError('');
       }
-      if (loopbackOnly.length === 0) {
-        setError('No capture devices found. Ensure backend audio dependencies are installed and device is active.');
+      if (filtered.length === 0) {
+        const platform = captureDevices[0]?.platform;
+        const hint = platform === 'darwin'
+          ? 'On macOS, install BlackHole (free) for system audio capture, or select a microphone input.'
+          : 'Ensure backend audio dependencies are installed and device is active.';
+        setError(`No capture devices found. ${hint}`);
       }
     } catch (e) {
       console.error('Failed to fetch devices:', e);
@@ -181,9 +196,11 @@ export default function AudioDeviceChooser() {
           <Chip
             label={
               status.capture_method === 'soundcard_loopback'
-                ? 'WASAPI Loopback'
+                ? ((status as any).platform === 'darwin' ? 'CoreAudio Loopback' : 'WASAPI Loopback')
                 : status.capture_method === 'pyaudio_loopback'
-                ? 'WASAPI (PyAudio)'
+                ? ((status as any).platform === 'darwin' ? 'CoreAudio (PyAudio)' : 'WASAPI (PyAudio)')
+                : status.capture_method === 'sounddevice'
+                ? ((status as any).platform === 'darwin' ? 'CoreAudio' : 'Direct Input')
                 : 'Direct Input'
             }
             size="small"

@@ -79,7 +79,8 @@
       "WebSearch",
       "Bash(if not exist \"E:\\\\Intelligent Lighting System\\\\backend\\\\app\\\\services\\\\lighting\" mkdir \"E:\\\\Intelligent Lighting System\\\\backend\\\\app\\\\services\\\\lighting\")",
       "Bash(npx tsc:*)",
-      "Bash(curl.exe:*)"
+      "Bash(curl.exe:*)",
+      "Bash(docker compose:*)"
     ]
   }
 }

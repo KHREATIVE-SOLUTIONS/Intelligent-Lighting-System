@@ -52,12 +52,30 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./ml_models:/app/ml_models
+      - ./visualizer:/app/visualizer:ro
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # 3D Visualizer (FastAPI + WebSocket relay)
+  visualizer:
+    image: python:3.11-slim
+    container_name: lighting-visualizer
+    working_dir: /visualizer
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./visualizer:/visualizer
+    environment:
+      - ILS_BACKEND_URL=http://backend:8000
+    command: >
+      bash -c "pip install --quiet fastapi uvicorn aiohttp websockets &&
+               python server.py"
+    depends_on:
+      - backend
 
   # Frontend
   frontend:

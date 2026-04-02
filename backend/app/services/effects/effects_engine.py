@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from .fixture_groups import (
     Fixture, FixtureGroup, FixtureGroupManager, create_demo_rig
 )
+from ..demo.venue_presets import create_venue_rig
 from .movement_patterns import (
     MovementEngine, MovementType, StaticLook, MovementParams, MOVEMENT_PRESETS
 )
@@ -31,6 +32,7 @@ from .strobe_controller import (
 from .color_mapper import (
     ColorMapper, ColorPalette, AudioFeatures, RGB, COLOR_PRESETS
 )
+from .gobo_engine import GoboEngine
 from .decision_engine import (
     DecisionEngine, LightingState, AudioState, EffectSelection
 )
@@ -117,7 +119,7 @@ class EffectsConfig:
     bright_movement_pan_tilt_cap_deg: float = 55.0
 
     # Research-pack runtime context flags
-    accessibility_mode: str = "no_strobe"     # no_strobe | conservative | performance
+    accessibility_mode: str = "performance"     # no_strobe | conservative | performance
     venue_mode: str = "concert"               # theatre | broadcast | corporate | concert | club
     camera_mode: bool = False
     major_change_min_bars: int = 2
@@ -143,12 +145,19 @@ class EffectsEngine:
         self.config = config or EffectsConfig()
 
         # Initialize components
-        self.fixtures = create_demo_rig()
+        manager, preset = create_venue_rig("bigroom_edm")
+        if manager:
+            self.fixtures = manager
+        else:
+            self.fixtures = create_demo_rig()
         self.movement = MovementEngine()
         self.dimmer = DimmerEngine()
         self.strobe = StrobeController()
         self.color = ColorMapper(self.config.palette)
         self.decision = DecisionEngine()
+
+        # Gobo choreography engine
+        self.gobo = GoboEngine()
 
         # Drop sequence handler
         self.drop_sequence = DropStrobeSequence(self.strobe)
@@ -273,12 +282,97 @@ class EffectsEngine:
         self._rebuild_last_impact: float = -999.0
         self._rebuild_prev_energy: float = 0.0
         self._rebuild_prev_bass: float = 0.0
+        self._rebuild_manual_hold_until: float = -999.0  # API section override hold
         self._rebuild_color_hold_until: float = 0.0
         self._rebuild_base_color: RGB = RGB(1.0, 1.0, 1.0)
         self._rebuild_snare_strobe_until: float = -999.0
         self._rebuild_snare_last_trigger: float = -999.0
         self._rebuild_active_pattern: str = "tilt_cross"
         self._rebuild_pattern_hold_until_bar: int = 0
+
+        # ── Confidence-gated section state machine (from song structure research) ──
+        # Multi-rate streaming analysis: fast onset stream + slow section stream
+        self._section_energy_history: list = []   # rolling window of (time, energy, bass, mid, high, flux) tuples
+        self._section_energy_window: float = 8.0  # seconds of history to keep (longer for stability)
+        self._section_min_hold_bars: int = 8      # minimum BARS in a section before changing (research: ≥8 bars)
+        self._section_min_hold_s: float = 3.0     # absolute minimum seconds (fallback for slow BPM)
+        self._section_buildup_ramp_start: float = -999.0
+        # Section probabilities (continuous, not discrete — per research §4)
+        self._section_probs: dict = {"breakdown": 0.0, "verse": 0.5, "buildup": 0.0, "chorus": 0.0, "drop": 0.0}
+        self._section_confidence: float = 0.5     # confidence in current section label
+        self._section_stable: bool = True          # is section state stable? (for "soft landing")
+        # Boundary detection with N-of-M confirmation (research §4: debounce + persistence)
+        self._boundary_prob_history: list = []     # recent boundary probability values
+        self._boundary_confirm_threshold: int = 3  # need 3 of last 5 frames above threshold
+        self._boundary_confirm_window: int = 5
+        self._boundary_last_confirmed: float = -999.0
+        # Spectral flux onset detection (research §3: onset envelope + peak picking)
+        self._onset_envelope: float = 0.0          # smoothed onset strength
+        self._onset_peak_threshold: float = 0.02   # adaptive threshold for onset peaks
+        self._onset_last_peak_time: float = -999.0
+        self._onset_cooldown_s: float = 0.15       # minimum time between onset triggers
+        # Running spectral flux for onset detection
+        self._prev_spectral_frame: list = [0.0] * 5  # previous [e, b, m, h, f] for flux calc
+        self._spectral_flux_running: float = 0.0
+
+        # ── Position-aware fixture grouping (built on first update) ──
+        self._rig_groups_built: bool = False
+        self._rig_beam_movers: list = []      # beam_up fixtures sorted L→R
+        self._rig_mid_movers: list = []       # mover_mid fixtures sorted L→R
+        self._rig_washes: list = []           # wash_ds fixtures sorted L→R
+        self._rig_floor_bars: list = []       # bar_floor sorted L→R
+        self._rig_rear_bars: list = []        # bar_rear sorted L→R
+        self._rig_strobes: list = []          # strobe fixtures
+        self._rig_blinders: list = []         # blinder fixtures
+        self._rig_spots: list = []            # spot fixtures
+        self._rig_all_movers: list = []       # all movers sorted L→R
+        self._rig_fixture_norm_x: dict = {}   # fixture_id → normalized x position (-1=left, +1=right)
+        self._rig_fixture_sym_phase: dict = {} # fixture_id → symmetric phase (0=outside, 1=center)
+
+        # ── Busking layer state (from research doc) ──
+        # Bump layer: short intensity spikes on beats/downbeats
+        self._bump_decay: float = 0.0          # current bump intensity (decays each frame)
+        self._bump_last_beat_time: float = -999.0
+        self._bump_last_downbeat_time: float = -999.0
+        # FX accent layer: onset-triggered color hits + audience pops
+        self._fx_onset_flash: float = 0.0      # onset flash intensity (decays)
+        self._fx_last_onset_time: float = -999.0
+        self._fx_onset_color: tuple = (1.0, 1.0, 1.0)  # color of current flash
+        # Drop moment state
+        self._drop_white_flash: float = 0.0    # white flash intensity at drop start (decays fast)
+        self._drop_start_time: float = -999.0
+        # Smoothed energy for layer density decisions (1-3s smoothing per research)
+        self._smoothed_sig: float = 0.0
+        # Dark-move prepositioning (programming research: "mark cue / move-in-black")
+        self._dark_move_active: bool = False       # currently executing a dark move
+        self._dark_move_start_time: float = -999.0
+        self._dark_move_duration: float = 0.45     # seconds to complete dark move
+        self._dark_move_prev_pattern: str = ""     # previous movement pattern
+        self._dark_move_dim_suppress: float = 0.0  # dimmer suppression during dark move (0-1)
+        # Strobe safety (programming research: Ofcom guidance: ≤3 flashes/sec audience-facing)
+        self._strobe_flash_count: int = 0          # flashes in current 1-second window
+        self._strobe_window_start: float = 0.0     # start of current counting window
+        self._strobe_max_rate_hz: float = 3.0      # max flashes per second (Ofcom limit)
+        self._strobe_last_flash_time: float = -999.0
+        # Perceptual dimmer curve (programming research: non-linear for smooth fades)
+        self._perceptual_gamma: float = 2.2        # gamma curve for perceptual dimmer
+
+        # ── Look library (mood-tagged effect presets for variety) ──
+        from .look_library import LookSelector
+        self._look_selector = LookSelector()
+        self._active_look = None       # current LookPreset
+        self._look_last_bar: int = -1  # last bar we checked for a look change
+
+        # ── Vocal analyzer integration ──
+        self._vocal_analyzer = None  # set via set_vocal_analyzer()
+        self._vocal_movement_mod: dict = {
+            "bounce_intensity": 0.0,
+            "tilt_accent": 0.0,
+            "speed_modifier": 1.0,
+            "amplitude_modifier": 1.0,
+            "ethereal_slowdown": 1.0,
+        }
+        self._lyric_color_theme: dict = {}  # from vocal analyzer keyword matching
 
         # Pro lighting integration enabled flag
         self._pro_lighting_enabled = False
@@ -478,301 +572,956 @@ class EffectsEngine:
             self.section_manager.trigger_section(s, immediate=True)
 
     def _rebuild_update_intent(self, delta_time: float):
-        """Clean-slate reactive section detector for live busking."""
+        """Confidence-gated section state machine with boundary probability.
+
+        Based on song structure research (streaming Transformer + probabilistic
+        post-processing design), implements a multi-rate analysis stack:
+
+        FAST STREAM (every frame):
+        - Spectral flux onset envelope for beat/accent triggers
+        - Running energy/bass/mid/high for absolute tier
+        - Onset peak picking with adaptive threshold and hysteresis
+
+        SLOW STREAM (section analysis):
+        - Continuous section probabilities (not discrete labels)
+        - Boundary probability with N-of-M frame confirmation
+        - ≥8 bar minimum dwell time (research: "enforce minimum dwell time")
+        - "Soft landing": hold current look when confidence drops
+        - Energy-gated bar cycling (standard 48-bar EDM structure)
+
+        KEY PRINCIPLES FROM RESEARCH:
+        - "Confidence-gated state + smoothing, not fire on argmax"
+        - "Section probabilities feeding a conservative state machine"
+        - "Soft landing on uncertainty: keep current look family"
+        - "Boundary detection evaluated at tight tolerance (±0.5s not ±3s)"
+        - "Minimum dwell time ≥8 bars unless confidence is very high"
+        """
+        if self.time < self._rebuild_manual_hold_until:
+            return
+
+        now = self.time
+        dt = max(0.001, delta_time)
         e = float(self.audio_features.energy)
         b = float(self.audio_features.bass)
+        m = float(self.audio_features.mid) if hasattr(self.audio_features, 'mid') else 0.0
+        h = float(self.audio_features.high)
         f = float(getattr(self.audio_state, "spectral_flux", 0.0) or 0.0)
         beat = bool(self.audio_features.is_beat)
+        bpm = max(60.0, float(self._smoothed_movement_bpm))
+        beats_per_sec = bpm / 60.0
+        bar_clock = int(now * beats_per_sec / 4.0)
+        bars_in_section = int((now - self._rebuild_section_changed_at) * beats_per_sec / 4.0)
+
+        # ══════════════════════════════════════════════════════════════
+        #  FAST STREAM: Spectral flux onset envelope
+        # ══════════════════════════════════════════════════════════════
+        # Compute spectral flux as sum of positive differences (half-wave rectified)
+        # This is the "onset strength / spectral flux" from research §3
+        prev = self._prev_spectral_frame
+        flux_raw = max(0.0, e - prev[0]) + max(0.0, b - prev[1]) + \
+                   max(0.0, m - prev[2]) * 0.6 + max(0.0, h - prev[3]) * 0.3
+        self._prev_spectral_frame = [e, b, m, h, f]
+
+        # Smooth onset envelope with fast attack / slow decay (research §3)
+        attack_rate = 25.0   # fast attack: ~40ms
+        decay_rate = 4.0     # slow decay: ~250ms
+        if flux_raw > self._onset_envelope:
+            self._onset_envelope += (flux_raw - self._onset_envelope) * min(1.0, dt * attack_rate)
+        else:
+            self._onset_envelope *= max(0.0, 1.0 - dt * decay_rate)
+
+        # Adaptive threshold: running mean of onset envelope + margin
+        self._onset_peak_threshold += (self._onset_envelope * 0.6 - self._onset_peak_threshold) * min(1.0, dt * 1.5)
+        self._onset_peak_threshold = max(0.008, self._onset_peak_threshold)
+
+        # Peak picking with cooldown (research: "hysteresis + peak picking")
+        is_onset_peak = (
+            self._onset_envelope > self._onset_peak_threshold * 1.8 and
+            (now - self._onset_last_peak_time) > self._onset_cooldown_s
+        )
+        if is_onset_peak:
+            self._onset_last_peak_time = now
+
+        # Smooth spectral flux for section analysis
+        self._spectral_flux_running += (flux_raw - self._spectral_flux_running) * min(1.0, dt * 2.0)
+
+        # ══════════════════════════════════════════════════════════════
+        #  Rolling energy history (for slow-stream section analysis)
+        # ══════════════════════════════════════════════════════════════
+        self._section_energy_history.append((now, e, b, m, h, flux_raw))
+        cutoff = now - self._section_energy_window
+        self._section_energy_history = [
+            x for x in self._section_energy_history if x[0] >= cutoff
+        ]
+        hist = self._section_energy_history
+        n = len(hist)
+
+        # ══════════════════════════════════════════════════════════════
+        #  ABSOLUTE energy tier (composite signal weighted toward mid)
+        # ══════════════════════════════════════════════════════════════
+        sig = max(e, m * 0.55, 0.30 * e + 0.20 * b + 0.40 * m + 0.10 * h)
+        if sig < 0.03 and m < 0.1:
+            abs_tier = "silent"
+        elif sig < 0.15 or m < 0.3:
+            abs_tier = "low"
+        elif sig < 0.35 or m < 0.6:
+            abs_tier = "medium"
+        elif sig < 0.55 or m < 0.8:
+            abs_tier = "high"
+        else:
+            abs_tier = "peak"
+
+        # ══════════════════════════════════════════════════════════════
+        #  RELATIVE change detection (for boundary + drop impulse)
+        # ══════════════════════════════════════════════════════════════
         de = e - self._rebuild_prev_energy
         db = b - self._rebuild_prev_bass
-        now = self.time
+        dm = m - (hist[-2][3] if n >= 2 else m)
 
-        impact = beat and e > 0.48 and b > 0.54 and (de > 0.04 or db > 0.06 or f > 0.04)
-        if impact and (now - self._rebuild_last_impact) > 1.8:
-            self._rebuild_last_impact = now
-            self._rebuild_drop_until = now + 1.55
+        # Impulse detection: large positive energy jump = potential drop
+        impulse = max(de, db, dm * 0.5)
+        has_impulse = impulse > 0.015 and sig > 0.1
 
-        if now < self._rebuild_drop_until:
-            self._rebuild_set_section("drop")
-        elif e < 0.22 and b < 0.28:
-            self._rebuild_set_section("breakdown")
-        elif e > 0.58 and (f > 0.05 or de > 0.015):
-            self._rebuild_set_section("buildup")
-        elif e > 0.64 and b > 0.48:
-            self._rebuild_set_section("chorus")
+        # Rising trend: compare old third vs new third of history
+        rising = False
+        falling = False
+        if n >= 12:
+            third = n // 3
+            old_avg = sum(x[3] for x in hist[:third]) / max(1, third)
+            new_avg = sum(x[3] for x in hist[2*third:]) / max(1, n - 2*third)
+            diff = new_avg - old_avg
+            rising = diff > 0.025
+            falling = diff < -0.025
+
+        # ══════════════════════════════════════════════════════════════
+        #  BOUNDARY PROBABILITY (N-of-M frame confirmation)
+        # ══════════════════════════════════════════════════════════════
+        # Boundary = significant change in spectral character
+        # Uses spectral flux running + energy delta as boundary signal
+        boundary_signal = self._spectral_flux_running * 2.0 + abs(de) + abs(db)
+        boundary_prob = min(1.0, boundary_signal / 0.15)  # normalize to 0-1
+        self._boundary_prob_history.append(boundary_prob)
+        if len(self._boundary_prob_history) > self._boundary_confirm_window:
+            self._boundary_prob_history = self._boundary_prob_history[-self._boundary_confirm_window:]
+
+        # N-of-M confirmation: need 3 of last 5 frames with boundary_prob > 0.5
+        frames_above = sum(1 for p in self._boundary_prob_history if p > 0.5)
+        boundary_confirmed = (
+            frames_above >= self._boundary_confirm_threshold and
+            (now - self._boundary_last_confirmed) > 2.0  # 2s debounce between boundaries
+        )
+        if boundary_confirmed:
+            self._boundary_last_confirmed = now
+
+        # ══════════════════════════════════════════════════════════════
+        #  SECTION PROBABILITIES (continuous, research §4)
+        # ══════════════════════════════════════════════════════════════
+        # Compute raw "evidence" for each section based on audio features
+        probs = {"breakdown": 0.0, "verse": 0.0, "buildup": 0.0, "chorus": 0.0, "drop": 0.0}
+
+        # Breakdown evidence: low energy, falling trend
+        probs["breakdown"] = max(0.0, 0.3 * (1.0 - sig / 0.3) + 0.3 * (1 if falling else 0) + 0.2 * (1 if abs_tier in {"silent", "low"} else 0))
+
+        # Verse evidence: medium energy, stable
+        probs["verse"] = max(0.0, 0.4 * (1.0 - abs(sig - 0.35) / 0.35) + 0.2 * (1 if not rising and not falling else 0) + 0.2 * (1 if abs_tier == "medium" else 0))
+
+        # Buildup evidence: rising trend, medium-high energy
+        probs["buildup"] = max(0.0, 0.5 * (1 if rising else 0) + 0.3 * (1 if abs_tier in {"medium", "high"} else 0) + 0.2 * min(1.0, self._spectral_flux_running / 0.05))
+
+        # Chorus evidence: high energy, high onset density, stable
+        probs["chorus"] = max(0.0, 0.4 * min(1.0, sig / 0.55) + 0.3 * (1 if abs_tier in {"high", "peak"} else 0) + 0.2 * (1 if not rising else 0))
+
+        # Drop evidence: impulse + very high energy + bass
+        probs["drop"] = max(0.0, 0.4 * (1 if has_impulse else 0) + 0.3 * min(1.0, sig / 0.6) + 0.3 * min(1.0, b / 0.5))
+
+        # Normalize probabilities (softmax-like)
+        total_p = sum(probs.values())
+        if total_p > 0:
+            for k in probs:
+                probs[k] /= total_p
+
+        # Smooth section probabilities (EMA, research: "stability requires smoothing")
+        smooth_rate = 1.5  # ~700ms smoothing constant
+        for k in probs:
+            self._section_probs[k] += (probs[k] - self._section_probs[k]) * min(1.0, dt * smooth_rate)
+
+        # ══════════════════════════════════════════════════════════════
+        #  BAR-LOCKED CYCLING (standard 48-bar EDM structure)
+        # ══════════════════════════════════════════════════════════════
+        cycle_pos = bar_clock % 48
+        if cycle_pos < 16:
+            cycle_section = "verse"
+        elif cycle_pos < 24:
+            cycle_section = "buildup"
+        elif cycle_pos < 40:
+            cycle_section = "chorus"
         else:
-            self._rebuild_set_section("verse")
+            cycle_section = "breakdown"
 
+        # ══════════════════════════════════════════════════════════════
+        #  SECTION DECISION: confidence-gated state machine
+        # ══════════════════════════════════════════════════════════════
+        current = self._rebuild_section or "verse"
+        time_in_current = now - self._rebuild_section_changed_at
+
+        # Minimum hold: ≥8 bars OR absolute minimum seconds (whichever is longer)
+        bar_duration = 4.0 / beats_per_sec  # seconds per bar
+        min_hold_time = max(self._section_min_hold_s, self._section_min_hold_bars * bar_duration)
+
+        # Find the winner from smoothed probabilities
+        prob_winner = max(self._section_probs, key=self._section_probs.get)
+        prob_confidence = self._section_probs.get(prob_winner, 0.0)
+
+        # Section confidence = how dominant the winner is
+        sorted_probs = sorted(self._section_probs.values(), reverse=True)
+        margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else sorted_probs[0]
+        self._section_confidence = margin
+        self._section_stable = margin > 0.15  # stable if winner has >15% margin
+
+        # ── DROP: impulse-triggered, overrides minimum hold ──
+        if has_impulse and abs_tier in {"high", "peak"} and (now - self._rebuild_last_impact) > 3.0:
+            self._rebuild_last_impact = now
+            self._rebuild_drop_until = now + 4.0  # 4 bars of drop minimum
+            target = "drop"
+        elif now < self._rebuild_drop_until:
+            target = "drop"
+        # ── SILENT: always breakdown ──
+        elif abs_tier == "silent":
+            target = "breakdown"
+        # ── RESPECT MINIMUM HOLD (unless confidence is very high) ──
+        elif time_in_current < min_hold_time and prob_confidence < 0.55:
+            target = current  # "soft landing": hold current section
+        # ── BOUNDARY CONFIRMED + stable new section: transition ──
+        elif boundary_confirmed and self._section_stable and prob_winner != current:
+            target = prob_winner
+        # ── HIGH CONFIDENCE winner (>55%): allow transition even without boundary ──
+        elif prob_confidence > 0.55 and time_in_current >= min_hold_time and prob_winner != current:
+            target = prob_winner
+        # ── RISING TREND: override to buildup ──
+        elif rising and abs_tier in {"medium", "high"} and time_in_current >= min_hold_time:
+            target = "buildup"
+        # ── LOW CONFIDENCE: use energy-gated bar cycling (conservative) ──
+        elif not self._section_stable and time_in_current >= min_hold_time:
+            # Gate cycle by absolute tier
+            if abs_tier == "low":
+                target = "breakdown" if cycle_section == "breakdown" else "verse"
+            elif abs_tier == "medium":
+                target = "verse" if cycle_section in {"chorus", "drop"} else cycle_section
+            else:
+                target = cycle_section
+        else:
+            target = current  # hold current (soft landing on uncertainty)
+
+        # Track buildup ramp timing
+        if target == "buildup" and current != "buildup":
+            self._section_buildup_ramp_start = now
+        elif target != "buildup":
+            self._section_buildup_ramp_start = -999.0
+
+        self._rebuild_set_section(target)
         self._rebuild_prev_energy = e
         self._rebuild_prev_bass = b
 
+    # ──────────────────────────────────────────────────────────────────
+    #  POSITION-AWARE RIG GROUPING
+    # ──────────────────────────────────────────────────────────────────
+
+    def _build_rig_groups(self):
+        """Build position-aware fixture groups from the rig layout.
+
+        Computes for each fixture:
+        - norm_x: normalized x position (-1.0=far left, +1.0=far right)
+        - sym_phase: symmetric phase (0.0=outermost, 1.0=center)
+          This is the KEY to symmetric movement — left and right fixtures
+          with the same sym_phase will mirror each other perfectly.
+        """
+        all_fixtures = self.fixtures.get_fixtures_in_group("all")
+
+        def _sort_by_x(fixtures):
+            return sorted(fixtures, key=lambda f: float(getattr(f, 'x', 0.0) or 0.0))
+
+        def _is_mover(fx):
+            ftype = str(getattr(fx, "fixture_type", "") or "").lower()
+            return ftype in {"mover", "moving_head", "beam", "spot", "wash", "profile", "hybrid"}
+
+        # Group by fixture ID prefix
+        for f in all_fixtures:
+            fid = str(getattr(f, "id", "") or "").lower()
+            if fid.startswith("beam_up"):
+                self._rig_beam_movers.append(f)
+            elif fid.startswith("mover_mid"):
+                self._rig_mid_movers.append(f)
+            elif fid.startswith("wash_ds"):
+                self._rig_washes.append(f)
+            elif fid.startswith("bar_floor"):
+                self._rig_floor_bars.append(f)
+            elif fid.startswith("bar_rear"):
+                self._rig_rear_bars.append(f)
+            elif fid.startswith("strobe"):
+                self._rig_strobes.append(f)
+            elif fid.startswith("blinder"):
+                self._rig_blinders.append(f)
+            elif fid.startswith("spot"):
+                self._rig_spots.append(f)
+
+        # Sort each group left-to-right by x position
+        self._rig_beam_movers = _sort_by_x(self._rig_beam_movers)
+        self._rig_mid_movers = _sort_by_x(self._rig_mid_movers)
+        self._rig_washes = _sort_by_x(self._rig_washes)
+        self._rig_floor_bars = _sort_by_x(self._rig_floor_bars)
+        self._rig_rear_bars = _sort_by_x(self._rig_rear_bars)
+        self._rig_strobes = _sort_by_x(self._rig_strobes)
+        self._rig_blinders = _sort_by_x(self._rig_blinders)
+        self._rig_spots = _sort_by_x(self._rig_spots)
+
+        # All movers = beams + mids + washes + spots (anything that pans/tilts)
+        self._rig_all_movers = _sort_by_x([
+            f for f in all_fixtures if _is_mover(f)
+        ])
+
+        # Compute normalized x and symmetric phase for ALL fixtures
+        # Find stage bounds from all fixture positions
+        all_x = [float(getattr(f, 'x', 0.0) or 0.0) for f in all_fixtures]
+        if all_x:
+            x_min = min(all_x)
+            x_max = max(all_x)
+            x_range = max(0.01, x_max - x_min)
+            x_center = (x_min + x_max) / 2.0
+        else:
+            x_min = x_max = x_center = 0.0
+            x_range = 1.0
+
+        for f in all_fixtures:
+            fid = str(getattr(f, "id", "") or "")
+            fx = float(getattr(f, 'x', 0.0) or 0.0)
+
+            # norm_x: -1 (far left) to +1 (far right)
+            norm_x = (fx - x_center) / (x_range / 2.0) if x_range > 0.01 else 0.0
+            norm_x = max(-1.0, min(1.0, norm_x))
+            self._rig_fixture_norm_x[fid] = norm_x
+
+            # sym_phase: 0.0 = outermost edge, 1.0 = center
+            # abs(norm_x) = 0 at center, 1 at edge → sym_phase = 1 - abs(norm_x)
+            self._rig_fixture_sym_phase[fid] = 1.0 - abs(norm_x)
+
+        self._rig_groups_built = True
+
+    def _compute_group_symmetric_phase(self, fixture, group_list):
+        """Compute symmetric phase offset for a fixture within its sorted group.
+
+        For a group sorted L→R: [L4, L3, L2, L1, R1, R2, R3, R4]
+        Returns phase offsets that make left and right mirror each other:
+        L4=0.0, L3=0.143, L2=0.286, L1=0.429, R1=0.429, R2=0.286, R3=0.143, R4=0.0
+
+        This is how MA2 does it: the symmetric phase creates identical motion
+        on both sides, with center fixtures leading and edges following.
+        """
+        if not group_list:
+            return 0.5
+        n = len(group_list)
+        try:
+            idx = group_list.index(fixture)
+        except ValueError:
+            return 0.5
+        # Position 0..1 within the group
+        frac = idx / max(1, n - 1) if n > 1 else 0.5
+        # Mirror: fold around center → 0=edge, 1=center
+        mirror = 1.0 - abs(2.0 * frac - 1.0)
+        return mirror
+
+    # ──────────────────────────────────────────────────────────────────
+    #  BPM-LOCKED SYMMETRIC MOVEMENT PATTERNS
+    # ──────────────────────────────────────────────────────────────────
+
+    def _bpm_phase(self, bpm, beats=1.0, offset=0.0):
+        """Get a 0→1 phase that cycles exactly every N beats at the current BPM.
+
+        This is the fundamental building block: ALL movement timing comes from
+        this function, ensuring everything locks to the music's tempo.
+        """
+        beats_elapsed = self.time * (bpm / 60.0)
+        return ((beats_elapsed / beats) + offset) % 1.0
+
+    def _symmetric_pan_tilt(self, norm_x, sym_phase, bpm, pattern, section, section_time):
+        """Compute symmetric pan/tilt for a fixture based on its stage position.
+
+        norm_x: -1 (far left) to +1 (far right) — determines mirror direction
+        sym_phase: 0 (edge) to 1 (center) — determines phase offset
+        bpm: current tempo
+        pattern: which movement pattern to use
+        section: current song section (affects amplitude/speed)
+        section_time: seconds since section started (for buildups)
+
+        Returns (pan_degrees, tilt_degrees)
+
+        KEY PRINCIPLE: Left fixtures (norm_x < 0) get NEGATED pan vs right fixtures,
+        creating perfect left-right symmetry. The sym_phase offsets create the
+        "wave" effect where center leads and edges follow (or vice versa).
+        """
+        # Section-based amplitude and speed multipliers
+        amp_mult = {"breakdown": 0.5, "verse": 0.7, "buildup": 0.85, "chorus": 1.0, "drop": 1.0}.get(section, 0.7)
+        speed_mult = {"breakdown": 0.5, "verse": 0.75, "buildup": 1.0, "chorus": 1.0, "drop": 1.2}.get(section, 0.75)
+
+        # Buildup acceleration: speed increases over time during buildup
+        if section == "buildup":
+            buildup_t = min(1.0, section_time / 16.0)
+            speed_mult = 0.6 + 0.8 * buildup_t  # 0.6x → 1.4x over 16 seconds
+            amp_mult = 0.6 + 0.5 * buildup_t     # 0.6x → 1.1x
+
+        # Vocal cadence modulation: singing controls bounce & amplitude
+        vmod = self._vocal_movement_mod
+        speed_mult *= vmod.get("speed_modifier", 1.0)
+        amp_mult *= vmod.get("amplitude_modifier", 1.0)
+
+        # Mirror sign: left side pans opposite to right side
+        mirror = 1.0 if norm_x >= 0 else -1.0
+
+        # Phase offset based on symmetric position (center leads)
+        # center_lead: center fixtures are ahead in the cycle
+        center_lead = sym_phase * 0.25  # center is 1/4 cycle ahead of edges
+
+        if pattern == "sync_sweep":
+            # All fixtures sweep together L→R in unison, perfectly synchronized
+            # The simplest and most powerful EDM pattern
+            phase = self._bpm_phase(bpm, beats=4.0 / speed_mult)
+            pan = 70.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            tilt = -10.0 + 25.0 * amp_mult * math.cos(2.0 * math.pi * phase)
+            return (pan, tilt)
+
+        elif pattern == "mirror_sweep":
+            # Left and right sweep in opposite directions (crossing in center)
+            phase = self._bpm_phase(bpm, beats=4.0 / speed_mult)
+            pan = mirror * 65.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            tilt = -5.0 + 30.0 * amp_mult * math.cos(2.0 * math.pi * phase)
+            return (pan, tilt)
+
+        elif pattern == "symmetric_fan":
+            # Fixtures fan out from center, then back in — like opening/closing hands
+            # Center fixtures have small swing, edges have large swing
+            edge_factor = 1.0 - sym_phase  # 0 at center, 1 at edges
+            phase = self._bpm_phase(bpm, beats=4.0 / speed_mult)
+            swing = math.sin(2.0 * math.pi * phase)
+            pan = mirror * 75.0 * amp_mult * edge_factor * swing
+            tilt = -15.0 + 20.0 * amp_mult * (0.5 + 0.5 * swing)
+            return (pan, tilt)
+
+        elif pattern == "tilt_wave":
+            # Pan stays in symmetric fan position, tilt does a wave from center→edges
+            edge_factor = 1.0 - sym_phase
+            pan = mirror * 40.0 * amp_mult * edge_factor
+            phase = self._bpm_phase(bpm, beats=2.0 / speed_mult, offset=center_lead)
+            tilt = -10.0 + 45.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            return (pan, tilt)
+
+        elif pattern == "symmetric_circle":
+            # All fixtures do circles, but left mirrors right for perfect symmetry
+            phase = self._bpm_phase(bpm, beats=4.0 / speed_mult, offset=center_lead)
+            pan = mirror * 60.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            tilt = 0.0 + 40.0 * amp_mult * math.cos(2.0 * math.pi * phase)
+            return (pan, tilt)
+
+        elif pattern == "cross_tilt":
+            # Odd fixtures tilt up while even tilt down, then swap — "crossing" effect
+            # Pan stays in symmetric spread
+            edge_factor = 1.0 - sym_phase
+            pan = mirror * 50.0 * amp_mult * edge_factor
+            # Use norm_x sign for odd/even determination (left=down first, right=up first)
+            cross_sign = 1.0 if norm_x >= 0 else -1.0
+            phase = self._bpm_phase(bpm, beats=2.0 / speed_mult)
+            tilt = 5.0 + cross_sign * 35.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            return (pan, tilt)
+
+        elif pattern == "ballyhoo":
+            # Figure-8 pattern with symmetric mirroring — the classic "big show" look
+            phase = self._bpm_phase(bpm, beats=4.0 / speed_mult, offset=center_lead)
+            pan = mirror * 80.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            tilt = 5.0 + 45.0 * amp_mult * math.sin(4.0 * math.pi * phase)
+            return (pan, tilt)
+
+        elif pattern == "center_burst":
+            # Drop pattern: all fixtures point center then EXPLODE outward on beat
+            phase = self._bpm_phase(bpm, beats=1.0 / speed_mult)
+            # Sharp triangle wave: snap to center then sweep out
+            tri = abs(2.0 * phase - 1.0)  # 0→1→0 triangle
+            pan = mirror * 90.0 * amp_mult * tri * (1.0 - sym_phase + 0.3)
+            tilt = 15.0 - 40.0 * amp_mult * (1.0 - tri)
+            return (pan, tilt)
+
+        elif pattern == "fly_out":
+            # ETHEREAL fly-out: fixtures slowly sweep to extreme positions
+            # Very slow (8-16 bars per cycle), wide amplitude, dreamy
+            phase = self._bpm_phase(bpm, beats=16.0 / speed_mult, offset=center_lead * 0.5)
+            pan = mirror * 120.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            tilt = -25.0 + 55.0 * amp_mult * (0.5 + 0.5 * math.cos(2.0 * math.pi * phase * 0.5))
+            return (pan, tilt)
+
+        elif pattern == "slow_breathe":
+            # Ethereal breathing: all fixtures gently rise and fall in tilt
+            # Pan stays wide and static, tilt oscillates very slowly
+            edge_factor = 1.0 - sym_phase
+            pan = mirror * 80.0 * amp_mult * edge_factor  # wide static spread
+            phase = self._bpm_phase(bpm, beats=8.0 / speed_mult, offset=center_lead)
+            # Sinusoidal breathing: slow up/down like lungs
+            tilt = -20.0 + 50.0 * amp_mult * (0.5 + 0.5 * math.sin(2.0 * math.pi * phase))
+            return (pan, tilt)
+
+        elif pattern == "cascade":
+            # Cascade: fixtures sweep one after another from center outward
+            # Creates a "ripple" or "waterfall" effect
+            # Edge fixtures are delayed behind center ones
+            delay = (1.0 - sym_phase) * 0.4  # edges are 40% cycle behind center
+            phase = self._bpm_phase(bpm, beats=4.0 / speed_mult, offset=delay)
+            pan = mirror * 55.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            tilt = -5.0 + 35.0 * amp_mult * math.cos(2.0 * math.pi * phase)
+            return (pan, tilt)
+
+        elif pattern == "figure_eight_wide":
+            # Wide figure-8 with staggered phase — more organic than ballyhoo
+            phase = self._bpm_phase(bpm, beats=8.0 / speed_mult, offset=center_lead * 0.6)
+            pan = mirror * 100.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            tilt = 10.0 + 35.0 * amp_mult * math.sin(4.0 * math.pi * phase + 0.5)
+            return (pan, tilt)
+
+        elif pattern == "stagger_sweep":
+            # Left→right stagger: each fixture starts its sweep slightly after its neighbor
+            # Creates a "wave" that travels across the rig
+            position_delay = abs(norm_x) * 0.35  # further from center = more delay
+            phase = self._bpm_phase(bpm, beats=4.0 / speed_mult, offset=position_delay)
+            pan = mirror * 60.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            tilt = -10.0 + 30.0 * amp_mult * math.cos(2.0 * math.pi * phase)
+            return (pan, tilt)
+
+        elif pattern == "snap_look":
+            # Snap to discrete positions on beat boundaries (like MA2 position presets)
+            # Moves between 4 "look" positions, snapping on each beat
+            beat_idx = int(self._bpm_phase(bpm, beats=1.0) * 0.99)
+            bar_idx = int(self._bpm_phase(bpm, beats=4.0) * 4.0) % 4
+            looks = [
+                (mirror * 60.0 * amp_mult, -15.0),   # wide out
+                (mirror * 20.0 * amp_mult, 25.0),     # center-ish, up
+                (mirror * -30.0 * amp_mult, -5.0),    # cross-over
+                (0.0, 35.0 * amp_mult),                # straight up
+            ]
+            target_pan, target_tilt = looks[bar_idx]
+            # Smooth the snap with a fast interpolation
+            snap_speed = 0.15  # fast but not instant
+            current_phase = self._bpm_phase(bpm, beats=1.0)
+            if current_phase < snap_speed:
+                # In snap zone: interpolate
+                t = current_phase / snap_speed
+                prev_idx = (bar_idx - 1) % 4
+                prev_pan, prev_tilt = looks[prev_idx]
+                pan = prev_pan + (target_pan - prev_pan) * t
+                tilt = prev_tilt + (target_tilt - prev_tilt) * t
+            else:
+                pan = target_pan
+                tilt = target_tilt
+            return (pan, tilt)
+
+        elif pattern == "audience_scan":
+            # Slow scan across the audience area (low tilt, wide pan)
+            # Perfect for washes during verses — makes the crowd feel included
+            phase = self._bpm_phase(bpm, beats=8.0 / speed_mult, offset=center_lead * 0.3)
+            pan = mirror * 70.0 * amp_mult * math.sin(2.0 * math.pi * phase)
+            tilt = 30.0 + 15.0 * amp_mult * math.cos(2.0 * math.pi * phase * 2.0)
+            return (pan, tilt)
+
+        else:
+            # Default: gentle symmetric sweep
+            phase = self._bpm_phase(bpm, beats=8.0)
+            pan = mirror * 30.0 * math.sin(2.0 * math.pi * phase)
+            tilt = -10.0 + 15.0 * math.cos(2.0 * math.pi * phase)
+            return (pan, tilt)
+
+    # ──────────────────────────────────────────────────────────────────
+    #  MAIN FIXTURE UPDATE (position-aware, BPM-locked, symmetric)
+    # ──────────────────────────────────────────────────────────────────
+
     def _update_fixtures_rebuild(self, delta_time: float):
-        """Scratch-built pro busker rendering pipeline (single source of truth)."""
+        """Layered busking engine following professional lighting research.
+
+        Architecture (from Intelligent Busking Lighting Research Pack):
+        - Layer 1: BASE WASH — mood color field, slow fades between color schemes
+        - Layer 2: AERIAL MOVEMENT — symmetric BPM-locked patterns for movers
+        - Layer 3: CHASE — traveling dimmer across fixture lines at BPM rate
+        - Layer 4: BUMP — short beat-quantized intensity spikes on downbeats
+        - Layer 5: AUDIENCE — blinders/strobes for big moments only
+        - Layer 6: FX ACCENT — onset-triggered color hits, drop white-flash
+
+        Key principles:
+        - Change ONE thing at a time, let it breathe for a musical unit
+        - Land changes on downbeats and phrase boundaries
+        - Breakdown is DARK so drops feel HUGE (contrast = drama)
+        - Use hysteresis: turn on at threshold, don't turn off until lower threshold
+        - Color SCHEMES not single colors: warm/cool contrast, neon pairs
+        - Spectral centroid → color temperature (bright timbre = cooler/sharper)
+        """
         all_fixtures = self.fixtures.get_fixtures_in_group("all")
         total = len(all_fixtures)
         if total <= 0:
             self._fixture_state_snapshot = []
             return
 
+        if not self._rig_groups_built:
+            self._build_rig_groups()
+
         section = (self._rebuild_section or "verse").lower()
         bpm = max(60.0, min(190.0, float(self._smoothed_movement_bpm)))
         energy = max(0.0, min(1.0, float(self.audio_features.energy)))
         bass = max(0.0, min(1.0, float(self.audio_features.bass)))
+        mid = max(0.0, min(1.0, float(self.audio_features.mid)))
         high = max(0.0, min(1.0, float(self.audio_features.high)))
-        flux = float(getattr(self.audio_state, "spectral_flux", 0.0) or 0.0)
         beat = bool(self.audio_features.is_beat)
-        beat_phase = (self.time * (bpm / 60.0)) % 1.0
+        now = self.time
+        dt = delta_time
+        section_time = now - self._rebuild_section_changed_at
 
-        def _is_motion_capable(fx: Fixture) -> bool:
-            ftype = str(getattr(fx, "fixture_type", "") or "").lower()
-            if ftype in {"mover", "moving_head", "beam", "spot", "wash", "profile", "hybrid"}:
-                return True
-            channels = getattr(fx, "channels", {}) or {}
-            return ("pan" in channels) and ("tilt" in channels)
+        # BPM-derived clocks (ALL timing from these)
+        beats_elapsed = now * (bpm / 60.0)
+        beat_phase = beats_elapsed % 1.0
+        bar_phase = (beats_elapsed / 4.0) % 1.0
+        bar_clock = int(beats_elapsed / 4.0)
+        phrase_clock = bar_clock // 4           # 4-bar phrase
+        sixteenth_phase = (beats_elapsed * 4.0) % 1.0
+        eighth_phase = (beats_elapsed * 2.0) % 1.0
 
-        movers = [f for f in all_fixtures if _is_motion_capable(f)]
-        if not movers:
-            movers = all_fixtures
+        # Effective energy (scaled up for weak browser audio)
+        eff_energy = max(energy, mid * 0.4)
+        eff_bass = max(bass, mid * 0.12)
 
-        # Use all truss rows so every motion-capable fixture participates.
-        row_map: Dict[float, List[Fixture]] = {}
-        for f in movers:
-            row_map.setdefault(round(float(getattr(f, "z", 0.0)), 2), []).append(f)
-        row_keys = sorted(row_map.keys())
-        selected_rows: Dict[int, List[Fixture]] = {}
-        for ridx, rk in enumerate(row_keys):
-            selected_rows[ridx] = sorted(
-                row_map[rk],
-                key=lambda x: (float(getattr(x, "x", 0.0)), str(getattr(x, "id", ""))),
-            )
+        # Smooth signal for layer density (1-3s smoothing per research §6.2)
+        self._smoothed_sig += (eff_energy - self._smoothed_sig) * min(1.0, dt * 0.5)
 
-        # Precompute stable membership so paired fixtures always get distinct phase slots.
-        row_membership: Dict[str, Tuple[int, int, int]] = {}
-        for row_i, row_fixtures in selected_rows.items():
-            count = len(row_fixtures)
-            for local_i, fx in enumerate(row_fixtures):
-                row_membership[str(fx.id)] = (row_i, local_i, count)
+        # ══════════════════════════════════════════════════════════════
+        #  LAYER 4: BUMP — beat-quantized intensity spikes
+        # ══════════════════════════════════════════════════════════════
+        # Research: "Land bumps on downbeats; require higher confidence
+        #  than beat for downbeat accent; reduce to subtle intensity
+        #  modulation if beat confidence low"
+        is_beat_start = beat_phase < 0.08  # first 8% of beat (wider gate for reliability)
+        is_downbeat = bar_phase < 0.02     # first beat of bar
+        is_phrase_start = bar_phase < 0.02 and (bar_clock % 4 == 0)
 
-        # Stable fixture order for MA-style linear chase.
-        chase_order: List[Fixture] = []
-        for ridx in sorted(selected_rows.keys()):
-            chase_order.extend(selected_rows[ridx])
-        chase_index = {fx.id: idx for idx, fx in enumerate(chase_order)}
+        # Bump intensity varies by section — breakdown ZERO for contrast
+        bump_strength = {
+            "breakdown": 0.0, "verse": 0.15, "buildup": 0.22,
+            "chorus": 0.30, "drop": 0.40
+        }.get(section, 0.15)
+        downbeat_extra = 0.20 if section in {"chorus", "drop"} else 0.10
+        phrase_extra = 0.10 if section in {"chorus", "drop"} else 0.05
 
-        # Movement patterns are BPM-locked and section-aware, with circle-heavy busker looks.
-        bar_clock = int(math.floor((self.time * (bpm / 60.0)) / 4.0))
-        section_pattern_pool = {
-            "breakdown": ["pan_wave", "tilt_circle", "circle"],
-            "verse": ["tilt_cross", "circle", "pan_wave", "figure8"],
-            "buildup": ["tilt_circle", "circle", "figure8", "odd_even"],
-            "chorus": ["circle", "tilt_circle", "figure8", "pan_wave"],
-            "drop": ["tilt_circle", "circle", "odd_even", "figure8"],
-        }
-        pattern_pool = section_pattern_pool.get(section, ["tilt_cross", "circle", "pan_wave", "figure8", "odd_even"])
-        target_pattern = pattern_pool[bar_clock % len(pattern_pool)]
-        if bar_clock >= self._rebuild_pattern_hold_until_bar:
-            if target_pattern != self._rebuild_active_pattern:
-                self._rebuild_active_pattern = target_pattern
-            hold_bars = max(1, int(getattr(self.config, "major_change_min_bars", 2) or 2))
-            self._rebuild_pattern_hold_until_bar = bar_clock + hold_bars
-        pattern = self._rebuild_active_pattern
+        if is_phrase_start:
+            self._bump_decay = bump_strength + downbeat_extra + phrase_extra
+        elif is_downbeat:
+            self._bump_decay = bump_strength + downbeat_extra
+        elif is_beat_start:
+            self._bump_decay = max(self._bump_decay, bump_strength)
+        # Fast exponential decay (~80ms half-life for tight bumps)
+        self._bump_decay *= max(0.0, 1.0 - dt * 22.0)
 
-        pan_amp = 22.0
-        tilt_amp = 12.0
-        move_speed = 0.45
-        base_floor = 0.62
-        chase_floor = 0.26
-        chase_steps_per_beat = 1.5
-        chase_heads = 2
-        chase_falloff = 0.26
+        # Onset bump: spectral flux onset peaks also trigger bumps
+        # (research: "onset strength drives bumps" — complementary to beat)
+        onset_is_peak = (
+            self._onset_envelope > self._onset_peak_threshold * 1.8 and
+            (now - self._onset_last_peak_time) < 0.03  # just peaked
+        )
+        if onset_is_peak and section in {"chorus", "drop", "buildup"}:
+            onset_bump = 0.15 if section == "drop" else 0.08
+            self._bump_decay = max(self._bump_decay, onset_bump)
 
-        if section == "breakdown":
-            pan_amp = 12.0
-            tilt_amp = 9.0
-            move_speed = 0.28
-            base_floor = 0.26
-            chase_floor = 0.18
-            chase_steps_per_beat = 1.0
-            chase_heads = 1
-            chase_falloff = 0.22
-        elif section == "verse":
-            pan_amp = 20.0
-            tilt_amp = 14.0
-            move_speed = 0.42
-            base_floor = 0.68
-            chase_floor = 0.24
-            chase_steps_per_beat = 1.8
-            chase_heads = 2
-            chase_falloff = 0.24
-        elif section == "buildup":
-            pan_amp = 30.0
-            tilt_amp = 22.0
-            move_speed = 0.70
-            base_floor = 0.74
-            chase_floor = 0.20
-            chase_steps_per_beat = 3.0
-            chase_heads = 3
-            chase_falloff = 0.20
-        elif section == "chorus":
-            pan_amp = 26.0
-            tilt_amp = 19.0
-            move_speed = 0.60
-            base_floor = 0.78
-            chase_floor = 0.22
-            chase_steps_per_beat = 2.4
-            chase_heads = 3
-            chase_falloff = 0.22
-        elif section == "drop":
-            pan_amp = 34.0
-            tilt_amp = 25.0
-            move_speed = 0.85
-            base_floor = 1.0
+        # ══════════════════════════════════════════════════════════════
+        #  LAYER 6: FX ACCENT — onset-triggered color hits + drop flash
+        # ══════════════════════════════════════════════════════════════
+        # Research: "Short sparkles, audience blinders; cooldowns to
+        #  avoid seizure-risk patterns"
+        # Use spectral flux onset envelope (not raw energy delta) for triggers
+        onset_strong = (
+            self._onset_envelope > self._onset_peak_threshold * 2.5 and
+            (now - self._fx_last_onset_time) > 0.35  # 350ms debounce
+        )
+        if onset_strong and section in {"chorus", "drop", "buildup"}:
+            self._fx_last_onset_time = now
+            self._fx_onset_flash = 0.7 if section == "drop" else 0.4
+            self._fx_onset_color = (1.0, 1.0, 1.0)  # white flash on onset
 
-        # Drop strobes: pure white only, gated by safety policy.
+        # Decay onset flash (fast: ~125ms)
+        self._fx_onset_flash *= max(0.0, 1.0 - dt * 8.0)
+
+        # Drop white flash: fires ONCE at drop start, decays over ~1.2s
+        if section == "drop" and section_time < 0.05:
+            self._drop_white_flash = 1.0
+            self._drop_start_time = now
+        self._drop_white_flash *= max(0.0, 1.0 - dt * 2.5)
+
+        # ══════════════════════════════════════════════════════════════
+        #  LAYER 5: STROBE / AUDIENCE policy with SAFETY RATE CAP
+        # ══════════════════════════════════════════════════════════════
+        # Programming research: "Ofcom guidance: >3 flashes/second in certain
+        #  conditions prohibited; encode as hard constraint for audience-facing strobes"
         policy = str(getattr(self.config, "accessibility_mode", "performance") or "performance").lower()
         venue_mode = str(getattr(self.config, "venue_mode", "concert") or "concert").lower()
         camera_mode = bool(getattr(self.config, "camera_mode", False))
-        visibility_first_mode = venue_mode in {"theatre", "broadcast", "corporate"}
-        strobe_allowed_by_policy = (policy not in {"no_strobe", "off"}) and (not camera_mode) and (not visibility_first_mode)
-        strobe_enabled_runtime = bool(self.config.strobe_enabled) and strobe_allowed_by_policy
-        drop_strobe_on = strobe_enabled_runtime and section == "drop" and self.time < self._rebuild_drop_until
-        drop_strobe_target_freq = 22.0 if energy > 0.65 else 18.0
-        drop_strobe_freq = min(float(self.config.strobe_hz_cap), drop_strobe_target_freq)
-        if drop_strobe_freq < drop_strobe_target_freq:
-            self._record_safety_event(
-                "strobe_frequency_clamped",
-                {
-                    "section": section,
-                    "requested_hz": round(drop_strobe_target_freq, 3),
-                    "applied_hz": round(drop_strobe_freq, 3),
-                    "cap_hz": round(float(self.config.strobe_hz_cap), 3),
-                },
-                throttle_s=1.0,
-                throttle_key="strobe_frequency_clamped_drop",
-            )
-        strobe_duty = max(0.15, min(float(self.config.strobe_max_duty_cycle), 0.75))
-        drop_strobe_flash = drop_strobe_on and ((self.time * drop_strobe_freq) % 1.0) < strobe_duty
+        visibility_first = venue_mode in {"theatre", "broadcast", "corporate"}
+        strobe_ok = (policy not in {"no_strobe", "off"}) and (not camera_mode) and (not visibility_first)
+        strobe_enabled = bool(self.config.strobe_enabled) and strobe_ok
 
-        # Snare strobe: very short fast white bursts on bright/transient hits.
-        snare_trigger = (
-            (section in {"verse", "buildup", "chorus", "drop"})
-            and high > 0.58
-            and flux > 0.055
-            and (beat or high > 0.72)
+        # Safety rate cap: count flashes in 1-second sliding window
+        if now - self._strobe_window_start > 1.0:
+            self._strobe_flash_count = 0
+            self._strobe_window_start = now
+
+        # Drop strobe: 8th-note BPM-locked flashing, GATED by safety cap
+        # (research: "not 16th — too fast; 8th note keeps it musical and safe")
+        drop_strobe_on = strobe_enabled and section == "drop"
+        raw_flash = eighth_phase < 0.25
+        # Apply safety rate cap: suppress flash if we've hit the limit
+        if raw_flash and self._strobe_flash_count >= int(self._strobe_max_rate_hz):
+            raw_flash = False  # suppress — too many flashes this second
+        if raw_flash and drop_strobe_on and (now - self._strobe_last_flash_time) > 0.08:
+            self._strobe_flash_count += 1
+            self._strobe_last_flash_time = now
+        drop_strobe_flash = drop_strobe_on and raw_flash
+
+        # ══════════════════════════════════════════════════════════════
+        #  LAYER 3: CHASE + DIMMER EFFECTS (multiple types)
+        # ══════════════════════════════════════════════════════════════
+        # look is set by _active_look from look library (may be None)
+        look = self._active_look
+        look_chase_dir = look.chase_direction if look is not None else "forward"
+        if look is not None and hasattr(look, 'chase_beats'):
+            chase_beats = look.chase_beats
+            chase_width = look.chase_width
+            chase_intensity = look.chase_intensity
+        else:
+            chase_beats = {"breakdown": 8.0, "verse": 4.0, "buildup": 2.0, "chorus": 2.0, "drop": 1.0}.get(section, 4.0)
+            chase_width = {"breakdown": 0.35, "verse": 0.22, "buildup": 0.18, "chorus": 0.15, "drop": 0.12}.get(section, 0.22)
+            chase_intensity = {"breakdown": 0.20, "verse": 0.35, "buildup": 0.45, "chorus": 0.50, "drop": 0.55}.get(section, 0.35)
+        if section == "buildup":
+            buildup_t = min(1.0, section_time / 16.0)
+            chase_beats = max(0.5, chase_beats - chase_beats * 0.6 * buildup_t)
+        chase_pos = self._bpm_phase(bpm, beats=chase_beats)
+
+        # Detect ethereal sub-state (from vocal analyzer or audio character)
+        # Must be computed BEFORE dimmer effect selection and movement selection
+        is_ethereal_state = getattr(getattr(self, '_vocal_analyzer', None), 'state', None)
+        ethereal_active = False
+        if is_ethereal_state and is_ethereal_state.is_ethereal:
+            ethereal_active = True
+        elif section == "breakdown":
+            if eff_bass < 0.10 and self._onset_envelope < 0.015 and high > mid * 0.3:
+                ethereal_active = True
+
+        # Dimmer effect type rotates every 4 bars for variety
+        # Types: "chase" (traveling gaussian), "odd_even" (alternating),
+        #        "circular" (wraps around), "ramp" (gradual rise/fall)
+        dimmer_effect_types = ["chase", "odd_even", "circular", "ramp"]
+        dimmer_effect_idx = (bar_clock // 4) % len(dimmer_effect_types)
+        dimmer_effect_type = dimmer_effect_types[dimmer_effect_idx]
+        # During breakdowns and ethereal, skip dimmer effects
+        if section in {"breakdown"} or ethereal_active:
+            dimmer_effect_type = "none"
+
+        # ══════════════════════════════════════════════════════════════
+        #  LAYER 2: MOVEMENT PATTERN selection (rotate every 8 bars)
+        #  + DARK-MOVE prepositioning on pattern change
+        # ══════════════════════════════════════════════════════════════
+        # Programming research: "mark cue = preposition with dark move
+        #  before intensity rise; execute non-intensity changes while
+        #  intensity is zero"
+
+        effective_section = "ethereal" if ethereal_active and section == "breakdown" else section
+
+        # ── LOOK LIBRARY: select a mood-appropriate look ──
+        # Get current mood from lyric theme (or default to section-derived mood)
+        lyric_mood = self._lyric_color_theme.get("mood", "")
+        if not lyric_mood:
+            lyric_mood = {"breakdown": "ethereal", "verse": "chill", "buildup": "party",
+                          "chorus": "party", "drop": "aggressive", "ethereal": "ethereal"}.get(effective_section, "")
+
+        # Check for new look on section change or every 8 bars
+        force_new_look = (bar_clock != self._look_last_bar and bar_clock % 8 == 0)
+        section_just_changed = (now - self._rebuild_section_changed_at) < 0.1
+        if section_just_changed:
+            force_new_look = True
+        self._look_last_bar = bar_clock
+
+        new_look = self._look_selector.select_look(
+            section=effective_section, energy=eff_energy,
+            mood=lyric_mood, bar_clock=bar_clock, force_new=force_new_look
         )
-        now = self.time
-        if snare_trigger and (now - self._rebuild_snare_last_trigger) > max(0.05, float(self.config.strobe_refractory_s)):
-            self._rebuild_snare_last_trigger = now
-            snare_burst_s = min(0.11, max(0.05, float(self.config.strobe_burst_max_s)))
-            self._rebuild_snare_strobe_until = now + snare_burst_s
-        snare_strobe_on = strobe_enabled_runtime and (not drop_strobe_on) and (now < self._rebuild_snare_strobe_until)
-        snare_strobe_target_freq = 30.0 if high > 0.72 else 24.0
-        snare_strobe_freq = min(float(self.config.strobe_hz_cap), snare_strobe_target_freq)
-        if snare_strobe_freq < snare_strobe_target_freq:
-            self._record_safety_event(
-                "strobe_frequency_clamped",
-                {
-                    "section": section,
-                    "requested_hz": round(snare_strobe_target_freq, 3),
-                    "applied_hz": round(snare_strobe_freq, 3),
-                    "cap_hz": round(float(self.config.strobe_hz_cap), 3),
-                },
-                throttle_s=1.0,
-                throttle_key="strobe_frequency_clamped_snare",
-            )
-        snare_strobe_flash = snare_strobe_on and ((now * snare_strobe_freq) % 1.0) < strobe_duty
+        if new_look is not None:
+            self._active_look = new_look
 
-        strobe_on = drop_strobe_on or snare_strobe_on
-        strobe_flash = drop_strobe_flash or snare_strobe_flash
+        # Use look parameters if available, fallback to defaults
+        look = self._active_look
+        if look is not None:
+            active_pattern = look.movement_pattern
+            chase_beats = look.chase_beats
+            chase_width = look.chase_width
+            chase_intensity = look.chase_intensity
+            bump_strength_override = look.bump_strength
+            look_chase_dir = look.chase_direction
+        else:
+            # Fallback: section-based pattern selection (original behavior)
+            section_patterns = {
+                "breakdown":  ["slow_breathe", "fly_out", "tilt_wave"],
+                "ethereal":   ["fly_out", "slow_breathe", "audience_scan"],
+                "verse":      ["mirror_sweep", "symmetric_fan", "tilt_wave", "audience_scan", "cascade"],
+                "buildup":    ["symmetric_circle", "cross_tilt", "mirror_sweep", "stagger_sweep"],
+                "chorus":     ["ballyhoo", "symmetric_circle", "mirror_sweep", "symmetric_fan",
+                               "figure_eight_wide", "cascade", "snap_look"],
+                "drop":       ["center_burst", "ballyhoo", "sync_sweep", "stagger_sweep"],
+            }
+            patterns = section_patterns.get(effective_section, ["sync_sweep"])
+            pattern_idx = (bar_clock // 8) % len(patterns)
+            active_pattern = patterns[pattern_idx]
+            look_chase_dir = "forward"
 
-        # Hold base color for musical phrases so mood color is stable.
-        if self.time >= self._rebuild_color_hold_until:
-            palette_color = self.color.get_color(self.audio_features, 0, 0.0)
-            emotional_color = self._rebuild_get_emotional_color(section)
-            section_emotion_mix = {
-                "breakdown": 0.66,
-                "verse": 0.36,
-                "buildup": 0.48,
-                "chorus": 0.56,
-                "drop": 0.62,
-            }.get(section, 0.42)
-            self._rebuild_base_color = palette_color.blend(emotional_color, section_emotion_mix)
-            phrase_s = max(2.4, min(6.0, (8.0 * 60.0) / max(60.0, bpm)))
-            self._rebuild_color_hold_until = self.time + phrase_s
+        # Dark-move: when pattern changes, briefly suppress dimmer so
+        # movers reposition without visible motion artifacts
+        if active_pattern != self._dark_move_prev_pattern and self._dark_move_prev_pattern != "":
+            self._dark_move_active = True
+            self._dark_move_start_time = now
+            self._dark_move_dim_suppress = 0.6  # suppress 60% of dimmer during move
+        self._dark_move_prev_pattern = active_pattern
 
-        # Gentle continuous blend toward current emotional target avoids abrupt color jumps.
-        live_emotional = self._rebuild_get_emotional_color(section)
-        self._rebuild_base_color = self._rebuild_base_color.blend(live_emotional, 0.018)
-        base_color = self._rebuild_base_color
-        white_accent = 0.0
-        if not strobe_on:
-            # Decay persistent accent envelope (lets bass hits "hang" briefly).
-            self._white_accent_level = max(0.0, self._white_accent_level - max(0.0, float(delta_time)) * 1.9)
-            if beat and section in {"verse", "buildup", "chorus"}:
-                white_accent = 0.16 if section == "buildup" else 0.10
-            # Bass-driven punch: more white on hard low-end hits.
-            if bass >= 0.62:
-                bass_punch = (min(1.0, bass) - 0.62) / 0.38
-                bass_hit = 0.10 + 0.24 * bass_punch
-                if beat:
-                    bass_hit += 0.08
-                self._white_accent_level = max(self._white_accent_level, min(0.42, bass_hit))
-            # Extra "pro busker" white lift on high-energy movement peaks.
-            # Keeps color identity while adding punch in energetic phrases.
-            if section in {"buildup", "chorus", "drop"} and energy > 0.68:
-                motion_peak = 0.5 + 0.5 * math.sin(2.0 * math.pi * beat_phase)
-                white_accent += 0.04 + 0.10 * motion_peak
-            white_accent += self._white_accent_level
-            white_accent = max(0.0, min(0.40, white_accent))
+        # Dark move fades out over duration
+        if self._dark_move_active:
+            move_progress = (now - self._dark_move_start_time) / self._dark_move_duration
+            if move_progress >= 1.0:
+                self._dark_move_active = False
+                self._dark_move_dim_suppress = 0.0
+            else:
+                # Cosine fade: smooth 0→1 suppress then release
+                self._dark_move_dim_suppress = 0.5 * (1.0 + math.cos(math.pi * move_progress))
 
-        chase_active = section in {"verse", "buildup", "chorus"}
-        chase_head = -1
-        chase_dir = 1
-        if chase_active and chase_order:
-            chase_len = len(chase_order)
-            chase_tick = int(math.floor(self.time * (bpm / 60.0) * chase_steps_per_beat))
-            # Reverse direction every 2 bars for a busker-style sweep/bounce feel.
-            chase_dir = -1 if (bar_clock % 4) >= 2 else 1
-            chase_head = chase_tick % chase_len if chase_dir > 0 else (chase_len - 1 - (chase_tick % chase_len))
+        # ══════════════════════════════════════════════════════════════
+        #  LAYER 1: COLOR SCHEME — mood-aware, spectral-centroid-driven
+        # ══════════════════════════════════════════════════════════════
+        # "Pick schemes (pairs/triads) not single colors; manage dominance
+        #  and contrast" (§2.1, Rutherford 2020)
+        #
+        # Color temperature from spectral centroid:
+        # high frequencies bright → cooler/sharper colors
+        # low frequencies dominant → warmer colors
+        spectral_balance = (high - bass)  # positive = bright timbre, negative = warm
+        warmth = max(0.0, min(1.0, 0.5 - spectral_balance * 2.0))  # 0=cool, 1=warm
+
+        # 6 color SCHEMES (pairs), rotate every 8 bars
+        # Each scheme has a dominant + accent following Rutherford's color theory
+        color_schemes = [
+            # Scheme 0: Cyan dominant / Hot pink accent (cool, high-energy)
+            (RGB(0.0, 0.85, 1.0), RGB(1.0, 0.0, 0.55)),
+            # Scheme 1: Deep blue dominant / Emerald accent (cool, mysterious)
+            (RGB(0.0, 0.25, 1.0), RGB(0.0, 1.0, 0.45)),
+            # Scheme 2: Red-orange dominant / Gold accent (warm, aggressive)
+            (RGB(1.0, 0.1, 0.0), RGB(1.0, 0.7, 0.0)),
+            # Scheme 3: Violet dominant / Cyan accent (cool, ethereal)
+            (RGB(0.55, 0.0, 1.0), RGB(0.0, 0.9, 1.0)),
+            # Scheme 4: Magenta dominant / Electric blue accent (neon pair)
+            (RGB(1.0, 0.0, 0.55), RGB(0.0, 0.15, 1.0)),
+            # Scheme 5: Lime dominant / Amber accent (warm, festival)
+            (RGB(0.3, 1.0, 0.0), RGB(1.0, 0.8, 0.0)),
+        ]
+        scheme_idx = (bar_clock // 8) % len(color_schemes)
+        color_dominant, color_accent = color_schemes[scheme_idx]
+
+        # ── LYRIC THEME OVERRIDE ──
+        # If Whisper detected keywords (e.g. "girls"→pink, "sad"→blue),
+        # blend the lyric-driven colors over the default scheme
+        lyric_theme = self._lyric_color_theme
+        lyric_confidence = float(lyric_theme.get("confidence", 0.0))
+        if lyric_confidence > 0.15:
+            lyric_dom = lyric_theme.get("dominant", (1.0, 1.0, 1.0))
+            lyric_acc = lyric_theme.get("accent", (1.0, 1.0, 1.0))
+            lyric_rgb_dom = RGB(lyric_dom[0], lyric_dom[1], lyric_dom[2])
+            lyric_rgb_acc = RGB(lyric_acc[0], lyric_acc[1], lyric_acc[2])
+            # Blend strength proportional to confidence (max 70% override)
+            blend = min(0.70, lyric_confidence * 0.8)
+            color_dominant = color_dominant.blend(lyric_rgb_dom, blend)
+            color_accent = color_accent.blend(lyric_rgb_acc, blend)
+            # Also adjust warmth from lyric theme
+            warmth = warmth * (1.0 - blend) + lyric_theme.get("warmth", 0.5) * blend
+
+        # Adjust color temperature based on spectral centroid
+        # Warm timbre → push dominant toward warmer hue
+        if warmth > 0.6:
+            color_dominant = color_dominant.blend(RGB(1.0, 0.4, 0.0), (warmth - 0.6) * 0.5)
+        elif warmth < 0.3:
+            color_dominant = color_dominant.blend(RGB(0.0, 0.5, 1.0), (0.3 - warmth) * 0.5)
+
+        # Section mood overlay (the "emotion" of the section)
+        section_mood = {
+            "breakdown": RGB(0.03, 0.08, 0.5),   # deep dark blue — VERY dim
+            "verse":     RGB(0.0, 0.55, 0.5),     # teal — cool and composed
+            "buildup":   RGB(0.5, 0.0, 0.85),     # violet — tension
+            "chorus":    RGB(1.0, 0.0, 0.6),      # hot pink — maximum energy
+            "drop":      RGB(1.0, 1.0, 1.0),      # white — impact
+        }.get(section, RGB(0.5, 0.5, 1.0))
+
+        # ══════════════════════════════════════════════════════════════
+        #  UPDATE GOBO ENGINE
+        # ══════════════════════════════════════════════════════════════
+        self.gobo.update(
+            delta_time=dt, bpm=bpm, energy=energy, bass=bass,
+            section=section, bar_clock=bar_clock, beat_phase=beat_phase,
+        )
+
+        # ══════════════════════════════════════════════════════════════
+        #  PER-FIXTURE RENDERING
+        # ══════════════════════════════════════════════════════════════
+        # Section-level base intensity (the KEY to contrast/drama)
+        # "Restraint: keep some tools in reserve so the show can build" (§1.1)
+        section_base_dim = {
+            "breakdown": 0.15,    # VERY dark — reserve for impact
+            "verse":     0.50,    # moderate — comfortable
+            "buildup":   0.60,    # rising
+            "chorus":    0.80,    # bright
+            "drop":      0.95,    # MAXIMUM
+        }.get(section, 0.50)
 
         snapshot = []
+
         for i, fixture in enumerate(all_fixtures):
+            fid = str(getattr(fixture, "id", "") or "")
+            fid_lower = fid.lower()
             ftype = str(getattr(fixture, "fixture_type", "") or "").lower()
-            is_mover = _is_motion_capable(fixture)
+            is_mover = ftype in {"mover", "moving_head", "beam", "spot", "wash", "profile", "hybrid"}
+            is_bar = "bar" in fid_lower
+            is_strobe_fix = "strobe" in fid_lower
+            is_blinder = "blinder" in fid_lower
+            is_wash = "wash" in fid_lower
+            is_beam = "beam" in fid_lower
 
-            # Symmetric BPM movement around home look (pan=0, tilt=0/down-home).
+            norm_x = self._rig_fixture_norm_x.get(fid, 0.0)
+            sym_phase = self._rig_fixture_sym_phase.get(fid, 0.5)
+
+            # ── LAYER 2: MOVEMENT (symmetric, BPM-locked) ────────────
             if is_mover:
-                ridx, local_idx, row_count = row_membership.get(str(fixture.id), (0, 0, 1))
+                if fixture in self._rig_beam_movers:
+                    gp = self._compute_group_symmetric_phase(fixture, self._rig_beam_movers)
+                elif fixture in self._rig_mid_movers:
+                    gp = self._compute_group_symmetric_phase(fixture, self._rig_mid_movers)
+                elif fixture in self._rig_washes:
+                    gp = self._compute_group_symmetric_phase(fixture, self._rig_washes)
+                elif fixture in self._rig_spots:
+                    gp = self._compute_group_symmetric_phase(fixture, self._rig_spots)
+                else:
+                    gp = sym_phase
 
-                # Global phase slot prevents "every other pair looks static" artifacts.
-                global_idx = chase_index.get(fixture.id, local_idx)
-                global_count = max(1, len(chase_order))
-                global_frac = (global_idx / max(1, global_count - 1)) if global_count > 1 else 0.5
-                frac = global_frac
-                row_sign = -1.0 if ridx % 2 == 0 else 1.0
-                phase = ((self.time * (bpm / 60.0) * move_speed) + frac) % 1.0
-
-                pan = 0.0
-                tilt = 0.0
-                if pattern == "tilt_cross":
-                    pan = row_sign * (8.0 + pan_amp * (2.0 * frac - 1.0)) * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * math.sin(2.0 * math.pi * phase + (0.0 if ridx == 0 else math.pi))
-                elif pattern == "pan_wave":
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * (0.42 + 0.33 * math.cos(2.0 * math.pi * phase))
-                elif pattern == "circle":
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * (0.25 + 0.75 * math.cos(2.0 * math.pi * phase))
-                elif pattern == "tilt_circle":
-                    pan = row_sign * (pan_amp * 0.65) * math.sin(2.0 * math.pi * phase)
-                    tilt = (tilt_amp * 1.25) * (0.15 + 0.85 * math.cos(2.0 * math.pi * phase))
-                elif pattern == "figure8":
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * math.sin(4.0 * math.pi * phase)
-                else:  # odd_even
-                    parity_phase = phase if (local_idx % 2 == 0) else (phase + 0.5)
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * parity_phase)
-                    tilt = tilt_amp * math.cos(2.0 * math.pi * parity_phase)
+                pan, tilt = self._symmetric_pan_tilt(
+                    norm_x, gp, bpm, active_pattern, section, section_time
+                )
+                # Vocal cadence: add bounce/tilt accent from singing rhythm
+                vocal_bounce = self._vocal_movement_mod.get("bounce_intensity", 0.0)
+                vocal_tilt_accent = self._vocal_movement_mod.get("tilt_accent", 0.0)
+                if vocal_bounce > 0.01:
+                    # Bounce: quick tilt pop on vocal rhythm, scaled by beat phase
+                    bounce_wave = math.sin(2.0 * math.pi * beat_phase * 2.0) * vocal_bounce * 8.0
+                    tilt += bounce_wave
+                if abs(vocal_tilt_accent) > 0.01:
+                    # Rising melody → fixtures look up; falling → look down
+                    tilt += vocal_tilt_accent * 12.0
 
                 fixture.pan = max(-270.0, min(270.0, float(pan)))
                 fixture.tilt = max(-135.0, min(135.0, float(tilt)))
@@ -780,67 +1529,214 @@ class EffectsEngine:
                 fixture.pan = 0.0
                 fixture.tilt = 0.0
 
-            # Dimmer policy: chase in verse/buildup/chorus, strobe on drop, calm breakdown.
-            if section == "breakdown":
-                dim = 0.24 + energy * 0.16
-            elif drop_strobe_on:
-                dim = 1.0 if strobe_flash else 0.06
-            elif snare_strobe_on:
-                dim = 1.0 if snare_strobe_flash else max(chase_floor, 0.16)
-            elif chase_active and is_mover and chase_head >= 0 and fixture.id in chase_index:
-                idx = chase_index[fixture.id]
-                chase_len = max(1, len(chase_order))
-                # Multi-head chase with short tails for stronger fixture-to-fixture bumps.
-                best_peak = 0.0
-                spacing = max(1, chase_len // max(1, chase_heads))
-                for h in range(max(1, chase_heads)):
-                    head = (chase_head + (h * spacing * chase_dir)) % chase_len
-                    dist = min((idx - head) % chase_len, (head - idx) % chase_len)
-                    peak = max(0.0, 1.0 - dist * chase_falloff)
-                    if peak > best_peak:
-                        best_peak = peak
-                beat_bump = 0.88 + 0.22 * (0.5 + 0.5 * math.sin(2.0 * math.pi * beat_phase))
-                dim = max(chase_floor, min(1.0, chase_floor + best_peak * beat_bump))
-            else:
-                dim = base_floor + energy * 0.20
+            # ── DIMMER: combine layers ────────────────────────────────
+            # Layer 1: Section base intensity
+            dim = section_base_dim
+
+            # Layer 3: DIMMER EFFECTS — multiple types for variety
+            fixture_position = i / max(1, total - 1)  # 0.0=first fixture, 1.0=last
+            dimmer_fx_val = 0.0
+
+            if dimmer_effect_type == "chase":
+                # CHASE: traveling gaussian spotlight LEFT→RIGHT through rig
+                # Direction from look or cycling
+                chase_dir = look_chase_dir if look is not None else ["forward", "bounce", "center_out"][(bar_clock // 4) % 3]
+                if chase_dir == "bounce":
+                    cp = chase_pos * 2.0
+                    cp = cp if cp <= 1.0 else (2.0 - cp)
+                elif chase_dir == "center_out":
+                    fp = abs(fixture_position - 0.5) * 2.0
+                    cp = chase_pos
+                    fixture_position_local = fp
+                else:
+                    cp = chase_pos
+                if chase_dir == "center_out":
+                    cd = abs(fixture_position_local - cp)
+                else:
+                    cd = abs(fixture_position - cp)
+                cd = min(cd, 1.0 - cd)
+                dimmer_fx_val = math.exp(-(cd ** 2) / (2.0 * chase_width ** 2)) * chase_intensity
+
+            elif dimmer_effect_type == "odd_even":
+                # ODD/EVEN: alternating fixtures flash on/off on beat
+                # Even fixtures bright on beat 1&3, odd on beat 2&4
+                is_even = (i % 2 == 0)
+                beat_idx = int(beats_elapsed % 4.0)
+                if is_even:
+                    dimmer_fx_val = chase_intensity * (0.8 if beat_idx in (0, 2) else 0.15)
+                else:
+                    dimmer_fx_val = chase_intensity * (0.8 if beat_idx in (1, 3) else 0.15)
+
+            elif dimmer_effect_type == "circular":
+                # CIRCULAR CHASE: wraps around the rig continuously
+                # Circular = chase wraps from last fixture back to first
+                wrap_pos = (chase_pos + fixture_position) % 1.0
+                # Use triangle wave for smooth wrap
+                circular_val = 1.0 - abs(2.0 * wrap_pos - 1.0)
+                dimmer_fx_val = (circular_val ** 2) * chase_intensity
+
+            elif dimmer_effect_type == "ramp":
+                # RAMP UP/DOWN: gradual intensity rise from L→R then R→L
+                # Creates a "wave" of brightness across the rig
+                ramp_phase = self._bpm_phase(bpm, beats=chase_beats * 2.0)
+                if ramp_phase < 0.5:
+                    # Ramp up L→R: fixture position determines when it lights
+                    progress = ramp_phase * 2.0  # 0→1 over half cycle
+                    dimmer_fx_val = chase_intensity * max(0.0, 1.0 - abs(fixture_position - progress) * 3.0)
+                else:
+                    # Ramp down R→L
+                    progress = (1.0 - ramp_phase) * 2.0
+                    dimmer_fx_val = chase_intensity * max(0.0, 1.0 - abs(fixture_position - progress) * 3.0)
+
+            dim += dimmer_fx_val
+
+            # Layer 4: BUMP — traveling bump through fixtures (not all-at-once!)
+            # The bump "travels" from left to right across the rig on each beat,
+            # so fixtures light up in sequence creating a "bump wave"
+            if self._bump_decay > 0.01:
+                # Bump travels across the rig in ~80ms (one bump width)
+                bump_travel_speed = 12.0  # how fast the bump travels
+                bump_center = (beat_phase * bump_travel_speed) % 1.0
+                bump_dist = abs(fixture_position - bump_center)
+                bump_dist = min(bump_dist, 1.0 - bump_dist)
+                bump_width = 0.15  # narrow gaussian = visible traveling bump
+                bump_val = math.exp(-(bump_dist ** 2) / (2.0 * bump_width ** 2))
+                dim += self._bump_decay * bump_val
+            # Downbeat bump hits ALL fixtures simultaneously (for impact)
+            if is_downbeat and section in {"chorus", "drop"}:
+                dim += downbeat_extra
+
+            # Layer 6: Onset flash (additive, all fixtures)
+            dim += self._fx_onset_flash * 0.3
+
+            # Drop white flash: FULL white at drop start
+            if self._drop_white_flash > 0.1:
+                dim = max(dim, self._drop_white_flash)
+
+            # Buildup progressive rise
+            if section == "buildup":
+                buildup_t = min(1.0, section_time / 16.0)
+                dim += 0.25 * buildup_t  # slowly rise over 16s
+
+            # Ethereal: keep dim but with gentle pulsing
+            if ethereal_active:
+                ethereal_pulse = 0.5 + 0.15 * math.sin(2.0 * math.pi * self._bpm_phase(bpm, beats=8.0))
+                dim = min(dim, ethereal_pulse)
+
+            # ── LAYER 5: Strobe fixtures (override) ───────────────────
+            # Strobes fire on HIGH ENERGY parts: drop always, chorus on downbeats,
+            # buildup with accelerating rate
+            if is_strobe_fix:
+                if section == "drop":
+                    # 8th-note strobe locked to BPM
+                    dim = 1.0 if eighth_phase < 0.25 else 0.0
+                elif section == "chorus" and eff_energy > 0.5:
+                    # Flash on downbeat AND phrase starts during high-energy chorus
+                    dim = 1.0 if (is_downbeat or is_phrase_start) else 0.0
+                elif section == "buildup":
+                    buildup_t = min(1.0, section_time / 16.0)
+                    # Accelerating rate: starts slow, gets frantic
+                    subdiv = 1.0 + 7.0 * (buildup_t ** 2)  # quadratic acceleration
+                    dim = 1.0 if (beats_elapsed * subdiv) % 1.0 < 0.08 else 0.0
+                else:
+                    dim = 0.0
+
+            # ── LAYER 5: Blinder fixtures (audience layer) ────────────
+            if is_blinder:
+                if section == "drop":
+                    # Slam on every beat, stay bright between
+                    dim = 0.95 if is_beat_start else 0.7
+                elif section == "chorus" and eff_energy > 0.4:
+                    # Flash on downbeat — big moments only
+                    dim = 0.9 if is_downbeat else 0.0
+                elif section == "buildup":
+                    buildup_t = min(1.0, section_time / 16.0)
+                    rate = 0.5 + 3.5 * buildup_t
+                    dim = buildup_t * 0.7 if (beats_elapsed * rate) % 1.0 < 0.06 else 0.0
+                else:
+                    dim = 0.0
+
+            # Drop strobe override for ALL fixtures
+            if drop_strobe_flash and not is_bar:
+                dim = 1.0 if eighth_phase < 0.25 else 0.15
+
+            # Dark-move dimmer suppression (only for movers during pattern transition)
+            if self._dark_move_active and is_mover and not is_strobe_fix and not is_blinder:
+                dim *= max(0.0, 1.0 - self._dark_move_dim_suppress * 0.7)
+
+            # Perceptual gamma curve (programming research: "non-linear curve
+            # for perceptually smooth fades; avoids steppy low-end")
+            dim = max(0.0, min(1.0, dim))
+            dim = dim ** (1.0 / self._perceptual_gamma) if dim > 0.0 else 0.0
+
             fixture.dimmer = max(0.0, min(1.0, dim))
+
+            # Audience intensity cap
             audience_cap = max(0.0, min(1.0, float(self.config.audience_intensity_cap)))
             if fixture.dimmer > audience_cap:
                 self._record_safety_event(
                     "audience_intensity_clamped",
-                    {
-                        "fixture_id": fixture.id,
-                        "requested": round(float(fixture.dimmer), 3),
-                        "applied": round(float(audience_cap), 3),
-                    },
-                    throttle_s=1.0,
-                    throttle_key="audience_intensity_clamped",
+                    {"fixture_id": fixture.id,
+                     "requested": round(float(fixture.dimmer), 3),
+                     "applied": round(float(audience_cap), 3)},
+                    throttle_s=1.0, throttle_key="audience_intensity_clamped",
                 )
             fixture.dimmer = min(fixture.dimmer, audience_cap)
-            if visibility_first_mode and (not strobe_on):
+            if visibility_first and (not drop_strobe_on):
                 fixture.dimmer = max(fixture.dimmer, 0.48)
 
-            # Optional "move-in-brightness restraint" policy for cleaner live looks.
-            if (
-                not self.config.movement_when_bright
-                and (not strobe_on)
-                and fixture.dimmer >= float(self.config.bright_movement_dimmer_threshold)
-            ):
-                cap = max(0.0, float(self.config.bright_movement_pan_tilt_cap_deg))
-                fixture.pan = max(-cap, min(cap, fixture.pan))
-                fixture.tilt = max(-cap, min(cap, fixture.tilt))
-
-            # Color policy: stable mood color + beat accents, pure white only on strobe flash.
-            if strobe_on and strobe_flash:
+            # ── COLOR: layered scheme + mood + onset flash ────────────
+            if (drop_strobe_flash and not is_bar) or self._drop_white_flash > 0.5:
+                # White flash on strobe or drop impact
                 fixture.red = 1.0
                 fixture.green = 1.0
                 fixture.blue = 1.0
             else:
-                fixture.red = max(0.0, min(1.0, base_color.r * (1.0 - white_accent) + white_accent))
-                fixture.green = max(0.0, min(1.0, base_color.g * (1.0 - white_accent) + white_accent))
-                fixture.blue = max(0.0, min(1.0, base_color.b * (1.0 - white_accent) + white_accent))
-                # Apply section narrative shaping (saturation/whiteness/accent behavior).
-                self._apply_palette_narrative_to_fixture(fixture, i, section)
+                # Base color from scheme: dominant on left/odd, accent on right/even
+                if i % 2 == 0:
+                    base = color_dominant
+                else:
+                    base = color_accent
+
+                # Blend with section mood (how much mood controls the color)
+                mood_blend = {
+                    "breakdown": 0.65, "verse": 0.30, "buildup": 0.35,
+                    "chorus": 0.20, "drop": 0.10
+                }.get(section, 0.30)
+                final = base.blend(section_mood, mood_blend)
+
+                # Buildup: warm shift over time
+                if section == "buildup":
+                    buildup_t = min(1.0, section_time / 16.0)
+                    final = final.blend(RGB(1.0, 0.5, 0.05), 0.15 + 0.25 * buildup_t)
+
+                # Drop: fade from white to vivid color over 2s
+                if section == "drop" and section_time < 2.0:
+                    white_fade = max(0.0, 1.0 - section_time / 1.5)
+                    final = final.blend(RGB(1.0, 1.0, 1.0), white_fade * 0.6)
+
+                # Onset color hit overlay
+                if self._fx_onset_flash > 0.1:
+                    flash_rgb = RGB(*self._fx_onset_color)
+                    final = final.blend(flash_rgb, self._fx_onset_flash * 0.5)
+
+                # LED bars: solid mood color (consistent anchor)
+                if is_bar:
+                    final = section_mood.blend(color_dominant, 0.25)
+                # Washes: softer, wider blend for fill
+                elif is_wash:
+                    final = color_dominant.blend(section_mood, 0.45)
+
+                fixture.red = max(0.0, min(1.0, final.r))
+                fixture.green = max(0.0, min(1.0, final.g))
+                fixture.blue = max(0.0, min(1.0, final.b))
+
+            # Strobe value
+            fixture.strobe = fixture.dimmer if (is_strobe_fix or is_blinder) else 0.0
+
+            # Gobo
+            if is_mover:
+                self.gobo.apply_to_fixture(fixture, i, energy=energy, bass=bass, beat_phase=beat_phase)
 
             snapshot.append({
                 'id': fixture.id,
@@ -851,31 +1747,53 @@ class EffectsEngine:
                 'r': fixture.red,
                 'g': fixture.green,
                 'b': fixture.blue,
+                'gobo': getattr(fixture, 'gobo_index', 0.0),
+                'gobo_rotation': getattr(fixture, 'gobo_rotation', 0.0),
+                'zoom': getattr(fixture, 'zoom', 0.5),
+                'iris': getattr(fixture, 'iris', 1.0),
+                'frost': getattr(fixture, 'frost', 0.0),
+                'prism': getattr(fixture, 'prism', 0.0),
             })
+
         self._fixture_state_snapshot = snapshot
 
     def _rebuild_get_emotional_color(self, section: str) -> RGB:
-        """Return mood color from valence/arousal with section-aware warmth/coolth shaping."""
-        v = max(0.0, min(1.0, float(self.audio_features.valence)))
-        a = max(0.0, min(1.0, float(self.audio_features.arousal)))
+        """Return section-specific emotional color for MA2-style looks.
 
-        calm_sad = RGB(0.24, 0.22, 0.48)      # cool violet
-        calm_happy = RGB(0.30, 0.56, 0.94)    # airy blue
-        hype_sad = RGB(0.92, 0.22, 0.34)      # tense red
-        hype_happy = RGB(0.98, 0.52, 0.20)    # euphoric amber
+        Simpler than before - just returns the look's color modified by section.
+        Drop gets white tint, breakdown gets cooler/darker, buildup warms.
+        """
+        bpm = max(60.0, float(self._smoothed_movement_bpm))
+        bar_clock = int(self.time * (bpm / 60.0) / 4.0)
 
-        low = calm_sad.blend(calm_happy, v)
-        high = hype_sad.blend(hype_happy, v)
-        mood = low.blend(high, a)
+        # Color palette rotation
+        edm_palettes = [
+            [RGB(0.0, 0.8, 1.0), RGB(1.0, 0.0, 0.6)],
+            [RGB(0.0, 0.4, 1.0), RGB(0.0, 1.0, 0.5)],
+            [RGB(0.9, 0.0, 0.3), RGB(1.0, 0.5, 0.0)],
+            [RGB(0.5, 0.0, 1.0), RGB(0.0, 0.8, 1.0)],
+            [RGB(1.0, 0.0, 0.4), RGB(0.0, 0.2, 1.0)],
+            [RGB(0.0, 1.0, 0.6), RGB(1.0, 0.8, 0.0)],
+        ]
+        palette_idx = (bar_clock // 8) % len(edm_palettes)
+        palette = edm_palettes[palette_idx]
+
+        beat_phase = (self.time * (bpm / 60.0)) % 1.0
+        color_blend = 0.5 + 0.3 * math.sin(2.0 * math.pi * beat_phase * 0.25)
+        base = palette[0].blend(palette[1], color_blend)
 
         section = (section or "verse").lower()
         if section in {"breakdown", "bridge"}:
-            return mood.blend(RGB(0.85, 0.88, 1.0), 0.14)
-        if section in {"buildup"}:
-            return mood.blend(RGB(1.0, 0.62, 0.26), 0.08)
-        if section in {"drop", "chorus"}:
-            return mood.blend(RGB(1.0, 0.92, 0.86), 0.05)
-        return mood
+            # Cooler, darker version
+            return base.blend(RGB(0.15, 0.25, 0.65), 0.40)
+        elif section == "buildup":
+            # Warm toward amber as buildup progresses
+            buildup_t = min(1.0, (self.time - self._rebuild_section_changed_at) / 8.0)
+            return base.blend(RGB(1.0, 0.7, 0.3), 0.20 + 0.25 * buildup_t)
+        elif section in {"drop", "chorus"}:
+            # White tint for intensity
+            return base.blend(RGB(1.0, 1.0, 1.0), 0.12)
+        return base
 
     def _apply_clocked_chase_pattern(self, chase_intensity: float = 0.0):
         """Apply deterministic, in-order fixture chases for non-reactive busking mode."""
@@ -935,6 +1853,35 @@ class EffectsEngine:
         """
         self._dmx_callback = callback
 
+    def set_vocal_analyzer(self, vocal_analyzer):
+        """Set the vocal analyzer for lyric-aware lighting.
+
+        The vocal analyzer provides two layers:
+        1. Vocal cadence → movement bounce modulation
+        2. Lyric keywords → color theme selection
+        """
+        self._vocal_analyzer = vocal_analyzer
+
+    def _update_vocal_integration(self, dt: float):
+        """Pull latest vocal analysis state into effects engine.
+
+        Called each frame from the main update loop.
+        """
+        va = self._vocal_analyzer
+        if va is None:
+            return
+
+        # Get movement modulation from vocal cadence
+        self._vocal_movement_mod = va.get_movement_modulation()
+
+        # Get lyric-driven color theme (if any)
+        theme = va.get_color_theme()
+        if theme is not None:
+            self._lyric_color_theme = theme
+        elif self._lyric_color_theme.get("confidence", 0.0) > 0.01:
+            # Fade out old theme gradually
+            self._lyric_color_theme["confidence"] = self._lyric_color_theme.get("confidence", 0.0) * 0.98
+
     def set_lfo_engine(self, lfo_engine: LFOEngine):
         """
         Set the LFO engine for grandMA2-style effects.
@@ -970,7 +1917,12 @@ class EffectsEngine:
         """Manually trigger a song section change."""
         self.section_manager.trigger_section(section, immediate)
         # Sync to decision engine
-        self.decision.set_section(section.value if hasattr(section, 'value') else str(section))
+        section_str = section.value if hasattr(section, 'value') else str(section)
+        self.decision.set_section(section_str)
+        # Sync to rebuild pipeline (drives gobo engine, movement, dimmer effects)
+        self._rebuild_set_section(section_str.lower())
+        # Hold manual section for 30s so auto-detection doesn't override it
+        self._rebuild_manual_hold_until = self.time + 30.0
 
     def update_audio(
         self,
@@ -1171,35 +2123,41 @@ class EffectsEngine:
         print(f"[Effects] Song changed! New palette: {self._current_song_palette.value}")
 
     def _get_palette_narrative_variant(self, section: str) -> Dict[str, float]:
-        """Section-aware palette narrative controls for one-song palette identity."""
+        """Section-aware palette narrative — keep colors vivid for EDM."""
         section = (section or "unknown").lower()
-        base_variant = {
-            "accent_swap": 0.0,
-            "sat_mult": 1.0,
-            "white_mix": 0.03,
-            "color_count": 3.0,
-        }
         if section in {"intro", "verse"}:
-            return base_variant
+            return {
+                "accent_swap": 0.5,   # Alternate colors between fixtures
+                "sat_mult": 1.15,     # Slightly boosted saturation
+                "white_mix": 0.0,
+                "color_count": 3.0,
+            }
         if section in {"chorus", "drop", "peak"}:
             return {
-                "accent_swap": 1.0,
-                "sat_mult": 1.2,
-                "white_mix": 0.02,
+                "accent_swap": 1.0,   # Strong fixture color alternation
+                "sat_mult": 1.3,      # Maximum saturation boost
+                "white_mix": 0.0,
                 "color_count": 3.0,
             }
         if section in {"breakdown", "bridge"}:
             return {
                 "accent_swap": 0.0,
-                "sat_mult": 0.75,
-                "white_mix": 0.12,
-                "color_count": 1.0,
+                "sat_mult": 0.85,     # Slightly cooler but still vivid
+                "white_mix": 0.05,    # Tiny white for ethereal feel
+                "color_count": 2.0,   # Keep at least 2 colors
+            }
+        if section == "buildup":
+            return {
+                "accent_swap": 0.5,
+                "sat_mult": 1.2,
+                "white_mix": 0.0,
+                "color_count": 3.0,
             }
         return {
-            "accent_swap": 0.0,
-            "sat_mult": 0.92,
-            "white_mix": 0.06,
-            "color_count": 2.0,
+            "accent_swap": 0.5,
+            "sat_mult": 1.1,
+            "white_mix": 0.0,
+            "color_count": 3.0,
         }
 
     def _apply_palette_narrative_to_fixture(self, fixture: Fixture, fixture_index: int, section: str):
@@ -1512,6 +2470,7 @@ class EffectsEngine:
         # Clean-slate runtime path: one renderer only, avoids conflicting overlays.
         # Respect auto/manual mode so manual controls still work when auto is disabled.
         if self.config.auto_mode and self._rebuild_busker_enabled:
+            self._update_vocal_integration(delta_time)
             self._rebuild_update_intent(delta_time)
             self._update_fixtures_rebuild(delta_time)
             if self._dmx_callback:
@@ -2315,6 +3274,12 @@ class EffectsEngine:
                 'r': fixture.red,
                 'g': fixture.green,
                 'b': fixture.blue,
+                'gobo': getattr(fixture, 'gobo_index', 0.0),
+                'gobo_rotation': getattr(fixture, 'gobo_rotation', 0.0),
+                'zoom': getattr(fixture, 'zoom', 0.5),
+                'iris': getattr(fixture, 'iris', 1.0),
+                'frost': getattr(fixture, 'frost', 0.0),
+                'prism': getattr(fixture, 'prism', 0.0),
             })
         self._fixture_state_snapshot = snapshot
 

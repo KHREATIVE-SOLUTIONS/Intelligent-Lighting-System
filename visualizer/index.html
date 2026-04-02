@@ -3,67 +3,836 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ILS Visualizer - Intelligent Lighting System</title>
-    <link rel="stylesheet" href="/css/visualizer.css">
+    <title>Intelligent Lighting System - 3D Visualizer</title>
     <style>
-        body { margin: 0; padding: 0; background: #050508; color: #fff; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
-        #container { width: 100vw; height: 100vh; position: relative; }
-        #visualizer { width: 100%; height: 100%; display: block; }
-        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
-        #loading.hidden { display: none; }
-        #overlay { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
-        #header { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: linear-gradient(to bottom, rgba(5,5,8,0.9) 0%, transparent 100%); }
-        #header h1 { font-size: 1.4rem; font-weight: 300; letter-spacing: 3px; color: #888; }
-        #status { display: flex; gap: 15px; font-size: 0.8rem; font-family: monospace; }
-        #connection-status { padding: 4px 10px; border-radius: 10px; font-weight: 500; }
-        #connection-status.connected { background: #0d2818; color: #4ade80; }
-        #connection-status.disconnected { background: #2d1515; color: #f87171; }
-        #fps { color: #666; }
-        #controls { position: absolute; bottom: 20px; left: 20px; display: flex; gap: 8px; align-items: center; pointer-events: auto; }
-        #controls button { padding: 8px 14px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #aaa; border-radius: 5px; cursor: pointer; font-size: 0.8rem; transition: all 0.2s; }
-        #controls button:hover { background: rgba(255,255,255,0.15); color: #fff; }
-        #controls label { display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: rgba(255,255,255,0.08); border-radius: 5px; cursor: pointer; font-size: 0.8rem; color: #aaa; }
-        #gpu-info { position: absolute; bottom: 20px; right: 20px; color: #333; font-size: 10px; font-family: monospace; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: #000;
+            color: #fff;
+            overflow: hidden;
+        }
+
+        #canvas {
+            display: block;
+            width: 100%;
+            height: 100vh;
+        }
+
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+        }
+
+        #section-name {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 3em;
+            font-weight: bold;
+            text-shadow: 0 0 20px rgba(0, 200, 255, 0.8);
+            color: #00c8ff;
+            letter-spacing: 2px;
+            pointer-events: none;
+            text-transform: uppercase;
+        }
+
+        #control-panel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 10px;
+            pointer-events: all;
+        }
+
+        #audio-capture-btn {
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: 2px solid #667eea;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s;
+            font-size: 0.9em;
+        }
+
+        #audio-capture-btn:hover {
+            background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+            box-shadow: 0 0 15px rgba(102, 126, 234, 0.6);
+        }
+
+        #audio-capture-btn.active {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            border-color: #f5576c;
+            box-shadow: 0 0 20px rgba(245, 87, 108, 0.8);
+        }
+
+        #audio-status {
+            padding: 10px 15px;
+            background: rgba(0, 0, 0, 0.6);
+            border: 2px solid #00c8ff;
+            border-radius: 5px;
+            font-size: 0.9em;
+            color: #00c8ff;
+        }
+
+        #audio-spectrum {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 600px;
+            height: 100px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 2px solid #00c8ff;
+            border-radius: 5px;
+            padding: 10px;
+            display: flex;
+            gap: 2px;
+            align-items: flex-end;
+            pointer-events: none;
+        }
+
+        .spectrum-bar {
+            flex: 1;
+            background: linear-gradient(180deg, #00ff00 0%, #ffff00 50%, #ff0000 100%);
+            border-radius: 2px;
+            min-height: 2px;
+            transition: height 0.05s ease-out;
+            box-shadow: 0 0 5px rgba(0, 255, 0, 0.5);
+        }
+
+        #fps-counter {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-size: 0.9em;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+        }
+
+        #connection-status {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-size: 0.9em;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 1s infinite;
+        }
+
+        .status-dot.connected {
+            background: #00ff00;
+            box-shadow: 0 0 10px #00ff00;
+        }
+
+        .status-dot.disconnected {
+            background: #ff0000;
+            box-shadow: 0 0 10px #ff0000;
+            animation: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
     </style>
 </head>
 <body>
-    <div id="container">
-        <div id="loading">
-            <h2>Loading ILS Visualizer...</h2>
-            <p style="color:#666">Initializing WebGL renderer</p>
+    <div id="ui-container">
+        <div id="section-name">INITIALIZING</div>
+        <div id="control-panel">
+            <button id="audio-capture-btn">Capture Audio</button>
+            <div id="audio-status">Not Capturing</div>
         </div>
-        <canvas id="visualizer"></canvas>
-        <div id="overlay">
-            <div id="header">
-                <h1>ILS VISUALIZER</h1>
-                <div id="status">
-                    <span id="connection-status" class="disconnected">Disconnected</span>
-                    <span id="fps">0 FPS</span>
-                </div>
-            </div>
-            <div id="controls">
-                <button id="btn-reset-camera">Reset View</button>
-                <button id="btn-toggle-grid">Grid</button>
-                <button id="btn-toggle-labels">Labels</button>
-                <label>
-                    <input type="checkbox" id="chk-test-mode"> Test Mode
-                </label>
-                <label>
-                    <input type="checkbox" id="chk-diagnostic-show-mode"> Diagnostic Show
-                </label>
-                <a href="/operator.html" style="padding: 8px 14px; background: rgba(255,100,100,0.15); border: 1px solid rgba(255,100,100,0.3); color: #f88; border-radius: 5px; text-decoration: none; font-size: 0.8rem; pointer-events: auto;">Operator Console</a>
-            </div>
-        </div>
-        <div id="gpu-info"></div>
+        <div id="audio-spectrum"></div>
+        <div id="fps-counter">FPS: 0</div>
+        <div id="connection-status"><span class="status-dot disconnected"></span>Disconnected</div>
     </div>
 
-    <!-- Three.js r128 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        // ==================== THREE.JS SCENE SETUP ====================
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 
-    <!-- ILS Visualizer -->
-    <script src="/js/fixtures.js"></script>
-    <script src="/js/volumetric-beam.js"></script>
-    <script src="/js/visualizer-optimized.js"></script>
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFShadowShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // Fog for atmosphere
+        scene.fog = new THREE.FogExp2(0x000000, 0.05);
+        scene.background = new THREE.Color(0x0a0a0a);
+
+        // ==================== ROOM GEOMETRY ====================
+        const roomWidth = 16;
+        const roomDepth = 12;
+        const roomHeight = 7;
+
+        // Floor
+        const floorGeo = new THREE.PlaneGeometry(roomWidth, roomDepth);
+        const floorMat = new THREE.MeshStandardMaterial({
+            color: 0x1a1a1a,
+            metalness: 0.3,
+            roughness: 0.4,
+            emissive: 0x000000
+        });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = 0;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // Walls - very dark with high roughness
+        const wallMat = new THREE.MeshStandardMaterial({
+            color: 0x0f0f0f,
+            metalness: 0.1,
+            roughness: 0.9,
+            emissive: 0x000000
+        });
+
+        // Back wall (z = -roomDepth/2)
+        const backWall = new THREE.Mesh(new THREE.PlaneGeometry(roomWidth, roomHeight), wallMat);
+        backWall.position.set(0, roomHeight / 2, -roomDepth / 2);
+        scene.add(backWall);
+
+        // Front wall (z = roomDepth/2)
+        const frontWall = new THREE.Mesh(new THREE.PlaneGeometry(roomWidth, roomHeight), wallMat);
+        frontWall.rotation.y = Math.PI;
+        frontWall.position.set(0, roomHeight / 2, roomDepth / 2);
+        scene.add(frontWall);
+
+        // Left wall (x = -roomWidth/2)
+        const leftWall = new THREE.Mesh(new THREE.PlaneGeometry(roomDepth, roomHeight), wallMat);
+        leftWall.rotation.y = Math.PI / 2;
+        leftWall.position.set(-roomWidth / 2, roomHeight / 2, 0);
+        scene.add(leftWall);
+
+        // Right wall (x = roomWidth/2)
+        const rightWall = new THREE.Mesh(new THREE.PlaneGeometry(roomDepth, roomHeight), wallMat);
+        rightWall.rotation.y = -Math.PI / 2;
+        rightWall.position.set(roomWidth / 2, roomHeight / 2, 0);
+        scene.add(rightWall);
+
+        // DJ Booth - raised platform at z=3
+        const djBoothGeo = new THREE.BoxGeometry(4, 0.5, 2);
+        const djBoothMat = new THREE.MeshStandardMaterial({
+            color: 0x1a1a2e,
+            metalness: 0.4,
+            roughness: 0.3,
+            emissive: 0x0a0a0f
+        });
+        const djBooth = new THREE.Mesh(djBoothGeo, djBoothMat);
+        djBooth.position.set(0, 0.25, 3);
+        djBooth.receiveShadow = true;
+        scene.add(djBooth);
+
+        // ==================== TRUSS STRUCTURES ====================
+        const trussMat = new THREE.MeshStandardMaterial({
+            color: 0x404040,
+            metalness: 0.6,
+            roughness: 0.2,
+            emissive: 0x0a0a0a
+        });
+
+        function createTruss(x1, x2, y, z) {
+            const trussGeo = new THREE.CylinderGeometry(0.08, 0.08, Math.abs(x2 - x1), 8);
+            const truss = new THREE.Mesh(trussGeo, trussMat);
+            truss.position.set((x1 + x2) / 2, y, z);
+            truss.rotation.z = Math.PI / 2;
+            truss.castShadow = true;
+            truss.receiveShadow = true;
+            scene.add(truss);
+        }
+
+        // Upstage truss (beams) at z=-2.0, y=6.5
+        createTruss(-4.5, 4.5, 6.5, -2.0);
+
+        // Mid truss (spots) at z=0.0, y=6.0
+        createTruss(-3.5, 3.5, 6.0, 0.0);
+
+        // Downstage truss (washes) at z=2.0, y=5.5
+        createTruss(-3.5, 3.5, 5.5, 2.0);
+
+        // ==================== FIXTURE DATA STRUCTURE ====================
+        const fixtures = {};
+        const fixtureConfigs = [];
+
+        // 10 beam movers on upstage truss (IDs match backend: beam_up1..beam_up10)
+        const beamXPositions = [];
+        for (let i = 0; i < 10; i++) beamXPositions.push(-5.0 + (10.0 * i / 9));
+        for (let i = 0; i < 10; i++) {
+            fixtureConfigs.push({
+                id: `beam_up${i + 1}`,
+                type: 'beam',
+                position: [beamXPositions[i], 6.5, -2.0],
+                radiusBottom: 0.5
+            });
+        }
+
+        // 8 spot movers on mid truss (IDs: mover_mid1..mover_mid8)
+        const midXPositions = [];
+        for (let i = 0; i < 8; i++) midXPositions.push(-4.0 + (8.0 * i / 7));
+        for (let i = 0; i < 8; i++) {
+            fixtureConfigs.push({
+                id: `mover_mid${i + 1}`,
+                type: 'spot',
+                position: [midXPositions[i], 6.0, 0.0],
+                radiusBottom: 0.8
+            });
+        }
+
+        // 6 wash fixtures on downstage truss (IDs: wash_ds1..wash_ds6)
+        const washXPositions = [];
+        for (let i = 0; i < 6; i++) washXPositions.push(-3.5 + (7.0 * i / 5));
+        for (let i = 0; i < 6; i++) {
+            fixtureConfigs.push({
+                id: `wash_ds${i + 1}`,
+                type: 'wash',
+                position: [washXPositions[i], 5.5, 2.0],
+                radiusBottom: 1.5
+            });
+        }
+
+        // 4 floor LED bars (IDs: bar_floor1..bar_floor4)
+        const barFloorX = [-5.0, -1.7, 1.7, 5.0];
+        for (let i = 0; i < 4; i++) {
+            fixtureConfigs.push({
+                id: `bar_floor${i + 1}`,
+                type: 'bar',
+                position: [barFloorX[i], 0.3, -3.0],
+                barSize: [0.5, 0.1, 2.0]
+            });
+        }
+
+        // 4 rear truss LED bars (IDs: bar_rear1..bar_rear4)
+        const barRearX = [-5.0, -1.7, 1.7, 5.0];
+        for (let i = 0; i < 4; i++) {
+            fixtureConfigs.push({
+                id: `bar_rear${i + 1}`,
+                type: 'bar',
+                position: [barRearX[i], 6.0, -2.5],
+                barSize: [0.5, 0.1, 2.0]
+            });
+        }
+
+        // 4 strobes (IDs: strobe_l1, strobe_l2, strobe_r1, strobe_r2)
+        fixtureConfigs.push({ id: 'strobe_l1', type: 'strobe', position: [-6.5, 6.0, -1.0] });
+        fixtureConfigs.push({ id: 'strobe_l2', type: 'strobe', position: [-6.5, 6.0, 1.0] });
+        fixtureConfigs.push({ id: 'strobe_r1', type: 'strobe', position: [6.5, 6.0, -1.0] });
+        fixtureConfigs.push({ id: 'strobe_r2', type: 'strobe', position: [6.5, 6.0, 1.0] });
+
+        // 4 blinders (IDs: blinder1..blinder4)
+        fixtureConfigs.push({ id: 'blinder1', type: 'blinder', position: [-1.5, 5.5, 1.0] });
+        fixtureConfigs.push({ id: 'blinder2', type: 'blinder', position: [-0.5, 5.5, 1.0] });
+        fixtureConfigs.push({ id: 'blinder3', type: 'blinder', position: [0.5, 5.5, 1.0] });
+        fixtureConfigs.push({ id: 'blinder4', type: 'blinder', position: [1.5, 5.5, 1.0] });
+
+        // 4 spot fixtures at corners (IDs: spot_dl, spot_dr, spot_ul, spot_ur)
+        fixtureConfigs.push({ id: 'spot_dl', type: 'spot', position: [-5.0, 6.0, 2.5], radiusBottom: 0.8 });
+        fixtureConfigs.push({ id: 'spot_dr', type: 'spot', position: [5.0, 6.0, 2.5], radiusBottom: 0.8 });
+        fixtureConfigs.push({ id: 'spot_ul', type: 'spot', position: [-5.0, 6.0, -2.0], radiusBottom: 0.8 });
+        fixtureConfigs.push({ id: 'spot_ur', type: 'spot', position: [5.0, 6.0, -2.0], radiusBottom: 0.8 });
+
+        // ==================== CREATE FIXTURE OBJECTS ====================
+        const lampGeometry = new THREE.SphereGeometry(0.08, 8, 6);
+        const floorSpotGeometry = new THREE.CircleGeometry(0.5, 16);
+
+        fixtureConfigs.forEach(config => {
+            const [x, y, z] = config.position;
+            const group = new THREE.Group();
+            group.position.set(x, y, z);
+
+            fixtures[config.id] = {
+                group: group,
+                type: config.type,
+                pan: 0,
+                tilt: -20,
+                dimmer: 0,
+                r: 0,
+                g: 0,
+                b: 0,
+                zoom: 0.5,
+                strobeVal: 0,
+                config: config
+            };
+
+            if (config.type === 'beam' || config.type === 'spot' || config.type === 'wash') {
+                // Beam radius based on type
+                const beamRadius = config.type === 'beam' ? 0.4 : config.type === 'spot' ? 0.7 : 1.2;
+                const beamHeight = config.type === 'wash' ? 7 : 10;
+                const beamOpacity = config.type === 'beam' ? 0.22 : config.type === 'spot' ? 0.18 : 0.12;
+
+                // Lamp (bright point at fixture origin)
+                const lampMat = new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false });
+                const lamp = new THREE.Mesh(lampGeometry, lampMat);
+                group.add(lamp);
+                fixtures[config.id].lampMesh = lamp;
+
+                // Beam cone (created ONCE, reused every frame)
+                const coneMat = new THREE.MeshBasicMaterial({
+                    color: 0xffffff,
+                    transparent: true,
+                    opacity: beamOpacity,
+                    blending: THREE.AdditiveBlending,
+                    side: THREE.DoubleSide,
+                    fog: false,
+                    depthWrite: false
+                });
+                // ConeGeometry(radius, height, radialSegments, heightSegments, openEnded)
+                const coneGeo = new THREE.ConeGeometry(beamRadius, beamHeight, 12, 1, true);
+                const coneMesh = new THREE.Mesh(coneGeo, coneMat);
+                // Position so tip is at y=0 (fixture), base extends downward
+                coneMesh.position.y = -beamHeight / 2;
+                // Pivot group for tilt rotation
+                const tiltGroup = new THREE.Group();
+                tiltGroup.add(coneMesh);
+                group.add(tiltGroup);
+                fixtures[config.id].coneMesh = coneMesh;
+                fixtures[config.id].tiltGroup = tiltGroup;
+                fixtures[config.id].beamOpacity = beamOpacity;
+
+                // Floor spot (circle on ground plane, world-space)
+                const floorSpotMat = new THREE.MeshBasicMaterial({
+                    color: 0xffffff,
+                    transparent: true,
+                    opacity: 0.25,
+                    blending: THREE.AdditiveBlending,
+                    fog: false,
+                    depthWrite: false
+                });
+                const floorSpot = new THREE.Mesh(floorSpotGeometry, floorSpotMat);
+                floorSpot.rotation.x = -Math.PI / 2;
+                floorSpot.position.set(x, 0.02, z);
+                scene.add(floorSpot);
+                fixtures[config.id].floorSpot = floorSpot;
+
+            } else if (config.type === 'bar') {
+                const [w, h, d] = config.barSize || [0.5, 0.1, 2.0];
+                const barGeo = new THREE.BoxGeometry(w, h, d);
+                const barMat = new THREE.MeshBasicMaterial({
+                    color: 0x000000,
+                    transparent: true,
+                    opacity: 0.8,
+                    fog: false
+                });
+                const bar = new THREE.Mesh(barGeo, barMat);
+                group.add(bar);
+                fixtures[config.id].barMesh = bar;
+
+            } else if (config.type === 'strobe' || config.type === 'blinder') {
+                const strobeSize = config.type === 'blinder' ? 0.4 : 0.25;
+                const strobeGeo = new THREE.PlaneGeometry(strobeSize, strobeSize);
+                const strobeMat = new THREE.MeshBasicMaterial({
+                    color: 0xffffff,
+                    transparent: true,
+                    opacity: 0,
+                    blending: THREE.AdditiveBlending,
+                    fog: false,
+                    depthWrite: false
+                });
+                const strobeMesh = new THREE.Mesh(strobeGeo, strobeMat);
+                strobeMesh.lookAt(0, 0, 10); // face toward audience
+                group.add(strobeMesh);
+                fixtures[config.id].strobeMesh = strobeMesh;
+            }
+
+            scene.add(group);
+        });
+
+        // ==================== CAMERA & CONTROLS ====================
+        camera.position.set(0, 3, 8);
+        camera.lookAt(0, 3, -2);
+
+        let mouseDown = false;
+        let mouseX = 0, mouseY = 0;
+        let cameraRotation = { x: 0, y: 0 };
+
+        document.addEventListener('mousedown', (e) => {
+            mouseDown = true;
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (mouseDown) {
+                const deltaX = e.clientX - mouseX;
+                const deltaY = e.clientY - mouseY;
+                mouseX = e.clientX;
+                mouseY = e.clientY;
+
+                cameraRotation.y += deltaX * 0.005;
+                cameraRotation.x += deltaY * 0.005;
+
+                // Clamp X rotation
+                cameraRotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, cameraRotation.x));
+
+                const radius = 10;
+                const lookAtPoint = new THREE.Vector3(0, 3, -2);
+
+                camera.position.x = lookAtPoint.x + radius * Math.sin(cameraRotation.y) * Math.cos(cameraRotation.x);
+                camera.position.y = lookAtPoint.y + radius * Math.sin(cameraRotation.x);
+                camera.position.z = lookAtPoint.z + radius * Math.cos(cameraRotation.y) * Math.cos(cameraRotation.x);
+
+                camera.lookAt(lookAtPoint);
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            mouseDown = false;
+        });
+
+        document.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const direction = camera.position.clone().sub(new THREE.Vector3(0, 3, -2)).normalize();
+            const currentDist = camera.position.distanceTo(new THREE.Vector3(0, 3, -2));
+            const newDist = Math.max(5, Math.min(30, currentDist + e.deltaY * 0.02));
+            const newPos = new THREE.Vector3(0, 3, -2).add(direction.multiplyScalar(newDist));
+            camera.position.copy(newPos);
+        }, { passive: false });
+
+        // ==================== WEBSOCKET CONNECTION ====================
+        let ws = null;
+        let wsConnected = false;
+        let currentSection = 'INITIALIZING';
+        let audioData = new Array(32).fill(0);
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host;
+            ws = new WebSocket(`${protocol}//${host}/ws`);
+
+            ws.onopen = () => {
+                wsConnected = true;
+                updateConnectionStatus(true);
+                console.log('WebSocket connected');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+
+                    if (message.type === 'analysis') {
+                        // Section can be in message.section or message.lighting.section
+                        if (message.section) {
+                            currentSection = message.section.toUpperCase();
+                        } else if (message.lighting && message.lighting.section) {
+                            currentSection = message.lighting.section.toUpperCase();
+                        }
+                        if (message.lighting && message.lighting.fixtures) {
+                            message.lighting.fixtures.forEach(fixtureData => {
+                                const fixture = fixtures[fixtureData.id];
+                                if (fixture) {
+                                    fixture.pan = fixtureData.pan || 0;
+                                    fixture.tilt = fixtureData.tilt || 0;
+                                    fixture.dimmer = fixtureData.dimmer || 0;
+                                    fixture.r = fixtureData.r || 0;
+                                    fixture.g = fixtureData.g || 0;
+                                    fixture.b = fixtureData.b || 0;
+                                    fixture.zoom = fixtureData.zoom || 0.5;
+                                    fixture.strobeVal = fixtureData.strobe || 0;
+                                }
+                            });
+                        }
+                    } else if (message.type === 'audio') {
+                        if (message.data && message.data.spectrum) {
+                            audioData = message.data.spectrum.slice(0, 32);
+                            while (audioData.length < 32) {
+                                audioData.push(0);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('WebSocket message parse error:', e);
+                }
+            };
+
+            ws.onerror = (error) => {
+                wsConnected = false;
+                updateConnectionStatus(false);
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = () => {
+                wsConnected = false;
+                updateConnectionStatus(false);
+                console.log('WebSocket disconnected, attempting reconnect in 3s...');
+                setTimeout(connectWebSocket, 3000);
+            };
+        }
+
+        connectWebSocket();
+
+        // ==================== AUDIO CAPTURE ====================
+        let audioContext = null;
+        let mediaStream = null;
+        let scriptProcessor = null;
+        let audioWs = null;
+        let isCapturing = false;
+
+        const captureBtn = document.getElementById('audio-capture-btn');
+        const audioStatus = document.getElementById('audio-status');
+
+        captureBtn.addEventListener('click', async () => {
+            if (isCapturing) {
+                stopAudioCapture();
+            } else {
+                startAudioCapture();
+            }
+        });
+
+        async function startAudioCapture() {
+            try {
+                const displayStream = await navigator.mediaDevices.getDisplayMedia({
+                    audio: true,
+                    video: true
+                });
+
+                const audioTrack = displayStream.getAudioTracks()[0];
+                if (!audioTrack) {
+                    throw new Error('No audio track in display stream');
+                }
+
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(new MediaStream([audioTrack]));
+
+                // Create script processor for audio capture
+                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                source.connect(scriptProcessor);
+                scriptProcessor.connect(audioContext.destination);
+
+                // Connect to audio proxy WebSocket
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                audioWs = new WebSocket(`${protocol}//${window.location.host}/ws/audio-proxy`);
+
+                audioWs.onopen = () => {
+                    console.log('Audio WebSocket connected');
+                };
+
+                scriptProcessor.onaudioprocess = (event) => {
+                    const inputData = event.inputBuffer.getChannelData(0);
+                    const pcmData = new Int16Array(inputData.length);
+
+                    for (let i = 0; i < inputData.length; i++) {
+                        pcmData[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+                    }
+
+                    if (audioWs && audioWs.readyState === WebSocket.OPEN) {
+                        audioWs.send(pcmData.buffer);
+                    }
+                };
+
+                isCapturing = true;
+                captureBtn.classList.add('active');
+                audioStatus.textContent = 'Capturing Audio';
+                audioStatus.style.color = '#f5576c';
+
+                // Stop video track (we only want audio)
+                displayStream.getVideoTracks().forEach(track => track.stop());
+
+            } catch (error) {
+                console.error('Audio capture error:', error);
+                audioStatus.textContent = 'Capture Failed';
+                audioStatus.style.color = '#ff6b6b';
+            }
+        }
+
+        function stopAudioCapture() {
+            if (scriptProcessor) {
+                scriptProcessor.disconnect();
+            }
+            if (audioContext) {
+                audioContext.close();
+            }
+            if (audioWs) {
+                audioWs.close();
+            }
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+            }
+
+            isCapturing = false;
+            captureBtn.classList.remove('active');
+            audioStatus.textContent = 'Not Capturing';
+            audioStatus.style.color = '#00c8ff';
+        }
+
+        // ==================== UPDATE FIXTURE VISUALS ====================
+        const _tmpColor = new THREE.Color();
+
+        function updateFixtures() {
+            Object.keys(fixtures).forEach(fixtureId => {
+                const fixture = fixtures[fixtureId];
+                const [fx, fy, fz] = fixture.config.position;
+
+                if (fixture.type === 'beam' || fixture.type === 'spot' || fixture.type === 'wash') {
+                    _tmpColor.setRGB(fixture.r, fixture.g, fixture.b);
+
+                    // Pan rotates the whole group around Y axis
+                    fixture.group.rotation.y = (fixture.pan * Math.PI) / 180;
+
+                    // Tilt rotates the inner tiltGroup around X axis
+                    if (fixture.tiltGroup) {
+                        fixture.tiltGroup.rotation.x = (fixture.tilt * Math.PI) / 180;
+                    }
+
+                    // Update cone color and opacity (no recreation!)
+                    if (fixture.coneMesh) {
+                        const mat = fixture.coneMesh.material;
+                        mat.color.copy(_tmpColor);
+                        mat.opacity = fixture.dimmer > 0.02
+                            ? fixture.beamOpacity * fixture.dimmer * 3.0
+                            : 0;
+                        fixture.coneMesh.visible = fixture.dimmer > 0.02;
+                    }
+
+                    // Lamp glow
+                    if (fixture.lampMesh) {
+                        fixture.lampMesh.material.color.copy(_tmpColor);
+                        fixture.lampMesh.visible = fixture.dimmer > 0.02;
+                    }
+
+                    // Floor spot position (world-space) based on pan/tilt and fixture height
+                    if (fixture.floorSpot) {
+                        const panRad = (fixture.pan * Math.PI) / 180;
+                        const tiltRad = (fixture.tilt * Math.PI) / 180;
+                        // Project beam to floor (y=0) from fixture height
+                        const dist = fy / Math.max(0.1, Math.cos(tiltRad));
+                        const spotX = fx + Math.sin(panRad) * dist * Math.sin(Math.abs(tiltRad));
+                        const spotZ = fz - Math.cos(panRad) * dist * Math.sin(Math.abs(tiltRad));
+                        fixture.floorSpot.position.set(spotX, 0.02, spotZ);
+                        fixture.floorSpot.material.color.copy(_tmpColor);
+                        fixture.floorSpot.material.opacity = fixture.dimmer > 0.02
+                            ? Math.min(0.35, fixture.dimmer * 0.4)
+                            : 0;
+                        fixture.floorSpot.scale.setScalar(0.8 + fixture.zoom * 1.5);
+                        fixture.floorSpot.visible = fixture.dimmer > 0.02;
+                    }
+
+                } else if (fixture.type === 'bar') {
+                    _tmpColor.setRGB(fixture.r, fixture.g, fixture.b);
+                    if (fixture.barMesh) {
+                        fixture.barMesh.material.color.copy(_tmpColor);
+                        fixture.barMesh.material.opacity = Math.max(0.1, fixture.dimmer);
+                    }
+
+                } else if (fixture.type === 'strobe' || fixture.type === 'blinder') {
+                    if (fixture.strobeMesh) {
+                        fixture.strobeMesh.material.opacity = fixture.dimmer > 0.5 ? 1.0 : 0;
+                        fixture.strobeMesh.visible = fixture.dimmer > 0.5;
+                    }
+                }
+            });
+        }
+
+        // ==================== UI UPDATES ====================
+        function updateConnectionStatus(connected) {
+            const status = document.getElementById('connection-status');
+            const dot = status.querySelector('.status-dot');
+
+            if (connected) {
+                dot.classList.remove('disconnected');
+                dot.classList.add('connected');
+                status.innerHTML = '<span class="status-dot connected"></span>Connected';
+            } else {
+                dot.classList.remove('connected');
+                dot.classList.add('disconnected');
+                status.innerHTML = '<span class="status-dot disconnected"></span>Disconnected';
+            }
+        }
+
+        function updateSpectrumDisplay() {
+            const container = document.getElementById('audio-spectrum');
+            const bars = container.querySelectorAll('.spectrum-bar');
+
+            audioData.forEach((value, i) => {
+                if (bars[i]) {
+                    const height = Math.min(80, value * 100);
+                    bars[i].style.height = height + 'px';
+                }
+            });
+        }
+
+        // Create spectrum bars
+        const spectrumContainer = document.getElementById('audio-spectrum');
+        for (let i = 0; i < 32; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'spectrum-bar';
+            bar.style.height = '2px';
+            spectrumContainer.appendChild(bar);
+        }
+
+        // ==================== ANIMATION LOOP ====================
+        let lastFrameTime = performance.now();
+        let frameCount = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Update fixture visuals
+            updateFixtures();
+
+            // Update UI
+            document.getElementById('section-name').textContent = currentSection;
+            updateSpectrumDisplay();
+
+            // Update FPS
+            const now = performance.now();
+            frameCount++;
+            if (now - lastFrameTime >= 1000) {
+                document.getElementById('fps-counter').textContent = `FPS: ${frameCount}`;
+                frameCount = 0;
+                lastFrameTime = now;
+            }
+
+            // Render
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // ==================== WINDOW RESIZE ====================
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            stopAudioCapture();
+            if (ws) ws.close();
+            if (audioWs) audioWs.close();
+        });
+
+    </script>
 </body>
 </html>

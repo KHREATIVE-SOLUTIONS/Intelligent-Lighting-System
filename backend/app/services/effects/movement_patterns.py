@@ -96,6 +96,13 @@ class MovementParams:
 class MovementEngine:
     """
     Generates pan/tilt values for fixtures based on movement patterns.
+
+    Human-like features:
+    - Momentum/inertia: fixtures don't start/stop instantly
+    - Micro-drift: subtle random wobble mimics real servo jitter
+    - Breath modulation: amplitude gently swells and ebbs
+    - Anticipation: slight overshoot on direction changes
+    - Organic acceleration: ease-in/ease-out on all transitions
     """
 
     def __init__(self):
@@ -107,6 +114,13 @@ class MovementEngine:
         # Per-fixture state for smoothing
         self._fixture_targets: Dict[str, Tuple[float, float]] = {}
         self._fixture_current: Dict[str, Tuple[float, float]] = {}
+
+        # Per-fixture velocity for momentum simulation
+        self._fixture_velocity: Dict[str, Tuple[float, float]] = {}
+
+        # Per-fixture micro-drift (organic servo jitter)
+        self._fixture_drift: Dict[str, Tuple[float, float]] = {}
+        self._drift_seed: float = random.random() * 1000.0
 
         # Random walk state
         self._random_targets: Dict[str, Tuple[float, float]] = {}
@@ -121,6 +135,16 @@ class MovementEngine:
         self._fixture_positions: Dict[str, Tuple[float, float, float]] = {}
         self._position_phase_cache: Dict[str, float] = {}
         self._phase_cache_dirty: bool = True
+
+        # Breath modulation: slow amplitude swell (mimics human LD "riding" faders)
+        self._breath_phase: float = 0.0
+        self._breath_rate: float = 0.07  # Very slow (one cycle ~14 seconds)
+        self._breath_depth: float = 0.12  # +/- 12% amplitude modulation
+
+        # Momentum parameters
+        self._momentum_enabled: bool = True
+        self._momentum_damping: float = 0.92  # Per-frame velocity retention
+        self._momentum_spring: float = 8.0    # Spring constant toward target
 
     def trigger_beat(self):
         """Trigger beat event for beat-synced patterns."""
@@ -179,6 +203,11 @@ class MovementEngine:
         self._delta_time = delta_time  # BUG-022 fix: store for frame-rate-independent smoothing
         self._random_timer += delta_time
 
+        # Update breath modulation (slow organic amplitude swell)
+        self._breath_phase += self._breath_rate * delta_time
+        if self._breath_phase > 1.0:
+            self._breath_phase -= 1.0
+
     def get_position(
         self,
         fixture_id: str,
@@ -205,27 +234,66 @@ class MovementEngine:
             fixture_x, fixture_y, fixture_z, index
         )
 
-        # Apply movement pattern
+        # Apply movement pattern with breath modulation on amplitude
         if self.params.pattern == MovementType.NONE:
             target_pan, target_tilt = base_pan, base_tilt
         else:
             move_pan, move_tilt = self._calculate_movement(
                 fixture_id, index, phase_offset, fixture_x
             )
+
+            # Breath modulation: gentle amplitude swell mimics human LD "riding" faders
+            breath = 1.0 + self._breath_depth * math.sin(
+                self._breath_phase * math.pi * 2
+                + index * 0.3  # Slight per-fixture offset so they don't all breathe in unison
+            )
+            move_pan *= breath
+            move_tilt *= breath
+
             target_pan = base_pan + move_pan
             target_tilt = base_tilt + move_tilt
 
-        # Smooth interpolation
+        # Initialize fixture state if new
         if fixture_id not in self._fixture_current:
             self._fixture_current[fixture_id] = (target_pan, target_tilt)
+            self._fixture_velocity[fixture_id] = (0.0, 0.0)
 
         current_pan, current_tilt = self._fixture_current[fixture_id]
-        # BUG-022 fix: frame-rate-independent smoothing using exponential decay
-        # At 60fps (dt=0.0167), factor ≈ smoothing (preserves original feel)
-        smooth = 1.0 - (1.0 - self.params.smoothing) ** (self._delta_time * 60.0)
 
-        new_pan = current_pan + (target_pan - current_pan) * smooth
-        new_tilt = current_tilt + (target_tilt - current_tilt) * smooth
+        # Micro-drift: subtle Perlin-like wobble simulating real servo micro-movements
+        # Each fixture gets unique drift based on its hash + time
+        drift_seed = hash(fixture_id) * 0.001 + self._drift_seed
+        drift_pan = 0.4 * math.sin(self.time * 1.7 + drift_seed) * math.sin(self.time * 0.9 + drift_seed * 2.3)
+        drift_tilt = 0.3 * math.sin(self.time * 2.1 + drift_seed * 1.5) * math.cos(self.time * 1.1 + drift_seed)
+
+        if self._momentum_enabled and self.params.pattern != MovementType.NONE:
+            # Spring-damper momentum system for natural acceleration/deceleration
+            vel_pan, vel_tilt = self._fixture_velocity.get(fixture_id, (0.0, 0.0))
+            dt = self._delta_time
+
+            # Spring force toward target
+            force_pan = (target_pan - current_pan) * self._momentum_spring
+            force_tilt = (target_tilt - current_tilt) * self._momentum_spring
+
+            # Apply force to velocity
+            vel_pan += force_pan * dt
+            vel_tilt += force_tilt * dt
+
+            # Damping (frame-rate-independent)
+            damping = self._momentum_damping ** (dt * 60.0)
+            vel_pan *= damping
+            vel_tilt *= damping
+
+            # Update position
+            new_pan = current_pan + vel_pan * dt + drift_pan
+            new_tilt = current_tilt + vel_tilt * dt + drift_tilt
+
+            self._fixture_velocity[fixture_id] = (vel_pan, vel_tilt)
+        else:
+            # Standard exponential smoothing (for NONE pattern or when momentum disabled)
+            smooth = 1.0 - (1.0 - self.params.smoothing) ** (self._delta_time * 60.0)
+            new_pan = current_pan + (target_pan - current_pan) * smooth + drift_pan
+            new_tilt = current_tilt + (target_tilt - current_tilt) * smooth + drift_tilt
 
         self._fixture_current[fixture_id] = (new_pan, new_tilt)
         return (new_pan, new_tilt)
@@ -443,27 +511,38 @@ class MovementEngine:
         return (pan_offset, tilt_offset)
 
     def _calculate_bump(self, is_pan: bool) -> Tuple[float, float]:
-        """Calculate bump offset (quick attack, slower decay)."""
+        """Calculate bump offset with natural overshoot and elastic settle.
+
+        Human operators create bumps that slightly overshoot then settle,
+        like a physical mass on a spring. This gives bumps that organic
+        'snap and settle' feel rather than mechanical triangles.
+        """
         if not self._bump_active:
             return (0.0, 0.0)
 
         elapsed = self.time - self._bump_start_time
         attack = self.params.bump_attack
         decay = self.params.bump_decay
-        total_duration = attack + decay
+        total_duration = attack + decay * 1.6  # Extended for elastic settle
 
         if elapsed > total_duration:
             self._bump_active = False
             return (0.0, 0.0)
 
-        # Attack phase: quick ramp up
+        # Attack phase: quick ease-out ramp (fast start, slight deceleration)
         if elapsed < attack:
-            intensity = elapsed / attack
+            t = elapsed / attack
+            intensity = 1.0 - (1.0 - t) * (1.0 - t)  # Ease-out quadratic
         else:
-            # Decay phase: exponential decay
+            # Decay phase: damped spring oscillation (overshoot + settle)
             decay_elapsed = elapsed - attack
-            intensity = 1.0 - (decay_elapsed / decay)
-            intensity = max(0, intensity * intensity)  # Squared for smoother decay
+            decay_t = decay_elapsed / decay
+            # Exponential decay envelope
+            envelope = math.exp(-decay_t * 3.5)
+            # Damped oscillation: one small overshoot before settling
+            oscillation = math.cos(decay_t * math.pi * 1.8)
+            intensity = envelope * oscillation
+            intensity = max(-0.15, intensity)  # Allow slight negative overshoot
 
         amplitude = self.params.pan_amplitude if is_pan else self.params.tilt_amplitude
         offset = intensity * amplitude * self._bump_direction

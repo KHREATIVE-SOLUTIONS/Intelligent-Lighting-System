@@ -264,6 +264,21 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         ml_data=ml_data,
     )
 
+    # Update vocal analyzer (cadence detection — lightweight, every frame)
+    vocal_analyzer = getattr(effects_engine, '_vocal_analyzer', None)
+    if vocal_analyzer is not None:
+        spectral_centroid = float(freq.get('spectral_centroid', 1000.0))
+        onset_env = float(freq.get('spectral_flux', 0.0))
+        vocal_analyzer.update_cadence(
+            audio_chunk=None,  # We don't have raw samples here
+            frequency_bands=bands,
+            spectral_centroid=spectral_centroid,
+            onset_envelope=onset_env,
+            bass=min(1.0, bass_energy),
+            energy=min(1.0, rms_energy * 2),
+            dt=1.0 / 60.0,  # approximate frame time
+        )
+
     # Get the current DMX frame (already updated by effects engine loop)
     dmx_frame = effects_engine.fixtures.get_dmx_frame(universe=0)
 
@@ -399,6 +414,14 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                         # Convert bytes to numpy array (assuming 16-bit PCM)
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                         audio_float = audio_array.astype(np.float32) / 32768.0
+
+                        # Feed raw audio to vocal analyzer for Whisper transcription
+                        vocal_analyzer = getattr(app.state, 'vocal_analyzer', None)
+                        if vocal_analyzer is not None:
+                            vocal_analyzer.feed_audio(audio_float)
+                            # Run Whisper transcription periodically (non-blocking)
+                            import time as _time
+                            await vocal_analyzer.maybe_transcribe(_time.time())
 
                         # Process audio
                         analysis = await audio_analyzer.process_chunk(audio_float)

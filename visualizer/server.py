@@ -26,6 +26,7 @@ async def lifespan(app: FastAPI):
     """Manage startup and shutdown lifecycle."""
     await start_artnet_receiver()
     asyncio.create_task(data_polling_loop())
+    asyncio.create_task(backend_ws_relay())
     yield
     global _http_session
     if _http_session and not _http_session.closed:
@@ -196,7 +197,7 @@ async def fetch_look_spec():
     global look_spec_data
     try:
         session = await _get_http_session()
-        async with session.get(f"{ILS_BACKEND_URL}/api/effects/look-spec") as resp:
+        async with session.get(f"{ILS_BACKEND_URL}/api/look-spec") as resp:
             if resp.status == 200:
                 look_spec_data = await resp.json()
                 return True
@@ -224,16 +225,47 @@ async def fetch_dmx_data():
     return False
 
 
+async def fetch_fixture_state():
+    """Fetch fixture state snapshot from ILS backend effects engine."""
+    try:
+        session = await _get_http_session()
+        async with session.get(f"{ILS_BACKEND_URL}/api/effects/fixture-states") as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                fixtures = data.get("fixture_states", [])
+                section = data.get("section", "")
+                if fixtures:
+                    message = json.dumps({
+                        "type": "analysis",
+                        "section": section,
+                        "lighting": {"fixtures": fixtures, "section": section}
+                    })
+                    disconnected = set()
+                    for client in list(clients):
+                        try:
+                            await client.send_text(message)
+                        except Exception:
+                            disconnected.add(client)
+                    clients.difference_update(disconnected)
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 async def data_polling_loop():
-    """Continuously poll for audio and DMX data from ILS backend."""
-    print("Starting data polling loop at 60Hz...")
+    """Continuously poll for audio, DMX, and fixture state data from ILS backend."""
+    print("Starting data polling loop at 30Hz...")
     while True:
         try:
-            # Fetch both audio and DMX data concurrently
+            # Fetch audio, DMX, and fixture state concurrently
             audio_task = fetch_audio_data()
             dmx_task = fetch_dmx_data()
+            fixture_task = fetch_fixture_state()
             look_task = fetch_look_spec()
-            audio_ok, dmx_ok, _ = await asyncio.gather(audio_task, dmx_task, look_task)
+            audio_ok, dmx_ok, fixture_ok, _ = await asyncio.gather(
+                audio_task, dmx_task, fixture_task, look_task
+            )
 
             if audio_ok:
                 await broadcast_audio()
@@ -242,7 +274,104 @@ async def data_polling_loop():
         except Exception as e:
             # BUG-040 fix: log polling errors instead of silencing them
             logger.debug(f"Polling error: {e}")
-        await asyncio.sleep(0.016)  # 60 Hz polling
+        await asyncio.sleep(0.033)  # 30 Hz polling
+
+
+async def backend_ws_relay():
+    """Connect to the backend WebSocket and relay analysis messages to browser clients.
+
+    This gives the visualizer access to per-fixture state (gobo, zoom, iris, frost, prism)
+    and full analysis data that the REST polling loop doesn't provide.
+    """
+    import websockets as ws_lib
+
+    # Convert http URL to ws URL
+    ws_base = ILS_BACKEND_URL.replace("http://", "ws://").replace("https://", "wss://")
+    ws_url = f"{ws_base}/ws/audio"
+
+    while True:
+        try:
+            print(f"Connecting to backend WebSocket at {ws_url}...")
+            async with ws_lib.connect(ws_url, ping_interval=20, ping_timeout=10) as backend_ws:
+                print(f"Connected to backend WebSocket!")
+
+                # Enable reactive mode so the backend starts sending analysis data
+                await backend_ws.send(json.dumps({"type": "reactive_on", "rig_id": 5}))
+
+                async for message in backend_ws:
+                    try:
+                        # Relay the full analysis message to all browser clients
+                        # This includes fixture states with gobo/zoom/iris/frost/prism
+                        if clients:
+                            disconnected = set()
+                            for client in list(clients):
+                                try:
+                                    await client.send_text(message)
+                                except Exception:
+                                    disconnected.add(client)
+                            clients.difference_update(disconnected)
+                    except Exception as e:
+                        logger.debug(f"Relay error: {e}")
+
+        except Exception as e:
+            print(f"Backend WebSocket connection failed: {e}, retrying in 3s...")
+            await asyncio.sleep(3)
+
+
+# Shared backend audio WS connection for proxying browser audio
+_backend_audio_ws = None
+_backend_audio_ws_lock = asyncio.Lock()
+
+
+async def _get_backend_audio_ws():
+    """Get or create a persistent WebSocket connection to the backend audio endpoint."""
+    global _backend_audio_ws
+    import websockets as ws_lib
+    async with _backend_audio_ws_lock:
+        if _backend_audio_ws is not None:
+            try:
+                await _backend_audio_ws.ping()
+                return _backend_audio_ws
+            except Exception:
+                _backend_audio_ws = None
+        ws_base = ILS_BACKEND_URL.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{ws_base}/ws/audio"
+        try:
+            _backend_audio_ws = await ws_lib.connect(ws_url, ping_interval=20, ping_timeout=10)
+            # Enable reactive mode
+            await _backend_audio_ws.send(json.dumps({"type": "reactive_on", "rig_id": 5}))
+            print(f"Audio proxy: connected to backend at {ws_url}")
+            return _backend_audio_ws
+        except Exception as e:
+            print(f"Audio proxy: failed to connect to backend: {e}")
+            return None
+
+
+@app.websocket("/ws/audio-proxy")
+async def audio_proxy_endpoint(websocket: WebSocket):
+    """Proxy browser-captured audio to the backend audio WebSocket."""
+    await websocket.accept()
+    print("Audio proxy: browser client connected")
+    chunks_forwarded = 0
+    try:
+        while True:
+            # Receive binary PCM audio from browser
+            data = await websocket.receive_bytes()
+            backend_ws = await _get_backend_audio_ws()
+            if backend_ws:
+                try:
+                    await backend_ws.send(data)
+                    chunks_forwarded += 1
+                    if chunks_forwarded % 100 == 0:
+                        print(f"Audio proxy: forwarded {chunks_forwarded} chunks")
+                except Exception as e:
+                    global _backend_audio_ws
+                    _backend_audio_ws = None
+                    print(f"Audio proxy: send failed, will reconnect: {e}")
+    except WebSocketDisconnect:
+        print(f"Audio proxy: browser disconnected after {chunks_forwarded} chunks")
+    except Exception as e:
+        print(f"Audio proxy: error: {e}")
 
 
 @app.websocket("/ws")

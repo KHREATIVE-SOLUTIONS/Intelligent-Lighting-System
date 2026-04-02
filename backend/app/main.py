@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
             auto_mode=True,
             movement_enabled=True,
             dimmer_enabled=True,
-            strobe_enabled=False,  # Keep off by default for cleaner looks
+            strobe_enabled=True,  # Strobes fire on high-energy parts (drops, chorus hits)
         ))
 
         # Connect effects engine to DMX controller
@@ -126,9 +126,9 @@ async def lifespan(app: FastAPI):
         from app.api.endpoints.demo import set_demo_effects_engine
         set_demo_effects_engine(app.state.effects_engine)
 
-        # Auto-apply pro beam-room preset so visualizer starts with the new top-down rig
+        # Auto-apply bigroom EDM preset for the Hakkasan/Amnesia style venue
         from app.services.demo.venue_presets import create_venue_rig
-        manager, preset = create_venue_rig("pro_beam_room")
+        manager, preset = create_venue_rig("bigroom_edm")
         if manager:
             app.state.effects_engine.fixtures = manager
             for zone_spec in preset.key_zones:
@@ -143,6 +143,18 @@ async def lifespan(app: FastAPI):
                 except (ValueError, Exception):
                     pass
             print(f"Auto-applied pro_beam_room preset ({len(preset.fixtures)} fixtures)")
+
+        # Initialize vocal analyzer for lyric-aware lighting
+        try:
+            from app.services.audio.vocal_analyzer import VocalAnalyzer
+            app.state.vocal_analyzer = VocalAnalyzer(sample_rate=44100)
+            app.state.effects_engine.set_vocal_analyzer(app.state.vocal_analyzer)
+            # Start Whisper loading in background (non-blocking)
+            asyncio.create_task(app.state.vocal_analyzer.initialize_whisper())
+            print("Vocal analyzer initialized (lyric-aware lighting enabled)")
+        except Exception as e:
+            print(f"Vocal analyzer init skipped: {e}")
+            app.state.vocal_analyzer = None
 
         # Start the effects engine async loop (BUG-016 fix: store task reference)
         import asyncio
@@ -457,6 +469,14 @@ app.include_router(qr_scanning.router, prefix="/api", tags=["QR Scanning"])
 app.include_router(demo.router, prefix="/api", tags=["Demo & Venues"])
 
 
+# Serve the 3D visualizer as static files from the backend
+# (eliminates the need for a separate HTTP server on port 8080)
+import os as _os
+_visualizer_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))), "visualizer")
+if _os.path.isdir(_visualizer_dir):
+    app.mount("/visualizer", StaticFiles(directory=_visualizer_dir, html=True), name="visualizer")
+
+
 @app.get("/")
 async def root():
     """Root endpoint returning API information."""
@@ -465,6 +485,7 @@ async def root():
         "version": "1.0.0",
         "status": "running",
         "docs": "/docs",
+        "visualizer": "/visualizer/",
     }
 
 

@@ -1,16 +1,28 @@
 """
-System Audio Capture (WASAPI Loopback)
+System Audio Capture (Cross-Platform)
 ======================================
 
 Captures audio from system output with explicit device selection support.
-Backends (in priority order for auto mode):
+Auto-detects platform and selects appropriate backends:
+
+Windows backends (in priority order for auto mode):
 1) soundcard WASAPI loopback
 2) sounddevice input/loopback devices
 3) pyaudiowpatch WASAPI loopback devices
+
+macOS backends:
+1) sounddevice via CoreAudio (requires virtual audio device like BlackHole or Loopback)
+2) soundcard via CoreAudio
+3) pyaudio via PortAudio
+
+Linux backends:
+1) sounddevice via PulseAudio/ALSA
+2) soundcard
 """
 
 import asyncio
 import logging
+import sys
 import threading
 from typing import Optional, Callable
 
@@ -18,11 +30,28 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Platform detection
+PLATFORM = sys.platform  # 'darwin', 'win32', 'linux'
+IS_MACOS = PLATFORM == "darwin"
+IS_WINDOWS = PLATFORM == "win32"
+IS_LINUX = PLATFORM.startswith("linux")
+
 # Lazy imports
 _sc = None  # soundcard
 _sd = None  # sounddevice
-_pa = None  # pyaudiowpatch
+_pa = None  # pyaudiowpatch (Windows) or pyaudio (macOS/Linux)
 ENABLE_SOUNDCARD_BACKEND = False
+
+# macOS virtual audio device keywords (for system audio loopback)
+_MACOS_LOOPBACK_KEYWORDS = [
+    "blackhole",
+    "loopback",
+    "soundflower",
+    "existential audio",
+    "multi-output",
+    "aggregate",
+    "virtual",
+]
 
 
 def _get_soundcard():
@@ -53,11 +82,30 @@ def _get_pyaudio():
     global _pa
     if _pa is None:
         try:
-            import pyaudiowpatch as pyaudio
+            if IS_WINDOWS:
+                import pyaudiowpatch as pyaudio
+            else:
+                import pyaudio
             _pa = pyaudio
         except ImportError:
             _pa = False
     return _pa if _pa is not False else None
+
+
+def _is_loopback_device_name(name: str) -> bool:
+    """Check if a device name indicates a loopback/virtual audio device."""
+    name_lower = name.lower()
+    if IS_WINDOWS:
+        return any(kw in name_lower for kw in [
+            "loopback", "stereo mix", "what u hear", "wave out",
+        ])
+    elif IS_MACOS:
+        return any(kw in name_lower for kw in _MACOS_LOOPBACK_KEYWORDS)
+    else:
+        # Linux: PulseAudio monitor devices
+        return any(kw in name_lower for kw in [
+            "monitor", "loopback", "pulse",
+        ])
 
 
 class SystemAudioCapture:
@@ -124,13 +172,13 @@ class SystemAudioCapture:
                 devices = sd.query_devices()
                 for i, dev in enumerate(devices):
                     hostapi_name = sd.query_hostapis(dev["hostapi"])["name"]
-                    name_lower = dev["name"].lower()
                     is_loopback = (
-                        "loopback" in name_lower
-                        or "stereo mix" in name_lower
-                        or "what u hear" in name_lower
-                        or "wave out" in name_lower
+                        _is_loopback_device_name(dev["name"])
+                        and dev["max_input_channels"] > 0
                     )
+                    # On macOS, also flag input-capable devices as usable
+                    # (users may route audio through BlackHole etc.)
+                    is_input = dev["max_input_channels"] > 0
                     result.append(
                         {
                             "index": api_index,
@@ -139,9 +187,11 @@ class SystemAudioCapture:
                             "max_output_channels": dev["max_output_channels"],
                             "default_samplerate": dev["default_samplerate"],
                             "hostapi": hostapi_name,
-                            "is_loopback": is_loopback and dev["max_input_channels"] > 0,
+                            "is_loopback": is_loopback,
+                            "is_input": is_input,
                             "device_type": "sounddevice",
                             "sd_index": i,
+                            "platform": PLATFORM,
                         }
                     )
                     api_index += 1
@@ -154,23 +204,48 @@ class SystemAudioCapture:
             try:
                 for i in range(p.get_device_count()):
                     info = p.get_device_info_by_index(i)
-                    if info.get("isLoopbackDevice", False):
-                        result.append(
-                            {
-                                "index": api_index,
-                                "name": info["name"],
-                                "max_input_channels": info.get("maxInputChannels", 0),
-                                "max_output_channels": info.get("maxOutputChannels", 0),
-                                "default_samplerate": info.get("defaultSampleRate", 44100),
-                                "hostapi": "WASAPI Loopback (pyaudiowpatch)",
-                                "is_loopback": True,
-                                "device_type": "pyaudio_loopback",
-                                "pa_index": i,
-                            }
-                        )
-                        api_index += 1
+                    if IS_WINDOWS:
+                        # Windows: pyaudiowpatch exposes isLoopbackDevice
+                        if info.get("isLoopbackDevice", False):
+                            result.append(
+                                {
+                                    "index": api_index,
+                                    "name": info["name"],
+                                    "max_input_channels": info.get("maxInputChannels", 0),
+                                    "max_output_channels": info.get("maxOutputChannels", 0),
+                                    "default_samplerate": info.get("defaultSampleRate", 44100),
+                                    "hostapi": "WASAPI Loopback (pyaudiowpatch)",
+                                    "is_loopback": True,
+                                    "device_type": "pyaudio_loopback",
+                                    "pa_index": i,
+                                    "platform": PLATFORM,
+                                }
+                            )
+                            api_index += 1
+                    else:
+                        # macOS/Linux: list input devices, detect virtual loopback by name
+                        max_in = info.get("maxInputChannels", 0)
+                        if max_in > 0:
+                            is_loopback = _is_loopback_device_name(info["name"])
+                            hostapi_label = "CoreAudio (pyaudio)" if IS_MACOS else "PortAudio (pyaudio)"
+                            result.append(
+                                {
+                                    "index": api_index,
+                                    "name": info["name"],
+                                    "max_input_channels": max_in,
+                                    "max_output_channels": info.get("maxOutputChannels", 0),
+                                    "default_samplerate": info.get("defaultSampleRate", 44100),
+                                    "hostapi": hostapi_label,
+                                    "is_loopback": is_loopback,
+                                    "is_input": True,
+                                    "device_type": "pyaudio_input",
+                                    "pa_index": i,
+                                    "platform": PLATFORM,
+                                }
+                            )
+                            api_index += 1
             except Exception as e:
-                logger.debug(f"Error listing pyaudiowpatch devices: {e}")
+                logger.debug(f"Error listing pyaudio devices: {e}")
             finally:
                 p.terminate()
 
@@ -257,16 +332,12 @@ class SystemAudioCapture:
             return None
         devices = sd.query_devices()
 
+        # First pass: prefer known loopback/virtual devices
         for i, dev in enumerate(devices):
-            name_lower = dev["name"].lower()
-            if dev["max_input_channels"] > 0 and (
-                "loopback" in name_lower
-                or "stereo mix" in name_lower
-                or "what u hear" in name_lower
-                or "wave out" in name_lower
-            ):
+            if dev["max_input_channels"] > 0 and _is_loopback_device_name(dev["name"]):
                 return i
 
+        # Second pass: default input device
         try:
             default_input = sd.default.device[0]
             if default_input is not None and default_input >= 0:
@@ -276,6 +347,7 @@ class SystemAudioCapture:
         except Exception:
             pass
 
+        # Third pass: any input device
         for i, dev in enumerate(devices):
             if dev["max_input_channels"] > 0:
                 return i
@@ -396,7 +468,7 @@ class SystemAudioCapture:
                     logger.error("Selected sounddevice entry is missing sd_index")
                     return False
                 return self._start_sounddevice(int(sd_index))
-            if dtype == "pyaudio_loopback":
+            if dtype in ("pyaudio_loopback", "pyaudio_input"):
                 pa_index = selected.get("pa_index")
                 if pa_index is None:
                     logger.error("Selected pyaudio entry is missing pa_index")
@@ -468,9 +540,10 @@ class SystemAudioCapture:
             "sample_rate": self.sample_rate,
             "chunk_size": self.chunk_size,
             "channels": self.channels,
+            "platform": PLATFORM,
             "soundcard_available": _get_soundcard() is not None,
             "sounddevice_available": _get_sounddevice() is not None,
-            "pyaudiowpatch_available": _get_pyaudio() is not None,
+            "pyaudio_available": _get_pyaudio() is not None,
             "chunk_count": self._chunk_count,
             "last_rms": self._last_rms,
             "last_peak": self._last_peak,

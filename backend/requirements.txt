@@ -21,6 +21,10 @@ librosa==0.10.1
 # transformers==4.36.2
 # ultralytics==8.0.230
 
+# Vocal Analysis / Lyric Transcription (optional)
+# openai-whisper installs torch as a dependency
+openai-whisper>=20231117
+
 # WebSocket
 websockets==12.0
 python-multipart==0.0.6
@@ -46,10 +50,10 @@ mypy==1.8.0
 redis==5.0.1
 aioredis==2.0.1
 
-# ML/AI Dependencies (installed by install_models.py)
-torch>=2.1.0
-torchvision>=0.16.0
-torchaudio>=2.1.0
-transformers>=4.36.0
-ultralytics>=8.0.0
-BeatNet>=1.0.0
+# ML/AI Dependencies (installed separately by install_models.py)
+# torch>=2.1.0
+# torchvision>=0.16.0
+# torchaudio>=2.1.0
+# transformers>=4.36.0
+# ultralytics>=8.0.0
+# BeatNet>=1.0.0

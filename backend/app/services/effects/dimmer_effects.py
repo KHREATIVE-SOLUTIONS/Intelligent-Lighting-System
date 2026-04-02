@@ -25,6 +25,12 @@ class DimmerType(Enum):
     EXPONENTIAL_DECAY = "exp_decay"  # Smooth fade
     RANDOM_FLICKER = "flicker"       # Chaotic (10-60 Hz)
     GAUSSIAN_NOISE = "gaussian"      # Organic variation
+    # New human-like dimmer types
+    BREATH = "breath"                # Asymmetric breathing (slow rise, faster fall)
+    SWELL = "swell"                  # Musical swell (builds then holds)
+    AUDIENCE_SCAN = "audience_scan"  # Traveling spotlight feel across rig
+    BASS_PUMP = "bass_pump"          # Pumping dimmer locked to bass hits
+    SMOOTH_CHASE = "smooth_chase"    # Gaussian-shaped chase (no hard edges)
 
 
 @dataclass
@@ -62,6 +68,19 @@ class DimmerParams:
     # Noise parameters
     noise_amount: float = 0.2       # Standard deviation
 
+    # Breath parameters (asymmetric breathing)
+    breath_rise_ratio: float = 0.6   # Rise takes 60% of cycle, fall takes 40%
+    breath_hold_top: float = 0.1     # Hold at peak for 10% of cycle
+
+    # Audience scan parameters
+    scan_width: float = 3.0          # Width of scan beam in fixture units
+    scan_softness: float = 0.8       # Edge softness (0 = hard, 1 = very soft)
+
+    # Bass pump parameters
+    pump_attack: float = 0.02        # Very quick attack on bass hit
+    pump_release: float = 0.18       # Quick release for pumping feel
+    pump_depth: float = 0.5          # How much bass dips the dimmer
+
     def __post_init__(self):
         if self.beat_pattern is None:
             self.beat_pattern = [1.0, 0.5, 1.0, 0.5]  # Default 4-beat pattern
@@ -92,6 +111,14 @@ class DimmerEngine:
         self._current_beat: int = 0
         self._last_beat_time: float = 0.0
 
+        # Bass pump state
+        self._bass_pump_level: float = 0.0
+        self._last_bass_trigger: float = -1.0
+
+        # Swell state
+        self._swell_target: float = 0.0
+        self._swell_current: float = 0.0
+
     def set_effect(self, effect_type: DimmerType, **kwargs):
         """Set the current dimmer effect."""
         self.params.effect_type = effect_type
@@ -110,6 +137,12 @@ class DimmerEngine:
         self._current_beat = beat_number % len(self.params.beat_pattern)
         self._last_beat_time = self.time
 
+    def trigger_bass(self, bass_level: float):
+        """Trigger bass pump effect."""
+        if bass_level > 0.55:
+            self._bass_pump_level = min(1.0, bass_level)
+            self._last_bass_trigger = self.time
+
     def start_ramp(self, direction: str = "up"):
         """Start a ramp effect."""
         self._ramp_start_time = self.time
@@ -124,6 +157,16 @@ class DimmerEngine:
         """Update dimmer state."""
         self.time += delta_time
         self._delta_time = delta_time  # BUG-031 fix: store for frame-rate-independent flicker
+
+        # Decay bass pump level
+        if self._bass_pump_level > 0:
+            self._bass_pump_level *= max(0.0, 1.0 - delta_time / max(0.01, self.params.pump_release))
+            if self._bass_pump_level < 0.01:
+                self._bass_pump_level = 0.0
+
+        # Smooth swell toward target
+        diff = self._swell_target - self._swell_current
+        self._swell_current += diff * min(1.0, 2.5 * delta_time)
 
     def get_intensity(
         self,
@@ -232,6 +275,66 @@ class DimmerEngine:
             noise = random.gauss(0, self.params.noise_amount)
             intensity = base + noise
             intensity = max(minimum, min(1.0, intensity))
+
+        elif effect == DimmerType.BREATH:
+            # Asymmetric breathing: slow rise, brief hold at peak, faster fall
+            # Mimics how human LDs "breathe" intensity up slowly then release
+            cycle_pos = (self.params.speed * t + phase) % 1.0
+            rise_ratio = self.params.breath_rise_ratio
+            hold_ratio = self.params.breath_hold_top
+            fall_ratio = 1.0 - rise_ratio - hold_ratio
+
+            if cycle_pos < rise_ratio:
+                # Rise phase: ease-in-out for smooth start
+                rise_t = cycle_pos / rise_ratio
+                # Smooth ease-in-out (sine-based)
+                wave = 0.5 - 0.5 * math.cos(rise_t * math.pi)
+            elif cycle_pos < rise_ratio + hold_ratio:
+                # Hold at peak
+                wave = 1.0
+            else:
+                # Fall phase: slightly faster, ease-out
+                fall_t = (cycle_pos - rise_ratio - hold_ratio) / max(0.01, fall_ratio)
+                wave = 0.5 + 0.5 * math.cos(fall_t * math.pi)
+
+            intensity = minimum + (base - minimum) * wave
+
+        elif effect == DimmerType.SWELL:
+            # Musical swell: ramps up with energy, holds, then gently releases
+            # Useful for building tension - LD fader-ride feel
+            self._swell_target = energy  # Track energy as swell target
+            swell_value = self._swell_current
+            intensity = minimum + (base - minimum) * swell_value
+
+        elif effect == DimmerType.AUDIENCE_SCAN:
+            # Traveling warm spotlight across the rig (like scanning the audience)
+            scan_pos = (self.params.speed * t) % 1.0
+            # Gaussian falloff from scan position
+            fixture_pos = phase  # Phase offset represents fixture position in rig
+            dist = abs(scan_pos - fixture_pos)
+            dist = min(dist, 1.0 - dist)  # Wrap-around
+            # Gaussian beam shape
+            sigma = self.params.scan_softness * 0.15 + 0.03
+            scan_intensity = math.exp(-(dist * dist) / (2.0 * sigma * sigma))
+            intensity = minimum + (base - minimum) * scan_intensity
+
+        elif effect == DimmerType.BASS_PUMP:
+            # Pumping dimmer that dips on bass hits (sidechain compression feel)
+            # Creates that EDM "pump" where lights dim on the kick then swell back
+            pump_dip = self._bass_pump_level * self.params.pump_depth
+            intensity = base * (1.0 - pump_dip)
+            intensity = max(minimum, intensity)
+
+        elif effect == DimmerType.SMOOTH_CHASE:
+            # Gaussian-shaped chase with soft edges (no hard on/off)
+            chase_pos = (self.params.speed * t) % 1.0
+            fixture_pos = phase
+            dist = abs(chase_pos - fixture_pos)
+            dist = min(dist, 1.0 - dist)  # Wrap
+            sigma = 0.12  # Tight but soft gaussian
+            chase_val = math.exp(-(dist * dist) / (2.0 * sigma * sigma))
+            # Add a floor so fixtures are never fully off
+            intensity = minimum + (base - minimum) * (0.15 + 0.85 * chase_val)
 
         # Apply energy modulation with a minimum floor
         # This ensures lights are always somewhat visible even with no audio
@@ -361,7 +464,69 @@ DIMMER_PRESETS = {
         speed=1.0,
         phase_spread=1.0,
         min_intensity=0.1
-    )
+    ),
+    # New natural dimmer presets
+    "breath_slow": DimmerParams(
+        effect_type=DimmerType.BREATH,
+        speed=0.25,
+        min_intensity=0.15,
+        base_intensity=0.9,
+        breath_rise_ratio=0.65,
+        breath_hold_top=0.08,
+    ),
+    "breath_medium": DimmerParams(
+        effect_type=DimmerType.BREATH,
+        speed=0.5,
+        min_intensity=0.2,
+        base_intensity=1.0,
+        breath_rise_ratio=0.55,
+        breath_hold_top=0.12,
+    ),
+    "swell_energy": DimmerParams(
+        effect_type=DimmerType.SWELL,
+        base_intensity=1.0,
+        min_intensity=0.2,
+    ),
+    "audience_scan_slow": DimmerParams(
+        effect_type=DimmerType.AUDIENCE_SCAN,
+        speed=0.15,
+        phase_spread=1.0,
+        min_intensity=0.1,
+        scan_softness=0.8,
+    ),
+    "audience_scan_fast": DimmerParams(
+        effect_type=DimmerType.AUDIENCE_SCAN,
+        speed=0.5,
+        phase_spread=1.0,
+        min_intensity=0.15,
+        scan_softness=0.6,
+    ),
+    "bass_pump_heavy": DimmerParams(
+        effect_type=DimmerType.BASS_PUMP,
+        base_intensity=1.0,
+        min_intensity=0.15,
+        pump_depth=0.6,
+        pump_release=0.15,
+    ),
+    "bass_pump_subtle": DimmerParams(
+        effect_type=DimmerType.BASS_PUMP,
+        base_intensity=0.9,
+        min_intensity=0.3,
+        pump_depth=0.3,
+        pump_release=0.22,
+    ),
+    "smooth_chase_slow": DimmerParams(
+        effect_type=DimmerType.SMOOTH_CHASE,
+        speed=0.3,
+        phase_spread=1.0,
+        min_intensity=0.1,
+    ),
+    "smooth_chase_fast": DimmerParams(
+        effect_type=DimmerType.SMOOTH_CHASE,
+        speed=0.8,
+        phase_spread=1.0,
+        min_intensity=0.15,
+    ),
 }
 
 
