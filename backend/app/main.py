@@ -356,6 +356,13 @@ async def lifespan(app: FastAPI):
                                     spectral_flux=min(1.0, float(freq.get("spectral_flux", 0.0)) * 10.0),
                                     bpm=float(beat.get("bpm", 128.0)),
                                     ml_data=ml_data,
+                                    # Extended spectral data for SpectralIntelligence
+                                    sub_bass=min(1.0, float(bands.get("sub_bass", 0.0))),
+                                    low_mid=min(1.0, float(bands.get("low_mid", 0.0))),
+                                    high_mid=min(1.0, float(bands.get("high_mid", 0.0))),
+                                    brilliance=min(1.0, float(bands.get("brilliance", 0.0))),
+                                    spectral_centroid=float(freq.get("spectral_centroid", 2000.0)),
+                                    spectral_rolloff=float(freq.get("spectral_rolloff", 4000.0)),
                                 )
                         except Exception as e:
                             print(f"Audio pipeline update error: {e}")

@@ -262,6 +262,13 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         spectral_flux=spectral_flux,
         bpm=bpm,
         ml_data=ml_data,
+        # Extended spectral data for SpectralIntelligence
+        sub_bass=min(1.0, float(bands.get('sub_bass', 0.0))),
+        low_mid=min(1.0, float(bands.get('low_mid', 0.0))),
+        high_mid=min(1.0, float(bands.get('high_mid', 0.0))),
+        brilliance=min(1.0, float(bands.get('brilliance', 0.0))),
+        spectral_centroid=float(freq.get('spectral_centroid', 2000.0)),
+        spectral_rolloff=float(freq.get('spectral_rolloff', 4000.0)),
     )
 
     # Update vocal analyzer (cadence detection — lightweight, every frame)

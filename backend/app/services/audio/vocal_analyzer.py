@@ -305,7 +305,7 @@ class VocalAnalyzer:
         de = abs(vocal_e - self._prev_vocal_energy)
         self._vocal_rhythm_history.append(de)
         avg_rhythm = sum(self._vocal_rhythm_history) / max(1, len(self._vocal_rhythm_history))
-        self.state.vocal_rhythm = min(1.0, avg_rhythm * 15.0)  # scale up
+        self.state.vocal_rhythm = min(1.0, avg_rhythm * 6.0)  # reduced from 15x to prevent jitter
         self._prev_vocal_energy = vocal_e
 
         # Pitch trend (from spectral centroid movement)
