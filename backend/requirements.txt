@@ -21,7 +21,10 @@ soundcard>=0.4.2
 # ML/AI (optional - install based on needs)
 # torch==2.1.2
 # transformers==4.36.2
-# ultralytics==8.0.230
+
+# MIDI (live fader/controller input - mido needs python-rtmidi for real ports)
+mido>=1.3.0
+python-rtmidi>=1.5.0
 
 # WebSocket
 websockets==12.0
@@ -32,11 +35,10 @@ python-dotenv==1.0.0
 httpx==0.26.0
 aiofiles==23.2.1
 
-# Testing
+# Testing (httpx above doubles as the FastAPI TestClient transport)
 pytest==7.4.4
 pytest-asyncio==0.23.3
 pytest-cov==4.1.0
-httpx==0.26.0
 
 # Development
 black==23.12.1
@@ -53,5 +55,20 @@ torch>=2.1.0
 torchvision>=0.16.0
 torchaudio>=2.1.0
 transformers>=4.36.0
-ultralytics>=8.0.0
-BeatNet>=1.0.0
+
+# Optional extras deliberately NOT bundled - their licences are incompatible with
+# commercial distribution of this product. Every import of them is function-local
+# and guarded, and each feature degrades cleanly when they are absent.
+#   ultralytics (YOLO fixture detection from photos/video) - AGPL-3.0
+#   essentia-tensorflow (genre/mood classification)        - AGPL-3.0
+#   BeatNet (beat/downbeat tracking)                       - CC-BY-4.0, pulls madmom
+#   madmom (beat/chord models)                             - models are non-commercial
+# Installing any of these locally makes the resulting deployment subject to those
+# terms; do not add them here. scripts/install_models.py will not install them
+# without --accept-restricted-licences.
+#
+# Weak (file-level) copyleft reached transitively by the required set above. These
+# are distributable unmodified, but their notices must be reproduced:
+#   certifi  - MPL-2.0            (via httpx)
+#   tqdm     - MPL-2.0 AND MIT    (via transformers)
+#   pathspec - MPL-2.0            (via black, development only)

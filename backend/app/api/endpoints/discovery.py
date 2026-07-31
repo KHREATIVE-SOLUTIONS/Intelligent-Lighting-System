@@ -9,7 +9,8 @@ import logging
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.models.rdm_device import RDMDevice
@@ -48,13 +49,16 @@ async def stop_rdm_discovery():
 
 
 @router.get("/rdm/devices")
-async def get_rdm_devices(db: Session = Depends(get_db)):
+async def get_rdm_devices(db: AsyncSession = Depends(get_db)):
     """Get discovered RDM devices."""
     service = get_rdm_service()
     live_devices = service.get_discovered_devices()
 
     # Also return previously saved devices
-    saved = db.query(RDMDevice).order_by(RDMDevice.last_seen.desc()).all()
+    result = await db.execute(
+        select(RDMDevice).order_by(RDMDevice.last_seen.desc())
+    )
+    saved = result.scalars().all()
     saved_list = [
         {
             "id": d.id,
@@ -83,7 +87,7 @@ async def get_rdm_devices(db: Session = Depends(get_db)):
 async def import_rdm_devices(
     device_ids: List[int],
     rig_id: Optional[int] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Import discovered RDM devices into the rig."""
     from app.models.rig import Rig, RigFixture
@@ -91,14 +95,20 @@ async def import_rdm_devices(
 
     imported = 0
     for device_id in device_ids:
-        device = db.query(RDMDevice).filter(RDMDevice.id == device_id).first()
+        device_result = await db.execute(
+            select(RDMDevice).where(RDMDevice.id == device_id)
+        )
+        device = device_result.scalar_one_or_none()
         if not device or device.is_imported:
             continue
 
         # Create or find fixture
         fixture = None
         if device.matched_fixture_id:
-            fixture = db.query(Fixture).filter(Fixture.id == device.matched_fixture_id).first()
+            fixture_result = await db.execute(
+                select(Fixture).where(Fixture.id == device.matched_fixture_id)
+            )
+            fixture = fixture_result.scalar_one_or_none()
 
         if not fixture:
             fixture = Fixture(
@@ -108,11 +118,12 @@ async def import_rdm_devices(
                 source="rdm",
             )
             db.add(fixture)
-            db.flush()
+            await db.flush()
 
         # Add to rig if specified
         if rig_id:
-            rig = db.query(Rig).filter(Rig.id == rig_id).first()
+            rig_result = await db.execute(select(Rig).where(Rig.id == rig_id))
+            rig = rig_result.scalar_one_or_none()
             if rig:
                 rf = RigFixture(
                     rig_id=rig.id,
@@ -128,7 +139,7 @@ async def import_rdm_devices(
         device.matched_fixture_id = fixture.id
         imported += 1
 
-    db.commit()
+    await db.flush()
     return {"imported": imported}
 
 

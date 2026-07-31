@@ -91,7 +91,7 @@ WASH_CHANNELS = {
     'pan': 0, 'pan_fine': 1, 'tilt': 2, 'tilt_fine': 3,
     'speed': 4, 'dimmer': 5, 'shutter': 6,
     'red': 7, 'green': 8, 'blue': 9, 'white': 10,
-    'zoom': 11, 'color_temp': 12, 'control': 13
+    'zoom': 11, 'other': 12, 'other_2': 13
 }
 WASH_CH_COUNT = 14
 
@@ -99,12 +99,12 @@ BAR_CHANNELS = {
     'dimmer': 0, 'strobe': 1,
     'red': 2, 'green': 3, 'blue': 4, 'white': 5,
     'amber': 6, 'uv': 7, 'macro': 8, 'speed': 9,
-    'mode': 10, 'control': 11
+    'other': 10, 'other_2': 11
 }
 BAR_CH_COUNT = 12
 
 STROBE_CHANNELS = {
-    'dimmer': 0, 'strobe': 1, 'duration': 2, 'rate': 3,
+    'dimmer': 0, 'strobe': 1, 'other': 2, 'speed': 3,
 }
 STROBE_CH_COUNT = 4
 
@@ -115,6 +115,52 @@ SPOT_CHANNELS = {
     'zoom': 10, 'focus': 11
 }
 SPOT_CH_COUNT = 12
+
+# Pan/tilt travel in degrees per fixture type. A range of 0 means the fixture
+# is static and must never be given pan/tilt output.
+FIXTURE_RANGES: Dict[str, Tuple[float, float]] = {
+    'mover': (540.0, 270.0),
+    'wash': (540.0, 270.0),
+    'spot': (540.0, 270.0),
+    'bar': (0.0, 0.0),
+    'strobe': (0.0, 0.0),
+    'par': (0.0, 0.0),
+}
+STATIC_RANGES = (0.0, 0.0)
+
+# The preset vocabulary describes the physical fixture; the engine groups on
+# mover/wash/bar/strobe. A preset spot must reach the engine as a mover or it is
+# driven at a different speed class than the same fixture patched in the database.
+PRESET_ENGINE_TYPES: Dict[str, str] = {
+    'mover': 'mover',
+    'spot': 'mover',
+    'wash': 'wash',
+    'par': 'wash',
+    'bar': 'bar',
+    'strobe': 'strobe',
+}
+ENGINE_TYPE_GROUP_NAMES: Dict[str, str] = {
+    'mover': 'movers',
+    'wash': 'washes',
+    'bar': 'bars',
+    'strobe': 'strobes',
+}
+
+
+class _AddressAllocator:
+    """Assigns sequential DMX addresses, rolling to the next universe on overflow."""
+
+    def __init__(self, universe: int = 0):
+        self.address = 1
+        self.universe = universe
+
+    def take(self, ch_count: int) -> Tuple[int, int]:
+        if self.address + ch_count - 1 > 512:
+            self.universe += 1
+            self.address = 1
+        current = self.address
+        self.address += ch_count
+        return current, self.universe
 
 
 def _distribute_positions(count: int, x_range: Tuple[float, float],
@@ -134,32 +180,32 @@ def _build_small_nightclub() -> VenuePreset:
     """Small nightclub: 4 movers, 4 bars, 2 strobes."""
     stage = StageSpec(width=8.0, depth=6.0, height=3.0, truss_lines=1)
     fixtures = []
-    addr = 1
+    alloc = _AddressAllocator()
 
     # 2 movers front truss
     for i, (x, y, z) in enumerate(_distribute_positions(2, (-3.0, 3.0), 2.8, -2.0)):
-        fixtures.append(FixtureSpec("mover", f"mover_f{i+1}", f"Mover Front {i+1}", addr, 0, x, y, z))
-        addr += MOVER_CH_COUNT
+        a, u = alloc.take(MOVER_CH_COUNT)
+        fixtures.append(FixtureSpec("mover", f"mover_f{i+1}", f"Mover Front {i+1}", a, u, x, y, z))
 
     # 2 movers rear
     for i, (x, y, z) in enumerate(_distribute_positions(2, (-3.0, 3.0), 2.8, 2.0)):
-        fixtures.append(FixtureSpec("mover", f"mover_r{i+1}", f"Mover Rear {i+1}", addr, 0, x, y, z))
-        addr += MOVER_CH_COUNT
+        a, u = alloc.take(MOVER_CH_COUNT)
+        fixtures.append(FixtureSpec("mover", f"mover_r{i+1}", f"Mover Rear {i+1}", a, u, x, y, z))
 
     # 2 bars floor
     for i, (x, y, z) in enumerate(_distribute_positions(2, (-2.5, 2.5), 0.5, -2.5)):
-        fixtures.append(FixtureSpec("bar", f"bar_floor{i+1}", f"Bar Floor {i+1}", addr, 0, x, y, z))
-        addr += BAR_CH_COUNT
+        a, u = alloc.take(BAR_CH_COUNT)
+        fixtures.append(FixtureSpec("bar", f"bar_floor{i+1}", f"Bar Floor {i+1}", a, u, x, y, z))
 
     # 2 bars truss
     for i, (x, y, z) in enumerate(_distribute_positions(2, (-2.5, 2.5), 2.5, 0.0)):
-        fixtures.append(FixtureSpec("bar", f"bar_truss{i+1}", f"Bar Truss {i+1}", addr, 0, x, y, z))
-        addr += BAR_CH_COUNT
+        a, u = alloc.take(BAR_CH_COUNT)
+        fixtures.append(FixtureSpec("bar", f"bar_truss{i+1}", f"Bar Truss {i+1}", a, u, x, y, z))
 
     # 2 strobes
     for i, (x, y, z) in enumerate(_distribute_positions(2, (-3.5, 3.5), 2.8, -1.0)):
-        fixtures.append(FixtureSpec("strobe", f"strobe{i+1}", f"Strobe {i+1}", addr, 0, x, y, z))
-        addr += STROBE_CH_COUNT
+        a, u = alloc.take(STROBE_CH_COUNT)
+        fixtures.append(FixtureSpec("strobe", f"strobe{i+1}", f"Strobe {i+1}", a, u, x, y, z))
 
     key_zones = [
         KeyZoneSpec("dj_booth", ["mover_f1", "mover_f2"], active=True, min_intensity=0.0),
@@ -182,17 +228,17 @@ def _build_medium_venue() -> VenuePreset:
     """Medium venue: rebuilt all-mover rig for clear pan/tilt busking motion."""
     stage = StageSpec(width=12.0, depth=8.0, height=5.0, truss_lines=2)
     fixtures = []
-    addr = 1
+    alloc = _AddressAllocator()
 
     # 7 movers front truss
     for i, (x, y, z) in enumerate(_distribute_positions(7, (-5.2, 5.2), 4.5, -1.1)):
-        fixtures.append(FixtureSpec("mover", f"mover_f{i+1}", f"Mover Front {i+1}", addr, 0, x, y, z))
-        addr += MOVER_CH_COUNT
+        a, u = alloc.take(MOVER_CH_COUNT)
+        fixtures.append(FixtureSpec("mover", f"mover_f{i+1}", f"Mover Front {i+1}", a, u, x, y, z))
 
     # 7 movers rear truss
     for i, (x, y, z) in enumerate(_distribute_positions(7, (-5.2, 5.2), 4.5, 1.1)):
-        fixtures.append(FixtureSpec("mover", f"mover_r{i+1}", f"Mover Rear {i+1}", addr, 0, x, y, z))
-        addr += MOVER_CH_COUNT
+        a, u = alloc.take(MOVER_CH_COUNT)
+        fixtures.append(FixtureSpec("mover", f"mover_r{i+1}", f"Mover Rear {i+1}", a, u, x, y, z))
 
     key_zones = [
         KeyZoneSpec("dj_booth", ["mover_f3", "mover_f4", "mover_f5"], active=True, min_intensity=0.0),
@@ -216,35 +262,35 @@ def _build_large_concert() -> VenuePreset:
     """Large concert: 16 movers, 12 bars, 8 strobes, 4 spots."""
     stage = StageSpec(width=20.0, depth=12.0, height=8.0, truss_lines=3)
     fixtures = []
-    addr = 1
+    alloc = _AddressAllocator()
 
     # 8 movers front truss
     for i, (x, y, z) in enumerate(_distribute_positions(8, (-8.0, 8.0), 7.0, -5.0)):
-        fixtures.append(FixtureSpec("mover", f"mover_f{i+1}", f"Mover Front {i+1}", addr, 0, x, y, z))
-        addr += MOVER_CH_COUNT
+        a, u = alloc.take(MOVER_CH_COUNT)
+        fixtures.append(FixtureSpec("mover", f"mover_f{i+1}", f"Mover Front {i+1}", a, u, x, y, z))
 
     # 8 movers rear truss
     for i, (x, y, z) in enumerate(_distribute_positions(8, (-8.0, 8.0), 7.0, 5.0)):
-        fixtures.append(FixtureSpec("mover", f"mover_r{i+1}", f"Mover Rear {i+1}", addr, 0, x, y, z))
-        addr += MOVER_CH_COUNT
+        a, u = alloc.take(MOVER_CH_COUNT)
+        fixtures.append(FixtureSpec("mover", f"mover_r{i+1}", f"Mover Rear {i+1}", a, u, x, y, z))
 
     # 6 bars floor (downstage)
     for i, (x, y, z) in enumerate(_distribute_positions(6, (-7.0, 7.0), 0.5, -5.5)):
-        fixtures.append(FixtureSpec("bar", f"bar_floor{i+1}", f"Bar Floor {i+1}", addr, 0, x, y, z))
-        addr += BAR_CH_COUNT
+        a, u = alloc.take(BAR_CH_COUNT)
+        fixtures.append(FixtureSpec("bar", f"bar_floor{i+1}", f"Bar Floor {i+1}", a, u, x, y, z))
 
     # 6 bars mid truss
     for i, (x, y, z) in enumerate(_distribute_positions(6, (-7.0, 7.0), 6.5, 0.0)):
-        fixtures.append(FixtureSpec("bar", f"bar_truss{i+1}", f"Bar Truss {i+1}", addr, 0, x, y, z))
-        addr += BAR_CH_COUNT
+        a, u = alloc.take(BAR_CH_COUNT)
+        fixtures.append(FixtureSpec("bar", f"bar_truss{i+1}", f"Bar Truss {i+1}", a, u, x, y, z))
 
     # 8 strobes (4 front + 4 rear)
     for i, (x, y, z) in enumerate(_distribute_positions(4, (-7.5, 7.5), 7.0, -4.0)):
-        fixtures.append(FixtureSpec("strobe", f"strobe_f{i+1}", f"Strobe Front {i+1}", addr, 0, x, y, z))
-        addr += STROBE_CH_COUNT
+        a, u = alloc.take(STROBE_CH_COUNT)
+        fixtures.append(FixtureSpec("strobe", f"strobe_f{i+1}", f"Strobe Front {i+1}", a, u, x, y, z))
     for i, (x, y, z) in enumerate(_distribute_positions(4, (-7.5, 7.5), 7.0, 4.0)):
-        fixtures.append(FixtureSpec("strobe", f"strobe_r{i+1}", f"Strobe Rear {i+1}", addr, 0, x, y, z))
-        addr += STROBE_CH_COUNT
+        a, u = alloc.take(STROBE_CH_COUNT)
+        fixtures.append(FixtureSpec("strobe", f"strobe_r{i+1}", f"Strobe Rear {i+1}", a, u, x, y, z))
 
     # 4 spots
     spots = [
@@ -254,8 +300,8 @@ def _build_large_concert() -> VenuePreset:
         ("spot_right", "Stage Right Spot", 6.0, 6.5, 0.0),
     ]
     for sid, sname, sx, sy, sz in spots:
-        fixtures.append(FixtureSpec("spot", sid, sname, addr, 0, sx, sy, sz))
-        addr += SPOT_CH_COUNT
+        a, u = alloc.take(SPOT_CH_COUNT)
+        fixtures.append(FixtureSpec("spot", sid, sname, a, u, sx, sy, sz))
 
     key_zones = [
         KeyZoneSpec("dj_booth", ["spot_dj", "mover_f4", "mover_f5"], active=True, min_intensity=0.0),
@@ -281,17 +327,7 @@ def _build_pro_beam_room() -> VenuePreset:
     """Professional beam-only room rig with multiple truss rows."""
     stage = StageSpec(width=24.0, depth=16.0, height=10.0, truss_lines=5)
     fixtures = []
-    addr = 1
-    universe = 0
-
-    def next_addr(ch_count):
-        nonlocal addr, universe
-        if addr + ch_count > 512:
-            universe += 1
-            addr = 1
-        current = addr
-        addr += ch_count
-        return current, universe
+    alloc = _AddressAllocator()
 
     truss_rows = [
         ("f", "Front", -7.0, 10),
@@ -303,7 +339,7 @@ def _build_pro_beam_room() -> VenuePreset:
 
     for row_key, row_name, z, count in truss_rows:
         for i, (x, y, zz) in enumerate(_distribute_positions(count, (-10.5, 10.5), 9.2, z)):
-            a, u = next_addr(MOVER_CH_COUNT)
+            a, u = alloc.take(MOVER_CH_COUNT)
             fixtures.append(
                 FixtureSpec(
                     "mover",
@@ -342,57 +378,47 @@ def _build_festival_mainstage() -> VenuePreset:
     """Festival mainstage: 32 movers, 24 bars, 16 strobes, 8 spots."""
     stage = StageSpec(width=40.0, depth=20.0, height=15.0, truss_lines=4)
     fixtures = []
-    addr = 1
-    universe = 0
-
-    def next_addr(ch_count):
-        nonlocal addr, universe
-        if addr + ch_count > 512:
-            universe += 1
-            addr = 1
-        current = addr
-        addr += ch_count
-        return current, universe
+    alloc = _AddressAllocator()
 
     # 12 movers front truss
     for i, (x, y, z) in enumerate(_distribute_positions(12, (-16.0, 16.0), 13.0, -8.0)):
-        a, u = next_addr(MOVER_CH_COUNT)
+        a, u = alloc.take(MOVER_CH_COUNT)
         fixtures.append(FixtureSpec("mover", f"mover_f{i+1}", f"Mover Front {i+1}", a, u, x, y, z))
 
     # 10 movers mid truss
     for i, (x, y, z) in enumerate(_distribute_positions(10, (-14.0, 14.0), 12.0, 0.0)):
-        a, u = next_addr(MOVER_CH_COUNT)
+        a, u = alloc.take(MOVER_CH_COUNT)
         fixtures.append(FixtureSpec("mover", f"mover_m{i+1}", f"Mover Mid {i+1}", a, u, x, y, z))
 
     # 10 movers rear truss
     for i, (x, y, z) in enumerate(_distribute_positions(10, (-14.0, 14.0), 13.0, 8.0)):
-        a, u = next_addr(MOVER_CH_COUNT)
+        a, u = alloc.take(MOVER_CH_COUNT)
         fixtures.append(FixtureSpec("mover", f"mover_r{i+1}", f"Mover Rear {i+1}", a, u, x, y, z))
 
     # 8 bars floor
     for i, (x, y, z) in enumerate(_distribute_positions(8, (-15.0, 15.0), 0.5, -9.0)):
-        a, u = next_addr(BAR_CH_COUNT)
+        a, u = alloc.take(BAR_CH_COUNT)
         fixtures.append(FixtureSpec("bar", f"bar_floor{i+1}", f"Bar Floor {i+1}", a, u, x, y, z))
 
     # 8 bars mid truss
     for i, (x, y, z) in enumerate(_distribute_positions(8, (-14.0, 14.0), 11.0, 0.0)):
-        a, u = next_addr(BAR_CH_COUNT)
+        a, u = alloc.take(BAR_CH_COUNT)
         fixtures.append(FixtureSpec("bar", f"bar_mid{i+1}", f"Bar Mid {i+1}", a, u, x, y, z))
 
     # 8 bars rear
     for i, (x, y, z) in enumerate(_distribute_positions(8, (-14.0, 14.0), 11.0, 7.0)):
-        a, u = next_addr(BAR_CH_COUNT)
+        a, u = alloc.take(BAR_CH_COUNT)
         fixtures.append(FixtureSpec("bar", f"bar_rear{i+1}", f"Bar Rear {i+1}", a, u, x, y, z))
 
     # 16 strobes (distributed across front/mid/rear)
     for i, (x, y, z) in enumerate(_distribute_positions(6, (-16.0, 16.0), 13.0, -7.0)):
-        a, u = next_addr(STROBE_CH_COUNT)
+        a, u = alloc.take(STROBE_CH_COUNT)
         fixtures.append(FixtureSpec("strobe", f"strobe_f{i+1}", f"Strobe Front {i+1}", a, u, x, y, z))
     for i, (x, y, z) in enumerate(_distribute_positions(4, (-14.0, 14.0), 12.0, 0.0)):
-        a, u = next_addr(STROBE_CH_COUNT)
+        a, u = alloc.take(STROBE_CH_COUNT)
         fixtures.append(FixtureSpec("strobe", f"strobe_m{i+1}", f"Strobe Mid {i+1}", a, u, x, y, z))
     for i, (x, y, z) in enumerate(_distribute_positions(6, (-16.0, 16.0), 13.0, 7.0)):
-        a, u = next_addr(STROBE_CH_COUNT)
+        a, u = alloc.take(STROBE_CH_COUNT)
         fixtures.append(FixtureSpec("strobe", f"strobe_r{i+1}", f"Strobe Rear {i+1}", a, u, x, y, z))
 
     # 8 spots
@@ -407,7 +433,7 @@ def _build_festival_mainstage() -> VenuePreset:
         ("spot_drum", "Drum Riser", 5.0, 12.0, 4.0),
     ]
     for sid, sname, sx, sy, sz in spot_positions:
-        a, u = next_addr(SPOT_CH_COUNT)
+        a, u = alloc.take(SPOT_CH_COUNT)
         fixtures.append(FixtureSpec("spot", sid, sname, a, u, sx, sy, sz))
 
     key_zones = [
@@ -474,6 +500,11 @@ def create_venue_rig(preset_name: str):
 
     for spec in preset.fixtures:
         channels = channel_maps.get(spec.fixture_type, BAR_CHANNELS)
+        pan_range, tilt_range = FIXTURE_RANGES.get(spec.fixture_type, STATIC_RANGES)
+        if 'pan' not in channels:
+            pan_range = 0.0
+        if 'tilt' not in channels:
+            tilt_range = 0.0
         fixture = Fixture(
             id=spec.id,
             name=spec.name,
@@ -483,26 +514,26 @@ def create_venue_rig(preset_name: str):
             x=spec.x,
             y=spec.y,
             z=spec.z,
-            fixture_type=spec.fixture_type,
+            fixture_type=PRESET_ENGINE_TYPES.get(spec.fixture_type, 'wash'),
+            pan_range=pan_range,
+            tilt_range=tilt_range,
         )
         fixtures.append(fixture)
 
     manager.add_fixtures(fixtures)
 
-    # Create type-based groups
-    type_groups = {}
+    # Type groups, in the same shape the rig loader builds them so a preset rig
+    # and a patched rig expose the same group names.
+    type_groups: Dict[str, List[str]] = {name: [] for name in ENGINE_TYPE_GROUP_NAMES}
     for f in fixtures:
-        if f.fixture_type not in type_groups:
-            type_groups[f.fixture_type] = []
-        type_groups[f.fixture_type].append(f.id)
+        type_groups.setdefault(f.fixture_type, []).append(f.id)
 
-    for type_name, ids in type_groups.items():
-        manager.create_custom_group(f"{type_name}s", ids)
+    for type_name, group_name in ENGINE_TYPE_GROUP_NAMES.items():
+        manager.create_custom_group(group_name, list(type_groups.get(type_name, [])))
 
-    # Create combined mover+wash group
-    movers = type_groups.get("mover", [])
-    washes = type_groups.get("wash", [])
-    if movers or washes:
-        manager.create_custom_group("movers_washes", movers + washes)
+    manager.create_custom_group(
+        "movers_washes",
+        list(type_groups.get("mover", [])) + list(type_groups.get("wash", [])),
+    )
 
     return manager, preset

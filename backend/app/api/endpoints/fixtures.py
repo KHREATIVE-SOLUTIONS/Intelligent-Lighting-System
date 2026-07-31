@@ -105,8 +105,14 @@ async def create_fixture(
             channel = FixtureChannel(mode_id=mode.id, **channel_dict)
             db.add(channel)
 
-    await db.refresh(fixture)
-    return fixture
+    await db.flush()
+
+    result = await db.execute(
+        select(Fixture).where(Fixture.id == fixture.id).options(
+            selectinload(Fixture.modes).selectinload(FixtureMode.channels)
+        )
+    )
+    return result.scalar_one()
 
 
 @router.get("/{fixture_id}", response_model=FixtureResponse)
@@ -146,8 +152,13 @@ async def update_fixture(
         setattr(fixture, field, value)
 
     await db.flush()
-    await db.refresh(fixture)
-    return fixture
+
+    result = await db.execute(
+        select(Fixture).where(Fixture.id == fixture.id).options(
+            selectinload(Fixture.modes).selectinload(FixtureMode.channels)
+        )
+    )
+    return result.scalar_one()
 
 
 @router.delete("/{fixture_id}", status_code=204)
@@ -211,8 +222,14 @@ async def add_mode(
         channel = FixtureChannel(mode_id=mode.id, **channel_dict)
         db.add(channel)
 
-    await db.refresh(mode)
-    return mode
+    await db.flush()
+
+    result = await db.execute(
+        select(FixtureMode).where(FixtureMode.id == mode.id).options(
+            selectinload(FixtureMode.channels)
+        )
+    )
+    return result.scalar_one()
 
 
 @router.delete("/{fixture_id}/modes/{mode_id}", status_code=204)

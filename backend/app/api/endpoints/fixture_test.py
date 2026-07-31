@@ -10,7 +10,9 @@ import logging
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
@@ -37,18 +39,20 @@ def get_test_service(request: Request) -> FixtureTestService:
     return _test_service
 
 
-def _get_fixture_test_context(rig_id: int, fixture_id: int, db: Session):
+async def _get_fixture_test_context(rig_id: int, fixture_id: int, db: AsyncSession):
     """Load a rig fixture with its mode channels for testing."""
-    rig = db.query(Rig).filter(Rig.id == rig_id).first()
+    result = await db.execute(select(Rig).where(Rig.id == rig_id))
+    rig = result.scalar_one_or_none()
     if not rig:
         raise HTTPException(status_code=404, detail="Rig not found")
 
-    rf = (
-        db.query(RigFixture)
-        .filter(RigFixture.rig_id == rig_id, RigFixture.id == fixture_id)
-        .options(joinedload(RigFixture.mode).joinedload(FixtureMode.channels))
-        .first()
+    result = await db.execute(
+        select(RigFixture)
+        .where(RigFixture.rig_id == rig_id, RigFixture.id == fixture_id)
+        .options(selectinload(RigFixture.mode).selectinload(FixtureMode.channels))
+        .limit(1)
     )
+    rf = result.scalars().first()
     if not rf:
         raise HTTPException(status_code=404, detail="Rig fixture not found")
 
@@ -67,11 +71,11 @@ async def test_fixture(
     fixture_id: int,
     test_type: str = Query(default="identify", regex="^(identify|color_cycle|movement|full)$"),
     request: Request = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Run a test on a single fixture."""
     service = get_test_service(request)
-    rf = _get_fixture_test_context(rig_id, fixture_id, db)
+    rf = await _get_fixture_test_context(rig_id, fixture_id, db)
 
     ch_map = service._build_channel_map(rf.mode.channels)
     channel_count = rf.mode.channel_count
@@ -98,17 +102,18 @@ async def stop_fixture_test(
     rig_id: int,
     fixture_id: int,
     request: Request = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Stop an active test on a fixture."""
     service = get_test_service(request)
 
     # Validate fixture exists
-    rf = (
-        db.query(RigFixture)
-        .filter(RigFixture.rig_id == rig_id, RigFixture.id == fixture_id)
-        .first()
+    result = await db.execute(
+        select(RigFixture)
+        .where(RigFixture.rig_id == rig_id, RigFixture.id == fixture_id)
+        .limit(1)
     )
+    rf = result.scalars().first()
     if not rf:
         raise HTTPException(status_code=404, detail="Rig fixture not found")
 
@@ -122,7 +127,7 @@ async def set_fixture_channels(
     fixture_id: int,
     channel_values: Dict[str, int],
     request: Request = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Set specific DMX channel values on a fixture (live fader control).
 
@@ -130,11 +135,12 @@ async def set_fixture_channels(
     """
     service = get_test_service(request)
 
-    rf = (
-        db.query(RigFixture)
-        .filter(RigFixture.rig_id == rig_id, RigFixture.id == fixture_id)
-        .first()
+    result = await db.execute(
+        select(RigFixture)
+        .where(RigFixture.rig_id == rig_id, RigFixture.id == fixture_id)
+        .limit(1)
     )
+    rf = result.scalars().first()
     if not rf:
         raise HTTPException(status_code=404, detail="Rig fixture not found")
 
@@ -154,21 +160,22 @@ async def set_fixture_channels(
 async def test_all_fixtures(
     rig_id: int,
     request: Request = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Run sequential identify test on all fixtures in a rig."""
     service = get_test_service(request)
 
-    rig = db.query(Rig).filter(Rig.id == rig_id).first()
+    result = await db.execute(select(Rig).where(Rig.id == rig_id))
+    rig = result.scalar_one_or_none()
     if not rig:
         raise HTTPException(status_code=404, detail="Rig not found")
 
-    rig_fixtures = (
-        db.query(RigFixture)
-        .filter(RigFixture.rig_id == rig_id, RigFixture.is_active == True)
-        .options(joinedload(RigFixture.mode).joinedload(FixtureMode.channels))
-        .all()
+    result = await db.execute(
+        select(RigFixture)
+        .where(RigFixture.rig_id == rig_id, RigFixture.is_active == True)
+        .options(selectinload(RigFixture.mode).selectinload(FixtureMode.channels))
     )
+    rig_fixtures = result.scalars().all()
 
     if not rig_fixtures:
         return {"message": "No active fixtures to test", "tested": 0}
@@ -199,16 +206,15 @@ async def test_all_fixtures(
 async def stop_all_tests(
     rig_id: int,
     request: Request = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Stop all active fixture tests in a rig."""
     service = get_test_service(request)
 
-    rig_fixtures = (
-        db.query(RigFixture)
-        .filter(RigFixture.rig_id == rig_id)
-        .all()
+    result = await db.execute(
+        select(RigFixture).where(RigFixture.rig_id == rig_id)
     )
+    rig_fixtures = result.scalars().all()
 
     stopped = 0
     for rf in rig_fixtures:

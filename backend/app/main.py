@@ -5,6 +5,8 @@ Main FastAPI Application
 Entry point for the Intelligent Lighting System backend.
 """
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +18,9 @@ from app.api.endpoints import (
     rig_import_export, discovery, qr_scanning, demo,
 )
 from app.core.config import settings
+from app.core.logging_config import configure_logging
 from app.db.database import engine, Base
+from app.db.startup import init_database
 from app.services.audio.audio_analyzer import AudioAnalyzer
 from app.services.dmx.dmx_controller import DMXController
 from app.services.ml.model_manager import ModelManager
@@ -29,12 +33,138 @@ from app.services.effects.lfo_engine import LFOEngine
 from app.api.endpoints.lfo import set_lfo_engine
 from app.services.audio.system_audio_capture import SystemAudioCapture
 
+logger = logging.getLogger(__name__)
+
+# Venue preset the show falls back to when no rig has been patched yet.
+DEMO_VENUE_PRESET = "pro_beam_room"
+
+
+async def _load_active_rig_manager():
+    """Build a fixture manager from the rig the user patched.
+
+    Returns (manager, rig), both None when the database holds no usable rig.
+    """
+    from app.db.database import AsyncSessionLocal
+    from app.services.rig.rig_loader import get_rig_diagnostics, load_active_rig
+
+    async with AsyncSessionLocal() as db:
+        manager, rig = await load_active_rig(db)
+
+    diagnostics = get_rig_diagnostics(manager)
+    if diagnostics is not None:
+        logger.info("Rig load: %s", diagnostics.summary())
+        for entry in diagnostics.skipped:
+            logger.warning("Rig load skipped a fixture: %s", entry)
+        for entry in diagnostics.truncated:
+            logger.warning("Rig load: fixture runs past the end of its universe: %s", entry)
+        for entry in diagnostics.group_conflicts:
+            logger.warning("Rig load: %s", entry)
+        for message in diagnostics.errors:
+            logger.warning("Rig load: %s", message)
+
+    return manager, rig
+
+
+def _install_fixture_manager(app: FastAPI, manager):
+    """Point the running show at a fixture manager."""
+    engine = getattr(app.state, 'effects_engine', None)
+    if engine is not None:
+        setter = getattr(engine, 'set_fixture_manager', None)
+        if callable(setter):
+            setter(manager)
+        else:
+            engine.fixtures = manager
+    app.state.fixture_manager = manager
+
+
+def _install_demo_rig(app: FastAPI):
+    """Install the bundled demo venue so a fresh install still produces a show."""
+    from app.services.demo.venue_presets import create_venue_rig
+    from app.services.lighting.key_lighting import PerformerZone, KeyLightConfig
+
+    manager, preset = create_venue_rig(DEMO_VENUE_PRESET)
+    if not manager:
+        logger.error("Demo venue preset '%s' is unavailable - no rig installed", DEMO_VENUE_PRESET)
+        print(f"Warning: no rig installed (demo preset '{DEMO_VENUE_PRESET}' unavailable)")
+        return
+
+    _install_fixture_manager(app, manager)
+    for zone_spec in preset.key_zones:
+        try:
+            zone = PerformerZone(zone_spec.zone)
+            app.state.effects_engine.key_lighting.configure_zone(
+                zone,
+                KeyLightConfig(zone=zone, min_intensity=zone_spec.min_intensity, active=zone_spec.active)
+            )
+            app.state.effects_engine.key_lighting.assign_fixtures(zone, zone_spec.fixture_ids)
+        except (ValueError, Exception):
+            pass
+
+    logger.warning(
+        "No rig loaded from the database - running demo rig '%s' (%d fixtures)",
+        DEMO_VENUE_PRESET, len(preset.fixtures),
+    )
+    print(
+        f"Running DEMO rig '{DEMO_VENUE_PRESET}' ({len(preset.fixtures)} fixtures) - "
+        "no rig configured in the database"
+    )
+
+
+async def _boot_rig(app: FastAPI):
+    """Drive the show from the rig the user patched, or the demo venue if there is none."""
+    from app.api.endpoints.websocket import fixture_universes
+
+    app.state.fixture_manager = getattr(app.state.effects_engine, 'fixtures', None)
+
+    manager = None
+    rig = None
+    try:
+        manager, rig = await _load_active_rig_manager()
+    except ImportError as e:
+        logger.warning("Rig loader unavailable (%s) - falling back to the demo rig", e)
+    except Exception as e:
+        logger.error("Could not load the active rig: %s", e, exc_info=True)
+        print(f"Warning: could not load the active rig: {e}")
+
+    if manager is None or not manager.fixtures:
+        _install_demo_rig(app)
+        return
+
+    _install_fixture_manager(app, manager)
+    universes = fixture_universes(manager)
+    rig_name = getattr(rig, 'name', None) or 'active rig'
+    logger.info(
+        "Rig '%s' installed: %d fixtures across universes %s",
+        rig_name, len(manager.fixtures), universes,
+    )
+    print(
+        f"Rig '{rig_name}' loaded from database: "
+        f"{len(manager.fixtures)} fixtures, universes {universes}"
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown events."""
     # Startup
+    configure_logging()
     print("Starting Intelligent Lighting System...")
+
+    try:
+        # Schema + fixture library must be ready before anything touches the DB
+        print(" Initializing database...")
+        db_summary = await init_database()
+        logger.info("Database initialized: %s", db_summary)
+        print(
+            f" Database ready (schema={db_summary['schema']}, "
+            f"fixtures={db_summary['fixtures_total']}, "
+            f"seeded={db_summary['fixtures_seeded']})"
+        )
+        for error in db_summary["errors"]:
+            print(f"Warning: database init: {error}")
+    except Exception as e:
+        logger.error("Database initialization failed: %s", e, exc_info=True)
+        print(f"Warning: Database initialization failed: {e}")
 
     try:
         # Initialize ML models
@@ -71,6 +201,7 @@ async def lifespan(app: FastAPI):
         print(f"Warning: Could not connect DMX controller: {e}")
         app.state.dmx_controller = None
 
+    app.state.fixture_manager = None
     try:
         # Initialize Effects Engine - AI busker mode (autonomous show control)
         print(" Creating effects engine...")
@@ -112,7 +243,7 @@ async def lifespan(app: FastAPI):
             PerformerZone.DJ_BOOTH,
             KeyLightConfig(
                 zone=PerformerZone.DJ_BOOTH,
-                min_intensity=0.4,
+                min_intensity=0.0,
                 color_temp="genre",
                 active=True,
             )
@@ -126,32 +257,20 @@ async def lifespan(app: FastAPI):
         from app.api.endpoints.demo import set_demo_effects_engine
         set_demo_effects_engine(app.state.effects_engine)
 
-        # Auto-apply pro beam-room preset so visualizer starts with the new top-down rig
-        from app.services.demo.venue_presets import create_venue_rig
-        manager, preset = create_venue_rig("pro_beam_room")
-        if manager:
-            app.state.effects_engine.fixtures = manager
-            for zone_spec in preset.key_zones:
-                try:
-                    from app.services.lighting.key_lighting import PerformerZone, KeyLightConfig
-                    zone = PerformerZone(zone_spec.zone)
-                    app.state.effects_engine.key_lighting.configure_zone(
-                        zone,
-                        KeyLightConfig(zone=zone, min_intensity=zone_spec.min_intensity, active=zone_spec.active)
-                    )
-                    app.state.effects_engine.key_lighting.assign_fixtures(zone, zone_spec.fixture_ids)
-                except (ValueError, Exception):
-                    pass
-            print(f"Auto-applied pro_beam_room preset ({len(preset.fixtures)} fixtures)")
+        # The show drives the rig the user patched; the demo venue is only a
+        # fresh-install fallback and never overwrites a configured rig.
+        await _boot_rig(app)
 
         # Start the effects engine async loop (BUG-016 fix: store task reference)
-        import asyncio
         app.state.effects_engine_task = asyncio.create_task(app.state.effects_engine.run())
 
         # Start a WebSocket broadcast task that pushes DMX state to all connected clients at ~30fps
         # This is needed because server-side audio capture bypasses the WebSocket input path
         async def _broadcast_lighting_state():
-            from app.api.endpoints.websocket import manager, convert_numpy_types
+            from app.api.endpoints.websocket import (
+                manager, convert_numpy_types, collect_dmx_frames,
+                primary_dmx_universe, serialize_dmx_frames,
+            )
             from app.services.lighting.look_spec import build_lighting_look_spec
             from datetime import datetime
             frame_count = 0
@@ -162,8 +281,10 @@ async def lifespan(app: FastAPI):
                     if ee is None:
                         continue
 
-                    # Build DMX frame
-                    dmx_frame = ee.fixtures.get_dmx_frame(universe=0)
+                    # Build a DMX frame per universe the rig occupies
+                    dmx_frames = collect_dmx_frames(ee.fixtures)
+                    primary_universe = primary_dmx_universe(dmx_frames)
+                    dmx_frame = dmx_frames.get(primary_universe, [0] * 512)
                     fixture_states = ee.get_fixture_state_snapshot()
                     if not fixture_states:
                         fixture_states = []
@@ -182,6 +303,8 @@ async def lifespan(app: FastAPI):
 
                     lighting_data = {
                         'dmx_frame': dmx_frame,
+                        'dmx_universe': primary_universe,
+                        'dmx_frames': serialize_dmx_frames(dmx_frames),
                         'fixtures': fixture_states,
                         'state': 'auto',
                         'movement': 'auto',
@@ -221,7 +344,11 @@ async def lifespan(app: FastAPI):
                     await manager.broadcast("dmx", {
                         "type": "dmx_update",
                         "timestamp": datetime.utcnow().isoformat(),
-                        "data": {"universe": 0, "frame": dmx_frame},
+                        "data": {
+                            "universe": primary_universe,
+                            "frame": dmx_frame,
+                            "frames": serialize_dmx_frames(dmx_frames),
+                        },
                     })
                 except asyncio.CancelledError:
                     break
@@ -261,7 +388,10 @@ async def lifespan(app: FastAPI):
     print(" Initializing LFO engine...")
     try:
         app.state.lfo_engine = LFOEngine()
-        app.state.lfo_engine.set_fixture_count(8)  # Match demo rig
+        fixture_manager = getattr(app.state, 'fixture_manager', None)
+        app.state.lfo_engine.set_fixture_count(
+            len(fixture_manager.fixtures) if fixture_manager else 8
+        )
         set_lfo_engine(app.state.lfo_engine)
 
         # Connect LFO engine to effects engine for frame-by-frame updates
@@ -468,18 +598,48 @@ async def root():
     }
 
 
+def _dmx_health():
+    """Report DMX state from actual transmit results, not just socket state."""
+    controller = getattr(app.state, 'dmx_controller', None)
+    if controller is None:
+        return "disconnected", {"connected": False, "transmitting": False}
+
+    status_fn = getattr(controller, 'get_transmit_status', None)
+    if not callable(status_fn):
+        connected = bool(getattr(controller, 'is_connected', False))
+        return (
+            "connected" if connected else "disconnected",
+            {"connected": connected, "transmitting": None, "detail_available": False},
+        )
+
+    try:
+        detail = status_fn()
+    except Exception as e:
+        return "unknown", {"error": str(e)}
+
+    if not detail.get("connected"):
+        state = "disconnected"
+    elif detail.get("transmitting"):
+        state = "transmitting"
+    elif detail.get("last_send_error"):
+        state = f"error: {detail['last_send_error']}"
+    else:
+        state = "connected"
+    return state, detail
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint - reports actual service state."""
     from fastapi.responses import JSONResponse
 
+    dmx_state, dmx_detail = _dmx_health()
+
     services = {
         "api": "running",
         "audio_analyzer": "running" if getattr(app.state, 'audio_analyzer', None) else "unavailable",
         "ml_models": "loaded" if getattr(app.state, 'model_manager', None) else "unavailable",
-        "dmx": "connected" if (
-            getattr(app.state, 'dmx_controller', None) and app.state.dmx_controller.is_connected
-        ) else "disconnected",
+        "dmx": dmx_state,
         "effects_engine": "running" if (
             getattr(app.state, 'effects_engine', None) and app.state.effects_engine.running
         ) else "stopped",
@@ -503,5 +663,6 @@ async def health_check():
         content={
             "status": "healthy" if is_healthy else "degraded",
             "services": services,
+            "dmx_detail": dmx_detail,
         }
     )

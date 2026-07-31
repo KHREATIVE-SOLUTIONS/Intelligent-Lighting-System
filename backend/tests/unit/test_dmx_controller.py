@@ -70,7 +70,9 @@ class TestDMXController:
         """Test connecting and disconnecting."""
         await controller.connect()
         assert controller.is_connected == True
-        assert 0 in controller.universes
+        # Nothing is transmitted until something drives it. Claiming universe 0 here
+        # would put continuous zeros on a Port-Address the rig may not own.
+        assert controller.universes == {}
 
         await controller.disconnect()
         assert controller.is_connected == False

@@ -26,6 +26,19 @@ from app.services.rig.rig_detector import RigDetector, DemoRigGenerator, Pattern
 router = APIRouter()
 
 
+async def _load_rig(db: AsyncSession, rig_id: int) -> Rig:
+    """Re-select a rig with its fixtures eager-loaded for response serialization.
+
+    RigResponse walks rig.fixtures[].fixture, which raises MissingGreenlet under
+    an AsyncSession unless both relationships are already loaded.
+    """
+    query = select(Rig).where(Rig.id == rig_id).options(
+        selectinload(Rig.fixtures).selectinload(RigFixture.fixture)
+    )
+    result = await db.execute(query)
+    return result.scalar_one()
+
+
 # Rig CRUD
 @router.get("/", response_model=RigListResponse)
 async def list_rigs(
@@ -83,8 +96,7 @@ async def create_rig(
     rig = Rig(**rig_dict)
     db.add(rig)
     await db.flush()
-    await db.refresh(rig)
-    return rig
+    return await _load_rig(db, rig.id)
 
 
 @router.get("/{rig_id}", response_model=RigResponse)
@@ -128,8 +140,7 @@ async def update_rig(
         setattr(rig, field, value)
 
     await db.flush()
-    await db.refresh(rig)
-    return rig
+    return await _load_rig(db, rig_id)
 
 
 @router.delete("/{rig_id}", status_code=204)
@@ -170,8 +181,7 @@ async def activate_rig(
 
     rig.is_active = True
     await db.flush()
-    await db.refresh(rig)
-    return rig
+    return await _load_rig(db, rig_id)
 
 
 # Rig Fixture CRUD
@@ -226,8 +236,58 @@ async def add_fixture_to_rig(
     rig_fixture = RigFixture(rig_id=rig_id, **fixture_data.model_dump())
     db.add(rig_fixture)
     await db.flush()
-    await db.refresh(rig_fixture)
-    return rig_fixture
+
+    reload_query = select(RigFixture).where(
+        RigFixture.id == rig_fixture.id
+    ).options(selectinload(RigFixture.fixture))
+    reload_result = await db.execute(reload_query)
+    return reload_result.scalar_one()
+
+
+# Registered before "/{rig_id}/fixtures/{fixture_id}" so the literal path is not
+# captured by the parameterized route.
+@router.put("/{rig_id}/fixtures/batch-update")
+async def batch_update_fixtures(
+    rig_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch update multiple rig fixture properties (positions, addresses)."""
+    rig_query = select(Rig).where(Rig.id == rig_id)
+    rig_result = await db.execute(rig_query)
+    if not rig_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Rig not found")
+
+    fixtures_data = body.get("fixtures", [])
+    updated = 0
+
+    for item in fixtures_data:
+        rf_id = item.get("id")
+        if not rf_id:
+            continue
+
+        rf_query = select(RigFixture).where(
+            RigFixture.id == rf_id,
+            RigFixture.rig_id == rig_id,
+        )
+        rf_result = await db.execute(rf_query)
+        rf = rf_result.scalar_one_or_none()
+        if not rf:
+            continue
+
+        for field in [
+            "name", "universe", "dmx_address", "mode_id",
+            "position_x", "position_y", "position_z",
+            "rotation_x", "rotation_y", "rotation_z",
+            "group_name", "is_address_locked",
+        ]:
+            if field in item and item[field] is not None:
+                setattr(rf, field, item[field])
+
+        updated += 1
+
+    await db.flush()
+    return {"message": f"Updated {updated} fixtures", "updated": updated}
 
 
 @router.put("/{rig_id}/fixtures/{fixture_id}", response_model=RigFixtureResponse)
@@ -611,9 +671,7 @@ async def create_rig_from_layout(
         db.add(rig_fixture)
 
     await db.flush()
-    await db.refresh(rig, attribute_names=['fixtures'])
-
-    return rig
+    return await _load_rig(db, rig.id)
 
 
 # Pattern Generation
@@ -798,47 +856,6 @@ async def apply_pattern(
         )
 
 
-@router.put("/{rig_id}/fixtures/batch-update")
-async def batch_update_fixtures(
-    rig_id: int,
-    body: dict,
-    db: AsyncSession = Depends(get_db),
-):
-    """Batch update multiple rig fixture properties (positions, addresses)."""
-    rig = db.query(Rig).filter(Rig.id == rig_id).first()
-    if not rig:
-        raise HTTPException(status_code=404, detail="Rig not found")
-
-    fixtures_data = body.get("fixtures", [])
-    updated = 0
-
-    for item in fixtures_data:
-        rf_id = item.get("id")
-        if not rf_id:
-            continue
-
-        rf = db.query(RigFixture).filter(
-            RigFixture.id == rf_id,
-            RigFixture.rig_id == rig_id,
-        ).first()
-        if not rf:
-            continue
-
-        for field in [
-            "name", "universe", "dmx_address", "mode_id",
-            "position_x", "position_y", "position_z",
-            "rotation_x", "rotation_y", "rotation_z",
-            "group_name", "is_address_locked",
-        ]:
-            if field in item and item[field] is not None:
-                setattr(rf, field, item[field])
-
-        updated += 1
-
-    db.commit()
-    return {"message": f"Updated {updated} fixtures", "updated": updated}
-
-
 @router.post("/{rig_id}/fixtures/duplicate/{fixture_id}")
 async def duplicate_rig_fixture(
     rig_id: int,
@@ -846,20 +863,27 @@ async def duplicate_rig_fixture(
     db: AsyncSession = Depends(get_db),
 ):
     """Duplicate a rig fixture with auto-assigned DMX address."""
-    rig = db.query(Rig).filter(Rig.id == rig_id).first()
-    if not rig:
+    rig_query = select(Rig).where(Rig.id == rig_id)
+    rig_result = await db.execute(rig_query)
+    if not rig_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Rig not found")
 
-    source = db.query(RigFixture).filter(
+    source_query = select(RigFixture).where(
         RigFixture.id == fixture_id,
         RigFixture.rig_id == rig_id,
-    ).first()
+    ).options(selectinload(RigFixture.mode))
+    source_result = await db.execute(source_query)
+    source = source_result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Rig fixture not found")
 
     # Find next available address
     from app.services.rig.patching_service import PatchingService
-    all_fixtures = db.query(RigFixture).filter(RigFixture.rig_id == rig_id).all()
+    all_fixtures_query = select(RigFixture).where(RigFixture.rig_id == rig_id).options(
+        selectinload(RigFixture.mode)
+    )
+    all_fixtures_result = await db.execute(all_fixtures_query)
+    all_fixtures = all_fixtures_result.scalars().all()
     occupied = []
     channel_count = 16
     if source.mode:
@@ -891,8 +915,8 @@ async def duplicate_rig_fixture(
         is_active=True,
     )
     db.add(new_rf)
-    db.commit()
-    db.refresh(new_rf)
+    await db.flush()
+    await db.refresh(new_rf)
 
     return {
         "id": new_rf.id,

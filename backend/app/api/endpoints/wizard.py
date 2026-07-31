@@ -11,7 +11,9 @@ from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
@@ -57,7 +59,7 @@ async def get_venue_preset(key: str):
 @router.get("/venue-presets/{key}/suggestions")
 async def get_venue_suggestions(
     key: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get fixture suggestions matched to the local library for a venue preset."""
     preset = WizardService.get_venue_preset(key)
@@ -69,12 +71,13 @@ async def get_venue_suggestions(
         fixture_type = suggested["fixture_type"]
 
         # Try to find a matching fixture in the library
-        matched = (
-            db.query(Fixture)
-            .filter(Fixture.fixture_type == fixture_type)
-            .options(joinedload(Fixture.modes).joinedload(FixtureMode.channels))
-            .first()
+        result = await db.execute(
+            select(Fixture)
+            .where(Fixture.fixture_type == fixture_type)
+            .options(selectinload(Fixture.modes).selectinload(FixtureMode.channels))
+            .limit(1)
         )
+        matched = result.scalars().first()
 
         suggestion = {
             **suggested,
@@ -116,7 +119,7 @@ async def auto_place_fixtures(request: AutoPlaceRequest):
 @router.post("/create-rig")
 async def create_rig_from_wizard(
     request: CreateRigFromWizardRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a complete rig from wizard data."""
     # Create the rig
@@ -130,7 +133,7 @@ async def create_rig_from_wizard(
         is_active=True,
     )
     db.add(rig)
-    db.flush()
+    await db.flush()
 
     # Create rig fixtures from placements
     for i, placement in enumerate(request.placements):
@@ -151,8 +154,8 @@ async def create_rig_from_wizard(
         )
         db.add(rf)
 
-    db.commit()
-    db.refresh(rig)
+    await db.flush()
+    await db.refresh(rig)
 
     # Return the created rig
     return {

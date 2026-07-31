@@ -17,7 +17,7 @@ class DMXChannel(BaseModel):
 
 class DMXFrame(BaseModel):
     """Single DMX frame (512 channels)."""
-    universe: int = Field(default=0, ge=0, le=15)
+    universe: int = Field(default=0, ge=0, le=32767)
     channels: Dict[int, int] = Field(default_factory=dict)  # {channel: value}
     timestamp: Optional[float] = None
 
@@ -32,7 +32,7 @@ class DMXFrame(BaseModel):
 
 class DMXUniverse(BaseModel):
     """Complete DMX universe state."""
-    universe: int = Field(default=0, ge=0, le=15)
+    universe: int = Field(default=0, ge=0, le=32767)
     data: List[int] = Field(
         default_factory=lambda: [0] * 512,
         min_length=512,
@@ -52,8 +52,12 @@ class DMXUniverse(BaseModel):
 
 
 class ArtNetConfig(BaseModel):
-    """ArtNet configuration."""
-    ip_address: str = "0.0.0.0"
+    """ArtNet configuration.
+
+    ``net`` and ``subnet`` are packed with a 0-15 ``universe`` into the 15-bit
+    Port-Address; a ``universe`` above 15 is itself a full Port-Address.
+    """
+    ip_address: str = "255.255.255.255"
     port: int = Field(default=6454, ge=1, le=65535)
     broadcast: bool = False
     net: int = Field(default=0, ge=0, le=127)

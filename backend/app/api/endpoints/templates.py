@@ -9,7 +9,9 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.models.template import RigTemplate
@@ -24,13 +26,14 @@ router = APIRouter()
 @router.get("/")
 async def list_templates(
     venue_type: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """List rig templates with optional venue type filter."""
-    query = db.query(RigTemplate)
+    query = select(RigTemplate)
     if venue_type:
-        query = query.filter(RigTemplate.venue_type == venue_type)
-    templates = query.order_by(RigTemplate.usage_count.desc()).all()
+        query = query.where(RigTemplate.venue_type == venue_type)
+    result = await db.execute(query.order_by(RigTemplate.usage_count.desc()))
+    templates = result.scalars().all()
     return {
         "items": [_template_to_dict(t) for t in templates],
         "total": len(templates),
@@ -38,9 +41,10 @@ async def list_templates(
 
 
 @router.get("/{template_id}")
-async def get_template(template_id: int, db: Session = Depends(get_db)):
+async def get_template(template_id: int, db: AsyncSession = Depends(get_db)):
     """Get a template with its fixture slots."""
-    template = db.query(RigTemplate).filter(RigTemplate.id == template_id).first()
+    result = await db.execute(select(RigTemplate).where(RigTemplate.id == template_id))
+    template = result.scalar_one_or_none()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return _template_to_dict(template)
@@ -52,19 +56,20 @@ async def create_template_from_rig(
     name: str = Query(...),
     description: Optional[str] = None,
     venue_type: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a template from an existing rig. Abstracts fixture IDs to types."""
-    rig = db.query(Rig).filter(Rig.id == rig_id).first()
+    rig_result = await db.execute(select(Rig).where(Rig.id == rig_id))
+    rig = rig_result.scalar_one_or_none()
     if not rig:
         raise HTTPException(status_code=404, detail="Rig not found")
 
-    rig_fixtures = (
-        db.query(RigFixture)
-        .filter(RigFixture.rig_id == rig_id)
-        .options(joinedload(RigFixture.fixture), joinedload(RigFixture.mode))
-        .all()
+    fixtures_result = await db.execute(
+        select(RigFixture)
+        .where(RigFixture.rig_id == rig_id)
+        .options(selectinload(RigFixture.fixture), selectinload(RigFixture.mode))
     )
+    rig_fixtures = fixtures_result.scalars().all()
 
     # Group fixtures by type and group
     groups = {}
@@ -102,8 +107,8 @@ async def create_template_from_rig(
         is_public=True,
     )
     db.add(template)
-    db.commit()
-    db.refresh(template)
+    await db.flush()
+    await db.refresh(template)
 
     return _template_to_dict(template)
 
@@ -113,13 +118,14 @@ async def apply_template(
     template_id: int,
     rig_name: str = Query(...),
     venue: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Apply a template to create a new rig.
 
     Matches fixture slots to available library fixtures by type.
     """
-    template = db.query(RigTemplate).filter(RigTemplate.id == template_id).first()
+    result = await db.execute(select(RigTemplate).where(RigTemplate.id == template_id))
+    template = result.scalar_one_or_none()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
@@ -134,7 +140,7 @@ async def apply_template(
         is_active=True,
     )
     db.add(rig)
-    db.flush()
+    await db.flush()
 
     # Map fixture slots to library fixtures
     dmx_address = 1
@@ -145,17 +151,19 @@ async def apply_template(
         fixture_type = slot.get("fixture_type", "other")
 
         # Find a matching fixture in library
-        matched = db.query(Fixture).filter(
-            Fixture.fixture_type == fixture_type
-        ).first()
+        matched_result = await db.execute(
+            select(Fixture).where(Fixture.fixture_type == fixture_type).limit(1)
+        )
+        matched = matched_result.scalars().first()
 
         if not matched:
             continue
 
         # Get first mode
-        mode = db.query(FixtureMode).filter(
-            FixtureMode.fixture_id == matched.id
-        ).first()
+        mode_result = await db.execute(
+            select(FixtureMode).where(FixtureMode.fixture_id == matched.id).limit(1)
+        )
+        mode = mode_result.scalars().first()
 
         channel_count = mode.channel_count if mode else 16
         positions = slot.get("positions", [])
@@ -190,8 +198,8 @@ async def apply_template(
     # Increment template usage
     template.usage_count = (template.usage_count or 0) + 1
 
-    db.commit()
-    db.refresh(rig)
+    await db.flush()
+    await db.refresh(rig)
 
     return {
         "id": rig.id,
@@ -202,16 +210,16 @@ async def apply_template(
 
 
 @router.delete("/{template_id}")
-async def delete_template(template_id: int, db: Session = Depends(get_db)):
+async def delete_template(template_id: int, db: AsyncSession = Depends(get_db)):
     """Delete a user-created template."""
-    template = db.query(RigTemplate).filter(RigTemplate.id == template_id).first()
+    result = await db.execute(select(RigTemplate).where(RigTemplate.id == template_id))
+    template = result.scalar_one_or_none()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     if template.is_system:
         raise HTTPException(status_code=403, detail="Cannot delete system templates")
 
-    db.delete(template)
-    db.commit()
+    await db.delete(template)
     return {"message": "Template deleted"}
 
 

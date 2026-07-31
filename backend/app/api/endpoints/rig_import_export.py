@@ -14,7 +14,9 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
@@ -30,7 +32,7 @@ router = APIRouter()
 @router.post("/rigs/import/mvr")
 async def import_mvr(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Import a rig from an MVR file."""
     if not file.filename or not file.filename.lower().endswith(".mvr"):
@@ -52,7 +54,10 @@ async def import_mvr(
         # Check if already exists
         existing = None
         if parsed.get("gdtf_id"):
-            existing = db.query(Fixture).filter(Fixture.gdtf_id == parsed["gdtf_id"]).first()
+            result = await db.execute(
+                select(Fixture).where(Fixture.gdtf_id == parsed["gdtf_id"]).limit(1)
+            )
+            existing = result.scalars().first()
 
         if not existing:
             fixture = Fixture(
@@ -68,7 +73,7 @@ async def import_mvr(
                 source="gdtf",
             )
             db.add(fixture)
-            db.flush()
+            await db.flush()
 
             for mode_data in modes_data:
                 channels_data = mode_data.pop("channels", [])
@@ -78,7 +83,7 @@ async def import_mvr(
                     channel_count=mode_data["channel_count"],
                 )
                 db.add(mode)
-                db.flush()
+                await db.flush()
 
                 for ch_data in channels_data:
                     ch = FixtureChannel(
@@ -107,7 +112,7 @@ async def import_mvr(
         is_active=True,
     )
     db.add(rig)
-    db.flush()
+    await db.flush()
 
     # Create fixtures
     for i, fix_data in enumerate(mvr_data.get("fixtures", [])):
@@ -138,7 +143,7 @@ async def import_mvr(
         )
         db.add(rf)
 
-    db.commit()
+    await db.flush()
 
     return {
         "rig_id": rig.id,
@@ -153,7 +158,7 @@ async def import_console_patch(
     file: UploadFile = File(...),
     format: str = Query(default="auto"),
     rig_name: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Import a rig from a console patch export file (grandMA, Hog, Eos)."""
     content = (await file.read()).decode("utf-8", errors="replace")
@@ -171,17 +176,20 @@ async def import_console_patch(
         is_active=True,
     )
     db.add(rig)
-    db.flush()
+    await db.flush()
 
     # Create generic fixtures and rig placements
     for i, fix_data in enumerate(fixtures_data):
         # Try to find matching fixture in library
         matched = None
         if fix_data.get("manufacturer") and fix_data.get("model"):
-            matched = db.query(Fixture).filter(
-                Fixture.manufacturer.ilike(f"%{fix_data['manufacturer']}%"),
-                Fixture.model.ilike(f"%{fix_data['model']}%"),
-            ).first()
+            result = await db.execute(
+                select(Fixture).where(
+                    Fixture.manufacturer.ilike(f"%{fix_data['manufacturer']}%"),
+                    Fixture.model.ilike(f"%{fix_data['model']}%"),
+                ).limit(1)
+            )
+            matched = result.scalars().first()
 
         if not matched:
             # Create generic fixture
@@ -192,7 +200,7 @@ async def import_console_patch(
                 source="console",
             )
             db.add(matched)
-            db.flush()
+            await db.flush()
 
         rf = RigFixture(
             rig_id=rig.id,
@@ -205,7 +213,7 @@ async def import_console_patch(
         )
         db.add(rf)
 
-    db.commit()
+    await db.flush()
 
     return {
         "rig_id": rig.id,
@@ -215,21 +223,22 @@ async def import_console_patch(
 
 
 @router.get("/rigs/{rig_id}/export/json")
-async def export_rig_json(rig_id: int, db: Session = Depends(get_db)):
+async def export_rig_json(rig_id: int, db: AsyncSession = Depends(get_db)):
     """Export rig as JSON."""
-    rig = db.query(Rig).filter(Rig.id == rig_id).first()
+    result = await db.execute(select(Rig).where(Rig.id == rig_id))
+    rig = result.scalar_one_or_none()
     if not rig:
         raise HTTPException(status_code=404, detail="Rig not found")
 
-    fixtures = (
-        db.query(RigFixture)
-        .filter(RigFixture.rig_id == rig_id)
+    result = await db.execute(
+        select(RigFixture)
+        .where(RigFixture.rig_id == rig_id)
         .options(
-            joinedload(RigFixture.fixture),
-            joinedload(RigFixture.mode).joinedload(FixtureMode.channels),
+            selectinload(RigFixture.fixture),
+            selectinload(RigFixture.mode).selectinload(FixtureMode.channels),
         )
-        .all()
     )
+    fixtures = result.scalars().all()
 
     export_data = {
         "name": rig.name,
@@ -259,19 +268,20 @@ async def export_rig_json(rig_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/rigs/{rig_id}/export/csv")
-async def export_rig_csv(rig_id: int, db: Session = Depends(get_db)):
+async def export_rig_csv(rig_id: int, db: AsyncSession = Depends(get_db)):
     """Export rig patch sheet as CSV."""
-    rig = db.query(Rig).filter(Rig.id == rig_id).first()
+    result = await db.execute(select(Rig).where(Rig.id == rig_id))
+    rig = result.scalar_one_or_none()
     if not rig:
         raise HTTPException(status_code=404, detail="Rig not found")
 
-    fixtures = (
-        db.query(RigFixture)
-        .filter(RigFixture.rig_id == rig_id)
-        .options(joinedload(RigFixture.fixture), joinedload(RigFixture.mode))
+    result = await db.execute(
+        select(RigFixture)
+        .where(RigFixture.rig_id == rig_id)
+        .options(selectinload(RigFixture.fixture), selectinload(RigFixture.mode))
         .order_by(RigFixture.universe, RigFixture.dmx_address)
-        .all()
     )
+    fixtures = result.scalars().all()
 
     output = io.StringIO()
     writer = csv.writer(output)

@@ -42,6 +42,13 @@ class Fixture:
     # Fixture type for grouping
     fixture_type: str = "mover"  # mover, wash, bar, strobe
 
+    # Physical capability, read from the fixture profile
+    pan_range: float = 540.0
+    tilt_range: float = 270.0
+
+    # Profile clamps: channel name -> (min_value, max_value)
+    channel_limits: Dict[str, tuple] = field(default_factory=dict)
+
     # Current state
     pan: float = 0.0
     tilt: float = 0.0
@@ -51,6 +58,18 @@ class Fixture:
     blue: float = 0.0
     white: float = 0.0
     strobe: float = 0.0
+    amber: float = 0.0
+    uv: float = 0.0
+    zoom: float = 0.5
+    focus: float = 0.5
+    gobo: float = 0.0
+    gobo_rotation: float = 0.0
+    prism: float = 0.0
+    color_wheel: float = 0.0
+
+    def has_channel(self, name: str) -> bool:
+        """Check whether the fixture's profile declares a channel type."""
+        return name in self.channels
 
     def get_channel_address(self, channel_name: str) -> Optional[int]:
         """Get absolute DMX address for a channel."""
@@ -112,6 +131,99 @@ class FixtureGroup:
         return 0.0
 
 
+COLOR_CHANNELS = ('red', 'green', 'blue', 'white', 'amber', 'uv')
+LEVEL_CHANNELS = ('zoom', 'focus', 'gobo', 'gobo_rotation', 'prism', 'color_wheel')
+PASSIVE_CHANNELS = ('macro', 'effect', 'speed')
+
+
+def _level(value, default: float = 0.0) -> float:
+    """A state value as a float. Profiles and adapters may hand us None."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_byte(value) -> int:
+    """Scale a 0-1 state value to a DMX byte."""
+    return max(0, min(255, int(_level(value) * 255)))
+
+
+def canonical_channel_name(name: str) -> str:
+    """The channel type a repeated-channel alias ("dimmer_2") stands for."""
+    text = str(name)
+    base, _, suffix = text.rpartition('_')
+    return base if base and suffix.isdigit() else text
+
+
+def _render_fixture(fixture: Fixture) -> Dict[str, int]:
+    """Map a fixture's state onto the channel types its profile declares."""
+    values: Dict[str, int] = {}
+
+    dimmer = max(0.0, min(1.0, _level(fixture.dimmer)))
+
+    has_dimmer = fixture.has_channel('dimmer')
+    if has_dimmer:
+        values['dimmer'] = _to_byte(dimmer)
+        color_scale = 1.0
+    elif any(fixture.has_channel(name) for name in COLOR_CHANNELS):
+        # No intensity channel: intensity has to live in the colour values.
+        color_scale = dimmer
+    else:
+        color_scale = 1.0
+
+    for name in COLOR_CHANNELS:
+        if fixture.has_channel(name):
+            values[name] = _to_byte(_level(getattr(fixture, name, 0.0)) * color_scale)
+
+    # A pan_range of 0 marks a fixture that cannot move, so neither axis is driven.
+    pan_range = _level(fixture.pan_range)
+    tilt_range = _level(fixture.tilt_range)
+    if pan_range > 0:
+        if fixture.has_channel('pan'):
+            pan_norm = max(0.0, min(1.0, (_level(fixture.pan) + pan_range / 2.0) / pan_range))
+            if fixture.has_channel('pan_fine'):
+                pan_16 = int(round(pan_norm * 65535.0))
+                values['pan'] = (pan_16 >> 8) & 0xFF
+                values['pan_fine'] = pan_16 & 0xFF
+            else:
+                values['pan'] = int(round(pan_norm * 255.0))
+
+        if tilt_range > 0 and fixture.has_channel('tilt'):
+            tilt_norm = max(0.0, min(1.0, (_level(fixture.tilt) + tilt_range / 2.0) / tilt_range))
+            if fixture.has_channel('tilt_fine'):
+                tilt_16 = int(round(tilt_norm * 65535.0))
+                values['tilt'] = (tilt_16 >> 8) & 0xFF
+                values['tilt_fine'] = tilt_16 & 0xFF
+            else:
+                values['tilt'] = int(round(tilt_norm * 255.0))
+
+    strobe = max(0.0, min(1.0, _level(fixture.strobe)))
+    if fixture.has_channel('shutter'):
+        values['shutter'] = _to_byte(strobe) if strobe > 0 else 255
+    if fixture.has_channel('strobe'):
+        # A dedicated strobe channel rates the flash; 0 is "no strobe", not "closed".
+        values['strobe'] = _to_byte(strobe)
+
+    for name in LEVEL_CHANNELS + PASSIVE_CHANNELS:
+        if fixture.has_channel(name):
+            values[name] = _to_byte(getattr(fixture, name, 0.0))
+
+    # Repeated channel types (per-cell dimmers, multi-zone colour) carry the same
+    # value as the channel that owns the canonical name; leaving them at 0 puts a
+    # cell fixture at a fraction of its output or blacks it out entirely.
+    for name in fixture.channels:
+        if name in values:
+            continue
+        base = canonical_channel_name(name)
+        if base != name and base in values:
+            values[name] = values[base]
+
+    return values
+
+
 class FixtureGroupManager:
     """
     Manages fixtures and groups for effect application.
@@ -168,13 +280,27 @@ class FixtureGroupManager:
             self.fixtures[fixture.id] = fixture
         self._update_group_assignments()
 
+    @staticmethod
+    def _auto_group_keys() -> List[str]:
+        """Keys of the groups this manager rebuilds automatically.
+
+        Everything else in self.groups is caller-owned (custom groups) and is
+        left untouched by _update_group_assignments.
+        """
+        return [gt.value for gt in GroupType if gt is not GroupType.CUSTOM]
+
     def _update_group_assignments(self):
         """Auto-assign fixtures to groups based on position and index."""
         fixture_list = list(self.fixtures.values())
         fixture_list.sort(key=lambda f: (f.x, f.z))  # Sort left-to-right, front-to-back
 
-        # Clear existing assignments
-        for group in self.groups.values():
+        # Clear existing assignments.
+        # Only the auto-managed GroupType groups are rebuilt here; custom groups
+        # are owned by whoever created them and must survive fixture adds.
+        for key in self._auto_group_keys():
+            group = self.groups.get(key)
+            if group is None:
+                continue
             group.fixture_ids = []
             group.phase_offsets = []
 
@@ -208,8 +334,12 @@ class FixtureGroupManager:
             if i < len(fixture_list) * 0.25 or i >= len(fixture_list) * 0.75:
                 self.groups[GroupType.OUTER.value].fixture_ids.append(fixture_id)
 
-        # Update phase offsets for all groups
-        for group in self.groups.values():
+        # Update phase offsets for the auto-managed groups only. Custom groups
+        # may carry caller-supplied chase offsets, which this must not clobber.
+        for key in self._auto_group_keys():
+            group = self.groups.get(key)
+            if group is None:
+                continue
             count = len(group.fixture_ids)
             if count > 0:
                 group.phase_offsets = [i / count for i in range(count)]
@@ -271,6 +401,27 @@ class FixtureGroupManager:
                 phase = group.get_phase_offset(i)
                 func(fixture, i, phase)
 
+    def get_universes(self) -> List[int]:
+        """Sorted universes holding at least one fixture that can actually be driven.
+
+        A fixture patched past the end of a universe renders nothing, so counting it
+        here would put a permanently blank universe on the wire at frame rate.
+        """
+        return sorted({
+            fixture.universe
+            for fixture in self.fixtures.values()
+            if 0 <= fixture.dmx_address - 1 < 512
+        })
+
+    def get_dmx_frames(self) -> Dict[int, List[int]]:
+        """
+        Generate a DMX frame for every universe that holds fixtures.
+
+        Returns:
+            Mapping of universe number to 512-element list of DMX values
+        """
+        return {universe: self.get_dmx_frame(universe) for universe in self.get_universes()}
+
     def get_dmx_frame(self, universe: int = 0) -> List[int]:
         """
         Generate DMX frame from current fixture states.
@@ -288,28 +439,26 @@ class FixtureGroupManager:
             if base < 0 or base >= 512:
                 continue
 
-            # Map fixture state to channels
-            pan_norm = max(0.0, min(1.0, (float(fixture.pan) + 270.0) / 540.0))
-            tilt_norm = max(0.0, min(1.0, (float(fixture.tilt) + 135.0) / 270.0))
-            pan_16 = int(round(pan_norm * 65535.0))
-            tilt_16 = int(round(tilt_norm * 65535.0))
-            channel_values = {
-                'pan': (pan_16 >> 8) & 0xFF,          # coarse byte
-                'pan_fine': pan_16 & 0xFF,            # fine byte
-                'tilt': (tilt_16 >> 8) & 0xFF,        # coarse byte
-                'tilt_fine': tilt_16 & 0xFF,          # fine byte
-                'dimmer': int(fixture.dimmer * 255),
-                'red': int(fixture.red * 255),
-                'green': int(fixture.green * 255),
-                'blue': int(fixture.blue * 255),
-                'white': int(fixture.white * 255),
-                'shutter': int(fixture.strobe * 255) if fixture.strobe > 0 else 255,  # 255 = open
-            }
+            channel_values = _render_fixture(fixture)
 
             for channel_name, offset in fixture.channels.items():
+                if channel_name not in channel_values:
+                    continue
                 addr = base + offset
-                if 0 <= addr < 512 and channel_name in channel_values:
-                    frame[addr] = max(0, min(255, channel_values[channel_name]))
+                if not 0 <= addr < 512:
+                    continue
+
+                value = channel_values[channel_name]
+                limits = (fixture.channel_limits or {}).get(channel_name)
+                if isinstance(limits, (tuple, list)) and len(limits) >= 2:
+                    low, high = limits[0], limits[1]
+                    # A floor may not defeat blackout: 0 out stays 0 on the wire.
+                    if low is not None and value > 0:
+                        value = max(int(low), value)
+                    if high is not None:
+                        value = min(int(high), value)
+
+                frame[addr] = max(0, min(255, value))
 
         return frame
 
@@ -332,7 +481,7 @@ def create_demo_rig() -> FixtureGroupManager:
         'pan': 0, 'pan_fine': 1, 'tilt': 2, 'tilt_fine': 3,
         'speed': 4, 'dimmer': 5, 'shutter': 6,
         'red': 7, 'green': 8, 'blue': 9, 'white': 10,
-        'zoom': 11, 'color_temp': 12, 'control': 13
+        'zoom': 11, 'other': 12, 'other_2': 13
     }
 
     # Channel mapping for LED bar (12 channels)
@@ -340,7 +489,7 @@ def create_demo_rig() -> FixtureGroupManager:
         'dimmer': 0, 'strobe': 1,
         'red': 2, 'green': 3, 'blue': 4, 'white': 5,
         'amber': 6, 'uv': 7, 'macro': 8, 'speed': 9,
-        'mode': 10, 'control': 11
+        'other': 10, 'other_2': 11
     }
 
     fixtures = []

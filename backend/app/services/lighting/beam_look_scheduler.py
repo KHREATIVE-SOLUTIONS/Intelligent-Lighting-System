@@ -89,6 +89,10 @@ BEAM_LOOK_LIBRARY: Dict[str, BeamLook] = {
     ),
 }
 
+# Above this energy a look may strobe; below it the rig stays steady regardless of
+# which section the detector reports, so quiet passages never flash.
+LOW_ENERGY_MAX = 0.38
+
 
 class BeamLookScheduler:
     """Bar/section/energy aware scheduler with hold and cooldown constraints."""
@@ -147,7 +151,7 @@ class BeamLookScheduler:
         """Energy-aware look selection with section bias."""
         high_energy = ["audience_sweeps", "crisscross"]
         medium_energy = ["fan", "opposing_sweeps", "crisscross"]
-        low_energy = ["fan", "opposing_sweeps", "crisscross"]
+        low_energy = ["fan", "opposing_sweeps", "center_punch"]
 
         if section in {"intro", "outro", "breakdown"}:
             pool = ["fan", "opposing_sweeps", "center_punch"]
@@ -159,10 +163,14 @@ class BeamLookScheduler:
             pool = ["opposing_sweeps", "fan", "crisscross"]
         elif energy >= 0.72:
             pool = high_energy
-        elif energy <= 0.38:
+        elif energy <= LOW_ENERGY_MAX:
             pool = low_energy
         else:
             pool = medium_energy
+
+        if energy <= LOW_ENERGY_MAX:
+            steady = [n for n in pool if BEAM_LOOK_LIBRARY[n].strobe_mode == "off"]
+            pool = steady or low_energy
 
         # Avoid selecting current look when alternatives exist.
         alternatives = [name for name in pool if name != self._active_look.name]

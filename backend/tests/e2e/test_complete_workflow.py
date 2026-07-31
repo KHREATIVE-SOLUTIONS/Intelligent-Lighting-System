@@ -146,10 +146,9 @@ class TestCompleteWorkflow:
         duplicate_check = await client.get(f"/api/shows/{duplicate_id}")
         assert duplicate_check.json()["bpm"] == 140.0
 
-    @pytest.mark.asyncio
-    async def test_health_check(self, client: AsyncClient):
+    def test_health_check(self, lifespan_client):
         """Test health check endpoint."""
-        response = await client.get("/health")
+        response = lifespan_client.get("/health")
 
         assert response.status_code == 200
         data = response.json()

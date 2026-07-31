@@ -1,0 +1,89 @@
+Intelligent Lighting System
+Proprietary Software License
+
+Copyright (c) 2026 Alexander Kinghorn. All Rights Reserved.
+
+NOTICE: This software and its source code, object code, documentation, model
+configurations, fixture profiles, show data, and all associated materials
+(collectively, the "Software") are the confidential and proprietary property of
+Alexander Kinghorn (the "Licensor"). The Software is licensed, not sold.
+
+
+1. NO GRANT OF RIGHTS BY DEFAULT
+
+No licence, right, title, or interest in the Software is granted to any person or
+entity except under a separate written agreement signed by the Licensor. Access to
+a copy of the Software - including access to a source repository containing it -
+does not by itself grant any right to use, copy, or distribute it.
+
+
+2. RESTRICTIONS
+
+Except to the extent expressly permitted by a separate written agreement with the
+Licensor, or to the extent such restriction is prohibited by applicable law, you
+may not:
+
+  (a) use, run, or execute the Software for any purpose;
+  (b) copy, reproduce, publish, distribute, sell, sublicense, rent, lease, lend,
+      or otherwise transfer the Software or any portion of it;
+  (c) create derivative works of, modify, translate, or adapt the Software;
+  (d) reverse engineer, decompile, or disassemble the Software, or attempt to
+      derive its source code or underlying algorithms;
+  (e) remove, obscure, or alter any copyright, trademark, or other proprietary
+      notice contained in the Software;
+  (f) use the Software to develop a competing product or service; or
+  (g) disclose the Software or any benchmark or performance data concerning it to
+      any third party.
+
+
+3. THIRD-PARTY COMPONENTS
+
+The Software incorporates or depends upon third-party components that are
+distributed under their own licence terms. Those components remain the property of
+their respective owners and are governed by their own licences, which take
+precedence over this licence for those components only. Nothing in this licence
+grants rights in any third-party component beyond those granted by its own licence.
+
+
+4. FEEDBACK
+
+Any suggestions, ideas, or feedback you provide regarding the Software may be used
+by the Licensor without restriction and without obligation to you.
+
+
+5. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, TITLE, AND NONINFRINGEMENT.
+
+THE SOFTWARE CONTROLS STAGE LIGHTING AND OTHER PHYSICAL EQUIPMENT AND MAY PRODUCE
+HIGH-INTENSITY LIGHT, RAPID INTENSITY CHANGES, AND STROBE EFFECTS. IT IS NOT
+CERTIFIED FOR LIFE-SAFETY, EMERGENCY LIGHTING, OR ANY APPLICATION WHERE FAILURE
+COULD CAUSE INJURY OR DEATH. THE OPERATOR IS SOLELY RESPONSIBLE FOR SAFE OPERATION,
+FOR COMPLIANCE WITH APPLICABLE VENUE, ELECTRICAL, AND PHOTOSENSITIVITY REGULATIONS,
+AND FOR SUPERVISING ALL EQUIPMENT UNDER ITS CONTROL.
+
+
+6. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE LICENSOR
+BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OF OR OTHER DEALINGS IN THE SOFTWARE, INCLUDING ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES, LOSS OF
+PROFITS, LOSS OF DATA, OR EQUIPMENT DAMAGE.
+
+
+7. TERMINATION
+
+Any rights granted under a separate written agreement terminate automatically and
+immediately upon breach of that agreement or of this licence. Upon termination you
+must cease all use of the Software and destroy all copies in your possession or
+control. Sections 2 through 6 survive termination.
+
+
+8. LICENSING ENQUIRIES
+
+For commercial licensing, evaluation, or distribution enquiries, contact the
+Licensor.

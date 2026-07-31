@@ -7,7 +7,59 @@ Pydantic schemas for rig-related API operations.
 
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.exc import NoInspectionAvailable
+
+
+_FIXTURE_FIELDS = (
+    "id", "manufacturer", "model", "fixture_type", "gdtf_id", "weight", "power",
+    "beam_angle", "pan_range", "tilt_range", "has_rgb", "has_cmy", "has_color_wheel",
+    "color_temp_range", "thumbnail_url", "model_3d_url", "source", "source_id",
+    "categories", "popularity_score", "is_bundled",
+)
+_MODE_FIELDS = ("id", "fixture_id", "name", "channel_count", "description")
+_CHANNEL_FIELDS = (
+    "id", "mode_id", "channel_number", "channel_type", "name", "default_value",
+    "min_value", "max_value", "is_fine", "coarse_channel", "value_ranges",
+)
+
+
+def _unloaded(obj: Any) -> frozenset:
+    """Names of ORM attributes that would emit IO if read."""
+    try:
+        return frozenset(sa_inspect(obj).unloaded)
+    except NoInspectionAvailable:
+        return frozenset()
+
+
+def _serialize_fixture(fixture: Any) -> Any:
+    """Flatten an ORM fixture into a plain dict.
+
+    Relationships that are not already eager-loaded are omitted rather than
+    walked: reading them would emit IO, which raises MissingGreenlet under an
+    AsyncSession.
+    """
+    if fixture is None or isinstance(fixture, dict):
+        return fixture
+
+    data: Dict[str, Any] = {
+        name: getattr(fixture, name, None) for name in _FIXTURE_FIELDS
+    }
+    if "modes" not in _unloaded(fixture):
+        data["modes"] = [_serialize_mode(mode) for mode in fixture.modes]
+    return data
+
+
+def _serialize_mode(mode: Any) -> Dict[str, Any]:
+    """Flatten an ORM fixture mode, including its channels when loaded."""
+    data: Dict[str, Any] = {name: getattr(mode, name, None) for name in _MODE_FIELDS}
+    if "channels" not in _unloaded(mode):
+        data["channels"] = [
+            {name: getattr(channel, name, None) for name in _CHANNEL_FIELDS}
+            for channel in mode.channels
+        ]
+    return data
 
 
 # Rig Fixture Schemas
@@ -69,6 +121,11 @@ class RigFixtureResponse(RigFixtureBase):
 
     class Config:
         from_attributes = True
+
+    @field_validator("fixture", mode="before")
+    @classmethod
+    def _coerce_fixture(cls, value: Any) -> Any:
+        return _serialize_fixture(value)
 
 
 # Rig Schemas

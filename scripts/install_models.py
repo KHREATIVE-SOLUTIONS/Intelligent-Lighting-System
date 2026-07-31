@@ -12,8 +12,11 @@ Downloads and sets up ML models for the Intelligent Lighting System:
 - madmom: Beat validation and chord detection (CPU)
 - ONNX Runtime: Optimized inference
 
+Models whose licence is incompatible with commercial distribution of this
+product are never installed by default; they require --accept-restricted-licences.
+
 Usage:
-    python scripts/install_models.py              # Install all (legacy mode)
+    python scripts/install_models.py              # Install the permissive set
     python scripts/install_models.py --all        # Install all new models
     python scripts/install_models.py --mert       # Install MERT only
     python scripts/install_models.py --verify     # Verify installed models
@@ -32,6 +35,23 @@ PROJECT_ROOT = Path(__file__).parent.parent
 ML_MODELS_DIR = PROJECT_ROOT / "data" / "models"
 LEGACY_MODELS_DIR = PROJECT_ROOT / "ml_models"
 MANIFEST_PATH = ML_MODELS_DIR / "model_manifest.json"
+
+# Installing any of these subjects the resulting deployment to their terms, so
+# they are excluded from every default install path.
+RESTRICTED_LICENCES = {
+    "beatnet": "CC-BY-4.0 (pulls madmom, whose models are non-commercial)",
+    "essentia": "AGPL-3.0",
+    "madmom": "models are licensed for non-commercial use only",
+    "yolov9": "AGPL-3.0 (ultralytics)",
+}
+
+
+def refuse_restricted(name: str) -> None:
+    """Report that a restricted-licence model was skipped."""
+    print(
+        f"\n[SKIP] {name} - {RESTRICTED_LICENCES[name]}.\n"
+        "       Re-run with --accept-restricted-licences to install it anyway."
+    )
 
 
 def run_command(cmd, description):
@@ -151,7 +171,7 @@ def install_beatnet():
     """Install BeatNet for beat detection."""
     print("\n" + "="*60)
     print("  Setting up BeatNet...")
-    print("  License: MIT")
+    print(f"  License: {RESTRICTED_LICENCES['beatnet']}")
     print("="*60)
 
     beatnet_dir = LEGACY_MODELS_DIR / "beatnet"
@@ -230,6 +250,7 @@ def install_yolov9():
     """Install YOLOv9 for fixture detection."""
     print("\n" + "="*60)
     print("  Setting up YOLOv9...")
+    print(f"  License: {RESTRICTED_LICENCES['yolov9']}")
     print("="*60)
 
     yolo_dir = LEGACY_MODELS_DIR / "yolov9"
@@ -286,7 +307,7 @@ def install_essentia():
     """Install Essentia models for genre/mood classification (CPU)."""
     print("\n" + "=" * 60)
     print("Installing Essentia Models (Genre/Mood, CPU)")
-    print("License: AGPL-3.0")
+    print(f"License: {RESTRICTED_LICENCES['essentia']}")
     print("=" * 60)
 
     success = run_command(
@@ -309,7 +330,7 @@ def install_madmom():
     """Install madmom for beat tracking validation and chord detection."""
     print("\n" + "=" * 60)
     print("Installing madmom (Beat/Chord, CPU)")
-    print("License: BSD-3")
+    print(f"License: BSD-3 code, but {RESTRICTED_LICENCES['madmom']}")
     print("=" * 60)
 
     success = run_command(f"{sys.executable} -m pip install madmom", "madmom installation")
@@ -399,8 +420,19 @@ def main():
     parser.add_argument("--onnx", action="store_true", help="Install ONNX Runtime")
     parser.add_argument("--verify", action="store_true", help="Verify installed models")
     parser.add_argument("--legacy", action="store_true", help="Install legacy models (HuBERT, YOLOv9)")
+    parser.add_argument(
+        "--accept-restricted-licences",
+        action="store_true",
+        help=(
+            "Install models whose licence is incompatible with commercial "
+            "distribution: " + ", ".join(
+                f"{name} ({licence})" for name, licence in RESTRICTED_LICENCES.items()
+            )
+        ),
+    )
 
     args = parser.parse_args()
+    restricted_ok = args.accept_restricted_licences
 
     # If no args, run legacy installer for backward compatibility
     has_new_args = any([args.all, args.mert, args.beatnet, args.essentia,
@@ -415,9 +447,12 @@ def main():
 ================================================================
   This script will download and set up:
   - MERT-v1-95M  - Music emotion recognition (~380MB)
+  - PyTorch      - Deep learning framework (~2GB)
+  - HuBERT       - Legacy emotion model
+
+  Skipped unless --accept-restricted-licences is given:
   - BeatNet      - Beat detection (~500MB)
   - YOLOv9       - Object detection (~100MB)
-  - PyTorch      - Deep learning framework (~2GB)
 ================================================================
         """)
 
@@ -434,10 +469,14 @@ def main():
             print("\n[ERROR] PyTorch installation failed.")
             sys.exit(1)
 
-        results['beatnet'] = install_beatnet()
         results['mert'] = install_mert()
         results['hubert'] = install_hubert()
-        results['yolov9'] = install_yolov9()
+        if restricted_ok:
+            results['beatnet'] = install_beatnet()
+            results['yolov9'] = install_yolov9()
+        else:
+            refuse_restricted('beatnet')
+            refuse_restricted('yolov9')
 
         print("\n" + "="*60)
         print("  Installation Summary")
@@ -465,17 +504,28 @@ def main():
         results["onnxruntime"] = install_onnxruntime()
     if args.all or args.mert:
         results["mert"] = install_mert()
-    if args.all or args.beatnet:
-        results["beatnet"] = install_beatnet()
-    if args.all or args.essentia:
-        results["essentia"] = install_essentia()
     if args.all or args.allin1:
         results["allin1"] = install_allin1()
-    if args.all or args.madmom:
-        results["madmom"] = install_madmom()
+
+    # --all deliberately excludes these; each needs an explicit opt-in.
+    for flag, name, installer in (
+        (args.beatnet, "beatnet", install_beatnet),
+        (args.essentia, "essentia", install_essentia),
+        (args.madmom, "madmom", install_madmom),
+    ):
+        if not flag:
+            continue
+        if restricted_ok:
+            results[name] = installer()
+        else:
+            refuse_restricted(name)
+
     if args.legacy:
         results["hubert"] = install_hubert()
-        results["yolov9"] = install_yolov9()
+        if restricted_ok:
+            results["yolov9"] = install_yolov9()
+        else:
+            refuse_restricted("yolov9")
 
     print("\n" + "=" * 60)
     print("Installation Summary")

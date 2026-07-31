@@ -10,7 +10,7 @@ import json
 import random
 import math
 from dataclasses import dataclass, asdict
-from typing import Set, Dict, Any
+from typing import List, Set, Dict, Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
 from datetime import datetime
 import numpy as np
@@ -209,6 +209,107 @@ def _resolve_reactive_config(message: dict | None) -> ReactiveMotionConfig:
     return ReactiveMotionConfig(**merged)
 
 
+def fixture_universes(fixtures) -> List[int]:
+    """Sorted list of the universes a rig occupies."""
+    get_universes = getattr(fixtures, 'get_universes', None)
+    if callable(get_universes):
+        return sorted(int(u) for u in get_universes())
+    return sorted({int(getattr(f, 'universe', 0) or 0) for f in fixtures.fixtures.values()})
+
+
+def collect_dmx_frames(fixtures) -> Dict[int, List[int]]:
+    """Render every universe the rig occupies as universe -> 512-value frame."""
+    get_frames = getattr(fixtures, 'get_dmx_frames', None)
+    frames = get_frames() if callable(get_frames) else None
+    if not frames:
+        frames = {u: fixtures.get_dmx_frame(universe=u) for u in fixture_universes(fixtures) or [0]}
+    return {int(u): frame for u, frame in frames.items()}
+
+
+def primary_dmx_universe(frames: Dict[int, List[int]]) -> int:
+    """The universe whose frame stands in for the rig in single-universe payloads."""
+    if 0 in frames or not frames:
+        return 0
+    return min(frames)
+
+
+def serialize_dmx_frames(frames: Dict[int, List[int]]) -> Dict[str, List[int]]:
+    """JSON-safe universe -> frame mapping."""
+    return {str(u): frames[u] for u in sorted(frames)}
+
+
+# The engine dataclass and the fixture library disagree on type names, so both
+# vocabularies have to resolve to the same reactive role. Strobes get their own
+# role: driven as bars they sit permanently lit, which on an atomic strobe is a
+# constant blinding flood.
+_REACTIVE_ROLE_BY_TYPE = {
+    'mover': 'movers',
+    'moving_head': 'movers',
+    'spot': 'movers',
+    'beam': 'movers',
+    'wash': 'washes',
+    'par': 'washes',
+    'led_par': 'washes',
+    'bar': 'bars',
+    'led_bar': 'bars',
+    'strobe': 'strobes',
+    'laser': 'strobes',
+    'effect': 'strobes',
+}
+
+
+def _can_move(fixture) -> bool:
+    """Whether the fixture's profile says it has usable pan travel."""
+    try:
+        return float(getattr(fixture, 'pan_range', 0.0) or 0.0) > 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _reactive_role(fixture) -> str:
+    """Map a fixture onto the reactive role that drives it."""
+    role = _REACTIVE_ROLE_BY_TYPE.get(str(getattr(fixture, 'fixture_type', '') or '').lower())
+    if role:
+        return role
+    return 'movers' if ('pan' in fixture.channels and _can_move(fixture)) else 'bars'
+
+
+def _reactive_roles(fixtures) -> Dict[str, list]:
+    """Split a rig into the movers / washes / bars / strobes roles, left to right."""
+    roles: Dict[str, list] = {'movers': [], 'washes': [], 'bars': [], 'strobes': []}
+    for fixture in fixtures.fixtures.values():
+        roles[_reactive_role(fixture)].append(fixture)
+    for group in roles.values():
+        group.sort(key=lambda f: (f.x, f.universe, f.dmx_address))
+    return roles
+
+
+def resolve_live_fixtures(app):
+    """Get the rig the running show is driving, if there is one."""
+    engine = getattr(app.state, 'effects_engine', None)
+    fixtures = getattr(engine, 'fixtures', None) if engine is not None else None
+    if fixtures is None:
+        fixtures = getattr(app.state, 'fixture_manager', None)
+    return fixtures
+
+
+async def resolve_reactive_fixtures(app, rig_id=None):
+    """Resolve the rig the reactive path drives: the one requested, else the live one."""
+    if rig_id is not None:
+        try:
+            from ...db.database import AsyncSessionLocal
+            from ...services.rig.rig_loader import build_manager_for_rig_id
+
+            async with AsyncSessionLocal() as db:
+                manager = await build_manager_for_rig_id(db, int(rig_id))
+            if manager is not None and manager.fixtures:
+                return manager
+            print(f"[WS] Rig {rig_id} has no drivable fixtures - driving the live rig instead")
+        except Exception as e:
+            print(f"[WS] Could not load rig {rig_id}: {e}")
+    return resolve_live_fixtures(app)
+
+
 def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
     """
     Process audio and update effects engine state.
@@ -264,8 +365,10 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         ml_data=ml_data,
     )
 
-    # Get the current DMX frame (already updated by effects engine loop)
-    dmx_frame = effects_engine.fixtures.get_dmx_frame(universe=0)
+    # Get the current DMX frames (already updated by effects engine loop)
+    dmx_frames = collect_dmx_frames(effects_engine.fixtures)
+    primary_universe = primary_dmx_universe(dmx_frames)
+    dmx_frame = dmx_frames.get(primary_universe, [0] * 512)
 
     # Get fixture states for visualization (atomic snapshot - BUG-001 fix)
     fixture_states = effects_engine.get_fixture_state_snapshot()
@@ -328,6 +431,8 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
 
     result = {
         'dmx_frame': dmx_frame,
+        'dmx_universe': primary_universe,
+        'dmx_frames': serialize_dmx_frames(dmx_frames),
         'fixtures': fixture_states,
         'state': 'auto' if effects_engine.config.auto_mode else 'manual',
         'movement': active_lfo,  # Show active LFO effect
@@ -367,6 +472,7 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
     # Reactive lighting state
     reactive_mode = False
     reactive_rig_id = None
+    reactive_fixtures = None
 
     try:
         # Get services from app state
@@ -411,7 +517,8 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                         # Apply reactive lighting if enabled (legacy mode)
                         if reactive_mode and dmx_controller and not effects_engine:
                             await apply_reactive_lighting(
-                                dmx_controller, analysis, reactive_rig_id
+                                dmx_controller, analysis, reactive_rig_id,
+                                fixtures=reactive_fixtures,
                             )
 
                         # Send analysis results with lighting data (convert numpy types for JSON)
@@ -463,7 +570,8 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                             # Apply reactive lighting if enabled (legacy mode)
                             if reactive_mode and dmx_controller and not effects_engine:
                                 await apply_reactive_lighting(
-                                    dmx_controller, analysis, reactive_rig_id
+                                    dmx_controller, analysis, reactive_rig_id,
+                                    fixtures=reactive_fixtures,
                                 )
 
                             # Send analysis results with lighting data (convert numpy types for JSON)
@@ -487,12 +595,14 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                         # Enable reactive lighting mode
                         reactive_mode = True
                         reactive_rig_id = message.get("rig_id")
+                        reactive_fixtures = await resolve_reactive_fixtures(app, reactive_rig_id)
                         resolved = _resolve_reactive_config(message)
                         if hasattr(apply_reactive_lighting, '_state'):
                             apply_reactive_lighting._state['config'] = resolved
                         await websocket.send_json({
                             "type": "reactive_enabled",
                             "rig_id": reactive_rig_id,
+                            "fixture_count": len(reactive_fixtures.fixtures) if reactive_fixtures else 0,
                             "preset": message.get("preset", "concert"),
                             "params": asdict(resolved),
                         })
@@ -531,6 +641,7 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                     elif msg_type == "reactive_off":
                         # Disable reactive lighting mode
                         reactive_mode = False
+                        reactive_fixtures = None
                         await websocket.send_json({"type": "reactive_disabled"})
 
                     elif msg_type == "config":
@@ -564,7 +675,7 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
         manager.disconnect(websocket, "audio")
 
 
-async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = None):
+async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = None, fixtures=None):
     """
     Apply reactive lighting based on hierarchical timing events.
 
@@ -572,7 +683,14 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
     - Beat events (fast): subtle modulation only (micro oscillation + dimmer accent)
     - Bar/downbeat events (medium): moderate directional changes
     - Phrase/section events (slow): choose scene/look family
+
+    Output is addressed through `fixtures`, the rig currently patched. Without a
+    rig nothing is emitted - guessing at addresses drives whatever hardware
+    happens to be listening there.
     """
+    if fixtures is None or not getattr(fixtures, 'fixtures', None):
+        return
+
     beat = analysis.get('beat', {})
     mood = analysis.get('mood', {})
     freq = analysis.get('frequency', {})
@@ -711,61 +829,86 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
     # Open shutter
     shutter_open = 255
 
+    async def write(fixture, channel_name: str, value: float):
+        offset = fixture.channels.get(channel_name)
+        if offset is None:
+            return
+        # A fixture with no travel must never be given movement, whatever its
+        # channel map claims - the engine's own renderer applies the same rule.
+        if channel_name in ('pan', 'pan_fine', 'tilt', 'tilt_fine') and not _can_move(fixture):
+            return
+        if channel_name in ('tilt', 'tilt_fine'):
+            try:
+                if float(getattr(fixture, 'tilt_range', 0.0) or 0.0) <= 0.0:
+                    return
+            except (TypeError, ValueError):
+                return
+        await dmx_controller.set_channel(
+            fixture.universe,
+            fixture.dmx_address + offset,
+            int(_clamp(value, 0, 255)),
+        )
+
+    async def write_color(fixture, intensity: float):
+        # Colour must carry the intensity on fixtures with no dimmer channel,
+        # or they sit at full brightness whatever the show decides.
+        scale = 1.0 if 'dimmer' in fixture.channels else _clamp(intensity, 0, 255) / 255.0
+        await write(fixture, 'red', r * scale)
+        await write(fixture, 'green', g * scale)
+        await write(fixture, 'blue', b * scale)
+
+    def center_x_of(group) -> float:
+        return sum(f.x for f in group) / len(group) if group else 0.0
+
     try:
-        mover_addresses = [1, 17, 33, 49, 65, 81, 97, 113]
+        roles = _reactive_roles(fixtures)
 
-        for i, addr in enumerate(mover_addresses):
-            is_left = i < 4
-            mirror = 1 if is_left else -1
+        movers = roles['movers']
+        mover_center = center_x_of(movers)
+        for fixture in movers:
+            mirror = 1.0 if fixture.x <= mover_center else -1.0
 
-            pan_unclamped = pan_base + mirror * state['pan_mod']
-            tilt_unclamped = tilt_base + state['tilt_mod']
-            pan = int(_clamp(pan_unclamped, 0, 255))
-            tilt = int(_clamp(tilt_unclamped, 0, 255))
+            await write(fixture, 'pan', pan_base + mirror * state['pan_mod'])
+            await write(fixture, 'tilt', tilt_base + state['tilt_mod'])
+            await write(fixture, 'dimmer', dimmer)
+            await write(fixture, 'shutter', shutter_open)
+            await write_color(fixture, dimmer)
 
-            await dmx_controller.set_channel(0, addr + 0, pan)
-            await dmx_controller.set_channel(0, addr + 2, tilt)
-            await dmx_controller.set_channel(0, addr + 5, dimmer)
-            await dmx_controller.set_channel(0, addr + 6, shutter_open)
-            await dmx_controller.set_channel(0, addr + 7, r)
-            await dmx_controller.set_channel(0, addr + 8, g)
-            await dmx_controller.set_channel(0, addr + 9, b)
+        washes = roles['washes']
+        wash_center = center_x_of(washes)
+        zoom = 128 + arousal * 100
+        for fixture in washes:
+            mirror = 1.0 if fixture.x <= wash_center else -1.0
 
-        wash_addresses = [129, 143, 157, 171, 185, 199]
-        for i, addr in enumerate(wash_addresses):
-            is_left = i < 3
-            mirror = 1 if is_left else -1
-            wash_pan_unclamped = pan_base + mirror * state['pan_mod'] * 0.5
-            wash_tilt_unclamped = 118 + state['tilt_mod'] * 0.35
-            wash_pan = int(_clamp(wash_pan_unclamped, 0, 255))
-            wash_tilt = int(_clamp(wash_tilt_unclamped, 0, 255))
-            zoom = int(128 + arousal * 100)
+            await write(fixture, 'pan', pan_base + mirror * state['pan_mod'] * 0.5)
+            await write(fixture, 'tilt', 118 + state['tilt_mod'] * 0.35)
+            await write(fixture, 'dimmer', dimmer)
+            await write(fixture, 'shutter', shutter_open)
+            await write_color(fixture, dimmer)
+            await write(fixture, 'zoom', zoom)
 
-            await dmx_controller.set_channel(0, addr + 0, wash_pan)
-            await dmx_controller.set_channel(0, addr + 2, wash_tilt)
-            await dmx_controller.set_channel(0, addr + 5, dimmer)
-            await dmx_controller.set_channel(0, addr + 6, shutter_open)
-            await dmx_controller.set_channel(0, addr + 7, r)
-            await dmx_controller.set_channel(0, addr + 8, g)
-            await dmx_controller.set_channel(0, addr + 9, b)
-            await dmx_controller.set_channel(0, addr + 12, zoom)
-
-        bar_addresses = [213, 225, 237, 249]
-        for i, addr in enumerate(bar_addresses):
+        for i, fixture in enumerate(roles['bars']):
             # Beat accents are mild; avoid full-on hard flashes.
             parity_match = (i % 2) == (beat_position % 2)
             accent = 18 if (is_beat and parity_match) else 0
-            bar_dimmer = int(max(0, min(255, dimmer + accent)))
+            bar_dimmer = _clamp(dimmer + accent, 0, 255)
 
             strobe = 0
             if arousal > 0.75 and is_section:
                 strobe = 80
 
-            await dmx_controller.set_channel(0, addr + 0, bar_dimmer)
-            await dmx_controller.set_channel(0, addr + 1, strobe)
-            await dmx_controller.set_channel(0, addr + 2, r)
-            await dmx_controller.set_channel(0, addr + 3, g)
-            await dmx_controller.set_channel(0, addr + 4, b)
+            await write(fixture, 'dimmer', bar_dimmer)
+            await write(fixture, 'strobe', strobe)
+            await write(fixture, 'shutter', shutter_open)
+            await write_color(fixture, bar_dimmer)
+
+        # Strobes idle dark and only fire on a high-arousal section change.
+        firing = arousal > 0.75 and is_section
+        for fixture in roles['strobes']:
+            await write(fixture, 'dimmer', 255 if firing else 0)
+            await write(fixture, 'strobe', 160 if firing else 0)
+            await write(fixture, 'shutter', shutter_open if firing else 0)
+            await write_color(fixture, 255 if firing else 0)
 
     except Exception:
         pass  # Ignore errors in reactive mode

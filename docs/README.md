@@ -136,9 +136,9 @@ DMX_FPS=40
 
 The system uses three ML models:
 
-1. **BeatNet** - Real-time beat detection
+1. **BeatNet** - Real-time beat detection (optional extra, not bundled; falls back to librosa beat tracking)
 2. **HuBERT** - Emotion/mood classification
-3. **YOLOv9** - Fixture detection (optional)
+3. **YOLOv9** - Fixture detection (optional extra, not bundled; detection endpoints return 503 without it)
 
 See `ml_models/*/config.yaml` for download instructions.
 
@@ -169,4 +169,10 @@ npm test
 
 ## License
 
-MIT License - see LICENSE file for details.
+Proprietary. Copyright (c) 2026 Alexander Kinghorn. All Rights Reserved.
+See the [LICENSE](../LICENSE) file at the repository root for the full terms.
+
+Third-party dependencies remain under their own licenses. Copyleft-licensed
+optional extras (`ultralytics`, AGPL-3.0; `BeatNet`/`madmom`, CC-BY-4.0 and
+non-commercial models) are deliberately **not** bundled - see the notes in
+`backend/requirements.txt` before installing them.

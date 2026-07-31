@@ -10,7 +10,9 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
@@ -22,21 +24,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _get_rig_fixtures_with_channels(rig_id: int, db: Session):
+async def _get_rig_fixtures_with_channels(rig_id: int, db: AsyncSession):
     """Load rig fixtures with their mode channel counts."""
-    rig = db.query(Rig).filter(Rig.id == rig_id).first()
+    result = await db.execute(select(Rig).where(Rig.id == rig_id))
+    rig = result.scalar_one_or_none()
     if not rig:
         raise HTTPException(status_code=404, detail="Rig not found")
 
-    rig_fixtures = (
-        db.query(RigFixture)
-        .filter(RigFixture.rig_id == rig_id)
+    result = await db.execute(
+        select(RigFixture)
+        .where(RigFixture.rig_id == rig_id)
         .options(
-            joinedload(RigFixture.fixture),
-            joinedload(RigFixture.mode).joinedload(FixtureMode.channels),
+            selectinload(RigFixture.fixture),
+            selectinload(RigFixture.mode).selectinload(FixtureMode.channels),
         )
-        .all()
     )
+    rig_fixtures = result.scalars().all()
 
     fixtures_data = []
     for rf in rig_fixtures:
@@ -70,13 +73,13 @@ def _get_rig_fixtures_with_channels(rig_id: int, db: Session):
 @router.post("/{rig_id}/auto-patch")
 async def auto_patch_rig(
     rig_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Auto-assign DMX addresses for all unlocked fixtures in a rig.
 
     Respects locked fixtures and universe boundaries (512ch max).
     """
-    rig, rig_fixtures, fixtures_data = _get_rig_fixtures_with_channels(rig_id, db)
+    rig, rig_fixtures, fixtures_data = await _get_rig_fixtures_with_channels(rig_id, db)
 
     locked_ids = {f["id"] for f in fixtures_data if f["is_address_locked"]}
     patched = PatchingService.auto_patch(fixtures_data, locked_ids)
@@ -92,7 +95,7 @@ async def auto_patch_rig(
                 rf.dmx_address = p["dmx_address"]
                 updated_count += 1
 
-    db.commit()
+    await db.flush()
 
     return {
         "message": f"Auto-patched {updated_count} fixtures",
@@ -105,10 +108,10 @@ async def auto_patch_rig(
 @router.get("/{rig_id}/patch-conflicts")
 async def get_patch_conflicts(
     rig_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Detect DMX address conflicts in a rig."""
-    rig, rig_fixtures, fixtures_data = _get_rig_fixtures_with_channels(rig_id, db)
+    rig, rig_fixtures, fixtures_data = await _get_rig_fixtures_with_channels(rig_id, db)
     conflicts = PatchingService.find_conflicts(fixtures_data)
 
     return {
@@ -123,10 +126,10 @@ async def get_next_available_address(
     rig_id: int,
     universe: int = Query(default=0, ge=0, le=15),
     channel_count: int = Query(default=16, ge=1, le=512),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get the next available DMX address in a universe."""
-    rig, rig_fixtures, fixtures_data = _get_rig_fixtures_with_channels(rig_id, db)
+    rig, rig_fixtures, fixtures_data = await _get_rig_fixtures_with_channels(rig_id, db)
 
     # Build occupied ranges for the specified universe
     occupied = []
@@ -155,8 +158,8 @@ async def get_next_available_address(
 @router.get("/{rig_id}/programming-audit")
 async def get_programming_audit(
     rig_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Run a professional programming-practices audit on a rig patch."""
-    _, _, fixtures_data = _get_rig_fixtures_with_channels(rig_id, db)
+    _, _, fixtures_data = await _get_rig_fixtures_with_channels(rig_id, db)
     return build_programming_audit(fixtures_data)

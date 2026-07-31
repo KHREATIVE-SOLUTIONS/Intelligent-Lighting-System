@@ -9,6 +9,7 @@ from typing import Optional, Dict
 
 from ...services.demo.demo_simulation import DemoSimulation, DemoConfig
 from ...services.demo.venue_presets import VENUE_PRESETS, VenuePreset, create_venue_rig
+from ...services.effects.fixture_groups import canonical_channel_name
 
 router = APIRouter()
 
@@ -63,7 +64,7 @@ async def start_demo(request: DemoStartRequest):
         if _effects_engine:
             manager, preset = create_venue_rig(request.venue_preset)
             if manager:
-                _effects_engine.fixtures = manager
+                _effects_engine.set_fixture_manager(manager)
                 # Apply default genre from venue
                 from ...services.lighting.genre_profiles import Genre
                 try:
@@ -303,7 +304,7 @@ async def get_demo_rig(preset: str = "pro_beam_room"):
                 "id": idx * 100 + offset,
                 "mode_id": idx + 1,
                 "channel_number": offset + 1,  # 1-indexed
-                "channel_type": ch_name,
+                "channel_type": canonical_channel_name(ch_name),
                 "name": ch_name.replace("_", " ").title(),
                 "default_value": 0,
                 "min_value": 0,
@@ -389,7 +390,7 @@ async def apply_venue_preset(preset_name: str):
         raise HTTPException(404, f"Venue preset not found: {preset_name}")
 
     # Replace the effects engine's fixture manager
-    _effects_engine.fixtures = manager
+    _effects_engine.set_fixture_manager(manager)
 
     # Apply key lighting zones
     for zone_spec in preset.key_zones:

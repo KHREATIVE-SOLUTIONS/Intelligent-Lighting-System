@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     EMOTION_HEAD_PATH: str = "data/models/mert_v1_95m/emotion_head.onnx"
 
     # DMX/ArtNet
-    ARTNET_IP: str = "0.0.0.0"
+    ARTNET_IP: str = "255.255.255.255"
     ARTNET_PORT: int = 6454
     DMX_UNIVERSE: int = 0
     DMX_FPS: int = 40

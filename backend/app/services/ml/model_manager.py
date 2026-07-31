@@ -4,6 +4,11 @@ ML Model Manager
 
 Manages loading and inference for ML models.
 Models: BeatNet, MERT (replaces HuBERT), YOLOv9, Genre, Structure.
+
+BeatNet (CC-BY-4.0, pulls the non-commercial madmom models) and ultralytics/YOLO
+(AGPL-3.0) are optional extras that are not bundled with this product. Their
+imports must stay function-local and guarded, and every caller must degrade when
+they are absent.
 """
 
 import asyncio
@@ -113,7 +118,11 @@ class ModelManager:
         logger.info("Genre classifier loaded")
 
     async def _load_beatnet(self):
-        """Load BeatNet model for beat detection."""
+        """Load BeatNet model for beat detection.
+
+        BeatNet is an optional, unbundled extra; when it is missing beat detection
+        falls back to the librosa onset tracker.
+        """
         try:
             from BeatNet.BeatNet import BeatNet
 
@@ -130,7 +139,7 @@ class ModelManager:
             print("BeatNet model loaded successfully")
 
         except ImportError:
-            print("BeatNet package not installed. Run: pip install BeatNet")
+            print("BeatNet not installed (optional CC-BY-4.0 extra). Using librosa beat tracking.")
         except Exception as e:
             print(f"BeatNet initialization error: {e}")
 
@@ -168,7 +177,11 @@ class ModelManager:
             print(f"HuBERT loading error: {e}")
 
     async def _load_yolo(self):
-        """Load YOLOv9 model for fixture detection."""
+        """Load YOLOv9 model for fixture detection.
+
+        ultralytics is an optional, unbundled extra; when it is missing the fixture
+        detection endpoints report the model as unavailable.
+        """
         model_path = Path(self.model_paths['yolo'])
 
         # Check for model.pt in the yolov9 directory
@@ -189,7 +202,7 @@ class ModelManager:
             print("YOLOv9 model loaded successfully")
 
         except ImportError:
-            print("Ultralytics not installed. Run: pip install ultralytics")
+            print("Ultralytics not installed (optional AGPL-3.0 extra). Fixture detection disabled.")
         except Exception as e:
             print(f"YOLOv9 loading error: {e}")
 
@@ -447,13 +460,16 @@ class ModelManager:
 
         Returns:
             Dictionary with detected fixtures
+
+        Raises:
+            ImportError: If the optional ultralytics extra or the YOLOv9 weights are
+                unavailable. Callers surface this as a 503.
         """
         if 'yolo' not in self.models:
-            return {
-                'fixtures': [],
-                'count': 0,
-                'confidence': 0.0,
-            }
+            raise ImportError(
+                "YOLOv9 fixture detection is unavailable: the optional 'ultralytics' "
+                "extra is not installed or the model weights are missing."
+            )
 
         try:
             # Run YOLO inference

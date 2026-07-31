@@ -3,6 +3,10 @@ Rig Detector Service
 ====================
 
 Uses YOLOv9 to detect fixtures in rig photos and auto-generate layouts.
+
+Detection depends on the optional ultralytics (AGPL-3.0) extra, which is not
+bundled. This module never imports it; it goes through ModelManager, which raises
+ImportError when the extra is absent so the API can answer 503.
 """
 
 import numpy as np
@@ -63,6 +67,9 @@ class RigDetector:
 
         Returns:
             List of detected fixtures
+
+        Raises:
+            ImportError: If the optional YOLOv9 fixture-detection extra is unavailable.
         """
         # Get image dimensions
         height, width = image.shape[:2]

@@ -5,28 +5,37 @@ Pytest Configuration and Fixtures
 Shared fixtures for testing.
 """
 
-import asyncio
-import pytest
-from typing import AsyncGenerator, Generator
-from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
+import atexit
+import os
+import shutil
+import tempfile
+from pathlib import Path
 
-from app.main import app
-from app.db.database import Base, get_db
-from app.core.config import settings
+# The application binds its engines to settings.DATABASE_URL at import time, so the
+# throwaway database has to be in the environment before any app module is imported.
+_TEST_DB_DIR = tempfile.mkdtemp(prefix="ils-tests-")
+_TEST_DB_PATH = Path(_TEST_DB_DIR) / "test.db"
+os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH.as_posix()}"
+atexit.register(shutil.rmtree, _TEST_DB_DIR, True)
+
+# Tests that drive the real lifespan start the DMX output loop. The checked-in
+# .env points ArtNet at the limited broadcast address, which would drive every
+# real fixture on the operator's network for the duration of the run.
+os.environ["ARTNET_IP"] = "127.0.0.1"
+
+import pytest  # noqa: E402
+from typing import AsyncGenerator  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+from sqlalchemy.pool import NullPool  # noqa: E402
+
+from app.main import app  # noqa: E402
+from app.db.database import Base, get_db  # noqa: E402
+from app.core.config import settings  # noqa: E402
 
 # Test database URL (use SQLite for testing)
-TEST_DATABASE_URL = "sqlite+aiosqlite:///./test.db"
-
-
-@pytest.fixture(scope="session")
-def event_loop() -> Generator:
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+TEST_DATABASE_URL = f"sqlite+aiosqlite:///{_TEST_DB_PATH.as_posix()}"
 
 
 @pytest.fixture(scope="session")
@@ -70,10 +79,25 @@ async def client(db_session) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db] = override_get_db
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
         yield ac
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def lifespan_client():
+    """Client that runs the real startup/shutdown sequence.
+
+    /health reports live subsystem state, so it only reads healthy once startup has
+    actually constructed the audio analyzer and effects engine.
+    """
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 @pytest.fixture

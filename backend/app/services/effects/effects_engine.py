@@ -13,7 +13,7 @@ import asyncio
 import copy
 import math
 import time
-from typing import Dict, List, Optional, Callable, Tuple
+from typing import Dict, List, Optional, Callable, Set, Tuple
 from dataclasses import dataclass
 
 from .fixture_groups import (
@@ -134,6 +134,14 @@ class _TargetGateState:
     last_accept_time: float = -999.0
 
 
+def _travel(fixture, attribute: str) -> float:
+    """Degrees of travel on an axis; 0 means the fixture cannot move it."""
+    try:
+        return float(getattr(fixture, attribute, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class EffectsEngine:
     """
     Main effects engine coordinating all layers.
@@ -164,6 +172,7 @@ class EffectsEngine:
 
         # DMX output callback
         self._dmx_callback: Optional[Callable[[int, List[int]], None]] = None
+        self._emitted_universes: Set[int] = set()
 
         # Beat tracking
         self.beat_count = 0
@@ -524,11 +533,15 @@ class EffectsEngine:
         beat_phase = (self.time * (bpm / 60.0)) % 1.0
 
         def _is_motion_capable(fx: Fixture) -> bool:
+            channels = getattr(fx, "channels", {}) or {}
+            can_pan = "pan" in channels and _travel(fx, "pan_range") > 0.0
+            can_tilt = "tilt" in channels and _travel(fx, "tilt_range") > 0.0
+            if not (can_pan or can_tilt):
+                return False
             ftype = str(getattr(fx, "fixture_type", "") or "").lower()
             if ftype in {"mover", "moving_head", "beam", "spot", "wash", "profile", "hybrid"}:
                 return True
-            channels = getattr(fx, "channels", {}) or {}
-            return ("pan" in channels) and ("tilt" in channels)
+            return can_pan and can_tilt
 
         movers = [f for f in all_fixtures if _is_motion_capable(f)]
         if not movers:
@@ -844,6 +857,7 @@ class EffectsEngine:
             snapshot.append({
                 'id': fixture.id,
                 'dmx_address': int(getattr(fixture, 'dmx_address', 0) or 0),
+                'universe': int(getattr(fixture, 'universe', 0) or 0),
                 'pan': fixture.pan,
                 'tilt': fixture.tilt,
                 'dimmer': fixture.dimmer,
@@ -933,6 +947,69 @@ class EffectsEngine:
             callback: Function(universe, dmx_frame) to send DMX data
         """
         self._dmx_callback = callback
+
+    def _emit_dmx(self):
+        """Send one DMX frame per universe that currently holds fixtures."""
+        callback = self._dmx_callback
+        if callback is None:
+            return
+
+        get_frames = getattr(self.fixtures, "get_dmx_frames", None)
+        if get_frames is None:
+            callback(0, self.fixtures.get_dmx_frame(universe=0))
+            return
+
+        for universe, frame in get_frames().items():
+            self._emitted_universes.add(universe)
+            callback(universe, frame)
+
+    @staticmethod
+    def _manager_universes(manager: FixtureGroupManager) -> List[int]:
+        """List the universes a fixture manager occupies."""
+        get_universes = getattr(manager, "get_universes", None)
+        if get_universes is not None:
+            return list(get_universes())
+        return sorted({int(getattr(f, "universe", 0) or 0) for f in manager.fixtures.values()})
+
+    def set_fixture_manager(self, manager: FixtureGroupManager) -> None:
+        """
+        Replace the active rig at runtime.
+
+        Universes the outgoing rig occupied but the incoming rig does not are
+        blacked out first; without that they would never receive another frame
+        and their fixtures would stay latched at their last values.
+        """
+        outgoing = self._manager_universes(self.fixtures)
+        incoming = set(self._manager_universes(manager))
+
+        if self._dmx_callback is not None:
+            for universe in outgoing:
+                if universe in incoming or universe not in self._emitted_universes:
+                    continue
+                self._dmx_callback(universe, [0] * 512)
+                self._emitted_universes.discard(universe)
+
+        self.fixtures = manager
+
+        self._mib_states.clear()
+        self._fixture_state_snapshot = []
+        for cache in (
+            self.movement._fixture_targets,
+            self.movement._fixture_current,
+            self.movement._random_targets,
+            self.movement._fixture_positions,
+            self.movement._position_phase_cache,
+            self.pro_movement._current_positions,
+            self.pro_movement._rate_limited_positions,
+        ):
+            cache.clear()
+
+        retain = getattr(self.key_lighting, "retain_fixtures", None)
+        if callable(retain):
+            retain(manager.fixtures.keys())
+
+        if self._lfo_engine is not None:
+            self._lfo_engine.set_fixture_count(len(manager.fixtures))
 
     def set_lfo_engine(self, lfo_engine: LFOEngine):
         """
@@ -1513,9 +1590,7 @@ class EffectsEngine:
         if self.config.auto_mode and self._rebuild_busker_enabled:
             self._rebuild_update_intent(delta_time)
             self._update_fixtures_rebuild(delta_time)
-            if self._dmx_callback:
-                frame = self.fixtures.get_dmx_frame(universe=0)
-                self._dmx_callback(0, frame)
+            self._emit_dmx()
             return
 
         # Update pro lighting modules
@@ -1669,9 +1744,7 @@ class EffectsEngine:
         self._update_fixtures(delta_time)
 
         # Output DMX
-        if self._dmx_callback:
-            frame = self.fixtures.get_dmx_frame(universe=0)
-            self._dmx_callback(0, frame)
+        self._emit_dmx()
 
     def _apply_beam_look_effects(self, active_look):
         """Apply scheduler-selected look parameters as a coordinated bundle."""
@@ -2305,6 +2378,7 @@ class EffectsEngine:
             snapshot.append({
                 'id': fixture.id,
                 'dmx_address': int(getattr(fixture, 'dmx_address', 0) or 0),
+                'universe': int(getattr(fixture, 'universe', 0) or 0),
                 'pan': fixture.pan,
                 'tilt': fixture.tilt,
                 'dimmer': fixture.dimmer,

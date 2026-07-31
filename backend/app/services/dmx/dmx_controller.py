@@ -6,6 +6,7 @@ Controls DMX output via ArtNet protocol.
 """
 
 import asyncio
+import logging
 import socket
 import struct
 import time
@@ -16,6 +17,9 @@ from app.core.config import settings
 from app.schemas.dmx import DMXFrame, DMXUniverse, ArtNetConfig, DMXSceneState, DMXFixtureState
 
 
+logger = logging.getLogger(__name__)
+
+
 class ArtNetProtocol:
     """ArtNet protocol implementation."""
 
@@ -24,7 +28,24 @@ class ArtNetProtocol:
     PROTOCOL_VERSION = 14
 
     @staticmethod
-    def create_dmx_packet(universe: int, data: bytes, sequence: int = 0) -> bytes:
+    def encode_port_address(universe: int, net: int = 0, subnet: int = 0) -> int:
+        """Encode the Art-Net 4 15-bit Port-Address (Net << 8 | Sub-Net << 4 | Universe).
+
+        A ``universe`` above 15 does not fit the 4-bit Universe field, so it is
+        taken to already be a full Port-Address and Net/Sub-Net are ignored.
+        """
+        if universe > 0x0F:
+            return universe & 0x7FFF
+        return ((net & 0x7F) << 8) | ((subnet & 0x0F) << 4) | (universe & 0x0F)
+
+    @staticmethod
+    def create_dmx_packet(
+        universe: int,
+        data: bytes,
+        sequence: int = 0,
+        net: int = 0,
+        subnet: int = 0,
+    ) -> bytes:
         """Create an ArtNet DMX packet."""
         # Ensure data is 512 bytes
         if len(data) < 512:
@@ -47,8 +68,10 @@ class ArtNetProtocol:
         # Physical port
         packet.append(0)
 
-        # Universe (little endian)
-        packet.extend(struct.pack('<H', universe))
+        # Port-Address: SubUni (Sub-Net + Universe) then Net
+        port_address = ArtNetProtocol.encode_port_address(universe, net, subnet)
+        packet.append(port_address & 0xFF)
+        packet.append((port_address >> 8) & 0x7F)
 
         # Length (big endian)
         packet.extend(struct.pack('>H', len(data)))
@@ -61,6 +84,11 @@ class ArtNetProtocol:
 
 class DMXController:
     """DMX controller with ArtNet output support."""
+
+    BROADCAST_ADDRESS = '255.255.255.255'
+    UNSPECIFIED_ADDRESSES = ('', '0.0.0.0')
+    # Frames leave at DMX_FPS, so a gap this long means the output loop stopped.
+    TRANSMIT_STALE_AFTER = 1.0
 
     def __init__(self):
         """Initialize the DMX controller."""
@@ -76,14 +104,21 @@ class DMXController:
 
         # Universe data
         self.universes: Dict[int, DMXUniverse] = {}
+        # Universes that exist only to carry a test pattern, and the pending tasks
+        # that hand them back once their blackout frame has gone out.
+        self._borrowed_universes: Set[int] = set()
+        self._release_tasks: Dict[int, asyncio.Task] = {}
         self.pre_blackout_state: Dict[int, List[int]] = {}
 
         # Output state
         self.sequence = 0
         self.target_fps = settings.DMX_FPS
         self.current_fps = 0.0
-        self.packets_sent = 0
+        self.frames_sent = 0
+        self.send_error_count = 0
+        self.last_send_error: Optional[str] = None
         self.last_send_time = 0.0
+        self._send_error_logged = False
 
         # Fade engine
         self.fade_tasks: Dict[str, asyncio.Task] = {}
@@ -100,6 +135,29 @@ class DMXController:
         """Get list of active universe numbers."""
         return list(self.universes.keys())
 
+    @property
+    def packets_sent(self) -> int:
+        """Number of ArtDmx packets handed to the socket without error."""
+        return self.frames_sent
+
+    @property
+    def target_ip(self) -> str:
+        """Resolved destination address.
+
+        An unset or wildcard address is not routable as a destination, so it
+        falls back to limited broadcast - the standard ArtNet default.
+        """
+        ip_address = (self.config.ip_address or '').strip()
+        if self.config.broadcast or ip_address in self.UNSPECIFIED_ADDRESSES:
+            return self.BROADCAST_ADDRESS
+        return ip_address
+
+    @property
+    def is_broadcast(self) -> bool:
+        """Whether the resolved destination is a broadcast address."""
+        target = self.target_ip
+        return target == self.BROADCAST_ADDRESS or target.endswith('.255')
+
     async def connect(self):
         """Connect to the ArtNet interface."""
         if self.is_connected:
@@ -107,14 +165,15 @@ class DMXController:
 
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            if self.is_broadcast:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             # BUG-018 fix: keep socket blocking for synchronous sendto()
             self.socket.setblocking(True)
+            self._send_error_logged = False
 
-            # Initialize universes
-            for universe in self.config.universes:
-                self.universes[universe] = DMXUniverse(universe=universe)
-
+            # Universes are created on demand by whatever drives them. Pre-seeding
+            # here would transmit continuous zeros on a Port-Address this box does
+            # not own, which fights any other console already merging on it.
             self.is_connected = True
 
             # Start output loop
@@ -148,8 +207,8 @@ class DMXController:
         while self.is_connected:
             loop_start = time.time()
 
-            # Send all universes
-            for universe_num, universe in self.universes.items():
+            # Snapshot: _send_universe awaits, and other tasks add or drop universes.
+            for universe_num, universe in list(self.universes.items()):
                 await self._send_universe(universe_num, bytes(universe.data))
 
             # FPS tracking
@@ -172,27 +231,56 @@ class DMXController:
 
         # Create packet
         self.sequence = (self.sequence + 1) % 256
-        packet = ArtNetProtocol.create_dmx_packet(universe, data, self.sequence)
+        packet = ArtNetProtocol.create_dmx_packet(
+            universe,
+            data,
+            self.sequence,
+            net=self.config.net,
+            subnet=self.config.subnet,
+        )
 
         # Send packet
+        target = (self.target_ip, self.config.port)
         try:
-            target = (
-                self.config.ip_address if not self.config.broadcast else '255.255.255.255',
-                self.config.port
-            )
             self.socket.sendto(packet, target)
-            self.packets_sent += 1
+            self.frames_sent += 1
             self.last_send_time = time.time()
+            self.last_send_error = None
+            self._send_error_logged = False
         except OSError as e:
             # BUG-017 fix: log send errors instead of silencing them
-            if not hasattr(self, '_artnet_err_logged'):
-                import logging
-                logging.getLogger(__name__).warning(f"ArtNet send error (suppressing repeats): {e}")
-                self._artnet_err_logged = True
+            self.send_error_count += 1
+            self.last_send_error = str(e)
+            if not self._send_error_logged:
+                logger.warning(
+                    f"ArtNet send error to {target[0]}:{target[1]} (suppressing repeats): {e}"
+                )
+                self._send_error_logged = True
 
     def get_config(self) -> ArtNetConfig:
         """Get current configuration."""
         return self.config
+
+    def get_transmit_status(self) -> Dict[str, Any]:
+        """Report actual ArtNet output health."""
+        last_send_time = self.last_send_time or None
+        stalled = (
+            last_send_time is None
+            or (time.time() - last_send_time) > self.TRANSMIT_STALE_AFTER
+        )
+        return {
+            "connected": self.is_connected,
+            "transmitting": (
+                self.is_connected and not stalled and self.last_send_error is None
+            ),
+            "target_ip": self.target_ip,
+            "port": self.config.port,
+            "broadcast": self.is_broadcast,
+            "frames_sent": self.frames_sent,
+            "send_error_count": self.send_error_count,
+            "last_send_error": self.last_send_error,
+            "last_send_time": last_send_time,
+        }
 
     async def update_config(self, config: ArtNetConfig):
         """Update configuration."""
@@ -424,8 +512,16 @@ class DMXController:
         # Cancel any existing test pattern
         await self.stop_test_pattern()
 
+        # A release from a previous run on this universe may still be pending. Let it
+        # fire and it would pop the entry out from under this run mid-pattern.
+        pending_release = self._release_tasks.pop(universe, None)
+        if pending_release is not None:
+            pending_release.cancel()
+
         if universe not in self.universes:
             self.universes[universe] = DMXUniverse(universe=universe)
+            self._borrowed_universes.add(universe)
+        borrowed = universe in self._borrowed_universes
 
         async def bounded_pattern():
             try:
@@ -435,8 +531,39 @@ class DMXController:
                 )
             except asyncio.TimeoutError:
                 pass
+            finally:
+                # Every pattern can end on a full-on frame - by operator stop, by the
+                # duration timeout firing unattended, or by simply running to
+                # completion. Nothing else writes this universe, so without an
+                # explicit blackout the rig stays latched at 255 forever.
+                entry = self.universes.get(universe)
+                if entry is not None:
+                    entry.data = [0] * 512
+                if borrowed:
+                    try:
+                        self._release_tasks[universe] = asyncio.get_running_loop().create_task(
+                            self._release_borrowed_universe(universe)
+                        )
+                    except RuntimeError:
+                        self.universes.pop(universe, None)
+                        self._borrowed_universes.discard(universe)
 
         self.test_pattern_task = asyncio.create_task(bounded_pattern())
+
+    async def _release_borrowed_universe(self, universe: int):
+        """Stop transmitting a universe that only existed to carry a test pattern.
+
+        Delayed so the blackout frame actually reaches the wire first; a fixture left
+        holding its last value is exactly what the blackout is there to prevent.
+        """
+        try:
+            await asyncio.sleep(0.25)
+            entry = self.universes.get(universe)
+            if entry is not None and not any(entry.data):
+                self.universes.pop(universe, None)
+                self._borrowed_universes.discard(universe)
+        finally:
+            self._release_tasks.pop(universe, None)
 
     async def _run_pattern(self, universe: int, pattern: str):
         """Internal pattern runner."""
@@ -450,11 +577,13 @@ class DMXController:
             elif pattern == "fade":
                 await self._fade_pattern(universe)
             elif pattern == "all_on":
-                for i in range(512):
-                    self.universes[universe].data[i] = 255
+                self.universes[universe].data = [255] * 512
+                # Hold rather than return, so max_duration bounds how long the rig
+                # sits at full and the caller's cleanup gets to run afterwards.
+                while True:
+                    await asyncio.sleep(0.1)
             elif pattern == "all_off":
-                for i in range(512):
-                    self.universes[universe].data[i] = 0
+                self.universes[universe].data = [0] * 512
         except asyncio.CancelledError:
             pass
 

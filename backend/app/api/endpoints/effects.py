@@ -26,6 +26,9 @@ from ...services.lighting.look_spec import build_lighting_look_spec
 
 router = APIRouter(prefix="/effects", tags=["effects"])
 
+# The engine dataclass and the fixture library name moving heads differently.
+MOVER_TYPE_NAMES = frozenset({"mover", "moving_head", "spot", "beam"})
+
 # Global effects engine instance (initialized in main.py)
 _effects_engine: Optional[EffectsEngine] = None
 
@@ -624,7 +627,7 @@ async def set_color_enabled(enabled: bool):
 
 
 @router.get("/debug/frame")
-async def get_debug_frame():
+async def get_debug_frame(universe: int = 0):
     """Debug: Get current DMX frame from effects engine."""
     engine = get_effects_engine()
 
@@ -632,13 +635,14 @@ async def get_debug_frame():
     engine.update()
 
     # Get the DMX frame
-    frame = engine.fixtures.get_dmx_frame(universe=0)
+    frame = engine.fixtures.get_dmx_frame(universe=universe)
 
     # Get fixture states
     fixtures = []
     for fixture in engine.fixtures.fixtures.values():
         fixtures.append({
             'id': fixture.id,
+            'universe': fixture.universe,
             'dmx_address': fixture.dmx_address,
             'pan': fixture.pan,
             'tilt': fixture.tilt,
@@ -651,6 +655,8 @@ async def get_debug_frame():
 
     non_zero = sum(1 for v in frame if v > 0)
     return {
+        "universe": universe,
+        "universes": engine.fixtures.get_universes(),
         "non_zero_channels": non_zero,
         "first_50_channels": frame[:50],
         "fixtures": fixtures,
@@ -660,7 +666,7 @@ async def get_debug_frame():
 
 
 @router.get("/debug/pipeline")
-async def get_debug_pipeline():
+async def get_debug_pipeline(universe: int = 0):
     """Debug: Get complete pipeline state for troubleshooting."""
     engine = get_effects_engine()
 
@@ -668,25 +674,31 @@ async def get_debug_pipeline():
     engine.update()
 
     # Get DMX frame
-    frame = engine.fixtures.get_dmx_frame(universe=0)
+    frame = engine.fixtures.get_dmx_frame(universe=universe)
 
-    # Analyze first mover (address 1)
-    mover_base = 0  # Address 1 = index 0
-    mover_dmx = {
-        'pan': frame[mover_base + 0],
-        'tilt': frame[mover_base + 2],
-        'dimmer': frame[mover_base + 5],
-        'shutter': frame[mover_base + 6],
-        'red': frame[mover_base + 7],
-        'green': frame[mover_base + 8],
-        'blue': frame[mover_base + 9],
-    }
+    # Sample the first mover patched in this universe, read through its own
+    # channel map - a rig patches wherever it likes.
+    in_universe = [f for f in engine.fixtures.fixtures.values() if f.universe == universe]
+    in_universe.sort(key=lambda f: f.dmx_address)
+    sampled = next((f for f in in_universe if f.fixture_type in MOVER_TYPE_NAMES), None)
+    if sampled is None:
+        sampled = in_universe[0] if in_universe else None
+
+    mover_dmx = {}
+    if sampled is not None:
+        base = sampled.dmx_address - 1
+        mover_dmx = {'id': sampled.id, 'dmx_address': sampled.dmx_address}
+        for name in ('pan', 'tilt', 'dimmer', 'shutter', 'red', 'green', 'blue'):
+            offset = sampled.channels.get(name)
+            addr = base + offset if offset is not None else None
+            mover_dmx[name] = frame[addr] if addr is not None and 0 <= addr < len(frame) else None
 
     # Get fixture states
     fixtures = []
     for fixture in list(engine.fixtures.fixtures.values())[:4]:
         fixtures.append({
             'id': fixture.id,
+            'universe': fixture.universe,
             'dmx_address': fixture.dmx_address,
             'dimmer': round(fixture.dimmer, 3),
             'strobe': round(fixture.strobe, 3),
@@ -732,6 +744,8 @@ async def get_debug_pipeline():
     return {
         "status": "ok",
         "summary": {
+            "universe": universe,
+            "universes": engine.fixtures.get_universes(),
             "non_zero_dmx_channels": non_zero,
             "dmx_callback_set": engine._dmx_callback is not None,
             "first_mover_dmx": mover_dmx,

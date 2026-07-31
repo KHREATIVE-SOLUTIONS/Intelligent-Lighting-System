@@ -6,7 +6,7 @@ Endpoints for DMX/ArtNet control operations.
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
@@ -44,16 +44,38 @@ async def update_dmx_config(
 @router.get("/status")
 async def get_dmx_status(request: Request):
     """Get current DMX controller status."""
-    if not hasattr(request.app.state, 'dmx_controller'):
+    controller = getattr(request.app.state, 'dmx_controller', None)
+    if controller is None:
         return {"status": "not_initialized"}
 
-    controller = request.app.state.dmx_controller
     return {
         "status": "connected" if controller.is_connected else "disconnected",
         "universes": controller.active_universes,
         "fps": controller.current_fps,
         "packets_sent": controller.packets_sent,
+        **controller.get_transmit_status(),
     }
+
+
+@router.get("/transmit-status")
+async def get_transmit_status(request: Request):
+    """Get real ArtNet output health (is anything actually leaving the socket)."""
+    # main.py parks None on app.state when DMX init fails, so hasattr is not enough.
+    controller = getattr(request.app.state, 'dmx_controller', None)
+    if controller is None:
+        return {
+            "connected": False,
+            "transmitting": False,
+            "target_ip": None,
+            "port": None,
+            "broadcast": False,
+            "frames_sent": 0,
+            "send_error_count": 0,
+            "last_send_error": "DMX controller not initialized",
+            "last_send_time": None,
+        }
+
+    return controller.get_transmit_status()
 
 
 @router.post("/connect")
@@ -85,8 +107,8 @@ async def get_universe(
     if not hasattr(request.app.state, 'dmx_controller'):
         raise HTTPException(status_code=500, detail="DMX controller not initialized")
 
-    if universe < 0 or universe > 15:
-        raise HTTPException(status_code=400, detail="Universe must be 0-15")
+    if universe < 0 or universe > 32767:
+        raise HTTPException(status_code=400, detail="Universe must be 0-32767")
 
     return request.app.state.dmx_controller.get_universe(universe)
 
@@ -101,8 +123,8 @@ async def set_universe(
     if not hasattr(request.app.state, 'dmx_controller'):
         raise HTTPException(status_code=500, detail="DMX controller not initialized")
 
-    if universe < 0 or universe > 15:
-        raise HTTPException(status_code=400, detail="Universe must be 0-15")
+    if universe < 0 or universe > 32767:
+        raise HTTPException(status_code=400, detail="Universe must be 0-32767")
 
     await request.app.state.dmx_controller.set_frame(universe, frame)
     return {"status": "sent", "universe": universe}
@@ -119,8 +141,8 @@ async def set_channel(
     if not hasattr(request.app.state, 'dmx_controller'):
         raise HTTPException(status_code=500, detail="DMX controller not initialized")
 
-    if universe < 0 or universe > 15:
-        raise HTTPException(status_code=400, detail="Universe must be 0-15")
+    if universe < 0 or universe > 32767:
+        raise HTTPException(status_code=400, detail="Universe must be 0-32767")
     if channel < 1 or channel > 512:
         raise HTTPException(status_code=400, detail="Channel must be 1-512")
     if value < 0 or value > 255:
@@ -214,7 +236,7 @@ async def set_fixture_state(
 
 @router.post("/test/pattern")
 async def run_test_pattern(
-    universe: int = 0,
+    universe: int = Query(0, ge=0, le=32767),
     pattern: str = "chase",
     request: Request = None,
 ):
@@ -443,26 +465,30 @@ async def test_previs_connection(
 @router.get("/previs/status")
 async def get_previs_status(request: Request):
     """Get current Art-Net configuration and status for previs."""
-    if not hasattr(request.app.state, 'dmx_controller'):
+    controller = getattr(request.app.state, 'dmx_controller', None)
+    if controller is None:
         return {
             "status": "not_initialized",
             "ready_for_previs": False
         }
 
-    controller = request.app.state.dmx_controller
     config = controller.get_config()
+    transmit = controller.get_transmit_status()
 
     return {
         "status": "connected" if controller.is_connected else "disconnected",
-        "ready_for_previs": controller.is_connected,
-        "mode": "broadcast" if config.broadcast else "unicast",
-        "target": "255.255.255.255" if config.broadcast else config.ip_address,
-        "port": config.port,
+        "ready_for_previs": transmit["transmitting"],
+        "mode": "broadcast" if transmit["broadcast"] else "unicast",
+        "target": transmit["target_ip"],
+        "port": transmit["port"],
         "universes": config.universes,
         "current_fps": controller.current_fps,
         "packets_sent": controller.packets_sent,
+        "transmitting": transmit["transmitting"],
+        "send_error_count": transmit["send_error_count"],
+        "last_send_error": transmit["last_send_error"],
         "recommendations": [
             "Use broadcast mode for easiest previs setup",
-            f"Current target: {'Broadcast (all devices)' if config.broadcast else config.ip_address}",
+            f"Current target: {'Broadcast (all devices)' if transmit['broadcast'] else transmit['target_ip']}",
         ]
     }

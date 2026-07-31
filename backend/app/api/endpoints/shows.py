@@ -75,8 +75,14 @@ async def create_show(
     show = Show(**show_data.model_dump())
     db.add(show)
     await db.flush()
-    await db.refresh(show)
-    return show
+
+    result = await db.execute(
+        select(Show).where(Show.id == show.id).options(
+            selectinload(Show.tracks).selectinload(ShowTrack.cues),
+            selectinload(Show.cues),
+        )
+    )
+    return result.scalar_one()
 
 
 @router.get("/{show_id}", response_model=ShowResponse)
@@ -117,8 +123,14 @@ async def update_show(
         setattr(show, field, value)
 
     await db.flush()
-    await db.refresh(show)
-    return show
+
+    result = await db.execute(
+        select(Show).where(Show.id == show.id).options(
+            selectinload(Show.tracks).selectinload(ShowTrack.cues),
+            selectinload(Show.cues),
+        )
+    )
+    return result.scalar_one()
 
 
 @router.delete("/{show_id}", status_code=204)
@@ -202,8 +214,15 @@ async def duplicate_show(
         )
         db.add(new_cue)
 
-    await db.refresh(new_show)
-    return new_show
+    await db.flush()
+
+    result = await db.execute(
+        select(Show).where(Show.id == new_show.id).options(
+            selectinload(Show.tracks).selectinload(ShowTrack.cues),
+            selectinload(Show.cues),
+        )
+    )
+    return result.scalar_one()
 
 
 # Track CRUD
@@ -236,8 +255,13 @@ async def create_track(
     track = ShowTrack(show_id=show_id, **track_data.model_dump())
     db.add(track)
     await db.flush()
-    await db.refresh(track)
-    return track
+
+    result = await db.execute(
+        select(ShowTrack).where(ShowTrack.id == track.id).options(
+            selectinload(ShowTrack.cues)
+        )
+    )
+    return result.scalar_one()
 
 
 @router.put("/{show_id}/tracks/{track_id}", response_model=TrackResponse)
@@ -263,8 +287,13 @@ async def update_track(
         setattr(track, field, value)
 
     await db.flush()
-    await db.refresh(track)
-    return track
+
+    result = await db.execute(
+        select(ShowTrack).where(ShowTrack.id == track.id).options(
+            selectinload(ShowTrack.cues)
+        )
+    )
+    return result.scalar_one()
 
 
 @router.delete("/{show_id}/tracks/{track_id}", status_code=204)

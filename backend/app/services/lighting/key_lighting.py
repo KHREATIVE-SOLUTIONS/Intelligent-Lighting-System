@@ -196,6 +196,21 @@ class KeyLightingManager:
         for fid in fixture_ids:
             self._fixture_zone_map[fid] = zone
 
+    def retain_fixtures(self, fixture_ids) -> List[str]:
+        """Drop assignments to fixtures that are no longer in the rig.
+
+        Zone geometry and intensity settings are the operator's configuration and
+        survive; the id bindings do not, because a different rig can reuse an id
+        and would then inherit the old rig's key-light floor.
+        """
+        valid = set(fixture_ids)
+        dropped = [fid for fid in self._fixture_zone_map if fid not in valid]
+        for fid in dropped:
+            del self._fixture_zone_map[fid]
+        for config in self._configs.values():
+            config.fixture_ids = [fid for fid in config.fixture_ids if fid in valid]
+        return dropped
+
     def auto_assign_fixtures(self, fixtures: Dict[str, dict]):
         """
         Auto-assign fixtures to zones based on their position.
