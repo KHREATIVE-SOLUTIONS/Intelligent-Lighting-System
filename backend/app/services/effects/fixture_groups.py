@@ -60,12 +60,24 @@ class Fixture:
     strobe: float = 0.0
     amber: float = 0.0
     uv: float = 0.0
+    lime: float = 0.0
+    indigo: float = 0.0
     zoom: float = 0.5
     focus: float = 0.5
     gobo: float = 0.0
     gobo_rotation: float = 0.0
+    gobo2: float = 0.0
+    gobo2_rotation: float = 0.0
+    animation: float = 0.0
     prism: float = 0.0
     color_wheel: float = 0.0
+    # Mechanical flags carry the channel's own value, where 0 is iris open, frost
+    # and framing out of the beam, and no colour correction.
+    iris: float = 0.0
+    frost: float = 0.0
+    framing: float = 0.0
+    cto: float = 0.0
+    ctb: float = 0.0
 
     def has_channel(self, name: str) -> bool:
         """Check whether the fixture's profile declares a channel type."""
@@ -131,8 +143,14 @@ class FixtureGroup:
         return 0.0
 
 
-COLOR_CHANNELS = ('red', 'green', 'blue', 'white', 'amber', 'uv')
-LEVEL_CHANNELS = ('zoom', 'focus', 'gobo', 'gobo_rotation', 'prism', 'color_wheel')
+COLOR_CHANNELS = ('red', 'green', 'blue', 'white', 'amber', 'uv', 'lime', 'indigo')
+# Subtractive mixing: each flag removes the additive component it is paired with.
+CMY_CHANNELS = {'cyan': 'red', 'magenta': 'green', 'yellow': 'blue'}
+COLOR_BEARING_CHANNELS = COLOR_CHANNELS + tuple(CMY_CHANNELS)
+LEVEL_CHANNELS = (
+    'zoom', 'focus', 'gobo', 'gobo_rotation', 'gobo2', 'gobo2_rotation',
+    'animation', 'prism', 'color_wheel', 'iris', 'frost', 'framing', 'cto', 'ctb',
+)
 PASSIVE_CHANNELS = ('macro', 'effect', 'speed')
 
 
@@ -168,7 +186,7 @@ def _render_fixture(fixture: Fixture) -> Dict[str, int]:
     if has_dimmer:
         values['dimmer'] = _to_byte(dimmer)
         color_scale = 1.0
-    elif any(fixture.has_channel(name) for name in COLOR_CHANNELS):
+    elif any(fixture.has_channel(name) for name in COLOR_BEARING_CHANNELS):
         # No intensity channel: intensity has to live in the colour values.
         color_scale = dimmer
     else:
@@ -177,6 +195,12 @@ def _render_fixture(fixture: Fixture) -> Dict[str, int]:
     for name in COLOR_CHANNELS:
         if fixture.has_channel(name):
             values[name] = _to_byte(_level(getattr(fixture, name, 0.0)) * color_scale)
+
+    # 0 is full open on a subtractive flag: intensity scales the additive component
+    # before it is complemented, or a blackout would open every flag to white.
+    for name, source in CMY_CHANNELS.items():
+        if fixture.has_channel(name):
+            values[name] = 255 - _to_byte(_level(getattr(fixture, source, 0.0)) * color_scale)
 
     # A pan_range of 0 marks a fixture that cannot move, so neither axis is driven.
     pan_range = _level(fixture.pan_range)

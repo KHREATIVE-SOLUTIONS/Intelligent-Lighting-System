@@ -32,7 +32,11 @@ class FixtureType(str, enum.Enum):
 
 
 class ChannelType(str, enum.Enum):
-    """DMX channel type enumeration."""
+    """DMX channel type enumeration.
+
+    Persisted by member NAME, so the longest name sets the stored column width;
+    widening it is a migration (see 003_extended_channel_types).
+    """
     DIMMER = "dimmer"
     RED = "red"
     GREEN = "green"
@@ -40,14 +44,27 @@ class ChannelType(str, enum.Enum):
     WHITE = "white"
     AMBER = "amber"
     UV = "uv"
+    LIME = "lime"
+    INDIGO = "indigo"
+    CYAN = "cyan"
+    MAGENTA = "magenta"
+    YELLOW = "yellow"
+    CTO = "cto"
+    CTB = "ctb"
     PAN = "pan"
     PAN_FINE = "pan_fine"
     TILT = "tilt"
     TILT_FINE = "tilt_fine"
     ZOOM = "zoom"
     FOCUS = "focus"
+    IRIS = "iris"
+    FROST = "frost"
     GOBO = "gobo"
     GOBO_ROTATION = "gobo_rotation"
+    GOBO2 = "gobo2"
+    GOBO2_ROTATION = "gobo2_rotation"
+    ANIMATION = "animation"
+    FRAMING = "framing"
     PRISM = "prism"
     COLOR_WHEEL = "color_wheel"
     SHUTTER = "shutter"
@@ -151,7 +168,7 @@ class FixtureChannel(Base):
     coarse_channel = Column(Integer, nullable=True)  # Reference to coarse channel number
 
     # Value ranges/presets (for gobos, colors, etc.)
-    value_ranges = Column(JSON, nullable=True)  # [{name, min, max}, ...]
+    value_ranges = Column(JSON, nullable=True)  # [{name, min_value, max_value}, ...]
 
     # Relationships
     mode = relationship("FixtureMode", back_populates="channels")

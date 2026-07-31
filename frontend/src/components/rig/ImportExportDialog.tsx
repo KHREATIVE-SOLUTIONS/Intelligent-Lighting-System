@@ -29,34 +29,43 @@ import {
   CloudUpload as CloudUploadIcon,
   Description as FileIcon,
   CheckCircle as CheckIcon,
-  Warning as WarningIcon,
   InsertDriveFile as JsonIcon,
   TableChart as CsvIcon,
-  PictureAsPdf as PdfIcon,
   Close as CloseIcon,
 } from '@mui/icons-material';
 import { importExportApi, fixturesApi } from '../../services/api';
 import axios from 'axios';
 
+export type ImportOutcome =
+  | { kind: 'fixture'; fixtureId: number }
+  | { kind: 'rig'; rigId: number };
+
 interface ImportExportDialogProps {
   open: boolean;
   onClose: () => void;
   rigId?: number;
+  onImported?: (outcome: ImportOutcome) => void;
 }
 
-type ImportFormat = 'gdtf' | 'mvr' | 'console_xml' | 'console_csv';
+type ImportFormat = 'gdtf' | 'mvr' | 'console';
 
-interface ParsedImportData {
-  fixtureCount: number;
-  fixtures: Array<{ name: string; manufacturer?: string; matched: boolean }>;
-  unrecognized: string[];
-  format: string;
+interface ParsedFixture {
+  title: string;
+  subtitle: string;
+  modes: Array<{ name: string; channelCount: number }>;
+}
+
+interface ImportSummary {
+  headline: string;
+  lines: string[];
+  fixture?: ParsedFixture;
 }
 
 export default function ImportExportDialog({
   open,
   onClose,
   rigId,
+  onImported,
 }: ImportExportDialogProps) {
   const [tab, setTab] = useState(0);
   const [importFormat, setImportFormat] = useState<ImportFormat>('mvr');
@@ -65,25 +74,41 @@ export default function ImportExportDialog({
   const [exporting, setExporting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [parsedData, setParsedData] = useState<ParsedImportData | null>(null);
+  const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const formatOptions: Array<{ value: ImportFormat; label: string; extension: string }> = [
-    { value: 'gdtf', label: 'GDTF', extension: '.gdtf' },
-    { value: 'mvr', label: 'MVR', extension: '.mvr' },
-    { value: 'console_xml', label: 'Console Patch (XML)', extension: '.xml' },
-    { value: 'console_csv', label: 'Console Patch (CSV)', extension: '.csv' },
+  const formatOptions: Array<{
+    value: ImportFormat;
+    label: string;
+    extension: string;
+    description: string;
+  }> = [
+    {
+      value: 'gdtf',
+      label: 'GDTF',
+      extension: '.gdtf',
+      description: 'Adds one fixture profile to your library.',
+    },
+    {
+      value: 'mvr',
+      label: 'MVR',
+      extension: '.mvr',
+      description: 'Creates a rig with positions and patch from the MVR scene.',
+    },
+    {
+      value: 'console',
+      label: 'Console Patch',
+      extension: '.xml,.csv',
+      description: 'grandMA XML, Hog CSV or Eos CSV. Format is detected from the file.',
+    },
   ];
 
-  const getAcceptedExtensions = (): string => {
-    const format = formatOptions.find((f) => f.value === importFormat);
-    return format?.extension || '*';
-  };
+  const activeFormat = formatOptions.find((f) => f.value === importFormat) ?? formatOptions[0];
 
   const resetState = () => {
     setSelectedFile(null);
-    setParsedData(null);
+    setSummary(null);
     setError(null);
     setSuccess(null);
     setImporting(false);
@@ -99,27 +124,7 @@ export default function ImportExportDialog({
     setSelectedFile(file);
     setError(null);
     setSuccess(null);
-
-    // Simulate parsing preview based on file name and format
-    const preview: ParsedImportData = {
-      fixtureCount: 0,
-      fixtures: [],
-      unrecognized: [],
-      format: importFormat,
-    };
-
-    // In a real implementation, we would parse the file on the server
-    // For now, show a placeholder preview
-    const extension = file.name.split('.').pop()?.toLowerCase();
-    if (extension === 'gdtf') {
-      preview.fixtureCount = 1;
-      preview.fixtures = [{ name: file.name.replace('.gdtf', ''), matched: true }];
-    } else {
-      preview.fixtureCount = 0;
-      preview.fixtures = [];
-    }
-
-    setParsedData(preview);
+    setSummary(null);
   };
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -153,6 +158,33 @@ export default function ImportExportDialog({
     if (files && files.length > 0) {
       handleFileSelect(files[0]);
     }
+    e.target.value = '';
+  };
+
+  const importGdtf = async (file: File): Promise<{ summary: ImportSummary; outcome: ImportOutcome }> => {
+    const result = await fixturesApi.importGDTF(file);
+    const fixture = await fixturesApi.get(result.fixture_id);
+    const modes = (fixture.modes || []).map((mode) => ({
+      name: mode.name,
+      channelCount: mode.channel_count,
+    }));
+
+    return {
+      summary: {
+        headline: result.message,
+        lines: [
+          `Fixture type: ${fixture.fixture_type}`,
+          `Pan ${fixture.pan_range}° / tilt ${fixture.tilt_range}°`,
+          `${modes.length} mode${modes.length === 1 ? '' : 's'} parsed`,
+        ],
+        fixture: {
+          title: `${fixture.manufacturer} ${fixture.model}`,
+          subtitle: fixture.gdtf_id ? `GDTF ID ${fixture.gdtf_id}` : 'Parsed from GDTF',
+          modes,
+        },
+      },
+      outcome: { kind: 'fixture', fixtureId: fixture.id },
+    };
   };
 
   const handleImport = async () => {
@@ -161,30 +193,48 @@ export default function ImportExportDialog({
     setImporting(true);
     setError(null);
     setSuccess(null);
+    setSummary(null);
 
     try {
+      let imported: { summary: ImportSummary; outcome: ImportOutcome };
+
       switch (importFormat) {
-        case 'gdtf': {
-          // For GDTF, we create the fixture definition from the file
-          const formData = new FormData();
-          formData.append('file', selectedFile);
-          await fixturesApi.create({ manufacturer: 'Imported', model: selectedFile.name.replace('.gdtf', '') });
+        case 'gdtf':
+          imported = await importGdtf(selectedFile);
+          break;
+        case 'mvr': {
+          const result = await importExportApi.importMVR(selectedFile);
+          imported = {
+            summary: {
+              headline: result.rig_name,
+              lines: [
+                `${result.fixtures_imported} fixture${result.fixtures_imported === 1 ? '' : 's'} placed`,
+                `${result.gdtf_fixtures_parsed ?? 0} GDTF profile${result.gdtf_fixtures_parsed === 1 ? '' : 's'} parsed`,
+              ],
+            },
+            outcome: { kind: 'rig', rigId: result.rig_id },
+          };
           break;
         }
-        case 'mvr':
-          await importExportApi.importMVR(selectedFile);
+        case 'console': {
+          const result = await importExportApi.importConsolePatch(selectedFile);
+          imported = {
+            summary: {
+              headline: result.rig_name,
+              lines: [
+                `${result.fixtures_imported} fixture${result.fixtures_imported === 1 ? '' : 's'} patched`,
+              ],
+            },
+            outcome: { kind: 'rig', rigId: result.rig_id },
+          };
           break;
-        case 'console_xml':
-          await importExportApi.importConsolePatch(selectedFile, 'xml');
-          break;
-        case 'console_csv':
-          await importExportApi.importConsolePatch(selectedFile, 'csv');
-          break;
+        }
       }
 
-      setSuccess(`Successfully imported from ${selectedFile.name}`);
-      setParsedData(null);
+      setSummary(imported.summary);
+      setSuccess(`Imported ${selectedFile.name}`);
       setSelectedFile(null);
+      onImported?.(imported.outcome);
     } catch (err) {
       if (axios.isAxiosError(err)) {
         setError(err.response?.data?.detail || 'Import failed. Please check the file format and try again.');
@@ -246,27 +296,6 @@ export default function ImportExportDialog({
     }
   };
 
-  const handleExportPDF = async () => {
-    if (!rigId) return;
-    setExporting('pdf');
-    setError(null);
-    try {
-      const response = await axios.get(`/api/rigs/${rigId}/export/pdf`, {
-        responseType: 'blob',
-      });
-      triggerDownload(response.data, `rig_${rigId}.pdf`, 'application/pdf');
-      setSuccess('PDF export downloaded successfully.');
-    } catch (err) {
-      if (axios.isAxiosError(err)) {
-        setError(err.response?.data?.detail || 'PDF export failed.');
-      } else {
-        setError('PDF export failed.');
-      }
-    } finally {
-      setExporting(null);
-    }
-  };
-
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -306,7 +335,7 @@ export default function ImportExportDialog({
                 onChange={(e) => {
                   setImportFormat(e.target.value as ImportFormat);
                   setSelectedFile(null);
-                  setParsedData(null);
+                  setSummary(null);
                 }}
                 label="Import Format"
               >
@@ -317,6 +346,10 @@ export default function ImportExportDialog({
                 ))}
               </Select>
             </FormControl>
+
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              {activeFormat.description}
+            </Typography>
 
             {/* Drag-and-drop area */}
             <Paper
@@ -343,7 +376,7 @@ export default function ImportExportDialog({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept={getAcceptedExtensions()}
+                accept={activeFormat.extension}
                 onChange={handleFileInputChange}
                 style={{ display: 'none' }}
               />
@@ -354,7 +387,7 @@ export default function ImportExportDialog({
                   : 'Drag and drop a file here, or click to browse'}
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                Accepted format: {getAcceptedExtensions()}
+                Accepted format: {activeFormat.extension}
               </Typography>
             </Paper>
 
@@ -370,52 +403,60 @@ export default function ImportExportDialog({
                     ({(selectedFile.size / 1024).toFixed(1)} KB)
                   </Typography>
                 </Stack>
+                <Typography variant="caption" color="text.secondary">
+                  The file is parsed by the server on import; what it found is shown here
+                  afterwards.
+                </Typography>
               </Box>
             )}
 
-            {/* Parsed data preview */}
-            {parsedData && (
+            {/* Server-side parse result */}
+            {summary && (
               <Box sx={{ mt: 2 }}>
                 <Divider sx={{ mb: 2 }} />
-                <Typography variant="subtitle2" gutterBottom>
-                  Preview
-                </Typography>
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <CheckIcon color="success" fontSize="small" />
+                  <Typography variant="subtitle2">{summary.headline}</Typography>
+                </Stack>
 
-                {parsedData.fixtures.length > 0 && (
+                {summary.fixture && (
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="body2" fontWeight="bold">
+                      {summary.fixture.title}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {summary.fixture.subtitle}
+                    </Typography>
+                  </Box>
+                )}
+
+                <List dense>
+                  {summary.lines.map((line) => (
+                    <ListItem key={line} disableGutters sx={{ py: 0 }}>
+                      <ListItemText primaryTypographyProps={{ variant: 'body2' }} primary={line} />
+                    </ListItem>
+                  ))}
+                </List>
+
+                {summary.fixture && summary.fixture.modes.length > 0 && (
                   <List dense>
-                    {parsedData.fixtures.map((f, i) => (
-                      <ListItem key={i}>
+                    {summary.fixture.modes.map((mode) => (
+                      <ListItem key={mode.name} disableGutters>
                         <ListItemIcon sx={{ minWidth: 36 }}>
-                          {f.matched ? (
-                            <CheckIcon color="success" fontSize="small" />
-                          ) : (
-                            <WarningIcon color="warning" fontSize="small" />
-                          )}
+                          <FileIcon fontSize="small" color="disabled" />
                         </ListItemIcon>
                         <ListItemText
-                          primary={f.name}
-                          secondary={
-                            f.matched
-                              ? f.manufacturer || 'Matched in library'
-                              : 'Unrecognized - will be created as custom fixture'
-                          }
+                          primary={mode.name}
+                          secondary={`${mode.channelCount} channels`}
                         />
                       </ListItem>
                     ))}
                   </List>
                 )}
 
-                {parsedData.fixtureCount === 0 && (
-                  <Typography variant="body2" color="text.secondary">
-                    File will be parsed on import. Fixture details will be determined by the server.
-                  </Typography>
-                )}
-
-                {parsedData.unrecognized.length > 0 && (
+                {summary.fixture && summary.fixture.modes.length === 0 && (
                   <Alert severity="warning" sx={{ mt: 1 }}>
-                    {parsedData.unrecognized.length} unrecognized fixture type
-                    {parsedData.unrecognized.length > 1 ? 's' : ''}:{' '}
-                    {parsedData.unrecognized.join(', ')}
+                    The server parsed no modes from this file, so the profile has no channels.
                   </Alert>
                 )}
               </Box>
@@ -468,25 +509,6 @@ export default function ImportExportDialog({
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
                     Spreadsheet-compatible patch sheet for documentation
-                  </Typography>
-                </Box>
-              </Button>
-
-              <Button
-                variant="outlined"
-                size="large"
-                fullWidth
-                startIcon={<PdfIcon />}
-                onClick={handleExportPDF}
-                disabled={exporting !== null}
-                sx={{ justifyContent: 'flex-start', py: 2 }}
-              >
-                <Box sx={{ textAlign: 'left' }}>
-                  <Typography variant="body1" fontWeight="bold">
-                    Export as PDF
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Printable patch sheet and rig documentation
                   </Typography>
                 </Box>
               </Button>

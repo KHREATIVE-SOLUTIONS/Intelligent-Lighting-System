@@ -53,8 +53,12 @@ export default function Dashboard() {
 
       // Update DMX store with lighting data from effects engine
       if (analysisData.lighting) {
-        if (analysisData.lighting.dmx_frame) {
-          setUniverse(0, analysisData.lighting.dmx_frame);
+        if (analysisData.lighting.dmx_frames) {
+          Object.entries(analysisData.lighting.dmx_frames).forEach(([universe, frame]) => {
+            setUniverse(Number(universe) || 0, frame as number[]);
+          });
+        } else if (analysisData.lighting.dmx_frame) {
+          setUniverse(Number(analysisData.lighting.dmx_universe) || 0, analysisData.lighting.dmx_frame);
         }
         if (analysisData.lighting.fixtures) {
           setFixtureStates(analysisData.lighting.fixtures);

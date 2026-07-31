@@ -34,6 +34,9 @@ import {
   FileUpload as ImportIcon,
 } from '@mui/icons-material';
 import { rigsApi } from '../../services/api';
+import ImportExportDialog from './ImportExportDialog';
+import type { ImportOutcome } from './ImportExportDialog';
+import TemplateGallery from './TemplateGallery';
 import type { Rig, RigCreate } from '../../types';
 
 export default function RigList() {
@@ -44,6 +47,8 @@ export default function RigList() {
   const [search, setSearch] = useState('');
   const [newRigMenuOpen, setNewRigMenuOpen] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [newRig, setNewRig] = useState<RigCreate>({
     name: '',
     description: '',
@@ -94,6 +99,15 @@ export default function RigList() {
         console.error('Failed to delete rig:', error);
       }
     }
+  };
+
+  const handleImported = (outcome: ImportOutcome) => {
+    if (outcome.kind === 'rig') {
+      setImportDialogOpen(false);
+      navigate(`/rigs/${outcome.rigId}`);
+      return;
+    }
+    fetchRigs();
   };
 
   const handleActivate = async (id: number) => {
@@ -241,20 +255,30 @@ export default function RigList() {
               </ListItemButton>
             </ListItem>
             <ListItem disablePadding>
-              <ListItemButton disabled>
+              <ListItemButton
+                onClick={() => {
+                  setNewRigMenuOpen(false);
+                  setTemplateDialogOpen(true);
+                }}
+              >
                 <ListItemIcon><TemplateIcon /></ListItemIcon>
                 <ListItemText
                   primary="From Template"
-                  secondary="Use a saved rig template (coming soon)"
+                  secondary="Use a saved rig template"
                 />
               </ListItemButton>
             </ListItem>
             <ListItem disablePadding>
-              <ListItemButton disabled>
+              <ListItemButton
+                onClick={() => {
+                  setNewRigMenuOpen(false);
+                  setImportDialogOpen(true);
+                }}
+              >
                 <ListItemIcon><ImportIcon /></ListItemIcon>
                 <ListItemText
                   primary="Import File"
-                  secondary="Import from MVR, console patch, or JSON (coming soon)"
+                  secondary="Import from MVR, a console patch export, or GDTF"
                 />
               </ListItemButton>
             </ListItem>
@@ -341,6 +365,28 @@ export default function RigList() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* From Template */}
+      <Dialog
+        open={templateDialogOpen}
+        onClose={() => setTemplateDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogContent>
+          <TemplateGallery onClose={() => setTemplateDialogOpen(false)} />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTemplateDialogOpen(false)}>Cancel</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Import File */}
+      <ImportExportDialog
+        open={importDialogOpen}
+        onClose={() => setImportDialogOpen(false)}
+        onImported={handleImported}
+      />
     </Box>
   );
 }

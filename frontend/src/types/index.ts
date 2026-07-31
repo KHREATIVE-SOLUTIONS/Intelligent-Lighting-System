@@ -217,6 +217,19 @@ export type ChannelType =
   | 'speed'
   | 'effect'
   | 'macro'
+  | 'cyan'
+  | 'magenta'
+  | 'yellow'
+  | 'cto'
+  | 'ctb'
+  | 'iris'
+  | 'frost'
+  | 'animation'
+  | 'framing'
+  | 'gobo2'
+  | 'gobo2_rotation'
+  | 'lime'
+  | 'indigo'
   | 'other';
 
 export interface RigFixture {

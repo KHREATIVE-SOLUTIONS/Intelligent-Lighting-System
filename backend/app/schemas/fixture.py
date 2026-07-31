@@ -7,17 +7,28 @@ Pydantic schemas for fixture library operations.
 
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from app.models.fixture import FixtureType, ChannelType
 
 
 # Channel Schemas
 class ChannelValueRange(BaseModel):
-    """Value range for channel presets."""
+    """Value range for channel presets.
+
+    Importers write these straight to the JSON column; "min"/"max" are accepted
+    so a GDTF ChannelSet or an OFL capability still reads back through here.
+    """
     name: str
-    min_value: int = Field(..., ge=0, le=255)
-    max_value: int = Field(..., ge=0, le=255)
+    min_value: int = Field(
+        ..., ge=0, le=255, validation_alias=AliasChoices("min_value", "min")
+    )
+    max_value: int = Field(
+        ..., ge=0, le=255, validation_alias=AliasChoices("max_value", "max")
+    )
+
+    class Config:
+        populate_by_name = True
 
 
 class FixtureChannelBase(BaseModel):

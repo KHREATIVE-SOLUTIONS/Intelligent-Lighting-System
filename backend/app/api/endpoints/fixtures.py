@@ -301,12 +301,16 @@ async def get_channel_templates(fixture_type: str):
     return {"fixture_type": fixture_type, "channels": templates[fixture_type]}
 
 
-@router.post("/import/gdtf")
-async def import_gdtf(
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
-):
-    """Import a fixture from a GDTF file."""
+def _channel_type(value) -> ChannelType:
+    """Coerce a parsed channel type, tolerating types this build does not know."""
+    try:
+        return ChannelType(value or "other")
+    except ValueError:
+        return ChannelType.OTHER
+
+
+async def _parse_gdtf_upload(file: UploadFile) -> dict:
+    """Read and parse an uploaded GDTF, raising the API's error shape on bad input."""
     if not file.filename or not file.filename.lower().endswith(".gdtf"):
         raise HTTPException(status_code=400, detail="File must be a GDTF file (.gdtf)")
 
@@ -314,9 +318,63 @@ async def import_gdtf(
 
     try:
         from app.services.fixture_library.gdtf_parser import parse_gdtf
-        fixture_data = parse_gdtf(content)
+        return parse_gdtf(content)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/import/gdtf/preview")
+async def preview_gdtf(file: UploadFile = File(...)):
+    """Parse a GDTF and report what it contains, without adding it to the library.
+
+    Lets an operator see how a profile was understood before committing it, so a
+    misparsed file does not have to be found and removed after the fact.
+    """
+    fixture_data = await _parse_gdtf_upload(file)
+    modes = fixture_data.get("modes", [])
+
+    return {
+        "manufacturer": fixture_data.get("manufacturer"),
+        "model": fixture_data.get("model"),
+        "fixture_type": fixture_data.get("fixture_type"),
+        "gdtf_id": fixture_data.get("gdtf_id"),
+        "pan_range": fixture_data.get("pan_range"),
+        "tilt_range": fixture_data.get("tilt_range"),
+        "has_rgb": fixture_data.get("has_rgb", False),
+        "has_cmy": fixture_data.get("has_cmy", False),
+        "modes": [
+            {
+                "name": mode.get("name"),
+                "channel_count": mode.get("channel_count"),
+                # The DMX slots actually claimed, which differs from the row count
+                # whenever the mode carries 16-bit channels.
+                "dmx_footprint": max(
+                    (ch.get("channel_number", 0) for ch in mode.get("channels", [])),
+                    default=0,
+                ),
+                "channels": [
+                    {
+                        "channel_number": ch.get("channel_number"),
+                        "channel_type": ch.get("channel_type"),
+                        "name": ch.get("name"),
+                        "is_fine": ch.get("is_fine", False),
+                        "coarse_channel": ch.get("coarse_channel"),
+                    }
+                    for ch in mode.get("channels", [])
+                ],
+            }
+            for mode in modes
+        ],
+    }
+
+
+@router.post("/import/gdtf")
+async def import_gdtf(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import a fixture from a GDTF file."""
+    fixture_data = await _parse_gdtf_upload(file)
 
     # Check for duplicate by GDTF ID
     gdtf_id = fixture_data.get("gdtf_id")
@@ -338,8 +396,14 @@ async def import_gdtf(
         power=fixture_data.get("power"),
         beam_angle=fixture_data.get("beam_angle"),
         has_rgb=fixture_data.get("has_rgb", False),
+        has_cmy=fixture_data.get("has_cmy", False),
         has_color_wheel=fixture_data.get("has_color_wheel", False),
         source="gdtf",
+        **{
+            key: fixture_data[key]
+            for key in ("pan_range", "tilt_range")
+            if fixture_data.get(key) is not None
+        },
     )
     db.add(fixture)
     await db.flush()
@@ -358,10 +422,14 @@ async def import_gdtf(
             channel = FixtureChannel(
                 mode_id=mode.id,
                 channel_number=ch_data["channel_number"],
-                channel_type=ChannelType(ch_data.get("channel_type", "other")),
+                channel_type=_channel_type(ch_data.get("channel_type")),
                 name=ch_data.get("name", f"Channel {ch_data['channel_number']}"),
                 default_value=ch_data.get("default_value", 0),
+                min_value=ch_data.get("min_value", 0),
+                max_value=ch_data.get("max_value", 255),
                 is_fine=ch_data.get("is_fine", False),
+                coarse_channel=ch_data.get("coarse_channel"),
+                value_ranges=ch_data.get("value_ranges"),
             )
             db.add(channel)
 

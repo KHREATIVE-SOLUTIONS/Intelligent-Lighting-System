@@ -45,6 +45,7 @@ type BeamDebugSnapshot = {
 type LiveFixtureState = {
   id: string;
   dmx_address?: number;
+  universe?: number;
   pan?: number;
   tilt?: number;
   dimmer?: number;
@@ -53,6 +54,8 @@ type LiveFixtureState = {
   b?: number;
   _updatedAt?: number;
 };
+
+const BLANK_UNIVERSE: number[] = new Array(512).fill(0);
 
 type CameraMode = 'iso' | 'top' | 'front' | 'audience';
 type QualityMode = 'performance' | 'balanced' | 'ultra';
@@ -1015,15 +1018,16 @@ function Scene({
   cameraMode: CameraMode;
   qualityMode: QualityMode;
 }) {
-  const dmxData = useDMXStore((state) => {
-    const universeData = state.universes.get(0);
-    return universeData || new Array(512).fill(0);
-  });
+  const universes = useDMXStore((state) => state.universes);
   const keyLightingZones = useDMXStore((state) => state.proLighting.keyLightingZones);
   const fixtureStates = useDMXStore((state) => state.fixtureStates);
   const liveBindings = useMemo(() => {
     const now = Date.now();
-    const byAddress = new Map<number, LiveFixtureState>();
+    // A DMX address only identifies a fixture within its own universe: a rig with
+    // fixtures at address 1 in universes 0 and 1 has two fixtures sharing an address.
+    const patchKey = (universe: unknown, address: unknown) =>
+      `${Number(universe) || 0}:${Number(address)}`;
+    const byAddress = new Map<string, LiveFixtureState>();
     const byId = new Map<string, LiveFixtureState>();
     const allStates: LiveFixtureState[] = [];
 
@@ -1032,7 +1036,7 @@ function Scene({
       allStates.push(state);
       byId.set(String(state.id), state);
       const addr = Number(state?.dmx_address);
-      if (Number.isFinite(addr) && addr > 0) byAddress.set(addr, state);
+      if (Number.isFinite(addr) && addr > 0) byAddress.set(patchKey(state?.universe, addr), state);
     });
 
     const rigSorted = [...(rig.fixtures || [])].sort((a, b) => a.dmx_address - b.dmx_address);
@@ -1050,8 +1054,8 @@ function Scene({
       let state: LiveFixtureState | undefined;
       let source = 'dmx';
 
-      if (byAddress.has(fx.dmx_address)) {
-        state = byAddress.get(fx.dmx_address);
+      if (byAddress.has(patchKey(fx.universe, fx.dmx_address))) {
+        state = byAddress.get(patchKey(fx.universe, fx.dmx_address));
         source = 'state:dmx_address';
       } else if (byId.has(String(fx.id))) {
         state = byId.get(String(fx.id));
@@ -1145,7 +1149,7 @@ function Scene({
         <Fixture3D
           key={fixture.id}
           fixture={fixture}
-          dmxData={dmxData}
+          dmxData={universes.get(Number(fixture.universe) || 0) || BLANK_UNIVERSE}
           liveBinding={liveBindings.get(fixture.id)}
           fixtureIndex={index}
           spotCap={quality.spotCap}
@@ -1206,7 +1210,13 @@ export default function RigVisualizer() {
       const msg = data as any;
       if (msg.lighting) {
         const l = msg.lighting;
-        if (l.dmx_frame) setUniverse(0, l.dmx_frame);
+        if (l.dmx_frames) {
+          Object.entries(l.dmx_frames).forEach(([universe, frame]) => {
+            setUniverse(Number(universe) || 0, frame as number[]);
+          });
+        } else if (l.dmx_frame) {
+          setUniverse(Number(l.dmx_universe) || 0, l.dmx_frame);
+        }
         if (l.fixtures) setFixtureStates(l.fixtures);
         if (l.state) setEffectsInfo(l.state, l.movement || 'none', l.dimmer || 'none');
         if (l.genre) setGenre(l.genre);

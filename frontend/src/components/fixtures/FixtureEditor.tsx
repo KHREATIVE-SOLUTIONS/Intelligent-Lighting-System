@@ -33,10 +33,11 @@ const FIXTURE_TYPES: FixtureType[] = [
 ];
 
 const CHANNEL_TYPES: ChannelType[] = [
-  'dimmer', 'red', 'green', 'blue', 'white', 'amber', 'uv',
-  'pan', 'pan_fine', 'tilt', 'tilt_fine', 'zoom', 'focus',
-  'gobo', 'gobo_rotation', 'prism', 'color_wheel', 'shutter',
-  'strobe', 'speed', 'effect', 'macro', 'other',
+  'dimmer', 'red', 'green', 'blue', 'white', 'amber', 'uv', 'lime', 'indigo',
+  'cyan', 'magenta', 'yellow', 'cto', 'ctb',
+  'pan', 'pan_fine', 'tilt', 'tilt_fine', 'zoom', 'focus', 'iris', 'frost',
+  'gobo', 'gobo_rotation', 'gobo2', 'gobo2_rotation', 'animation', 'framing',
+  'prism', 'color_wheel', 'shutter', 'strobe', 'speed', 'effect', 'macro', 'other',
 ];
 
 const STEPS = ['Basic Info', 'Modes', 'Channel Mapping'];

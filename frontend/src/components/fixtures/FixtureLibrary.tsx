@@ -17,9 +17,12 @@ import {
   Chip,
   Stack,
   Alert,
+  CircularProgress,
 } from '@mui/material';
 import { Search as SearchIcon, Add as AddIcon } from '@mui/icons-material';
+import axios from 'axios';
 import { fixturesApi } from '../../services/api';
+import type { OnlineFixtureResult } from '../../services/api';
 import FixtureCard from './FixtureCard';
 import type { Fixture } from '../../types';
 
@@ -27,6 +30,13 @@ const FIXTURE_TYPES = [
   'moving_head', 'led_par', 'led_bar', 'wash', 'spot',
   'beam', 'strobe', 'laser', 'effect', 'dimmer',
 ];
+
+const prettifyKey = (key: string): string =>
+  key
+    .split('-')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 
 export default function FixtureLibrary() {
   const navigate = useNavigate();
@@ -41,10 +51,14 @@ export default function FixtureLibrary() {
   const [localTotal, setLocalTotal] = useState(0);
   const [localPage, setLocalPage] = useState(1);
   const [localPages, setLocalPages] = useState(1);
+  const [localError, setLocalError] = useState('');
 
   // Online search state
-  const [onlineResults, setOnlineResults] = useState<any[]>([]);
+  const [onlineResults, setOnlineResults] = useState<OnlineFixtureResult[]>([]);
   const [onlineSearch, setOnlineSearch] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [searchedFor, setSearchedFor] = useState('');
+  const [onlineError, setOnlineError] = useState('');
   const [importing, setImporting] = useState<Set<string>>(new Set());
   const [imported, setImported] = useState<Set<string>>(new Set());
   const [importError, setImportError] = useState('');
@@ -61,8 +75,13 @@ export default function FixtureLibrary() {
       setLocalFixtures(data.items);
       setLocalTotal(data.total);
       setLocalPages(data.pages);
-    } catch {
+      setLocalError('');
+    } catch (err) {
       setLocalFixtures([]);
+      setLocalError(
+        (axios.isAxiosError(err) && err.response?.data?.detail) ||
+          'Could not load your fixture library.'
+      );
     }
   }, [localPage, search, manufacturer]);
 
@@ -72,12 +91,23 @@ export default function FixtureLibrary() {
 
   // Search online
   const handleOnlineSearch = async () => {
-    if (!onlineSearch.trim()) return;
+    const query = onlineSearch.trim();
+    if (!query) return;
+    setSearching(true);
+    setOnlineError('');
     try {
-      const data = await fixturesApi.searchOnline(onlineSearch);
-      setOnlineResults(data.results || []);
-    } catch {
+      const data = await fixturesApi.searchOnline(query);
+      setOnlineResults(data.results);
+      setOnlineError(data.error || '');
+    } catch (err) {
       setOnlineResults([]);
+      setOnlineError(
+        (axios.isAxiosError(err) && err.response?.data?.detail) ||
+          'Could not reach the Open Fixture Library. Check your connection and try again.'
+      );
+    } finally {
+      setSearchedFor(query);
+      setSearching(false);
     }
   };
 
@@ -192,7 +222,13 @@ export default function FixtureLibrary() {
             ))}
           </Grid>
 
-          {filteredLocal.length === 0 && (
+          {localError && (
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {localError}
+            </Alert>
+          )}
+
+          {!localError && filteredLocal.length === 0 && (
             <Typography color="text.secondary" sx={{ mt: 4, textAlign: 'center' }}>
               No fixtures found. Import from the Online tab or create a new fixture.
             </Typography>
@@ -228,40 +264,56 @@ export default function FixtureLibrary() {
               }}
               sx={{ minWidth: 350 }}
             />
-            <Button variant="contained" onClick={handleOnlineSearch}>
+            <Button variant="contained" onClick={handleOnlineSearch} disabled={searching}>
               Search
             </Button>
           </Box>
 
+          {onlineError && (
+            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setOnlineError('')}>
+              {onlineError}
+            </Alert>
+          )}
+
+          {searching && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
+              <CircularProgress />
+            </Box>
+          )}
+
           <Grid container spacing={2}>
-            {onlineResults.map((result: any, idx: number) => {
-              const mfrKey = result.manufacturer_key || result.manufacturerKey || '';
-              const fixKey = result.fixture_key || result.fixtureKey || '';
-              const key = `${mfrKey}/${fixKey}`;
+            {onlineResults.map((result) => {
+              const key = `${result.manufacturer_key}/${result.fixture_key}`;
+              const isImporting = importing.has(key);
 
               return (
-                <Grid item xs={12} sm={6} md={4} lg={3} key={`${key}-${idx}`}>
-                  <FixtureCard
-                    fixture={{
-                      manufacturer: result.manufacturer || mfrKey,
-                      model: result.name || fixKey,
-                      fixture_type: result.categories?.[0]?.toLowerCase().replace(' ', '_') || 'other',
-                      categories: result.categories,
-                      manufacturer_key: mfrKey,
-                      fixture_key: fixKey,
-                    }}
-                    isOnline
-                    isImported={imported.has(key)}
-                    onImport={() => handleImport(mfrKey, fixKey)}
-                  />
+                <Grid item xs={12} sm={6} md={4} lg={3} key={key}>
+                  <Box sx={{ opacity: isImporting ? 0.5 : 1, pointerEvents: isImporting ? 'none' : 'auto' }}>
+                    <FixtureCard
+                      fixture={{
+                        manufacturer: result.manufacturer || prettifyKey(result.manufacturer_key),
+                        model: result.name || prettifyKey(result.fixture_key),
+                        fixture_type:
+                          result.categories?.[0]?.toLowerCase().replace(' ', '_') || 'other',
+                        categories: result.categories,
+                        manufacturer_key: result.manufacturer_key,
+                        fixture_key: result.fixture_key,
+                      }}
+                      isOnline
+                      isImported={imported.has(key)}
+                      onImport={() => handleImport(result.manufacturer_key, result.fixture_key)}
+                    />
+                  </Box>
                 </Grid>
               );
             })}
           </Grid>
 
-          {onlineResults.length === 0 && onlineSearch && (
+          {!searching && !onlineError && onlineResults.length === 0 && (
             <Typography color="text.secondary" sx={{ mt: 4, textAlign: 'center' }}>
-              Search for fixtures on the Open Fixture Library.
+              {searchedFor
+                ? `No fixtures on the Open Fixture Library match "${searchedFor}".`
+                : 'Search for fixtures on the Open Fixture Library.'}
             </Typography>
           )}
         </>

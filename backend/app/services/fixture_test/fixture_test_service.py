@@ -27,16 +27,29 @@ class FixtureTestService:
 
         mode_channels: list of FixtureChannel model instances or dicts.
         """
-        ch_map = {}
+        coarse: Dict[str, int] = {}
+        fine: Dict[str, int] = {}
+
         for ch in mode_channels:
             if hasattr(ch, "channel_type"):
                 ct = ch.channel_type.value if hasattr(ch.channel_type, "value") else ch.channel_type
                 offset = ch.channel_number - 1  # Convert 1-indexed to 0-indexed
+                is_fine = bool(getattr(ch, "is_fine", False))
             else:
                 ct = ch.get("channel_type", "other")
                 offset = ch.get("channel_number", 1) - 1
-            ch_map[ct] = offset
-        return ch_map
+                is_fine = bool(ch.get("is_fine", False))
+
+            # Only pan and tilt have dedicated fine channel types; every other 16-bit
+            # channel repeats its coarse type, so a plain assignment would leave the
+            # map pointing at the low byte and the fixture dark during an identify.
+            target = fine if is_fine else coarse
+            if ct not in target or offset < target[ct]:
+                target[ct] = offset
+
+        for ct, offset in fine.items():
+            coarse.setdefault(ct, offset)
+        return coarse
 
     async def _set_fixture_channel(
         self, universe: int, base_address: int, offset: int, value: int

@@ -234,6 +234,75 @@ export const rigsApi = {
 };
 
 // Fixtures API
+export interface OnlineFixtureResult {
+  manufacturer_key: string;
+  fixture_key: string;
+  manufacturer?: string;
+  name?: string;
+  categories?: string[];
+}
+
+export interface OnlineFixtureSearchResult {
+  results: OnlineFixtureResult[];
+  error?: string;
+}
+
+export interface GdtfImportResult {
+  message: string;
+  fixture_id: number;
+  manufacturer?: string;
+  model?: string;
+  modes?: number;
+}
+
+/**
+ * OFL search results arrive either as flat "manufacturer/fixture" strings
+ * (the shape of the upstream OFL API) or as pre-expanded objects.
+ */
+const normalizeOnlineFixture = (entry: unknown): OnlineFixtureResult[] => {
+  const split = (combined: string): [string, string] => {
+    const separator = combined.indexOf('/');
+    if (separator <= 0) return ['', ''];
+    return [combined.slice(0, separator), combined.slice(separator + 1)];
+  };
+
+  if (typeof entry === 'string') {
+    const [manufacturerKey, fixtureKey] = split(entry);
+    return manufacturerKey && fixtureKey
+      ? [{ manufacturer_key: manufacturerKey, fixture_key: fixtureKey }]
+      : [];
+  }
+
+  if (entry && typeof entry === 'object') {
+    const raw = entry as Record<string, unknown>;
+    const combined = typeof raw.source_id === 'string' ? raw.source_id : '';
+    const [fallbackManufacturer, fallbackFixture] = split(combined);
+    const manufacturerKey =
+      (raw.manufacturer_key as string) || (raw.manufacturerKey as string) || fallbackManufacturer;
+    const fixtureKey =
+      (raw.fixture_key as string) || (raw.fixtureKey as string) || fallbackFixture;
+
+    if (!manufacturerKey || !fixtureKey) return [];
+
+    return [
+      {
+        manufacturer_key: manufacturerKey,
+        fixture_key: fixtureKey,
+        manufacturer: typeof raw.manufacturer === 'string' ? raw.manufacturer : undefined,
+        name:
+          typeof raw.name === 'string'
+            ? raw.name
+            : typeof raw.model === 'string'
+              ? raw.model
+              : undefined,
+        categories: Array.isArray(raw.categories) ? (raw.categories as string[]) : undefined,
+      },
+    ];
+  }
+
+  return [];
+};
+
 export const fixturesApi = {
   list: async (
     page = 1,
@@ -264,11 +333,19 @@ export const fixturesApi = {
   },
 
   // Library operations
-  searchOnline: async (query: string, manufacturer?: string) => {
+  searchOnline: async (
+    query: string,
+    manufacturer?: string
+  ): Promise<OnlineFixtureSearchResult> => {
     const params = new URLSearchParams({ query });
     if (manufacturer) params.append('manufacturer', manufacturer);
     const response = await api.get(`/fixtures/library/search?${params}`);
-    return response.data;
+    const payload = response.data;
+    const raw = Array.isArray(payload) ? payload : payload?.results;
+    return {
+      results: Array.isArray(raw) ? raw.flatMap(normalizeOnlineFixture) : [],
+      error: typeof payload?.error === 'string' ? payload.error : undefined,
+    };
   },
 
   importFromLibrary: async (manufacturerKey: string, fixtureKey: string) => {
@@ -292,6 +369,15 @@ export const fixturesApi = {
 
   getOFLManufacturers: async () => {
     const response = await api.get('/fixtures/library/manufacturers');
+    return response.data;
+  },
+
+  importGDTF: async (file: File): Promise<GdtfImportResult> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.post('/fixtures/import/gdtf', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
     return response.data;
   },
 
@@ -453,6 +539,13 @@ export const wizardApi = {
 };
 
 // Templates API
+export interface AppliedTemplate {
+  id: number;
+  name: string;
+  fixture_count: number;
+  message: string;
+}
+
 export const templatesApi = {
   list: async (venueType?: string): Promise<{ items: RigTemplate[]; total: number }> => {
     const params = venueType ? `?venue_type=${venueType}` : '';
@@ -470,8 +563,13 @@ export const templatesApi = {
     return response.data;
   },
 
-  apply: async (id: number, data: { rig_name: string; venue?: string; fixture_mapping?: Record<string, number> }): Promise<Rig> => {
-    const response = await api.post(`/templates/${id}/apply`, data);
+  apply: async (
+    id: number,
+    data: { rig_name: string; venue?: string }
+  ): Promise<AppliedTemplate> => {
+    const response = await api.post(`/templates/${id}/apply`, null, {
+      params: { rig_name: data.rig_name, venue: data.venue },
+    });
     return response.data;
   },
 
@@ -701,8 +799,15 @@ export const proLightingApi = {
 };
 
 // Import/Export API
+export interface RigImportResult {
+  rig_id: number;
+  rig_name: string;
+  fixtures_imported: number;
+  gdtf_fixtures_parsed?: number;
+}
+
 export const importExportApi = {
-  importMVR: async (file: File) => {
+  importMVR: async (file: File): Promise<RigImportResult> => {
     const formData = new FormData();
     formData.append('file', file);
     const response = await api.post('/rigs/import/mvr', formData, {
@@ -711,12 +816,12 @@ export const importExportApi = {
     return response.data;
   },
 
-  importConsolePatch: async (file: File, format: string) => {
+  importConsolePatch: async (file: File, format = 'auto'): Promise<RigImportResult> => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('format', format);
     const response = await api.post('/rigs/import/console-patch', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      params: { format },
     });
     return response.data;
   },

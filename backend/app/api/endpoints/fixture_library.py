@@ -17,7 +17,11 @@ from sqlalchemy.orm import selectinload
 from app.db.database import get_db
 from app.models.fixture import Fixture, FixtureMode, FixtureChannel, FixtureType, ChannelType
 from app.schemas.fixture import FixtureResponse, FixtureCreate
-from app.services.fixture_library.ofl_client import OFLClient, convert_ofl_to_internal
+from app.services.fixture_library.ofl_client import (
+    OFLClient,
+    OFLUnavailableError,
+    convert_ofl_to_internal,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -40,7 +44,12 @@ async def search_fixtures_online(
 ):
     """Search the Open Fixture Library for fixtures."""
     client = get_ofl_client()
-    results = await client.search_fixtures(query, manufacturer)
+    try:
+        results = await client.search_fixtures(query, manufacturer)
+    except OFLUnavailableError as e:
+        # 503 rather than an empty list: a venue offline at load-in must be told the
+        # library is unreachable, not that their fixture does not exist.
+        raise HTTPException(status_code=503, detail=str(e))
     return {"results": results, "source": "ofl"}
 
 
