@@ -17,10 +17,62 @@ from app.db.database import get_db
 from app.models.template import RigTemplate
 from app.models.rig import Rig, RigFixture
 from app.models.fixture import Fixture, FixtureMode
+from app.services.lighting.key_lighting import parse_zone
+from app.services.rig.fixture_choice import choose_mode, mode_makes_light
 from app.services.rig.patching_service import PatchingService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _validated_zone(value) -> Optional[str]:
+    """A zone name the engine recognises, or None. A template is not user input,
+    so an unknown zone is dropped and logged rather than failing the whole apply."""
+    if not value:
+        return None
+    zone = parse_zone(value)
+    if zone is None:
+        logger.warning("Template declares unknown zone %r; ignoring it", value)
+        return None
+    return zone.value
+
+
+async def _pick_profile(db: AsyncSession, fixture_type: str):
+    """The library profile and mode to patch a slot of this type onto.
+
+    Prefers a mode that can actually make light. Taking the first mode blindly
+    patches an `effect` slot onto a macro+speed mode, so the fixture holds an
+    address, shows on the plan and can never be turned on.
+    """
+    result = await db.execute(
+        select(Fixture)
+        .where(Fixture.fixture_type == fixture_type)
+        .order_by(Fixture.id)
+    )
+    fixtures = result.scalars().all()
+    if not fixtures:
+        return None, None
+
+    fallback = (None, None)
+    for fixture in fixtures:
+        mode_result = await db.execute(
+            select(FixtureMode)
+            .where(FixtureMode.fixture_id == fixture.id)
+            .options(selectinload(FixtureMode.channels))
+            .order_by(FixtureMode.id)
+        )
+        modes = mode_result.scalars().all()
+        mode = choose_mode(modes)
+        if mode is not None and mode_makes_light(mode.channels):
+            return fixture, mode
+        if fallback == (None, None):
+            fallback = (fixture, mode)
+
+    logger.warning(
+        "No '%s' profile in the library has a drivable mode; the fixtures this "
+        "template patches will not light", fixture_type,
+    )
+    return fallback
 
 
 @router.get("/")
@@ -150,23 +202,13 @@ async def apply_template(
     for slot in (template.fixture_slots or []):
         fixture_type = slot.get("fixture_type", "other")
 
-        # Find a matching fixture in library
-        matched_result = await db.execute(
-            select(Fixture).where(Fixture.fixture_type == fixture_type).limit(1)
-        )
-        matched = matched_result.scalars().first()
-
+        matched, mode = await _pick_profile(db, fixture_type)
         if not matched:
             continue
 
-        # Get first mode
-        mode_result = await db.execute(
-            select(FixtureMode).where(FixtureMode.fixture_id == matched.id).limit(1)
-        )
-        mode = mode_result.scalars().first()
-
         channel_count = mode.channel_count if mode else 16
         positions = slot.get("positions", [])
+        zone = _validated_zone(slot.get("zone"))
 
         for i in range(slot.get("count", 1)):
             # Universe boundary check
@@ -189,6 +231,7 @@ async def apply_template(
                 position_z=pos.get("z", 0.0),
                 rotation_y=pos.get("rotation_y", 0.0),
                 group_name=slot.get("group_name"),
+                zone=zone,
                 is_active=True,
             )
             db.add(rf)

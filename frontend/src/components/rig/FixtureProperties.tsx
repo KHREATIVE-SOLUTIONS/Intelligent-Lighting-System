@@ -12,6 +12,30 @@ import {
 } from '@mui/material';
 import type { RigFixture, Fixture } from '../../types';
 
+/**
+ * What a light points at, said in the words the owner would use. The values are
+ * the engine's PerformerZone vocabulary; the labels are not, because "this one
+ * is on the singer" is the whole point and "downstage_center" is not that.
+ *
+ * Optional throughout: leaving it on "Not set" is exactly how the rig behaved
+ * before zones existed.
+ */
+const ZONE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '', label: 'Not set' },
+  { value: 'stage_center', label: 'The singer / centre stage' },
+  { value: 'stage_left', label: 'Stage left' },
+  { value: 'stage_right', label: 'Stage right' },
+  { value: 'downstage_center', label: 'Front of the stage' },
+  { value: 'upstage_center', label: 'Back of the stage' },
+  { value: 'drum_riser', label: 'The drums' },
+  { value: 'keyboard', label: 'The keyboard' },
+  { value: 'dj_booth', label: 'The DJ booth' },
+  { value: 'dance_floor', label: 'The dance floor' },
+  { value: 'bar', label: 'The bar' },
+  { value: 'audience', label: 'The audience' },
+  { value: 'entrance', label: 'The way in / out' },
+];
+
 interface FixturePropertiesProps {
   fixture: RigFixture;
   availableModes?: Fixture['modes'];
@@ -85,6 +109,23 @@ export default function FixtureProperties({ fixture, availableModes = [], onChan
             value={fixture.group_name || ''}
             onChange={(e) => onChange({ group_name: e.target.value })}
           />
+        </Grid>
+
+        <Grid item xs={12}>
+          <FormControl size="small" fullWidth>
+            <InputLabel>Points at</InputLabel>
+            <Select
+              value={fixture.zone || ''}
+              label="Points at"
+              onChange={(e) => onChange({ zone: String(e.target.value) })}
+            >
+              {ZONE_OPTIONS.map((option) => (
+                <MenuItem key={option.value || 'none'} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         </Grid>
 
         <Grid item xs={4}>

@@ -80,6 +80,9 @@ class RigFixture(Base):
 
     # Grouping
     group_name = Column(String(100), nullable=True)
+    # What this fixture points at, from the PerformerZone vocabulary. Optional:
+    # a rig that declares none behaves as it did before zones existed.
+    zone = Column(String(50), nullable=True)
     tags = Column(JSON, default=list)
 
     # Status

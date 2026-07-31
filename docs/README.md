@@ -173,10 +173,23 @@ the log with the address it came from.
 
 Two things are deliberate here. The wait is counted **per computer**, so somebody
 guessing at the password from the corner of the room cannot stop you signing in
-from behind the bar. And the wait never grows past five minutes, so even in the
-worst case - your laptop and theirs sharing one address through a router - the
-longest you are ever kept out is five minutes. If you cannot wait, the reset above
+from behind the bar. And while the wait is on, the box still checks your password
+once every fifteen seconds - the *right* password always gets you in and clears
+the slate, so somebody else's guessing can never keep you out of your own lights
+for more than a few seconds. If you would rather not wait at all, the reset above
 clears the waiting list too.
+
+If your box sits behind a reverse proxy, every request reaches it from the proxy's
+address, so all your computers share one waiting list. Tell the box which address
+its proxy connects from and it will count each real computer separately instead:
+
+```bash
+TRUSTED_PROXIES=127.0.0.1 uvicorn app.main:app
+```
+
+Only set this to an address you control. The box ignores forwarded addresses from
+anywhere else on purpose - otherwise anyone could claim to be your laptop and
+spend your tries for you.
 
 ## Architecture
 

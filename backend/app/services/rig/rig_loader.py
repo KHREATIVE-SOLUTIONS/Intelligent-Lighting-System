@@ -22,6 +22,7 @@ from app.models.fixture import (
 )
 from app.models.rig import Rig, RigFixture
 from app.services.effects.fixture_groups import Fixture, FixtureGroupManager
+from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,8 @@ class RigLoadDiagnostics:
     fixture_count: int = 0
     universes: Dict[int, int] = field(default_factory=dict)
     groups: Dict[str, int] = field(default_factory=dict)
+    zones: Dict[str, int] = field(default_factory=dict)
+    unknown_zones: List[Dict[str, Any]] = field(default_factory=list)
     skipped: List[Dict[str, Any]] = field(default_factory=list)
     modes_guessed: List[Dict[str, Any]] = field(default_factory=list)
     generic_maps: List[Dict[str, Any]] = field(default_factory=list)
@@ -118,12 +121,16 @@ class RigLoadDiagnostics:
         universes = ", ".join(
             f"u{universe}={count}" for universe, count in sorted(self.universes.items())
         ) or "none"
+        zones = ", ".join(
+            f"{zone}={count}" for zone, count in sorted(self.zones.items())
+        ) or "none"
         return (
             f"rig {self.rig_id} '{self.rig_name}': {self.fixture_count} fixtures "
             f"({universes}); {len(self.skipped)} skipped, "
             f"{len(self.modes_guessed)} modes guessed, "
             f"{len(self.generic_maps)} generic maps, "
-            f"{self.alias_count} aliased channels"
+            f"{self.alias_count} aliased channels; zones: {zones}"
+            + (f"; {len(self.unknown_zones)} unknown zones" if self.unknown_zones else "")
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -133,6 +140,8 @@ class RigLoadDiagnostics:
             "fixture_count": self.fixture_count,
             "universes": dict(self.universes),
             "groups": dict(self.groups),
+            "zones": dict(self.zones),
+            "unknown_zones": list(self.unknown_zones),
             "skipped": list(self.skipped),
             "modes_guessed": list(self.modes_guessed),
             "generic_maps": list(self.generic_maps),
@@ -383,7 +392,33 @@ def _build_fixture(
     fixture.tilt_range = _travel_range(profile.tilt_range, DEFAULT_TILT_RANGE) if 'tilt' in channels else 0.0
     fixture.channel_limits = limits
     fixture.channel_defaults = defaults
+    # What the light points at, or None when the rig declares nothing. Every
+    # fixture carries the attribute so a consumer never has to tell "no zone"
+    # apart from "built by a path that predates zones".
+    fixture.zone = _fixture_zone(rf, diagnostics)
     return fixture
+
+
+def _fixture_zone(rf: RigFixture, diagnostics: RigLoadDiagnostics) -> Optional[str]:
+    """The zone this patch declares, validated against the engine vocabulary.
+
+    A zone the engine does not know is reported rather than carried: carrying it
+    would leave the operator with a fixture they believe is on the singer and a
+    key light that never fires.
+    """
+    raw = getattr(rf, "zone", None)
+    zone = parse_zone(raw)
+    if zone is None:
+        if raw is not None and str(raw).strip():
+            diagnostics.unknown_zones.append({
+                "rig_fixture_id": rf.id,
+                "name": rf.name,
+                "zone": raw,
+                "reason": f"not one of: {', '.join(ZONE_VALUES)}",
+            })
+        return None
+    diagnostics.zones[zone.value] = diagnostics.zones.get(zone.value, 0) + 1
+    return zone.value
 
 
 def _build_groups(

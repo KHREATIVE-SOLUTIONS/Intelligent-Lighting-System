@@ -17,7 +17,7 @@ from starlette.routing import get_route_path
 from app.api.endpoints import (
     shows, rigs, fixtures, audio, dmx, websocket, effects, training, lfo,
     fixture_library, rig_patching, fixture_test, wizard, templates,
-    rig_import_export, discovery, qr_scanning, demo, auth,
+    rig_import_export, discovery, qr_scanning, demo, auth, rig_identify,
 )
 from app.core.config import settings
 from app.core.logging_config import configure_logging
@@ -668,6 +668,7 @@ app.include_router(lfo.router, prefix="/api", tags=["LFO Effects"])
 app.include_router(fixture_library.router, prefix="/api/fixtures/library", tags=["Fixture Library"])
 app.include_router(rig_patching.router, prefix="/api/rigs", tags=["Rig Patching"])
 app.include_router(fixture_test.router, prefix="/api", tags=["Fixture Test"])
+app.include_router(rig_identify.router, prefix="/api", tags=["Flash to Identify"])
 app.include_router(wizard.router, prefix="/api/wizard", tags=["Setup Wizard"])
 app.include_router(templates.router, prefix="/api/templates", tags=["Templates"])
 app.include_router(rig_import_export.router, prefix="/api", tags=["Import/Export"])

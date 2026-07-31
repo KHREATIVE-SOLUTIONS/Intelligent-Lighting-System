@@ -307,6 +307,145 @@ export const rigsApi = {
   },
 };
 
+// Flash-to-identify walkthrough API
+export interface IdentifyStep {
+  fixture_id: number;
+  label: string;
+  universe: number;
+  dmx_address: number;
+  position_x: number;
+  position_y: number;
+  position_z: number;
+  /** False when the patch does not tell us how to light this fixture. */
+  can_flash: boolean;
+  blocked_reason: string | null;
+  flashing: boolean;
+}
+
+export interface IdentifyUnresponsive {
+  fixture_id: number;
+  label: string;
+  universe: number;
+  dmx_address: number;
+  reason: string;
+}
+
+export interface IdentifySession {
+  session_id: string;
+  rig_id: number;
+  rig_name: string;
+  stage_width: number;
+  stage_depth: number;
+  total: number;
+  step_number: number;
+  complete: boolean;
+  flash_level: number;
+  current: IdentifyStep | null;
+  placed: number;
+  kept: number;
+  no_response: number;
+  unresponsive: IdentifyUnresponsive[];
+  heartbeat_timeout_s: number;
+  flash_max_s: number;
+}
+
+const identifyPath = (rigId: number, sessionId?: string) =>
+  sessionId ? `/rigs/${rigId}/identify/${sessionId}` : `/rigs/${rigId}/identify`;
+
+export const identifyApi = {
+  start: async (rigId: number): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId)}/start`);
+    return response.data;
+  },
+
+  get: async (rigId: number, sessionId: string): Promise<IdentifySession> => {
+    const response = await api.get(identifyPath(rigId, sessionId));
+    return response.data;
+  },
+
+  heartbeat: async (rigId: number, sessionId: string): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/heartbeat`);
+    return response.data;
+  },
+
+  flash: async (
+    rigId: number,
+    sessionId: string,
+    fixtureId?: number
+  ): Promise<IdentifySession> => {
+    const response = await api.post(
+      `${identifyPath(rigId, sessionId)}/flash`,
+      null,
+      { params: fixtureId === undefined ? undefined : { fixture_id: fixtureId } }
+    );
+    return response.data;
+  },
+
+  /** Canonical stage coordinates: x across (0 centre), z depth (+z toward the audience). */
+  recordPosition: async (
+    rigId: number,
+    sessionId: string,
+    position: {
+      position_x: number;
+      position_z: number;
+      position_y?: number;
+      /** Which light this answer is about; the server refuses any other. */
+      fixture_id?: number;
+    }
+  ): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/position`, position);
+    return response.data;
+  },
+
+  skip: async (
+    rigId: number,
+    sessionId: string,
+    reason?: string,
+    fixtureId?: number
+  ): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/skip`, {
+      reason: reason ?? null,
+      fixture_id: fixtureId ?? null,
+    });
+    return response.data;
+  },
+
+  keep: async (
+    rigId: number,
+    sessionId: string,
+    fixtureId?: number
+  ): Promise<IdentifySession> => {
+    const response = await api.post(
+      `${identifyPath(rigId, sessionId)}/advance`,
+      null,
+      { params: fixtureId === undefined ? undefined : { fixture_id: fixtureId } }
+    );
+    return response.data;
+  },
+
+  end: async (rigId: number, sessionId: string): Promise<void> => {
+    await api.post(`${identifyPath(rigId, sessionId)}/end`);
+  },
+
+  /**
+   * Release the rig from a tab that is going away. A normal request is abandoned
+   * when the document unloads, which would leave a fixture latched at full until
+   * the server's own watchdog fires.
+   */
+  endOnUnload: (rigId: number, sessionId: string): void => {
+    const token = useAuthStore.getState().token;
+    try {
+      void fetch(`${API_BASE_URL}${identifyPath(rigId, sessionId)}/end`, {
+        method: 'POST',
+        keepalive: true,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+    } catch {
+      // The server watchdog is the guarantee; this is only the fast path.
+    }
+  },
+};
+
 // Fixtures API
 export interface OnlineFixtureResult {
   manufacturer_key: string;

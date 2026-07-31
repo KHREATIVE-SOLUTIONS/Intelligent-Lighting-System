@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import NoInspectionAvailable
 
+from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
+
 
 _FIXTURE_FIELDS = (
     "id", "manufacturer", "model", "fixture_type", "gdtf_id", "weight", "power",
@@ -51,6 +53,24 @@ def _serialize_fixture(fixture: Any) -> Any:
     return data
 
 
+def _validate_zone(value: Any) -> Optional[str]:
+    """Normalise a zone name, rejecting one that is not in the vocabulary.
+
+    A zone the engine does not recognise would be stored, redisplayed and then
+    quietly ignored at showtime, so it is refused at the door instead.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    zone = parse_zone(value)
+    if zone is None:
+        raise ValueError(
+            f"unknown zone '{value}'; expected one of: {', '.join(ZONE_VALUES)}"
+        )
+    return zone.value
+
+
 def _serialize_mode(mode: Any) -> Dict[str, Any]:
     """Flatten an ORM fixture mode, including its channels when loaded."""
     data: Dict[str, Any] = {name: getattr(mode, name, None) for name in _MODE_FIELDS}
@@ -78,6 +98,10 @@ class RigFixtureBase(BaseModel):
     rotation_y: float = Field(default=0.0)
     rotation_z: float = Field(default=0.0)
     group_name: Optional[str] = None
+    zone: Optional[str] = Field(
+        default=None,
+        description=f"What this fixture points at: {', '.join(ZONE_VALUES)}",
+    )
     tags: List[str] = Field(default_factory=list)
     is_active: bool = True
     is_inverted: bool = False
@@ -88,7 +112,13 @@ class RigFixtureBase(BaseModel):
 
 class RigFixtureCreate(RigFixtureBase):
     """Schema for creating a rig fixture."""
-    pass
+
+    # Validated on the way in only: a response has to be able to carry back a
+    # zone some other import path wrote, or one bad row would fail the whole rig.
+    @field_validator("zone", mode="before")
+    @classmethod
+    def _check_zone(cls, value: Any) -> Optional[str]:
+        return _validate_zone(value)
 
 
 class RigFixtureUpdate(BaseModel):
@@ -105,12 +135,22 @@ class RigFixtureUpdate(BaseModel):
     rotation_y: Optional[float] = None
     rotation_z: Optional[float] = None
     group_name: Optional[str] = None
+    zone: Optional[str] = Field(
+        default=None,
+        description=f"What this fixture points at: {', '.join(ZONE_VALUES)}. "
+                    "Send an empty string to clear it.",
+    )
     tags: Optional[List[str]] = None
     is_active: Optional[bool] = None
     is_inverted: Optional[bool] = None
     is_address_locked: Optional[bool] = None
     serial_number: Optional[str] = None
     qr_code_data: Optional[str] = None
+
+    @field_validator("zone", mode="before")
+    @classmethod
+    def _check_zone(cls, value: Any) -> Optional[str]:
+        return _validate_zone(value)
 
 
 class RigFixtureResponse(RigFixtureBase):

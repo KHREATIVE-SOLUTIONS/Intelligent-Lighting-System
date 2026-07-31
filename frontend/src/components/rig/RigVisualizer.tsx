@@ -623,14 +623,29 @@ function Fixture3D({
     });
   });
 
-  // SpotLight target position
+  // The yaw the rig says this fixture is hung at. Object3D.rotation.y takes the
+  // wizard's convention directly: 0 aims down local +Z (downstage, toward the
+  // audience), +90 deg aims toward +X. Ignoring it rendered every fixture facing
+  // the same way, so "each fixture points at the performance area" had no
+  // observable effect in the previs.
+  const bodyYawRad = useMemo(
+    () => THREE.MathUtils.degToRad(fixture.rotation_y || 0),
+    [fixture.rotation_y]
+  );
+
+  // SpotLight target. World space - light.target is not a child of the light -
+  // so it is the one thing in here the body yaw must not be applied to twice.
   const targetPos = useMemo(
     () => new THREE.Vector3(fixture.position_x, 0, fixture.position_z),
     [fixture.position_x, fixture.position_z]
   );
 
   return (
-    <group ref={groupRef} position={[fixture.position_x, fixture.position_y, fixture.position_z]}>
+    <group
+      ref={groupRef}
+      position={[fixture.position_x, fixture.position_y, fixture.position_z]}
+      rotation={[0, bodyYawRad, 0]}
+    >
       {/* Base */}
       <mesh castShadow position={[0, 0, 0]}>
         <boxGeometry args={fixtureModel.base} />

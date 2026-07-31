@@ -1,25 +1,68 @@
 import { create } from 'zustand';
 
+/** MIME type carried by a palette drag so the stage view can accept only fixture drops. */
+export const FIXTURE_DRAG_MIME = 'application/x-lighting-fixture-id';
+
+export type SnapMode = 'grid' | 'truss' | 'none';
+
+export interface FixturePositionSnapshot {
+  id: number;
+  position_x: number;
+  position_z: number;
+}
+
+const HISTORY_LIMIT = 50;
+
+/** Fixtures within this distance in depth are read as hanging on the same truss. */
+const TRUSS_TOLERANCE_M = 0.3;
+
+/**
+ * Derive truss lines (stage-depth values) from the depths fixtures already occupy.
+ * A depth counts as a truss only when at least two fixtures share it, so a single
+ * stray light never becomes a snap target.
+ */
+export function computeTrussLines(depths: number[]): number[] {
+  const sorted = [...depths].sort((a, b) => a - b);
+  const lines: number[] = [];
+  let group: number[] = [];
+
+  const close = () => {
+    if (group.length >= 2) {
+      lines.push(group.reduce((sum, z) => sum + z, 0) / group.length);
+    }
+    group = [];
+  };
+
+  for (const z of sorted) {
+    if (group.length > 0 && z - group[group.length - 1] > TRUSS_TOLERANCE_M) close();
+    group.push(z);
+  }
+  close();
+
+  return lines;
+}
+
 interface RigEditorState {
   viewMode: '2d' | '3d';
-  snapMode: 'grid' | 'truss' | 'none';
+  snapMode: SnapMode;
   gridSize: number;
   selectedFixtureIds: Set<number>;
   hoveredFixtureId: number | null;
   isDragging: boolean;
-  undoStack: any[];
-  redoStack: any[];
+  undoStack: FixturePositionSnapshot[][];
+  redoStack: FixturePositionSnapshot[][];
 
   setViewMode: (mode: '2d' | '3d') => void;
-  setSnapMode: (mode: 'grid' | 'truss' | 'none') => void;
+  setSnapMode: (mode: SnapMode) => void;
   setGridSize: (size: number) => void;
   selectFixture: (id: number, multi?: boolean) => void;
   deselectAll: () => void;
   setHoveredFixture: (id: number | null) => void;
   setDragging: (dragging: boolean) => void;
-  pushUndo: (state: any) => void;
-  undo: () => any | null;
-  redo: () => any | null;
+  pushUndo: (snapshot: FixturePositionSnapshot[]) => void;
+  undo: (current: FixturePositionSnapshot[]) => FixturePositionSnapshot[] | null;
+  redo: (current: FixturePositionSnapshot[]) => FixturePositionSnapshot[] | null;
+  clearHistory: () => void;
 }
 
 export const useRigEditorStore = create<RigEditorState>((set, get) => ({
@@ -52,31 +95,33 @@ export const useRigEditorStore = create<RigEditorState>((set, get) => ({
   setHoveredFixture: (id) => set({ hoveredFixtureId: id }),
   setDragging: (dragging) => set({ isDragging: dragging }),
 
-  pushUndo: (state) =>
+  pushUndo: (snapshot) =>
     set((s) => ({
-      undoStack: [...s.undoStack.slice(-50), state],
+      undoStack: [...s.undoStack, snapshot].slice(-HISTORY_LIMIT),
       redoStack: [],
     })),
 
-  undo: () => {
+  undo: (current) => {
     const { undoStack } = get();
     if (undoStack.length === 0) return null;
-    const last = undoStack[undoStack.length - 1];
+    const previous = undoStack[undoStack.length - 1];
     set((s) => ({
       undoStack: s.undoStack.slice(0, -1),
-      redoStack: [...s.redoStack, last],
+      redoStack: [...s.redoStack, current].slice(-HISTORY_LIMIT),
     }));
-    return last;
+    return previous;
   },
 
-  redo: () => {
+  redo: (current) => {
     const { redoStack } = get();
     if (redoStack.length === 0) return null;
-    const last = redoStack[redoStack.length - 1];
+    const next = redoStack[redoStack.length - 1];
     set((s) => ({
       redoStack: s.redoStack.slice(0, -1),
-      undoStack: [...s.undoStack, last],
+      undoStack: [...s.undoStack, current].slice(-HISTORY_LIMIT),
     }));
-    return last;
+    return next;
   },
+
+  clearHistory: () => set({ undoStack: [], redoStack: [] }),
 }));

@@ -21,9 +21,28 @@ from app.schemas.rig import (
     RigCreate, RigUpdate, RigResponse, RigListResponse,
     RigFixtureCreate, RigFixtureUpdate, RigFixtureResponse,
 )
+from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
 from app.services.rig.rig_detector import RigDetector, DemoRigGenerator, PatternGenerator
 
 router = APIRouter()
+
+
+def _validated_zone(value: Any) -> Optional[str]:
+    """A zone name the engine will recognise, or a 400 the caller can read.
+
+    The batch endpoint takes a raw dict rather than a schema, so the validation
+    the per-fixture routes get from RigFixtureUpdate has to be done by hand here.
+    None and "" both clear the zone: that is the only way to take one back off.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    zone = parse_zone(value)
+    if zone is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown zone '{value}'; expected one of: {', '.join(ZONE_VALUES)}",
+        )
+    return zone.value
 
 
 async def _load_rig(db: AsyncSession, rig_id: int) -> Rig:
@@ -283,6 +302,11 @@ async def batch_update_fixtures(
         ]:
             if field in item and item[field] is not None:
                 setattr(rf, field, item[field])
+
+        # Handled apart from the list above: null and "" are how a zone is taken
+        # back off a light, so this one field cannot skip its empty values.
+        if "zone" in item:
+            rf.zone = _validated_zone(item["zone"])
 
         updated += 1
 

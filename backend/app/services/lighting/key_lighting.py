@@ -12,13 +12,13 @@ Features:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..effects.color_mapper import RGB
 
 
 class PerformerZone(Enum):
-    """Predefined performer zones on stage."""
+    """Predefined performer zones on stage, plus the venue areas an owner names."""
     DJ_BOOTH = "dj_booth"
     STAGE_CENTER = "stage_center"
     STAGE_LEFT = "stage_left"
@@ -27,6 +27,85 @@ class PerformerZone(Enum):
     KEYBOARD = "keyboard"
     DOWNSTAGE_CENTER = "downstage_center"
     UPSTAGE_CENTER = "upstage_center"
+    # Venue areas. They carry no default stage geometry: where the dance floor,
+    # the bar or the way out sits is venue layout, not stage layout, so it cannot
+    # be inferred from a stage-relative box the way a performer position can.
+    DANCE_FLOOR = "dance_floor"
+    BAR = "bar"
+    AUDIENCE = "audience"
+    ENTRANCE = "entrance"
+
+
+ZONE_VALUES: Tuple[str, ...] = tuple(zone.value for zone in PerformerZone)
+
+# The floor a zone gets when a rig declares it and no operator has configured it.
+#
+# Zero, deliberately. Declaring a zone says where a light points, not how bright
+# it must stay: every shipped venue preset holds its zones at 0.0, and a nonzero
+# floor adopted from a rig file would be light the owner never asked for and has
+# no control to take away - blackout included. The floor is the operator's to
+# raise (POST /api/effects/pro/key-lighting), and adoption is what finally gives
+# that call a rig fixture to act on.
+DEFAULT_KEY_LIGHT_MIN_INTENSITY = 0.0
+
+# Per-zone overrides of that floor, for zones whose default should differ.
+ZONE_MIN_INTENSITY: Dict[PerformerZone, float] = {}
+
+
+def parse_zone(value: Any) -> Optional[PerformerZone]:
+    """The zone a stored string names, or None if it names nothing.
+
+    Storage is free text, so an empty string, a stray case difference and a typo
+    all arrive here; only the last one is a mistake, and the caller reports it.
+    """
+    if value is None:
+        return None
+    if isinstance(value, PerformerZone):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    try:
+        return PerformerZone(text)
+    except ValueError:
+        return None
+
+
+def default_min_intensity(zone: PerformerZone) -> float:
+    """The key-light floor a declared zone starts at."""
+    return ZONE_MIN_INTENSITY.get(zone, DEFAULT_KEY_LIGHT_MIN_INTENSITY)
+
+
+def _fixture_index(source: Any) -> Optional[Mapping[str, Any]]:
+    """Recover {fixture_id: fixture} from whatever a caller handed over.
+
+    `EffectsEngine.set_fixture_manager` passes `manager.fixtures.keys()`. A dict
+    view carries `.mapping` back to the dictionary it came from, and that is the
+    only route from there to the fixtures themselves - without it a rig's zone
+    declarations would never reach key lighting. Returns None when the caller
+    passed bare ids, which means there is nothing to read a zone from.
+    """
+    if isinstance(source, Mapping):
+        return source
+    mapping = getattr(source, "mapping", None)
+    if isinstance(mapping, Mapping):
+        return mapping
+    fixtures = getattr(source, "fixtures", None)
+    if isinstance(fixtures, Mapping):
+        return fixtures
+    return None
+
+
+def _fixture_items(source: Any) -> Iterable[Tuple[str, Any]]:
+    """(id, fixture) pairs from a mapping, a manager, or a list of fixtures."""
+    index = _fixture_index(source)
+    if index is not None:
+        return list(index.items())
+    return [
+        (fixture.id, fixture)
+        for fixture in source
+        if getattr(fixture, "id", None) is not None
+    ]
 
 
 @dataclass
@@ -156,6 +235,12 @@ class KeyLightingManager:
         # Fixture-to-zone mapping
         self._fixture_zone_map: Dict[str, PerformerZone] = {}
 
+        # The subset of those bindings this manager made from a rig's own zone
+        # declarations. Kept apart from the rest so clearing a zone in the rig
+        # editor can take its binding back off without disturbing one the
+        # operator assigned by hand.
+        self._adopted_zone_ids: Dict[str, PerformerZone] = {}
+
         # Global key light intensity multiplier
         self._master_intensity: float = 1.0
 
@@ -185,16 +270,75 @@ class KeyLightingManager:
         """Set global key light intensity multiplier."""
         self._master_intensity = max(0.0, min(1.0, intensity))
 
-    def assign_fixtures(self, zone: PerformerZone, fixture_ids: List[str]):
-        """Assign fixtures as key lights for a zone."""
+    def assign_fixtures(self, zone: PerformerZone, fixture_ids: List[str],
+                        min_intensity: Optional[float] = None):
+        """Assign fixtures as key lights for a zone.
+
+        `min_intensity` applies only when the zone has no config yet: a config
+        already in place is the operator's, and an assignment is not a request to
+        change how bright their zone holds.
+        """
         if zone not in self._configs:
             # Auto-create config
             self._configs[zone] = KeyLightConfig(zone=zone, fixture_ids=fixture_ids)
+            if min_intensity is not None:
+                self._configs[zone].min_intensity = max(0.0, min(1.0, min_intensity))
         else:
             self._configs[zone].fixture_ids = fixture_ids
 
         for fid in fixture_ids:
             self._fixture_zone_map[fid] = zone
+
+    def adopt_fixture_zones(self, fixtures) -> Dict[PerformerZone, List[str]]:
+        """Bind every fixture that declares a zone to that zone.
+
+        The rig is the authority for which light points where, in both
+        directions: a light whose zone was cleared or changed loses the binding
+        it had, otherwise clearing a zone in the rig editor would leave the light
+        held by a zone no control mentions any more.
+
+        A zone the operator has already configured keeps their min_intensity -
+        only the id bindings change.
+
+        Returns zone -> the ids adopted for it.
+        """
+        declared: Dict[PerformerZone, List[str]] = {}
+        seen: Dict[str, Optional[PerformerZone]] = {}
+        for fid, fixture in _fixture_items(fixtures):
+            zone = parse_zone(getattr(fixture, "zone", None))
+            seen[fid] = zone
+            if zone is None:
+                continue
+            declared.setdefault(zone, []).append(fid)
+
+        # Retract the bindings this rig previously declared and no longer does,
+        # before adding the ones it does, so a fixture is never listed under two
+        # zones at once. Only bindings adoption itself made are retracted: an
+        # operator's manual assignment is their configuration, not the rig's.
+        for fid, zone in seen.items():
+            adopted = self._adopted_zone_ids.get(fid)
+            if adopted is None or adopted is zone:
+                continue
+            config = self._configs.get(adopted)
+            if config is not None:
+                config.fixture_ids = [f for f in config.fixture_ids if f != fid]
+            if self._fixture_zone_map.get(fid) is adopted:
+                del self._fixture_zone_map[fid]
+            del self._adopted_zone_ids[fid]
+
+        for zone, ids in declared.items():
+            config = self._configs.get(zone)
+            if config is None:
+                self.assign_fixtures(zone, list(ids), default_min_intensity(zone))
+            else:
+                merged = list(config.fixture_ids)
+                known = set(merged)
+                merged.extend(fid for fid in ids if fid not in known)
+                self.assign_fixtures(zone, merged)
+            for fid in ids:
+                self._adopted_zone_ids[fid] = zone
+
+        return declared
 
     def retain_fixtures(self, fixture_ids) -> List[str]:
         """Drop assignments to fixtures that are no longer in the rig.
@@ -202,13 +346,22 @@ class KeyLightingManager:
         Zone geometry and intensity settings are the operator's configuration and
         survive; the id bindings do not, because a different rig can reuse an id
         and would then inherit the old rig's key-light floor.
+
+        The incoming rig's own zone declarations are adopted in the same pass,
+        which is the only point where the rig being installed is visible to key
+        lighting at all.
         """
-        valid = set(fixture_ids)
+        fixtures = _fixture_index(fixture_ids)
+        valid = set(fixtures) if fixtures is not None else set(fixture_ids)
         dropped = [fid for fid in self._fixture_zone_map if fid not in valid]
         for fid in dropped:
             del self._fixture_zone_map[fid]
+        for fid in [f for f in self._adopted_zone_ids if f not in valid]:
+            del self._adopted_zone_ids[fid]
         for config in self._configs.values():
             config.fixture_ids = [fid for fid in config.fixture_ids if fid in valid]
+        if fixtures is not None:
+            self.adopt_fixture_zones(fixtures)
         return dropped
 
     def auto_assign_fixtures(self, fixtures: Dict[str, dict]):

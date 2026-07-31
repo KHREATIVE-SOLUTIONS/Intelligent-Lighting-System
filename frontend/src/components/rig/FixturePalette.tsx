@@ -6,7 +6,6 @@ import {
   List,
   ListItem,
   ListItemText,
-  ListSubheader,
   InputAdornment,
   Collapse,
   IconButton,
@@ -18,6 +17,7 @@ import {
   DragIndicator,
 } from '@mui/icons-material';
 import { fixturesApi } from '../../services/api';
+import { FIXTURE_DRAG_MIME } from '../../stores/rigEditorStore';
 import type { Fixture } from '../../types';
 
 interface FixturePaletteProps {
@@ -33,6 +33,12 @@ export default function FixturePalette({ onDragStart, onFixtureClick }: FixtureP
   useEffect(() => {
     fixturesApi.list(1, 100).then((data) => setFixtures(data.items)).catch(() => {});
   }, []);
+
+  const handleDragStart = (e: React.DragEvent, fixture: Fixture) => {
+    e.dataTransfer.setData(FIXTURE_DRAG_MIME, String(fixture.id));
+    e.dataTransfer.effectAllowed = 'copy';
+    onDragStart?.(fixture);
+  };
 
   const toggleType = (type: string) => {
     setExpandedTypes((prev) => {
@@ -60,8 +66,11 @@ export default function FixturePalette({ onDragStart, onFixtureClick }: FixtureP
   return (
     <Box sx={{ height: '100%', overflow: 'auto' }}>
       <Box sx={{ p: 1 }}>
-        <Typography variant="subtitle2" sx={{ px: 1, mb: 1 }}>
+        <Typography variant="subtitle2" sx={{ px: 1 }}>
           Fixture Palette
+        </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ px: 1, mb: 1, display: 'block' }}>
+          Drag onto the plan, or click to drop one at centre stage.
         </Typography>
         <TextField
           size="small"
@@ -102,7 +111,7 @@ export default function FixturePalette({ onDragStart, onFixtureClick }: FixtureP
                     key={f.id}
                     sx={{ pl: 2, cursor: 'grab' }}
                     draggable
-                    onDragStart={() => onDragStart?.(f)}
+                    onDragStart={(e) => handleDragStart(e, f)}
                     onClick={() => onFixtureClick?.(f)}
                   >
                     <DragIndicator fontSize="small" sx={{ mr: 1, color: 'text.disabled' }} />

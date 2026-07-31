@@ -248,6 +248,11 @@ export interface RigFixture {
   rotation_y: number;
   rotation_z: number;
   group_name?: string;
+  /**
+   * What this light points at, in the key-lighting vocabulary. Optional: a rig
+   * that names no zones behaves exactly as it did before zones existed.
+   */
+  zone?: string | null;
   tags: string[];
   is_active: boolean;
   is_inverted: boolean;
@@ -271,6 +276,8 @@ export interface RigFixtureCreate {
   rotation_y?: number;
   rotation_z?: number;
   group_name?: string;
+  /** Empty string clears it; that is the only way to take a zone back off. */
+  zone?: string | null;
   tags?: string[];
   is_address_locked?: boolean;
 }
@@ -501,7 +508,26 @@ export interface VenuePreset {
     fixture_type: string;
     count: number;
     group_name: string;
+    /** Where the preset says this group hangs; the wizard never infers it. */
+    mounting_position?: string;
   }>;
+}
+
+/** One fixture the wizard is about to create, as POST /api/wizard/create-rig reads it. */
+export interface WizardPlacement {
+  fixture_id: number;
+  mode_id?: number;
+  name?: string;
+  universe?: number;
+  dmx_address: number;
+  position_x?: number;
+  position_y?: number;
+  position_z?: number;
+  rotation_y?: number;
+  group_name?: string;
+  mounting_position?: string;
+  /** What this light points at, in the key-lighting vocabulary. */
+  zone?: string;
 }
 
 export interface WizardData {
@@ -509,12 +535,14 @@ export interface WizardData {
   stage_width: number;
   stage_depth: number;
   stage_height: number;
-  fixtures: Array<{
+  fixtures?: Array<{
     fixture_id: number;
     count: number;
     mode_id?: number;
     group_name?: string;
   }>;
+  /** The endpoint creates a rig from these; the fixture list is only the input to placement. */
+  placements?: WizardPlacement[];
   rig_name: string;
   venue?: string;
 }

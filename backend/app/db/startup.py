@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.database import Base, SessionLocal, engine
+from app.db.venue_templates import seed_venue_templates
 from app.models.fixture import (
     ChannelType, Fixture, FixtureChannel, FixtureMode, FixtureType
 )
@@ -43,6 +44,9 @@ async def init_database() -> Dict[str, Any]:
         "schema": "unknown",
         "fixtures_seeded": 0,
         "fixtures_total": 0,
+        "templates_seeded": 0,
+        "templates_refreshed": 0,
+        "templates_total": 0,
         "errors": [],
     }
 
@@ -73,6 +77,18 @@ async def init_database() -> Dict[str, Any]:
     except Exception as e:
         summary["errors"].append(f"fixtures: {e}")
         logger.error("Fixture library seeding failed: %s", e, exc_info=True)
+
+    # Templates resolve each slot's channel width from the library, so they can
+    # only be generated once the library is in place.
+    try:
+        created, refreshed, total, errors = await asyncio.to_thread(seed_venue_templates)
+        summary["templates_seeded"] = created
+        summary["templates_refreshed"] = refreshed
+        summary["templates_total"] = total
+        summary["errors"].extend(errors)
+    except Exception as e:
+        summary["errors"].append(f"templates: {e}")
+        logger.error("Venue template seeding failed: %s", e, exc_info=True)
 
     return summary
 

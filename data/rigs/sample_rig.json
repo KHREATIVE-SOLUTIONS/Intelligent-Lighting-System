@@ -16,7 +16,7 @@
   "fixtures": [
     {
       "fixture_id": 1,
-      "name": "Front Left PAR",
+      "name": "Back Left PAR",
       "fixture_number": 1,
       "universe": 0,
       "dmx_address": 1,
@@ -26,12 +26,12 @@
       "rotation_x": 45,
       "rotation_y": 0,
       "rotation_z": 0,
-      "group_name": "front_wash",
-      "tags": ["front", "wash", "stage_left"]
+      "group_name": "back_wash",
+      "tags": ["back", "wash", "stage_left"]
     },
     {
       "fixture_id": 1,
-      "name": "Front Right PAR",
+      "name": "Back Right PAR",
       "fixture_number": 2,
       "universe": 0,
       "dmx_address": 9,
@@ -41,12 +41,12 @@
       "rotation_x": 45,
       "rotation_y": 0,
       "rotation_z": 0,
-      "group_name": "front_wash",
-      "tags": ["front", "wash", "stage_right"]
+      "group_name": "back_wash",
+      "tags": ["back", "wash", "stage_right"]
     },
     {
       "fixture_id": 1,
-      "name": "Back Left PAR",
+      "name": "Front Left PAR",
       "fixture_number": 3,
       "universe": 0,
       "dmx_address": 17,
@@ -56,12 +56,12 @@
       "rotation_x": -30,
       "rotation_y": 0,
       "rotation_z": 0,
-      "group_name": "back_wash",
-      "tags": ["back", "wash", "stage_left"]
+      "group_name": "front_wash",
+      "tags": ["front", "wash", "stage_left"]
     },
     {
       "fixture_id": 1,
-      "name": "Back Right PAR",
+      "name": "Front Right PAR",
       "fixture_number": 4,
       "universe": 0,
       "dmx_address": 25,
@@ -71,8 +71,8 @@
       "rotation_x": -30,
       "rotation_y": 0,
       "rotation_z": 0,
-      "group_name": "back_wash",
-      "tags": ["back", "wash", "stage_right"]
+      "group_name": "front_wash",
+      "tags": ["front", "wash", "stage_right"]
     },
     {
       "fixture_id": 2,

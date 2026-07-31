@@ -109,16 +109,22 @@ async def raw_asgi(
     """
     sent = []
     delivered = False
+    finished = asyncio.Event()
 
     async def receive():
         nonlocal delivered
-        if delivered:
-            return {"type": "http.disconnect"}
-        delivered = True
-        return {"type": "http.request", "body": body, "more_body": False}
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        # A real client stays connected until the response is complete; hanging
+        # up here makes the middleware stack truncate the body it is streaming.
+        await finished.wait()
+        return {"type": "http.disconnect"}
 
     async def send(message):
         sent.append(message)
+        if message["type"] == "http.response.body" and not message.get("more_body"):
+            finished.set()
 
     request_headers = [(b"host", b"testserver")]
     if body:

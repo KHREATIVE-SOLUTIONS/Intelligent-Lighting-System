@@ -18,10 +18,24 @@ from sqlalchemy.orm import selectinload
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
 from app.models.fixture import Fixture, FixtureMode
+from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
 from app.services.rig.wizard_service import WizardService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _validated_zone(value: Any) -> Optional[str]:
+    """A zone the engine will recognise, or a 400. Blank clears it."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    zone = parse_zone(value)
+    if zone is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown zone '{value}'; expected one of: {', '.join(ZONE_VALUES)}",
+        )
+    return zone.value
 
 
 class AutoPlaceRequest(BaseModel):
@@ -150,6 +164,7 @@ async def create_rig_from_wizard(
             position_z=placement.get("position_z", 0.0),
             rotation_y=placement.get("rotation_y", 0.0),
             group_name=placement.get("group_name"),
+            zone=_validated_zone(placement.get("zone")),
             is_active=True,
         )
         db.add(rf)
