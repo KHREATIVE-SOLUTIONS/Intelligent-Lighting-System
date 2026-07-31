@@ -85,3 +85,12 @@ ml_models/yolov9/*.pt
 *.bak
 *.backup
 nul
+
+# Operator secrets. The token-signing key is generated per install and lives
+# beside the database; committing it would let anyone holding the repo mint
+# valid sessions for every deployment built from it.
+secret_key
+*.secret_key
+*.pem
+*.key
+!package-lock.json
