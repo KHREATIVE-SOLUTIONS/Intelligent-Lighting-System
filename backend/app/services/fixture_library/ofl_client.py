@@ -256,8 +256,9 @@ class OFLClient:
             logger.error(f"OFL request {method} {url} exceeded {self._deadline}s")
             raise OFLUnavailableError(f"OFL request timed out after {self._deadline}s") from e
         except httpx.HTTPError as e:
-            logger.error(f"OFL request {method} {url} failed: {e}")
-            raise OFLUnavailableError(f"OFL request failed: {e}") from e
+            detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            logger.error(f"OFL request {method} {url} failed: {detail}")
+            raise OFLUnavailableError(f"OFL request failed: {detail}") from e
 
         if missing_is_none and response.status_code == 404:
             return None
@@ -730,8 +731,8 @@ def _value_ranges(
             continue
         ranges.append({
             "name": _capability_label(capability, channel_key, wheels)[:100],
-            "min": _to_coarse(dmx_range[0], resolution),
-            "max": _to_coarse(dmx_range[1], resolution),
+            "min_value": _to_coarse(dmx_range[0], resolution),
+            "max_value": _to_coarse(dmx_range[1], resolution),
         })
     return ranges or None
 
@@ -834,7 +835,8 @@ def _build_mode(
         definition_key, byte_index = _resolve_slot(
             key, channels, fine_aliases, switching
         )
-        coarse_key = _coarse_key(key, fine_aliases, slot_of) if byte_index else None
+        is_fine = byte_index > 0
+        coarse_key = _coarse_key(key, fine_aliases, slot_of) if is_fine else None
 
         definition = channels.get(definition_key) if definition_key else None
         if definition is None:
@@ -843,7 +845,7 @@ def _build_mode(
                 "channel_type": ChannelType.OTHER.value,
                 "name": key[:100],
                 "default_value": 0,
-                "is_fine": coarse_key is not None,
+                "is_fine": is_fine,
                 "coarse_channel": slot_of.get(coarse_key) if coarse_key else None,
                 "value_ranges": None,
             })
@@ -855,7 +857,6 @@ def _build_mode(
             )
         channel_type = type_cache[definition_key]
 
-        is_fine = coarse_key is not None
         if is_fine:
             channel_type = FINE_CHANNEL_TYPES.get(channel_type, channel_type)
 
