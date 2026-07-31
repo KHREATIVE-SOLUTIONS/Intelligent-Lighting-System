@@ -136,7 +136,7 @@ FINE_CHANNEL_TYPES = {
 }
 
 # Catch-all types, outranked by any type naming a physical mechanism when a
-# channel mixes the two — a prism channel carrying prism macros is still a prism.
+# channel mixes the two: a prism channel carrying prism macros is still a prism.
 GENERIC_CHANNEL_TYPES = frozenset({
     ChannelType.EFFECT,
     ChannelType.SPEED,
