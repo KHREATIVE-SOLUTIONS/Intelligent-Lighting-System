@@ -37,6 +37,60 @@ def get_ofl_client() -> OFLClient:
     return _ofl_client
 
 
+def _library_fixture(fixture_data: dict) -> Fixture:
+    """The library row for a converted definition, carrying all it parsed.
+
+    Travel the converter could not read is left absent so the column default
+    stands, rather than written as None.
+    """
+    fixture = Fixture(
+        manufacturer=fixture_data["manufacturer"],
+        model=fixture_data["model"],
+        fixture_type=FixtureType(fixture_data.get("fixture_type", "other")),
+        weight=fixture_data.get("weight"),
+        power=fixture_data.get("power"),
+        beam_angle=fixture_data.get("beam_angle"),
+        has_rgb=fixture_data.get("has_rgb", False),
+        has_cmy=fixture_data.get("has_cmy", False),
+        has_color_wheel=fixture_data.get("has_color_wheel", False),
+        source=fixture_data.get("source"),
+        source_id=fixture_data.get("source_id"),
+        categories=fixture_data.get("categories"),
+    )
+    for key in ("pan_range", "tilt_range"):
+        if fixture_data.get(key) is not None:
+            setattr(fixture, key, fixture_data[key])
+    return fixture
+
+
+def _library_channel(mode_id: int, ch_data: dict) -> FixtureChannel:
+    return FixtureChannel(
+        mode_id=mode_id,
+        channel_number=ch_data["channel_number"],
+        channel_type=ChannelType(ch_data.get("channel_type", "other")),
+        name=ch_data.get("name", f"Channel {ch_data['channel_number']}"),
+        default_value=ch_data.get("default_value", 0),
+        min_value=ch_data.get("min_value", 0),
+        max_value=ch_data.get("max_value", 255),
+        is_fine=ch_data.get("is_fine", False),
+        coarse_channel=ch_data.get("coarse_channel"),
+        value_ranges=ch_data.get("value_ranges"),
+    )
+
+
+async def _fetch_fixture(client: OFLClient, manufacturer_key: str, fixture_key: str) -> dict:
+    """Fetch one OFL definition, mapping transport and key failures to statuses."""
+    try:
+        ofl_data = await client.get_fixture(manufacturer_key, fixture_key)
+    except OFLUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ofl_data:
+        raise HTTPException(status_code=404, detail="Fixture not found on OFL")
+    return ofl_data
+
+
 @router.get("/search")
 async def search_fixtures_online(
     query: str = Query(..., min_length=1),
@@ -71,28 +125,14 @@ async def import_fixture(
 
     # Fetch from OFL
     client = get_ofl_client()
-    ofl_data = await client.get_fixture(manufacturer_key, fixture_key)
-    if not ofl_data:
-        raise HTTPException(status_code=404, detail="Fixture not found on OFL")
+    ofl_data = await _fetch_fixture(client, manufacturer_key, fixture_key)
 
     # Convert to our format
     fixture_data = convert_ofl_to_internal(ofl_data, manufacturer_key, fixture_key)
 
     # Create in database
     modes_data = fixture_data.pop("modes", [])
-    fixture = Fixture(
-        manufacturer=fixture_data["manufacturer"],
-        model=fixture_data["model"],
-        fixture_type=FixtureType(fixture_data.get("fixture_type", "other")),
-        weight=fixture_data.get("weight"),
-        power=fixture_data.get("power"),
-        beam_angle=fixture_data.get("beam_angle"),
-        has_rgb=fixture_data.get("has_rgb", False),
-        has_color_wheel=fixture_data.get("has_color_wheel", False),
-        source=fixture_data.get("source"),
-        source_id=fixture_data.get("source_id"),
-        categories=fixture_data.get("categories"),
-    )
+    fixture = _library_fixture(fixture_data)
     db.add(fixture)
     await db.flush()
 
@@ -108,15 +148,7 @@ async def import_fixture(
         await db.flush()
 
         for ch_data in channels_data:
-            channel = FixtureChannel(
-                mode_id=mode.id,
-                channel_number=ch_data["channel_number"],
-                channel_type=ChannelType(ch_data.get("channel_type", "other")),
-                name=ch_data.get("name", f"Channel {ch_data['channel_number']}"),
-                default_value=ch_data.get("default_value", 0),
-                is_fine=ch_data.get("is_fine", False),
-            )
-            db.add(channel)
+            db.add(_library_channel(mode.id, ch_data))
 
     await db.flush()
 
@@ -136,6 +168,7 @@ async def import_fixtures_bulk(
     imported = []
     skipped = []
     errors = []
+    unavailable = None
 
     for item in fixtures:
         mfr_key = item.get("manufacturer_key", "")
@@ -159,19 +192,7 @@ async def import_fixtures_bulk(
             fixture_data = convert_ofl_to_internal(ofl_data, mfr_key, fix_key)
             modes_data = fixture_data.pop("modes", [])
 
-            fixture = Fixture(
-                manufacturer=fixture_data["manufacturer"],
-                model=fixture_data["model"],
-                fixture_type=FixtureType(fixture_data.get("fixture_type", "other")),
-                weight=fixture_data.get("weight"),
-                power=fixture_data.get("power"),
-                beam_angle=fixture_data.get("beam_angle"),
-                has_rgb=fixture_data.get("has_rgb", False),
-                has_color_wheel=fixture_data.get("has_color_wheel", False),
-                source=fixture_data.get("source"),
-                source_id=fixture_data.get("source_id"),
-                categories=fixture_data.get("categories"),
-            )
+            fixture = _library_fixture(fixture_data)
             db.add(fixture)
             await db.flush()
 
@@ -186,18 +207,17 @@ async def import_fixtures_bulk(
                 await db.flush()
 
                 for ch_data in channels_data:
-                    channel = FixtureChannel(
-                        mode_id=mode.id,
-                        channel_number=ch_data["channel_number"],
-                        channel_type=ChannelType(ch_data.get("channel_type", "other")),
-                        name=ch_data.get("name", f"Channel {ch_data['channel_number']}"),
-                        default_value=ch_data.get("default_value", 0),
-                        is_fine=ch_data.get("is_fine", False),
-                    )
-                    db.add(channel)
+                    db.add(_library_channel(mode.id, ch_data))
 
             await db.commit()
             imported.append(source_id)
+        except OFLUnavailableError as e:
+            # One unreachable library is not N separate fixture failures. Stop
+            # rather than reporting the rest of the batch as missing fixtures,
+            # and keep what already committed.
+            await db.rollback()
+            unavailable = str(e)
+            break
         except Exception as e:
             await db.rollback()
             errors.append({"source_id": source_id, "error": str(e)})
@@ -207,6 +227,7 @@ async def import_fixtures_bulk(
         "skipped": skipped,
         "errors": errors,
         "total_imported": len(imported),
+        "unavailable": unavailable,
     }
 
 
@@ -234,7 +255,10 @@ async def get_popular_fixtures(
 async def list_ofl_manufacturers():
     """List manufacturers available on OFL."""
     client = get_ofl_client()
-    manufacturers = await client.list_manufacturers()
+    try:
+        manufacturers = await client.list_manufacturers()
+    except OFLUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     return {"manufacturers": manufacturers}
 
 

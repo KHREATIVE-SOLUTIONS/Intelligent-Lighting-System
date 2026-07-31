@@ -49,6 +49,9 @@ class Fixture:
     # Profile clamps: channel name -> (min_value, max_value)
     channel_limits: Dict[str, tuple] = field(default_factory=dict)
 
+    # Profile homes: channel name -> the DMX value the profile parks it at
+    channel_defaults: Dict[str, int] = field(default_factory=dict)
+
     # Current state
     pan: float = 0.0
     tilt: float = 0.0
@@ -144,6 +147,7 @@ class FixtureGroup:
 
 
 COLOR_CHANNELS = ('red', 'green', 'blue', 'white', 'amber', 'uv', 'lime', 'indigo')
+RGB_CHANNELS = ('red', 'green', 'blue')
 # Subtractive mixing: each flag removes the additive component it is paired with.
 CMY_CHANNELS = {'cyan': 'red', 'magenta': 'green', 'yellow': 'blue'}
 COLOR_BEARING_CHANNELS = COLOR_CHANNELS + tuple(CMY_CHANNELS)
@@ -179,6 +183,18 @@ def canonical_channel_name(name: str) -> str:
 def _render_fixture(fixture: Fixture) -> Dict[str, int]:
     """Map a fixture's state onto the channel types its profile declares."""
     values: Dict[str, int] = {}
+    homes = fixture.channel_defaults or {}
+
+    def home(name: str) -> int:
+        """Where a channel the engine is not commanding parks.
+
+        0 is not universally safe: on a blade or a wheel rotation it is a
+        mechanical end stop, which is why profiles carry a default per channel.
+        """
+        try:
+            return max(0, min(255, int(homes.get(name, 0))))
+        except (TypeError, ValueError):
+            return 0
 
     dimmer = max(0.0, min(1.0, _level(fixture.dimmer)))
 
@@ -196,11 +212,20 @@ def _render_fixture(fixture: Fixture) -> Dict[str, int]:
         if fixture.has_channel(name):
             values[name] = _to_byte(_level(getattr(fixture, name, 0.0)) * color_scale)
 
+    # A fixture that also declares additive red/green/blue emitters mixes
+    # additively, so its cyan/magenta/yellow are emitters of their own rather
+    # than subtractive flags. Complementing those lights them fully at blackout.
+    subtractive = not any(fixture.has_channel(name) for name in RGB_CHANNELS)
+
     # 0 is full open on a subtractive flag: intensity scales the additive component
     # before it is complemented, or a blackout would open every flag to white.
     for name, source in CMY_CHANNELS.items():
-        if fixture.has_channel(name):
+        if not fixture.has_channel(name):
+            continue
+        if subtractive:
             values[name] = 255 - _to_byte(_level(getattr(fixture, source, 0.0)) * color_scale)
+        else:
+            values[name] = home(name)
 
     # A pan_range of 0 marks a fixture that cannot move, so neither axis is driven.
     pan_range = _level(fixture.pan_range)
@@ -231,19 +256,26 @@ def _render_fixture(fixture: Fixture) -> Dict[str, int]:
         # A dedicated strobe channel rates the flash; 0 is "no strobe", not "closed".
         values['strobe'] = _to_byte(strobe)
 
+    at_home = set()
     for name in LEVEL_CHANNELS + PASSIVE_CHANNELS:
         if fixture.has_channel(name):
-            values[name] = _to_byte(getattr(fixture, name, 0.0))
+            level = _level(getattr(fixture, name, 0.0))
+            if level > 0.0:
+                values[name] = _to_byte(level)
+            else:
+                values[name] = home(name)
+                at_home.add(name)
 
     # Repeated channel types (per-cell dimmers, multi-zone colour) carry the same
     # value as the channel that owns the canonical name; leaving them at 0 puts a
-    # cell fixture at a fraction of its output or blacks it out entirely.
+    # cell fixture at a fraction of its output or blacks it out entirely. A
+    # repeat that is only parked follows its own profile home instead.
     for name in fixture.channels:
         if name in values:
             continue
         base = canonical_channel_name(name)
         if base != name and base in values:
-            values[name] = values[base]
+            values[name] = home(name) if base in at_home else values[base]
 
     return values
 

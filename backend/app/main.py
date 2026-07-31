@@ -8,17 +8,20 @@ Entry point for the Intelligent Lighting System backend.
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import get_route_path
 
 from app.api.endpoints import (
     shows, rigs, fixtures, audio, dmx, websocket, effects, training, lfo,
     fixture_library, rig_patching, fixture_test, wizard, templates,
-    rig_import_export, discovery, qr_scanning, demo,
+    rig_import_export, discovery, qr_scanning, demo, auth,
 )
 from app.core.config import settings
 from app.core.logging_config import configure_logging
+from app.core.security import refresh_token, should_refresh, verify_token
 from app.db.database import engine, Base
 from app.db.startup import init_database
 from app.services.audio.audio_analyzer import AudioAnalyzer
@@ -165,6 +168,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Database initialization failed: %s", e, exc_info=True)
         print(f"Warning: Database initialization failed: {e}")
+
+    try:
+        # Contract §4: the setup code belongs on the console the installer is
+        # already watching, and a pending local reset has to take effect on the
+        # boot that follows it - neither can wait for someone to make a request.
+        from app.db.database import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            await auth.prepare_first_run(db)
+    except Exception as e:
+        logger.error("First-run check failed: %s", e, exc_info=True)
+        print(f"Warning: could not check first-run state: {e}")
 
     try:
         # Initialize ML models
@@ -557,16 +572,90 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
+# The three requests an operator has to make before they hold a token. Everything
+# else under /api needs one. /health, the OpenAPI docs and any static mount live
+# outside /api and are never gated.
+PUBLIC_API_ROUTES = frozenset({
+    ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/setup"),
+    ("GET", "/api/auth/status"),
+})
+
+# Carries a reissued token back to the operator's browser on an active session.
+OPERATOR_TOKEN_HEADER = "X-Operator-Token"
+
+
+def route_requires_auth(method: str, path: str) -> bool:
+    """Single source of truth for what the operator token protects."""
+    path = path.rstrip("/") or "/"
+    if path != "/api" and not path.startswith("/api/"):
+        return False
+    return (method.upper(), path) not in PUBLIC_API_ROUTES
+
+
+def request_token(request: Request) -> str:
+    """Pull the operator token out of an Authorization: Bearer header."""
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
+def request_claims(request: Request):
+    """Claims of the request's token, or None when it has no usable one."""
+    token = request_token(request)
+    if not token:
+        return None
+    try:
+        return verify_token(token)
+    except Exception:
+        # Anything that stops validation is a rejection, never a 500.
+        return None
+
+
+def request_is_authenticated(request: Request) -> bool:
+    """True when the request carries a token the box currently accepts."""
+    return request_claims(request) is not None
+
+
+@app.middleware("http")
+async def enforce_operator_auth(request: Request, call_next):
+    """Gate every /api route centrally so no endpoint can be forgotten."""
+    # get_route_path is what the router itself dispatches on. request.url.path
+    # still carries root_path, so behind `--root-path=/lights` the gate and the
+    # router would disagree about every path and nothing would be protected.
+    path = get_route_path(request.scope)
+    if request.method == "OPTIONS" or not route_requires_auth(request.method, path):
+        return await call_next(request)
+
+    claims = request_claims(request)
+    if claims is None:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Operator authentication required"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    response = await call_next(request)
+    # Sliding session: an operator who is working never reaches the expiry.
+    if should_refresh(claims):
+        reissued = refresh_token(request_token(request))
+        if reissued:
+            response.headers[OPERATOR_TOKEN_HEADER] = reissued
+    return response
+
+
+# CORS middleware. Registered after the auth middleware so it wraps it: a 401
+# still carries CORS headers, and a preflight OPTIONS never needs a token.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[OPERATOR_TOKEN_HEADER],
 )
 
 # Include routers
+app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(shows.router, prefix="/api/shows", tags=["Shows"])
 app.include_router(rigs.router, prefix="/api/rigs", tags=["Rigs"])
 app.include_router(fixtures.router, prefix="/api/fixtures", tags=["Fixtures"])
@@ -629,10 +718,13 @@ def _dmx_health():
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint - reports actual service state."""
-    from fastapi.responses import JSONResponse
+async def health_check(request: Request):
+    """Health check endpoint - reports actual service state.
 
+    Stays open so a watchdog or installer can see the box is alive. An
+    unauthenticated caller gets liveness and nothing else: the subsystem map and
+    dmx_detail carry ArtNet targets and rig state.
+    """
     dmx_state, dmx_detail = _dmx_health()
 
     services = {
@@ -658,11 +750,8 @@ async def health_check():
     )
 
     status_code = 200 if is_healthy else 503
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "status": "healthy" if is_healthy else "degraded",
-            "services": services,
-            "dmx_detail": dmx_detail,
-        }
-    )
+    content = {"status": "healthy" if is_healthy else "degraded"}
+    if request_is_authenticated(request):
+        content["services"] = services
+        content["dmx_detail"] = dmx_detail
+    return JSONResponse(status_code=status_code, content=content)

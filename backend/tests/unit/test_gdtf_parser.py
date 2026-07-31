@@ -54,6 +54,15 @@ def _channel_xml(spec: Dict[str, Any]) -> str:
         for index, (name, dmx_from) in enumerate(spec.get("sets", ()))
     )
 
+    # A LogicalChannel may carry several ChannelFunctions, each with its own
+    # attribute and physical range.
+    extra = "".join(
+        f'<ChannelFunction Name="{extra_attribute}" Attribute="{extra_attribute}"'
+        f' DMXFrom="0/{byte_count}" PhysicalFrom="{extra_physical[0]}"'
+        f' PhysicalTo="{extra_physical[1]}"/>'
+        for extra_attribute, extra_physical in spec.get("functions", ())
+    )
+
     return (
         f'<DMXChannel DMXBreak="1"{offset_attr}'
         f' Geometry="{spec.get("geometry", "Head")}" Highlight="255/1">'
@@ -61,7 +70,7 @@ def _channel_xml(spec: Dict[str, Any]) -> str:
         f'<ChannelFunction Name="{attribute} 1" Attribute="{attribute}"'
         f' DMXFrom="0/{byte_count}" Default="0/{byte_count}"{physical_attr}>'
         f"{channel_sets}"
-        "</ChannelFunction></LogicalChannel></DMXChannel>"
+        f"</ChannelFunction>{extra}</LogicalChannel></DMXChannel>"
     )
 
 
@@ -487,3 +496,91 @@ def test_an_archive_without_a_description_is_rejected():
 
     with pytest.raises(ValueError):
         parse_gdtf(buffer.getvalue())
+
+
+def test_a_continuous_rotation_function_is_not_read_as_travel():
+    # PanRotate/TiltRotate declare an angular SPEED in deg/s. Taking one as travel
+    # inflates the range, and the renderer then moves the head a fraction of the
+    # commanded throw.
+    result = _parse([("Rotate", [
+        {"offset": "1,2", "attribute": "Pan", "physical": (-270.0, 270.0),
+         "functions": [("PanRotate", (-3600.0, 3600.0))]},
+        {"offset": "3,4", "attribute": "Tilt", "physical": (-105.0, 105.0),
+         "functions": [("TiltRotate", (-1800.0, 1800.0))]},
+    ])])
+
+    assert result["pan_range"] == pytest.approx(540.0)
+    assert result["tilt_range"] == pytest.approx(210.0)
+
+
+@pytest.mark.parametrize("span", [(0.0, 1.0), (0.0, 0.0), (-4000.0, 4000.0)])
+def test_an_implausible_physical_range_leaves_the_profile_default_standing(span):
+    # PhysicalFrom=0/PhysicalTo=1 are ChannelFunction's schema defaults and real
+    # exporters write them out; a head with one degree of travel is not a head.
+    result = _parse([("Odd", [
+        {"offset": "1", "attribute": "Pan", "physical": span},
+        {"offset": "2", "attribute": "Tilt", "physical": span},
+    ])])
+
+    assert "pan_range" not in result
+    assert "tilt_range" not in result
+
+
+def test_travel_the_file_does_not_declare_is_omitted_rather_than_null():
+    from app.schemas.fixture import FixtureCreate
+
+    result = _parse([("RGB", [
+        {"offset": "1", "attribute": "ColorAdd_R"},
+        {"offset": "2", "attribute": "ColorAdd_G"},
+        {"offset": "3", "attribute": "ColorAdd_B"},
+    ])])
+
+    assert "pan_range" not in result and "tilt_range" not in result
+    # The parser's documented output is a FixtureCreate-compatible dict; a None
+    # travel is not a value that schema accepts.
+    validated = FixtureCreate.model_validate(result)
+    assert validated.pan_range == 540.0
+    assert validated.tilt_range == 270.0
+
+
+def test_a_file_with_no_usable_mode_reports_none_instead_of_a_fabricated_one():
+    result = parse_gdtf(gdtf_archive([]))
+
+    assert result["modes"] == [], (
+        "substituting a one-channel dimmer profile makes an unparseable file read "
+        "as a successful import"
+    )
+
+
+@pytest.mark.parametrize("attribute", [
+    "IntensityMSpeed", "ColorMixMSpeed", "ColorWheelSelectMSpeed",
+    "GoboWheelMSpeed", "FocusMSpeed", "ZoomMSpeed", "IrisMSpeed",
+    "FrostMSpeed", "PositionMSpeed",
+])
+def test_the_mspeed_family_is_a_speed_channel_not_the_feature_it_times(attribute):
+    result = _parse([("Speeds", [
+        {"offset": "1", "attribute": "Dimmer"},
+        {"offset": "2", "attribute": attribute},
+    ])])
+    rows = _slots(_mode(result))
+
+    assert rows[2]["channel_type"] == ChannelType.SPEED.value, (
+        f"{attribute} times a move; typing it as the feature it names gives the "
+        "mode two channels of that type, and the renderer mirrors the live value "
+        "onto the second one"
+    )
+
+
+def test_an_additive_cmy_emitter_is_not_typed_as_a_subtractive_flag():
+    result = _parse([("Colour", [
+        {"offset": "1", "attribute": "ColorAdd_C"},
+        {"offset": "2", "attribute": "ColorSub_C"},
+    ])])
+    rows = _slots(_mode(result))
+
+    assert rows[2]["channel_type"] == ChannelType.CYAN.value
+    assert rows[1]["channel_type"] == ChannelType.OTHER.value, (
+        "ColorAdd_C is an emitter; driving it through the renderer's subtractive "
+        "complement lights it fully at blackout"
+    )
+    assert result["has_cmy"] is True

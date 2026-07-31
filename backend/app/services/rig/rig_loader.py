@@ -232,7 +232,7 @@ def _build_channel_map(
     rf: RigFixture,
     profile: FixtureProfile,
     diagnostics: RigLoadDiagnostics,
-) -> Tuple[Dict[str, int], Dict[str, tuple], int]:
+) -> Tuple[Dict[str, int], Dict[str, tuple], Dict[str, int], int]:
     """Map a mode's channels to engine channel names and 0-based offsets.
 
     channel_number is 1-based. A channel type that appears more than once in a
@@ -244,6 +244,7 @@ def _build_channel_map(
     """
     channels: Dict[str, int] = {}
     limits: Dict[str, tuple] = {}
+    defaults: Dict[str, int] = {}
     seen: Dict[str, int] = {}
     aliases = 0
     span = 0
@@ -281,6 +282,10 @@ def _build_channel_map(
         if (low, high) != (0, 255):
             limits[name] = (max(0, min(255, low)), max(0, min(255, high)))
 
+        default = _as_int(channel.default_value, 0)
+        if default:
+            defaults[name] = max(0, min(255, default))
+
     if aliases:
         diagnostics.channel_aliases.append({
             "rig_fixture_id": rf.id,
@@ -289,7 +294,7 @@ def _build_channel_map(
             "count": aliases,
         })
 
-    return channels, limits, max(span, int(mode.channel_count or 0))
+    return channels, limits, defaults, max(span, int(mode.channel_count or 0))
 
 
 def _build_fixture(
@@ -330,10 +335,11 @@ def _build_fixture(
     mode = _select_mode(rf, profile, diagnostics)
 
     if mode is not None:
-        channels, limits, span = _build_channel_map(mode, rf, profile, diagnostics)
+        channels, limits, defaults, span = _build_channel_map(mode, rf, profile, diagnostics)
     else:
         channels = dict(GENERIC_CHANNEL_MAPS.get(engine_type, GENERIC_CHANNEL_MAPS["effect"]))
         limits = {}
+        defaults = {}
         span = GENERIC_CHANNEL_SPANS.get(engine_type, len(channels))
         diagnostics.generic_maps.append({
             "rig_fixture_id": rf.id,
@@ -376,6 +382,7 @@ def _build_fixture(
     fixture.pan_range = _travel_range(profile.pan_range, DEFAULT_PAN_RANGE) if 'pan' in channels else 0.0
     fixture.tilt_range = _travel_range(profile.tilt_range, DEFAULT_TILT_RANGE) if 'tilt' in channels else 0.0
     fixture.channel_limits = limits
+    fixture.channel_defaults = defaults
     return fixture
 
 

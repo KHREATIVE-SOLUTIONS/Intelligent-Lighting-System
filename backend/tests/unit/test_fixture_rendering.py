@@ -480,3 +480,163 @@ def test_demo_rig_still_renders():
     assert len(frame) == 512
     assert frame[5] == 255
     assert frame[212] == 255
+
+
+CMY_SPOT_CHANNELS = {
+    'dimmer': 0, 'cyan': 1, 'magenta': 2, 'yellow': 3,
+    'cto': 4, 'ctb': 5, 'iris': 6, 'frost': 7,
+    'gobo': 8, 'gobo2': 9, 'gobo2_rotation': 10, 'animation': 11, 'framing': 12,
+}
+
+# An RGB+ LED engine whose cyan is an emitter, not a subtractive flag.
+ADDITIVE_LED_CHANNELS = {
+    'dimmer': 0, 'red': 1, 'green': 2, 'blue': 3,
+    'lime': 4, 'indigo': 5, 'cyan': 6,
+}
+
+
+def _cmy_fixture(**overrides) -> Fixture:
+    fixture = Fixture(
+        id="cmy1",
+        name="CMY 1",
+        dmx_address=1,
+        channels=dict(CMY_SPOT_CHANNELS),
+        fixture_type="mover",
+        pan_range=0.0,
+        tilt_range=0.0,
+    )
+    for name, value in overrides.items():
+        setattr(fixture, name, value)
+    return fixture
+
+
+def test_a_subtractive_flag_is_open_when_its_colour_is_wanted():
+    fixture = _cmy_fixture(dimmer=1.0, red=1.0, green=0.0, blue=0.0)
+
+    frame = _manager(fixture).get_dmx_frame(0)
+
+    # Cyan absorbs red, so full red means cyan out of the beam and the other
+    # two flags fully in.
+    assert frame[1] == 0
+    assert frame[2] == 255
+    assert frame[3] == 255
+
+
+def _dimmerless_cmy(**overrides) -> Fixture:
+    """A CMY head whose profile declares no intensity channel."""
+    channels = {name: offset for name, offset in CMY_SPOT_CHANNELS.items()
+                if name != 'dimmer'}
+    fixture = Fixture(
+        id="cmy2",
+        name="CMY 2",
+        dmx_address=1,
+        channels=channels,
+        fixture_type="mover",
+        pan_range=0.0,
+        tilt_range=0.0,
+    )
+    for name, value in overrides.items():
+        setattr(fixture, name, value)
+    return fixture
+
+
+def test_a_blackout_does_not_open_every_subtractive_flag_to_white():
+    lit = _manager(_dimmerless_cmy(dimmer=1.0, red=1.0, green=1.0, blue=1.0)).get_dmx_frame(0)
+    dark = _manager(_dimmerless_cmy(dimmer=0.0, red=1.0, green=1.0, blue=1.0)).get_dmx_frame(0)
+
+    # Without an intensity channel the flags carry the intensity, so open at full
+    # white and fully closed at blackout - never the other way round.
+    assert lit[1:4] == [0, 0, 0]
+    assert dark[1:4] == [255, 255, 255]
+
+
+def test_an_additive_cyan_emitter_is_not_driven_by_the_subtractive_complement():
+    fixture = Fixture(
+        id="led1",
+        name="LED 1",
+        dmx_address=1,
+        channels=dict(ADDITIVE_LED_CHANNELS),
+        fixture_type="wash",
+        pan_range=0.0,
+        tilt_range=0.0,
+    )
+    fixture.dimmer = 0.0
+    fixture.red = 1.0
+    fixture.green = 1.0
+    fixture.blue = 1.0
+
+    frame = _manager(fixture).get_dmx_frame(0)
+
+    assert frame[6] == 0, (
+        "this fixture declares red/green/blue emitters, so its cyan is an emitter "
+        "too; complementing it lights the cyan LED fully at blackout"
+    )
+
+
+def test_lime_and_indigo_emitters_carry_their_own_state():
+    fixture = Fixture(
+        id="led2",
+        name="LED 2",
+        dmx_address=1,
+        channels=dict(ADDITIVE_LED_CHANNELS),
+        fixture_type="wash",
+        pan_range=0.0,
+        tilt_range=0.0,
+    )
+    fixture.dimmer = 1.0
+    fixture.lime = 1.0
+    fixture.indigo = 0.5
+
+    frame = _manager(fixture).get_dmx_frame(0)
+
+    assert frame[4] == 255
+    assert frame[5] == 127
+
+
+def test_mechanical_flags_rest_out_of_the_beam():
+    frame = _manager(_cmy_fixture(dimmer=1.0)).get_dmx_frame(0)
+
+    # 0 is iris open, frost and colour correction out. Nothing drives these, so
+    # a fixture at full must not have them inserted.
+    assert [frame[4], frame[5], frame[6], frame[7]] == [0, 0, 0, 0]
+
+
+def test_a_second_gobo_wheel_is_addressed_separately_from_the_first():
+    fixture = _cmy_fixture(dimmer=1.0, gobo=0.25, gobo2=0.75, gobo2_rotation=0.5)
+
+    frame = _manager(fixture).get_dmx_frame(0)
+
+    assert frame[8] == 63
+    assert frame[9] == 191
+    assert frame[10] == 127
+
+
+def test_a_channel_the_engine_never_drives_parks_at_its_profile_home():
+    fixture = _cmy_fixture(dimmer=1.0)
+    # A blade rotation's zero is a mechanical end stop, which is why five of the
+    # bundled profiles declare 128 as its home.
+    fixture.channel_defaults = {'framing': 128}
+
+    frame = _manager(fixture).get_dmx_frame(0)
+
+    assert frame[12] == 128
+
+
+def test_a_repeated_mechanical_channel_follows_its_own_home():
+    fixture = _cmy_fixture(dimmer=1.0)
+    fixture.channels['framing_2'] = 13
+    fixture.channel_defaults = {'framing': 128, 'framing_2': 64}
+
+    frame = _manager(fixture).get_dmx_frame(0)
+
+    assert frame[12] == 128
+    assert frame[13] == 64
+
+
+def test_a_commanded_level_still_beats_the_profile_home():
+    fixture = _cmy_fixture(dimmer=1.0, gobo=1.0)
+    fixture.channel_defaults = {'gobo': 128}
+
+    frame = _manager(fixture).get_dmx_frame(0)
+
+    assert frame[8] == 255

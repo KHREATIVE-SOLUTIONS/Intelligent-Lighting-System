@@ -140,9 +140,29 @@ def _canonical_channel_name(name: str) -> str:
     return base if base and suffix.isdigit() else name
 
 
+def _channel_rows(source: Any) -> Any:
+    """The channel container a source carries.
+
+    The library ORM hangs channels off modes, so a `app.models.fixture.Fixture`
+    has no `channels` of its own; its capability is the union across its modes.
+    """
+    channels = getattr(source, "channels", None)
+    if channels is not None:
+        return channels
+
+    modes = getattr(source, "modes", None)
+    if modes is not None:
+        rows: list[Any] = []
+        for mode in modes or []:
+            rows.extend(getattr(mode, "channels", None) or [])
+        return rows
+
+    return source
+
+
 def _channel_names(source: Any) -> set[str]:
     """Channel type names declared by a fixture, a channel map, a mode or a name list."""
-    channels = getattr(source, "channels", source)
+    channels = _channel_rows(source)
 
     if isinstance(channels, Mapping):
         raw: Iterable[Any] = list(channels.keys())
@@ -173,6 +193,9 @@ def _channel_names(source: Any) -> set[str]:
 def _travel(source: Any, attribute: str, default: float) -> float:
     """Declared degrees of travel. 0 means the fixture cannot move that axis."""
     value = getattr(source, attribute, None)
+    if value is None:
+        # A FixtureMode carries no travel of its own; it lives on the profile.
+        value = getattr(getattr(source, "fixture", None), attribute, None)
     if value is None:
         return default
     try:

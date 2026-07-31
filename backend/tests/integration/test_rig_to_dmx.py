@@ -511,40 +511,60 @@ async def test_dimmer_lands_at_the_profile_offset_not_the_demo_offset(db):
 
 
 async def test_channels_typed_other_are_never_driven(db):
-    rig = await _make_rig(db, "Other Rig", [
-        (OTHER_SOURCE, OTHER_MODE, {"name": "Spot 1", "universe": 0, "dmx_address": 1}),
+    # Built here rather than read off a bundled profile: which of those carry
+    # 'other' rows is exactly what the library corrections keep changing.
+    profile = FixtureProfile(
+        manufacturer="Nameless",
+        model="Undeclared Spot",
+        fixture_type=FixtureType.SPOT,
+        source_id="test-undeclared-spot",
+        pan_range=0.0,
+        tilt_range=0.0,
+    )
+    db.add(profile)
+    await db.flush()
+
+    mode = FixtureMode(fixture_id=profile.id, name="5-Channel", channel_count=5)
+    db.add(mode)
+    await db.flush()
+
+    db.add_all([
+        FixtureChannel(mode_id=mode.id, channel_number=1,
+                       channel_type=ChannelType.DIMMER, name="Dimmer"),
+        FixtureChannel(mode_id=mode.id, channel_number=2,
+                       channel_type=ChannelType.OTHER, name="Fan Control"),
+        FixtureChannel(mode_id=mode.id, channel_number=3,
+                       channel_type=ChannelType.OTHER, name="CTC"),
+        FixtureChannel(mode_id=mode.id, channel_number=4,
+                       channel_type=ChannelType.ZOOM, name="Zoom"),
+        FixtureChannel(mode_id=mode.id, channel_number=5,
+                       channel_type=ChannelType.OTHER, name="Hue"),
     ])
+
+    rig = Rig(name="Other Rig", universes=[])
+    db.add(rig)
+    await db.flush()
+    db.add(RigFixture(
+        rig_id=rig.id, fixture_id=profile.id, mode_id=mode.id, name="Spot 1",
+        universe=0, dmx_address=1,
+    ))
+    await db.commit()
 
     manager = await build_manager_for_rig_id(db, rig.id)
     fixture = _by_name(manager, "Spot 1")
     fixture.dimmer = 1.0
-    fixture.pan = 90.0
-    fixture.tilt = 45.0
     fixture.zoom = 1.0
-    fixture.focus = 1.0
     fixture.gobo = 1.0
     fixture.prism = 1.0
     fixture.color_wheel = 1.0
 
     frame = manager.get_dmx_frame(0)
 
-    mode = await _mode_with_channels(
-        db,
-        (await db.execute(
-            select(RigFixture.mode_id).where(RigFixture.rig_id == rig.id)
-        )).scalar_one(),
-    )
-    other_offsets = [
-        channel.channel_number - 1
-        for channel in mode.channels
-        if channel.channel_type.value == "other"
-    ]
-
-    assert other_offsets == [3, 4, 5, 13]
-    for offset in other_offsets:
+    for offset in (1, 2, 4):
         assert frame[offset] == 0, f"channel {offset + 1} is typed 'other' and was driven"
 
-    assert frame[14] == 255
+    assert frame[0] == 255
+    assert frame[3] == 255
 
 
 async def test_profile_channel_limits_clamp_the_output(db):

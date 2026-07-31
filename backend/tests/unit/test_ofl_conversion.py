@@ -21,6 +21,7 @@ import httpx
 
 from app.models.fixture import ChannelType
 from app.schemas.fixture import ChannelValueRange
+from app.services.effects.fixture_groups import Fixture as EngineFixture, _render_fixture
 from app.services.fixture_library.ofl_client import OFLClient, convert_ofl_to_internal
 
 
@@ -42,8 +43,10 @@ MOVER: Dict[str, Any] = {
         },
     },
     "availableChannels": {
+        # "Pan LSB" shares no suffix with its parent, so only fineChannelAliases
+        # can resolve it: a converter that ignores the alias map cannot pass.
         "Pan": {
-            "fineChannelAliases": ["Pan fine"],
+            "fineChannelAliases": ["Pan LSB"],
             "defaultValue": 128,
             "capability": {"type": "Pan", "angleStart": "0deg", "angleEnd": "540deg"},
         },
@@ -81,7 +84,7 @@ MOVER: Dict[str, Any] = {
             "name": "12-channel",
             "shortName": "12ch",
             "channels": [
-                "Pan", "Pan fine", "Tilt", "Tilt fine",
+                "Pan", "Pan LSB", "Tilt", "Tilt fine",
                 "Dimmer", "Dimmer fine",
                 "Zoom", "Zoom LSB",
                 "Red", "Green", "Blue",
@@ -108,18 +111,22 @@ def _slots(mode: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
 
 
 def _ranges(channel: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Value ranges as the API serves them.
+    """Value ranges exactly as they are written to the JSON column.
 
-    FixtureChannelResponse reads this JSON column through ChannelValueRange, which
-    accepts either "min"/"max" or "min_value"/"max_value" so both importers can
-    write it. Normalising through the schema is what the fixture editor actually
-    receives, so that is what these tests assert against.
+    ChannelValueRange accepts either "min"/"max" or "min_value"/"max_value", so
+    validating through it cannot see which spelling landed in the column - and
+    app/schemas/rig.py passes the column through raw on rig export. The raw keys
+    are asserted here, then the schema is run over them to prove the API can
+    still read what was written.
     """
-    validated = [
-        ChannelValueRange(**entry).model_dump()
-        for entry in channel.get("value_ranges") or []
-    ]
-    return sorted(validated, key=lambda entry: entry["min_value"])
+    entries = list(channel.get("value_ranges") or [])
+    for entry in entries:
+        assert set(entry) == {"name", "min_value", "max_value"}, (
+            f"value_ranges is stored raw; {sorted(entry)} is not the column's "
+            "spelling and a consumer reading it directly regresses silently"
+        )
+        ChannelValueRange(**entry)
+    return sorted(entries, key=lambda entry: entry["min_value"])
 
 
 def _entries(value: Any) -> List[Any]:
@@ -321,6 +328,130 @@ def test_a_percentage_default_value_is_not_silently_zero():
 
     assert converted[1]["default_value"] in (127, 128), (
         f"'50%' became {converted[1]['default_value']}"
+    )
+
+
+COMBINED_INTENSITY_STROBE: Dict[str, Any] = {
+    "name": "Stage Par 6in1",
+    "categories": ["Color Changer"],
+    "availableChannels": {
+        "Red": {"capability": {"type": "ColorIntensity", "color": "Red"}},
+        "Green": {"capability": {"type": "ColorIntensity", "color": "Green"}},
+        "Blue": {"capability": {"type": "ColorIntensity", "color": "Blue"}},
+        # Master intensity that also owns a strobe band. 199 DMX values of
+        # intensity against 47 of strobe.
+        "Dimmer / Chase / Strobe": {"capabilities": [
+            {"dmxRange": [0, 190], "type": "Intensity"},
+            {"dmxRange": [191, 200], "type": "Effect", "effectName": "Chase"},
+            {"dmxRange": [201, 247], "type": "ShutterStrobe", "shutterEffect": "Strobe"},
+            {"dmxRange": [248, 255], "type": "Intensity", "brightness": "100%"},
+        ]},
+        # A dedicated strobe rate: Open is its resting state, at the bottom.
+        "Strobe": {"capabilities": [
+            {"dmxRange": [0, 0], "type": "ShutterStrobe", "shutterEffect": "Open"},
+            {"dmxRange": [1, 5], "type": "ShutterStrobe", "shutterEffect": "Strobe"},
+            {"dmxRange": [6, 10], "type": "ShutterStrobe", "shutterEffect": "Open"},
+            {"dmxRange": [11, 255], "type": "ShutterStrobe", "shutterEffect": "Strobe"},
+        ]},
+        "Master Dimmer": {"capability": {"type": "Intensity"}},
+    },
+    "modes": [
+        {"name": "4-channel", "channels": [
+            "Red", "Green", "Blue", "Dimmer / Chase / Strobe"]},
+        {"name": "5-channel", "channels": [
+            "Master Dimmer", "Red", "Green", "Blue", "Strobe"]},
+    ],
+}
+
+CONVENTIONAL_SHUTTER: Dict[str, Any] = {
+    "name": "Conventional Spot",
+    "categories": ["Moving Head"],
+    "availableChannels": {
+        "Shutter": {"capabilities": [
+            {"dmxRange": [0, 31], "type": "ShutterStrobe", "shutterEffect": "Closed"},
+            {"dmxRange": [32, 63], "type": "ShutterStrobe", "shutterEffect": "Open"},
+            {"dmxRange": [64, 95], "type": "ShutterStrobe", "shutterEffect": "Strobe"},
+            {"dmxRange": [96, 255], "type": "ShutterStrobe", "shutterEffect": "Open"},
+        ]},
+        "Dimmer": {"capability": {"type": "Intensity"}},
+    },
+    "modes": [{"name": "2-channel", "channels": ["Shutter", "Dimmer"]}],
+}
+
+
+def _render(mode: Dict[str, Any], **state: float) -> Dict[str, int]:
+    """The DMX bytes the engine would emit for a fixture patched in this mode."""
+    fixture = EngineFixture(
+        id="f1",
+        name="F1",
+        dmx_address=1,
+        channels={ch["channel_type"]: ch["channel_number"] - 1 for ch in mode["channels"]},
+        pan_range=0.0,
+        tilt_range=0.0,
+    )
+    for name, value in state.items():
+        setattr(fixture, name, value)
+    return _render_fixture(fixture)
+
+
+def test_a_master_intensity_channel_that_also_strobes_is_not_typed_strobe():
+    mode = convert_ofl_to_internal(
+        COMBINED_INTENSITY_STROBE, "briteq", "bt-stagepar-6in1"
+    )["modes"][0]
+    rows = _slots(mode)
+
+    assert rows[4]["channel_type"] == ChannelType.DIMMER.value, (
+        "199 of this channel's 256 values are intensity; typing it 'strobe' makes "
+        "the renderer write 0 there, which is 0% intensity"
+    )
+    assert _render(mode, dimmer=1.0, red=1.0)[ChannelType.DIMMER.value] == 255, (
+        "the fixture is dead on stage at full"
+    )
+
+
+def test_a_strobe_rate_channel_rests_where_the_shutter_is_open():
+    mode = convert_ofl_to_internal(
+        COMBINED_INTENSITY_STROBE, "briteq", "bt-stagepar-6in1"
+    )["modes"][1]
+    rows = _slots(mode)
+
+    assert rows[5]["channel_type"] == ChannelType.STROBE.value, (
+        "Open at DMX 0 is this channel's 'no strobe' state; typing it 'shutter' "
+        "makes the renderer write 255, which is the fastest strobe it has"
+    )
+    assert _render(mode, dimmer=1.0)[ChannelType.STROBE.value] == 0
+
+
+def test_a_shutter_whose_open_state_is_at_the_top_stays_a_shutter():
+    mode = convert_ofl_to_internal(
+        CONVENTIONAL_SHUTTER, "test", "conventional-spot"
+    )["modes"][0]
+    rows = _slots(mode)
+
+    assert rows[1]["channel_type"] == ChannelType.SHUTTER.value
+    assert _render(mode, dimmer=1.0)[ChannelType.SHUTTER.value] == 255, (
+        "DMX 255 is Open on this channel, so the renderer's resting value is right"
+    )
+
+
+def test_a_colour_channel_carrying_a_strobe_band_keeps_its_colour():
+    gigbar = {
+        "name": "GigBAR 2",
+        "categories": ["Effect"],
+        "availableChannels": {
+            "Red/Green Par": {"capabilities": [
+                {"dmxRange": [0, 0], "type": "NoFunction"},
+                {"dmxRange": [1, 200], "type": "ColorIntensity", "color": "Red"},
+                {"dmxRange": [201, 255], "type": "ShutterStrobe",
+                 "shutterEffect": "Strobe"},
+            ]},
+        },
+        "modes": [{"name": "1-channel", "channels": ["Red/Green Par"]}],
+    }
+    rows = _slots(convert_ofl_to_internal(gigbar, "chauvet-dj", "gigbar-2")["modes"][0])
+
+    assert rows[1]["channel_type"] == ChannelType.RED.value, (
+        "a mode whose only colour channel is typed 'strobe' has no colour at all"
     )
 
 

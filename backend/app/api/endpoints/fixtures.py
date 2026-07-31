@@ -383,7 +383,11 @@ async def import_gdtf(
         existing_result = await db.execute(existing_query)
         existing = existing_result.scalar_one_or_none()
         if existing:
-            return {"message": "Fixture already exists", "fixture_id": existing.id}
+            return {
+                "message": "Fixture already exists",
+                "fixture_id": existing.id,
+                "created": False,
+            }
 
     modes_data = fixture_data.pop("modes", [])
     fixture = Fixture(
@@ -442,4 +446,5 @@ async def import_gdtf(
         "manufacturer": fixture.manufacturer,
         "model": fixture.model,
         "modes": len(modes_data),
+        "created": True,
     }

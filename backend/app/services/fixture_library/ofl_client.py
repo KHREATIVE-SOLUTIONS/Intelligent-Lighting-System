@@ -148,6 +148,16 @@ _PIXEL_KEY_TOKEN = "$pixelKey"
 _FINE_SUFFIX = " fine"
 _MAX_SWITCH_DEPTH = 4
 
+# The two shutterEffects that hold a state rather than rate a flash.
+SHUTTER_STATE_EFFECTS = frozenset({"Open", "Closed"})
+
+# Where the renderer parks each type while the show is not strobing, most
+# conservative first.
+SHUTTER_RESTING_VALUES = (
+    (ChannelType.STROBE, 0),
+    (ChannelType.SHUTTER, 255),
+)
+
 
 class OFLUnavailableError(RuntimeError):
     """The Open Fixture Library could not be reached or answered unusably.
@@ -599,11 +609,34 @@ def _color_temperature_type(capability: Dict[str, Any], channel_key: str) -> Cha
     return ChannelType.CTB if "ctb" in str(channel_key).lower() else ChannelType.CTO
 
 
+def _shutter_capability_type(capability: Dict[str, Any]) -> ChannelType:
+    """A ShutterStrobe capability either holds a shutter state or rates a flash."""
+    effect = str(capability.get("shutterEffect") or "")
+    return ChannelType.SHUTTER if effect in SHUTTER_STATE_EFFECTS else ChannelType.STROBE
+
+
+def _opens_at(
+    capabilities: List[Dict[str, Any]], value: int, resolution: int
+) -> bool:
+    """Whether DMX `value` on the coarse byte sits in an open-shutter capability."""
+    for capability in capabilities:
+        dmx_range = capability.get("dmxRange")
+        if isinstance(dmx_range, list) and len(dmx_range) == 2:
+            low = _to_coarse(dmx_range[0], resolution)
+            high = _to_coarse(dmx_range[1], resolution)
+            if not low <= value <= high:
+                continue
+        return capability.get("shutterEffect") == "Open"
+    return False
+
+
 def _capability_channel_type(
     capability: Dict[str, Any], channel_key: str, wheels: _Wheels
 ) -> ChannelType:
     capability_type = str(capability.get("type") or "")
 
+    if capability_type == "ShutterStrobe":
+        return _shutter_capability_type(capability)
     if capability_type == "ColorIntensity":
         return OFL_COLOR_MAP.get(str(capability.get("color") or ""), ChannelType.OTHER)
     if capability_type == "ColorTemperature":
@@ -635,13 +668,6 @@ def _resolve_channel_type(
     """The one ChannelType that best describes an OFL channel definition."""
     capabilities = _capabilities(channel)
 
-    shutter = [c for c in capabilities if c.get("type") == "ShutterStrobe"]
-    if shutter:
-        # A channel that can open the shutter must be driven as a shutter, or the
-        # fixture never emits light.
-        opens = any(c.get("shutterEffect") == "Open" for c in shutter)
-        return ChannelType.SHUTTER if opens else ChannelType.STROBE
-
     resolution = _resolution(channel)
     spans: Dict[ChannelType, int] = {}
     first_seen: Dict[ChannelType, int] = {}
@@ -655,10 +681,19 @@ def _resolve_channel_type(
     candidates = [t for t in spans if t is not ChannelType.OTHER]
     if not candidates:
         return ChannelType.OTHER
-    return max(
+    best = max(
         candidates,
         key=lambda t: (t not in GENERIC_CHANNEL_TYPES, spans[t], -first_seen[t]),
     )
+
+    if best in (ChannelType.SHUTTER, ChannelType.STROBE):
+        # Both types rest somewhere on this channel every frame the show is not
+        # strobing. Take the one whose resting value is a documented Open state,
+        # or the fixture sits closed - or strobing flat out - all night.
+        for channel_type, resting in SHUTTER_RESTING_VALUES:
+            if _opens_at(capabilities, resting, resolution):
+                return channel_type
+    return best
 
 
 def _slot_label(wheel: Dict[str, Any], slot_number: float) -> str:

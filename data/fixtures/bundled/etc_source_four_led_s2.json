@@ -23,9 +23,9 @@
         {"channel_number": 2, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 3, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 4, "channel_type": "amber", "name": "Amber", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 5, "channel_type": "other", "name": "Lime", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 5, "channel_type": "lime", "name": "Lime", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 6, "channel_type": "other", "name": "Cyan", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 7, "channel_type": "other", "name": "Indigo", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+        {"channel_number": 7, "channel_type": "indigo", "name": "Indigo", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
       ]
     },
     {

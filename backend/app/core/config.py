@@ -5,11 +5,77 @@ Application Configuration
 Centralized configuration management using Pydantic settings.
 """
 
+import os
 import secrets
 import warnings
+from pathlib import Path
 from typing import List
 from pydantic_settings import BaseSettings
 from pydantic import Field, model_validator
+
+SECRET_KEY_FILENAME = "secret_key"
+
+INSECURE_SECRET_KEYS = {
+    "",
+    "your-secret-key-change-in-production",
+    "dev-secret-key-change-in-production-12345",
+}
+
+
+def resolve_data_dir(database_url: str) -> Path:
+    """Return the directory the appliance keeps its state in (holds the database)."""
+    if database_url.startswith("sqlite"):
+        db_path = database_url.split("///", 1)[-1]
+        if db_path and db_path != ":memory:":
+            return Path(db_path).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
+def load_or_create_secret_key(data_dir: Path) -> str:
+    """Read the persisted signing secret, generating and storing one on first run.
+
+    Tokens are signed with this key, so a key that changed per boot would log the
+    operator out on every restart. Deleting the file is the "log everyone out"
+    control.
+
+    Mode 0o600 is only enforced on POSIX; on Windows os.chmod toggles the
+    read-only bit alone and the file inherits the directory's ACL.
+    """
+    path = data_dir / SECRET_KEY_FILENAME
+
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except (OSError, ValueError):
+        pass
+
+    secret = secrets.token_urlsafe(48)
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # Another process won the race; its key is authoritative.
+            try:
+                existing = path.read_text(encoding="utf-8").strip()
+            except ValueError:
+                existing = ""
+            if existing:
+                return existing
+            fd = os.open(path, os.O_WRONLY | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(secret)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        warnings.warn(
+            f"SECURITY WARNING: could not persist SECRET_KEY to {path} ({exc}). "
+            "A temporary key is in use and every restart will sign the operator "
+            "out. Set SECRET_KEY in the environment.",
+            stacklevel=2,
+        )
+
+    return secret
 
 
 class Settings(BaseSettings):
@@ -57,28 +123,21 @@ class Settings(BaseSettings):
     # WebSocket
     WS_HEARTBEAT_INTERVAL: int = 30
 
+    @property
+    def data_dir(self) -> Path:
+        """Directory holding the database, logs and the persisted signing secret."""
+        return resolve_data_dir(self.DATABASE_URL)
+
+    @property
+    def secret_key_path(self) -> Path:
+        return self.data_dir / SECRET_KEY_FILENAME
+
     @model_validator(mode='after')
     def validate_secret_key(self) -> 'Settings':
-        insecure_defaults = {"", "your-secret-key-change-in-production",
-                             "dev-secret-key-change-in-production-12345"}
-        if self.SECRET_KEY in insecure_defaults:
-            if self.DEBUG:
-                # Generate a random key for development, but warn
-                self.SECRET_KEY = secrets.token_urlsafe(32)
-                warnings.warn(
-                    "SECRET_KEY not set - generated random key for development. "
-                    "Set SECRET_KEY in .env for production.",
-                    stacklevel=2,
-                )
-            else:
-                # In production, generate a random key and emit a strong warning
-                self.SECRET_KEY = secrets.token_urlsafe(32)
-                warnings.warn(
-                    "SECURITY WARNING: SECRET_KEY not configured! "
-                    "A random key was generated but will change on restart. "
-                    "Set SECRET_KEY in your .env file for production use.",
-                    stacklevel=2,
-                )
+        if self.SECRET_KEY in INSECURE_SECRET_KEYS:
+            self.SECRET_KEY = load_or_create_secret_key(
+                resolve_data_dir(self.DATABASE_URL)
+            )
         return self
 
     class Config:

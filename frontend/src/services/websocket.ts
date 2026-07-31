@@ -1,16 +1,31 @@
+import { authApi } from './api';
+import { useAuthStore } from '../stores/authStore';
+
 type MessageHandler = (data: unknown) => void;
+
+// The server closes an unauthenticated socket with the policy-violation code,
+// but it does so before the HTTP upgrade completes: a browser reports that as
+// 1006 and never surfaces the code the server sent. So the code is checked for
+// completeness and "never opened" is what actually catches a rejection.
+const CLOSE_POLICY_VIOLATION = 1008;
 
 class WebSocketService {
   private socket: WebSocket | null = null;
-  private url: string;
+  private path: string;
   private handlers: Map<string, Set<MessageHandler>> = new Map();
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
   private isConnecting = false;
+  private closedByClient = false;
 
-  constructor(url: string) {
-    this.url = url;
+  constructor(path: string) {
+    this.path = path;
+  }
+
+  private buildUrl(token: string): string {
+    const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${scheme}//${window.location.host}${this.path}?token=${encodeURIComponent(token)}`;
   }
 
   connect(): Promise<void> {
@@ -25,21 +40,40 @@ class WebSocketService {
         return;
       }
 
+      const token = useAuthStore.getState().token;
+      if (!token) {
+        reject(new Error('Not signed in'));
+        return;
+      }
+
       this.isConnecting = true;
+      this.closedByClient = false;
 
       try {
-        this.socket = new WebSocket(this.url);
+        let everOpened = false;
+        this.socket = new WebSocket(this.buildUrl(token));
 
         this.socket.onopen = () => {
           console.log('WebSocket connected');
+          everOpened = true;
           this.isConnecting = false;
           this.reconnectAttempts = 0;
           resolve();
         };
 
-        this.socket.onclose = () => {
+        this.socket.onclose = (event) => {
           console.log('WebSocket disconnected');
           this.isConnecting = false;
+
+          if (this.closedByClient) {
+            return;
+          }
+
+          if (event.code === CLOSE_POLICY_VIOLATION || !everOpened) {
+            void this.handleSocketRefused();
+            return;
+          }
+
           this.attemptReconnect();
         };
 
@@ -78,10 +112,30 @@ class WebSocketService {
   }
 
   disconnect(): void {
+    this.closedByClient = true;
     if (this.socket) {
       this.socket.close();
       this.socket = null;
     }
+  }
+
+  private async handleSocketRefused(): Promise<void> {
+    // A socket that never opened may have been refused for the session, or the
+    // box may simply be restarting. Asking is the only way to tell them apart -
+    // and burning five reconnects against a token the box will never accept
+    // leaves the operator on a silent dashboard with no way back to the login.
+    try {
+      const status = await authApi.getStatus();
+      if (!status.authenticated) {
+        console.error('WebSocket rejected: not signed in');
+        useAuthStore.getState().clearSession();
+        return;
+      }
+    } catch {
+      // The box did not answer at all; that is a transport problem, not a
+      // rejected session.
+    }
+    this.attemptReconnect();
   }
 
   private attemptReconnect(): void {
@@ -133,19 +187,19 @@ class WebSocketService {
 }
 
 // Audio WebSocket for streaming audio data and receiving analysis
-export const audioWebSocket = new WebSocketService(
-  `ws://${window.location.host}/ws/audio`
-);
+export const audioWebSocket = new WebSocketService('/ws/audio');
 
 // DMX WebSocket for real-time DMX updates
-export const dmxWebSocket = new WebSocketService(
-  `ws://${window.location.host}/ws/dmx`
-);
+export const dmxWebSocket = new WebSocketService('/ws/dmx');
 
 // Show WebSocket for playback state
-export const showWebSocket = new WebSocketService(
-  `ws://${window.location.host}/ws/show`
-);
+export const showWebSocket = new WebSocketService('/ws/show');
+
+export const disconnectAllWebSockets = (): void => {
+  audioWebSocket.disconnect();
+  dmxWebSocket.disconnect();
+  showWebSocket.disconnect();
+};
 
 // Audio streaming helper
 export class AudioStreamer {

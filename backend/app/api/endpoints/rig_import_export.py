@@ -69,8 +69,15 @@ async def import_mvr(
                 power=parsed.get("power"),
                 beam_angle=parsed.get("beam_angle"),
                 has_rgb=parsed.get("has_rgb", False),
+                has_cmy=parsed.get("has_cmy", False),
                 has_color_wheel=parsed.get("has_color_wheel", False),
                 source="gdtf",
+                # Travel the GDTF did not declare leaves the column default.
+                **{
+                    key: parsed[key]
+                    for key in ("pan_range", "tilt_range")
+                    if parsed.get(key) is not None
+                },
             )
             db.add(fixture)
             await db.flush()
@@ -92,7 +99,11 @@ async def import_mvr(
                         channel_type=ChannelType(ch_data.get("channel_type", "other")),
                         name=ch_data.get("name", f"Ch {ch_data['channel_number']}"),
                         default_value=ch_data.get("default_value", 0),
+                        min_value=ch_data.get("min_value", 0),
+                        max_value=ch_data.get("max_value", 255),
                         is_fine=ch_data.get("is_fine", False),
+                        coarse_channel=ch_data.get("coarse_channel"),
+                        value_ranges=ch_data.get("value_ranges"),
                     )
                     db.add(ch)
 

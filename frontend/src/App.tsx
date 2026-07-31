@@ -1,7 +1,8 @@
 import { Routes, Route } from 'react-router-dom';
-import { Box } from '@mui/material';
-import { lazy, Suspense } from 'react';
+import { Box, Button } from '@mui/material';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { CircularProgress } from '@mui/material';
+import { Logout as LogoutIcon } from '@mui/icons-material';
 import Layout from './components/common/Layout';
 import Dashboard from './components/dashboard/Dashboard';
 import ShowEditor from './components/show/ShowEditor';
@@ -9,6 +10,10 @@ import ShowList from './components/show/ShowList';
 import RigEditor from './components/rig/RigEditor';
 import RigList from './components/rig/RigList';
 import RigVisualizer from './components/rig/RigVisualizer';
+import LoginScreen from './components/auth/LoginScreen';
+import { authApi } from './services/api';
+import { disconnectAllWebSockets } from './services/websocket';
+import { useAuthStore } from './stores/authStore';
 
 // Lazy-loaded new components
 const FixtureLibrary = lazy(() => import('./components/fixtures/FixtureLibrary'));
@@ -24,8 +29,67 @@ const Loading = () => (
 );
 
 function App() {
+  const token = useAuthStore((state) => state.token);
+  const setConfigured = useAuthStore((state) => state.setConfigured);
+  const clearSession = useAuthStore((state) => state.clearSession);
+  const [checkedSession, setCheckedSession] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    authApi
+      .getStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setConfigured(status.configured);
+        if (useAuthStore.getState().token && !status.authenticated) {
+          clearSession();
+        }
+      })
+      .catch(() => {
+        // Server unreachable: keep any stored token rather than forcing a re-login.
+      })
+      .finally(() => {
+        if (!cancelled) setCheckedSession(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setConfigured, clearSession]);
+
+  const handleLogout = () => {
+    disconnectAllWebSockets();
+    clearSession();
+  };
+
+  if (!checkedSession) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100%' }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (!token) {
+    return <LoginScreen />;
+  }
+
   return (
     <Box sx={{ display: 'flex', height: '100vh' }}>
+      <Button
+        color="inherit"
+        startIcon={<LogoutIcon />}
+        onClick={handleLogout}
+        sx={{
+          position: 'fixed',
+          top: 12,
+          right: 16,
+          zIndex: (theme) => theme.zIndex.appBar + 1,
+        }}
+      >
+        Log out
+      </Button>
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />

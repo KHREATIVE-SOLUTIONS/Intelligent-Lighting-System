@@ -15,9 +15,30 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
 from datetime import datetime
 import numpy as np
 
+from ...core.security import verify_token
 from ...services.ml.training_recorder import get_recorder
 
 router = APIRouter()
+
+
+async def reject_unauthenticated(websocket: WebSocket) -> bool:
+    """Close an untokened socket with 1008 and report whether it was rejected.
+
+    Must run before accept(): an accepted socket is already in the broadcast set
+    and starts receiving DMX frames and analysis at 30fps.
+    """
+    token = websocket.query_params.get("token", "")
+    try:
+        valid = bool(token) and bool(verify_token(token))
+    except Exception:
+        # Anything that stops validation is a rejection, never a crash.
+        valid = False
+
+    if valid:
+        return False
+
+    await websocket.close(code=1008)
+    return True
 
 
 def convert_numpy_types(obj):
@@ -466,6 +487,9 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
     Client sends: Raw audio data (binary) or control messages (JSON)
     Server sends: Audio analysis results (JSON)
     """
+    if await reject_unauthenticated(websocket):
+        return
+
     app = websocket.app
     await manager.connect(websocket, "audio")
 
@@ -922,6 +946,9 @@ async def dmx_websocket(websocket: WebSocket, request: Request = None):
     Server sends: DMX frame updates (JSON)
     Client sends: DMX commands (JSON)
     """
+    if await reject_unauthenticated(websocket):
+        return
+
     app = websocket.app
     await manager.connect(websocket, "dmx")
 
@@ -997,6 +1024,9 @@ async def show_websocket(websocket: WebSocket, request: Request = None):
     Server sends: Show state updates, cue triggers (JSON)
     Client sends: Playback controls (JSON)
     """
+    if await reject_unauthenticated(websocket):
+        return
+
     app = websocket.app
     await manager.connect(websocket, "show")
 

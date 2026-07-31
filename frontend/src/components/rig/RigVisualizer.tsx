@@ -10,7 +10,7 @@ import {
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, PerspectiveCamera, Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { rigsApi } from '../../services/api';
+import { demoApi, rigsApi } from '../../services/api';
 import type { Rig, RigFixture } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
 import { audioWebSocket } from '../../services/websocket';
@@ -1274,33 +1274,9 @@ export default function RigVisualizer() {
     setLoading(true);
     setLoadError(null);
     try {
-      const ts = Date.now();
-      const candidates = [
-        `/api/demo/rig?preset=pro_beam_room&t=${ts}`,
-        `http://127.0.0.1:8000/api/demo/rig?preset=pro_beam_room&t=${ts}`,
-        `http://localhost:8000/api/demo/rig?preset=pro_beam_room&t=${ts}`,
-      ];
-
-      let lastErr = 'Unknown demo rig fetch error';
-      let data: any = null;
-      for (const url of candidates) {
-        try {
-          const response = await fetch(url);
-          if (!response.ok) {
-            lastErr = `Demo rig request failed (${response.status}) via ${url}`;
-            continue;
-          }
-          data = await response.json();
-          break;
-        } catch (err: any) {
-          lastErr = `${err?.message || 'Network error'} via ${url}`;
-        }
-      }
-
-      if (!data) {
-        throw new Error(lastErr);
-      }
-      setRig(data);
+      // Through the shared axios instance, which is what attaches the operator
+      // token; a bare fetch() here 401s on a box that has a password set.
+      setRig(await demoApi.getRig('pro_beam_room'));
     } catch (error) {
       console.error('Failed to fetch demo rig:', error);
       setLoadError(`Failed to load demo rig: ${(error as any)?.message || 'unknown error'}`);

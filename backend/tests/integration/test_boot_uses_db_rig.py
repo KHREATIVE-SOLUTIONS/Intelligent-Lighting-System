@@ -47,6 +47,22 @@ MODE = sys.argv[3]
 
 from fastapi.testclient import TestClient
 from app.main import app
+from app.api.endpoints.auth import ensure_setup_code
+
+
+def sign_in(client):
+    """Claim a freshly booted box and hold the operator session.
+
+    The setup code is read out of the process rather than off the wire on
+    purpose: it is never served over HTTP, so this is what an installer standing
+    at the console does.
+    """
+    r = client.post("/api/auth/setup", json={
+        "setup_code": ensure_setup_code(), "password": "boot-driver-passphrase",
+    })
+    if r.status_code not in (200, 201):
+        raise SystemExit("first-run setup failed: %s %s" % (r.status_code, r.text[:300]))
+    client.headers["Authorization"] = "Bearer " + r.json()["token"]
 
 
 def patch_rig(client, universe, address, second):
@@ -97,12 +113,14 @@ if MODE == "empty":
 
 elif MODE == "patched":
     with TestClient(app) as c:
+        sign_in(c)
         patch_rig(c, int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]))
     with TestClient(app):
         print("RESULT" + json.dumps(snapshot()))
 
 elif MODE == "two_rigs":
     with TestClient(app) as c:
+        sign_in(c)
         patch_rig(c, int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]))
         patch_rig(c, 5, 100, 140)
     with TestClient(app):

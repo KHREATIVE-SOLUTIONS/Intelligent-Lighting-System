@@ -18,6 +18,8 @@ from app.db.database import AsyncSessionLocal, Base, async_engine
 from app.models.rig import Rig, RigFixture
 from app.main import app
 
+from tests.conftest import bearer_headers, provision_operator
+
 HEALTH_READY_TIMEOUT = 15.0
 
 
@@ -40,6 +42,10 @@ async def smoke_client() -> AsyncGenerator[AsyncClient, None]:
         transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             await _wait_until_ready(client)
+            # Dropping the schema took the operator credential with it, so this
+            # box is at first run again and the journey below is the real one:
+            # set a password, then drive every call holding the session.
+            client.headers.update(bearer_headers(await provision_operator(client)))
             yield client
 
     # The engine is shared with the rest of the suite, whose session-scoped
@@ -262,6 +268,17 @@ async def test_setup_journey_has_no_server_errors(smoke_client: AsyncClient):
     await record(
         f"POST /api/rigs/{rig_id}/auto-patch",
         await smoke_client.post(f"/api/rigs/{rig_id}/auto-patch"),
+    )
+
+    # Checked first: a journey that 401s everywhere emits no 5xx either, so the
+    # assertion below would hold while proving nothing.
+    rejected = [
+        f"{label} -> 401"
+        for label, response in calls
+        if response.status_code == 401
+    ]
+    assert not rejected, (
+        "the setup journey was never authenticated:\n" + "\n".join(rejected)
     )
 
     server_errors = [

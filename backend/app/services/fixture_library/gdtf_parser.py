@@ -59,9 +59,12 @@ GDTF_CHANNEL_FUNCTION_MAP = {
     "ColorAdd_RY": ChannelType.AMBER,
     "ColorAdd_GY": ChannelType.LIME,
     "ColorAdd_UV": ChannelType.UV,
-    "ColorAdd_C": ChannelType.CYAN,
-    "ColorAdd_M": ChannelType.MAGENTA,
-    "ColorAdd_Y": ChannelType.YELLOW,
+    # ColorAdd_* are additive emitters: driving one through the renderer's
+    # subtractive complement would light it fully at blackout. The engine has no
+    # additive cyan/magenta/yellow state, so those emitters stay unaddressed.
+    "ColorAdd_C": ChannelType.OTHER,
+    "ColorAdd_M": ChannelType.OTHER,
+    "ColorAdd_Y": ChannelType.OTHER,
     "ColorSub_R": ChannelType.RED,
     "ColorSub_G": ChannelType.GREEN,
     "ColorSub_B": ChannelType.BLUE,
@@ -89,7 +92,7 @@ GDTF_CHANNEL_FUNCTION_MAP = {
     "KeyStone": ChannelType.FRAMING,
     "ShaperRot": ChannelType.FRAMING,
     "ShaperMacros": ChannelType.FRAMING,
-    "ShaperMacrosSpeed": ChannelType.FRAMING,
+    "ShaperMacrosSpeed": ChannelType.SPEED,
     "Speed": ChannelType.SPEED,
     "Effects": ChannelType.EFFECT,
     "Macro": ChannelType.MACRO,
@@ -141,6 +144,18 @@ _ATTRIBUTE_KEYWORDS = (
 
 _FINE_SUFFIXES = {1: "Fine", 2: "Ultra", 3: "Extra"}
 
+# The GDTF attribute that positions an axis. PanRotate/TiltRotate share the
+# feature but declare an angular speed, so they can never describe travel.
+POSITION_ATTRIBUTES = {
+    ChannelType.PAN: frozenset({"Pan"}),
+    ChannelType.TILT: frozenset({"Tilt"}),
+}
+
+# ChannelFunction's schema defaults are PhysicalFrom=0/PhysicalTo=1, and
+# exporters write them out; a span outside these bounds is not a head's travel.
+MIN_TRAVEL_DEGREES = 5.0
+MAX_TRAVEL_DEGREES = 1080.0
+
 
 def _resolve_indexed_attribute(base: str, index: int, rest: str) -> Optional[ChannelType]:
     """Resolve a GDTF attribute that carries a feature index."""
@@ -171,6 +186,10 @@ def _resolve_channel_type(attribute: str) -> ChannelType:
     direct = GDTF_CHANNEL_FUNCTION_MAP.get(attribute)
     if direct is not None:
         return direct
+
+    # The MSpeed family times a move; it does not drive the feature it names.
+    if attribute.lower().endswith("mspeed"):
+        return ChannelType.SPEED
 
     indexed = _INDEXED_ATTRIBUTE_RE.match(attribute)
     if indexed is not None:
@@ -309,10 +328,11 @@ def _claim_slot(slots: Dict[int, Dict[str, Any]], mode_name: str, slot: int, row
 
 
 def _physical_span(ch_el: ElementTree.Element, attribute: str, wanted: ChannelType) -> Optional[float]:
-    """Widest physical travel declared by this channel's functions, in degrees."""
+    """Widest plausible physical travel declared by this channel, in degrees."""
+    positional = POSITION_ATTRIBUTES[wanted]
     span = None
     for func in _channel_functions(ch_el):
-        if _resolve_channel_type(_function_attribute(func, attribute)) is not wanted:
+        if _function_attribute(func, attribute).strip() not in positional:
             continue
         raw_from = func.get("PhysicalFrom")
         raw_to = func.get("PhysicalTo")
@@ -322,7 +342,9 @@ def _physical_span(ch_el: ElementTree.Element, attribute: str, wanted: ChannelTy
             candidate = abs(float(raw_to) - float(raw_from))
         except (TypeError, ValueError):
             continue
-        if candidate > 0 and (span is None or candidate > span):
+        if not MIN_TRAVEL_DEGREES <= candidate <= MAX_TRAVEL_DEGREES:
+            continue
+        if span is None or candidate > span:
             span = candidate
     return span
 
@@ -499,20 +521,12 @@ def parse_gdtf(file_content: bytes) -> Dict[str, Any]:
                 "channels": [slots[slot] for slot in sorted(slots)],
             })
 
-    # If no modes found, create a basic placeholder
     if not modes:
-        modes.append({
-            "name": "Default",
-            "channel_count": 1,
-            "channels": [{
-                "channel_number": 1,
-                "channel_type": "dimmer",
-                "name": "Dimmer",
-                "default_value": 0,
-            }],
-        })
+        logger.warning(
+            "GDTF '%s %s' declares no usable DMX mode", manufacturer, name
+        )
 
-    return {
+    result = {
         "manufacturer": manufacturer,
         "model": name,
         "fixture_type": fixture_type.value,
@@ -520,11 +534,18 @@ def parse_gdtf(file_content: bytes) -> Dict[str, Any]:
         "weight": weight,
         "power": power,
         "beam_angle": beam_angle,
-        "pan_range": pan_range,
-        "tilt_range": tilt_range,
         "has_rgb": has_rgb,
         "has_cmy": has_cmy,
         "has_color_wheel": has_color_wheel,
         "source": "gdtf",
         "modes": modes,
     }
+
+    # Travel the file does not declare is left to the profile default rather than
+    # written as None, which no FixtureCreate field accepts.
+    if pan_range is not None:
+        result["pan_range"] = pan_range
+    if tilt_range is not None:
+        result["tilt_range"] = tilt_range
+
+    return result

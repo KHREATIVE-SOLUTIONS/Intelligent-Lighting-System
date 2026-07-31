@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { useAuthStore } from '../stores/authStore';
 import type {
   Show,
   ShowCreate,
@@ -31,6 +32,79 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+api.interceptors.request.use((config) => {
+  const token = useAuthStore.getState().token;
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// The box reissues the session token on an active session and returns it here.
+// Dropping it would freeze the stored token's expiry at issue time, so a box in
+// daily use would log the operator out 30 days later, mid-show.
+const OPERATOR_TOKEN_HEADER = 'x-operator-token';
+
+api.interceptors.response.use(
+  (response) => {
+    const reissued = response.headers?.[OPERATOR_TOKEN_HEADER];
+    if (typeof reissued === 'string' && reissued) {
+      useAuthStore.getState().setSession(reissued);
+    }
+    return response;
+  },
+  (error) => {
+    const status = error?.response?.status;
+    const url: string = error?.config?.url ?? '';
+    // A 401 from the login/setup call is a wrong password, not an expired session.
+    if (status === 401 && !url.startsWith('/auth/')) {
+      useAuthStore.getState().clearSession();
+    }
+    return Promise.reject(error);
+  }
+);
+
+// Auth API
+export interface AuthStatus {
+  configured: boolean;
+  authenticated: boolean;
+}
+
+interface TokenPayload {
+  token?: string;
+  access_token?: string;
+}
+
+const readToken = (data: TokenPayload | undefined): string | null =>
+  data?.token ?? data?.access_token ?? null;
+
+export const authApi = {
+  getStatus: async (): Promise<AuthStatus> => {
+    const response = await api.get('/auth/status');
+    return {
+      configured: Boolean(response.data?.configured),
+      authenticated: Boolean(response.data?.authenticated),
+    };
+  },
+
+  login: async (password: string): Promise<string> => {
+    const response = await api.post('/auth/login', { password });
+    const token = readToken(response.data);
+    if (!token) {
+      throw new Error('The server accepted the password but sent no session token.');
+    }
+    return token;
+  },
+
+  setup: async (setupCode: string, password: string): Promise<string | null> => {
+    const response = await api.post('/auth/setup', {
+      setup_code: setupCode,
+      password,
+    });
+    return readToken(response.data);
+  },
+};
 
 // Shows API
 export const showsApi = {
@@ -253,6 +327,8 @@ export interface GdtfImportResult {
   manufacturer?: string;
   model?: string;
   modes?: number;
+  /** False when the GDTF ID was already in the library and nothing was written. */
+  created?: boolean;
 }
 
 /**
@@ -833,6 +909,15 @@ export const importExportApi = {
 
   exportCSV: async (rigId: number) => {
     const response = await api.get(`/rigs/${rigId}/export/csv`, { responseType: 'blob' });
+    return response.data;
+  },
+};
+
+export const demoApi = {
+  getRig: async (preset: string): Promise<Rig> => {
+    const response = await api.get('/demo/rig', {
+      params: { preset, t: Date.now() },
+    });
     return response.data;
   },
 };

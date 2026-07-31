@@ -29,6 +29,7 @@ import {
   CloudUpload as CloudUploadIcon,
   Description as FileIcon,
   CheckCircle as CheckIcon,
+  WarningAmber as WarningIcon,
   InsertDriveFile as JsonIcon,
   TableChart as CsvIcon,
   Close as CloseIcon,
@@ -59,6 +60,8 @@ interface ImportSummary {
   headline: string;
   lines: string[];
   fixture?: ParsedFixture;
+  /** Set when the server matched an existing profile instead of writing one. */
+  notice?: string;
 }
 
 export default function ImportExportDialog({
@@ -169,12 +172,28 @@ export default function ImportExportDialog({
       channelCount: mode.channel_count,
     }));
 
+    // pan_range/tilt_range fall back to the profile column defaults when the file
+    // declares no travel, so they are only worth showing for a head that moves.
+    const movesOn = (axis: 'pan' | 'tilt') =>
+      (fixture.modes || []).some((mode) =>
+        (mode.channels || []).some((channel) => channel.channel_type === axis)
+      );
+    const travel = [
+      movesOn('pan') ? `pan ${fixture.pan_range}°` : null,
+      movesOn('tilt') ? `tilt ${fixture.tilt_range}°` : null,
+    ].filter(Boolean);
+
+    const created = result.created !== false;
+
     return {
       summary: {
         headline: result.message,
+        notice: created
+          ? undefined
+          : 'This GDTF ID is already in the library. Nothing was written - what you see below is the profile already stored, not this file.',
         lines: [
           `Fixture type: ${fixture.fixture_type}`,
-          `Pan ${fixture.pan_range}° / tilt ${fixture.tilt_range}°`,
+          ...(travel.length > 0 ? [`Travel: ${travel.join(' / ')}`] : []),
           `${modes.length} mode${modes.length === 1 ? '' : 's'} parsed`,
         ],
         fixture: {
@@ -232,7 +251,11 @@ export default function ImportExportDialog({
       }
 
       setSummary(imported.summary);
-      setSuccess(`Imported ${selectedFile.name}`);
+      setSuccess(
+        imported.summary.notice
+          ? `${selectedFile.name} was not imported`
+          : `Imported ${selectedFile.name}`
+      );
       setSelectedFile(null);
       onImported?.(imported.outcome);
     } catch (err) {
@@ -415,9 +438,19 @@ export default function ImportExportDialog({
               <Box sx={{ mt: 2 }}>
                 <Divider sx={{ mb: 2 }} />
                 <Stack direction="row" alignItems="center" spacing={1}>
-                  <CheckIcon color="success" fontSize="small" />
+                  {summary.notice ? (
+                    <WarningIcon color="warning" fontSize="small" />
+                  ) : (
+                    <CheckIcon color="success" fontSize="small" />
+                  )}
                   <Typography variant="subtitle2">{summary.headline}</Typography>
                 </Stack>
+
+                {summary.notice && (
+                  <Alert severity="warning" sx={{ mt: 1 }}>
+                    {summary.notice}
+                  </Alert>
+                )}
 
                 {summary.fixture && (
                   <Box sx={{ mt: 1 }}>
