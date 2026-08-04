@@ -5,9 +5,61 @@ Audio Analysis Schemas
 Pydantic schemas for audio analysis operations.
 """
 
+import math
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
+
+
+def engine_energy(raw_energy: Any, raw_scale: float = 2.0) -> float:
+    """Overall energy the effects engine renders from.
+
+    Deliberately the raw, uncompressed level rather than the analyser's
+    loudness-normalised one. Three things downstream need the raw signal and
+    break on a normalised one, all of them measured:
+
+    * the rig's own zero floor. An AGC maps *any* steady input to mid scale by
+      construction, so a paused player presenting a room-tone noise floor
+      normalises to ~0.5 and lights the rig with no music playing.
+    * the beat clock, which recovers phase from the positive difference of
+      block loudness. A loudness-normalised input is already compressed, so the
+      onset contrast the comb runs on collapses.
+    * the section detector's drop test, which reads a rise in units of the
+      running spread. Log-domain compression shrinks every deviation term.
+
+    Playback-level invariance of the *decisions* comes from the detector, which
+    measures every feature against its own running centre, not from normalising
+    the input. `programme_level` carries the normalised value alongside.
+
+    Called on every audio chunk, so it never raises: anything unusable is zero.
+    """
+    try:
+        value = float(raw_energy) * float(raw_scale)
+    except Exception:
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return min(1.0, max(0.0, value))
+
+
+def programme_level(normalized: Any) -> Optional[float]:
+    """The analyser's playback-level-invariant loudness, or None if absent.
+
+    0.5 is "as loud as this material's own running reference", and the scale is
+    30 dB wide. A source that publishes nothing usable returns None, which every
+    consumer has to read as "no opinion" rather than as silence.
+
+    Called on every audio chunk, so it never raises.
+    """
+    if normalized is None or isinstance(normalized, bool):
+        return None
+    try:
+        value = float(normalized)
+    except Exception:
+        return None
+    if not math.isfinite(value):
+        return None
+    return min(1.0, max(0.0, value))
 
 
 class AudioStreamConfig(BaseModel):

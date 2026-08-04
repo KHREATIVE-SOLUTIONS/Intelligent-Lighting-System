@@ -16,6 +16,7 @@ from datetime import datetime
 import numpy as np
 
 from ...core.security import verify_token
+from ...schemas.audio import engine_energy, programme_level
 from ...services.ml.training_recorder import get_recorder
 
 router = APIRouter()
@@ -355,6 +356,8 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
 
     # Get RMS and spectral flux
     rms_energy = freq.get('rms_energy', 0)
+    energy = engine_energy(rms_energy)
+    normalized_energy = programme_level(freq.get('normalized_energy'))
     spectral_flux = min(1.0, float(freq.get('spectral_flux', 0.0)) * 10.0)
 
     # Get beat info
@@ -373,7 +376,8 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
     # Update effects engine with audio data
     # Note: LFO effects are applied by the effects engine's main loop
     effects_engine.update_audio(
-        energy=min(1.0, rms_energy * 2),
+        energy=energy,
+        programme_level=normalized_energy,
         bass=min(1.0, bass_energy),
         mid=min(1.0, mid_energy),
         high=min(1.0, high_energy),

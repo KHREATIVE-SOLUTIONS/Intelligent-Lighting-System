@@ -35,6 +35,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from app.schemas.audio import engine_energy, programme_level
 from app.services.audio.audio_analyzer import AudioAnalyzer
 from app.services.effects.effects_engine import EffectsEngine, EffectsConfig
 
@@ -270,8 +271,10 @@ def _engine_section(engine: EffectsEngine) -> str:
 # Analyser -> engine wiring (mirrors app/main.py on_audio_chunk)
 # ---------------------------------------------------------------------------
 
-# Fields a normalised-loudness stage would publish alongside the raw RMS.
-# Absent today; read opportunistically so the harness reports it once it lands.
+# The normalised-loudness field the analyser publishes alongside the raw RMS.
+# The harness reads it under the same name main.py does; the alternatives are
+# kept only so a run against an older analyser still reports the value rather
+# than silently recording NaN.
 _NORMALISED_ENERGY_KEYS = (
     "normalized_energy",
     "normalised_energy",
@@ -282,7 +285,14 @@ _NORMALISED_ENERGY_KEYS = (
 
 
 def analysis_to_engine_kwargs(analysis: dict) -> dict:
-    """Exactly the mapping app/main.py applies between analyser and engine."""
+    """Exactly the mapping app/main.py applies between analyser and engine.
+
+    Including which value goes in which argument. A harness one line out of
+    step with main.py cannot falsify anything about the product, and the two
+    domains disagree materially: on a build where they had drifted apart, this
+    suite reported a dark room-tone floor, a 6.3 ms beat phase and a landed
+    drop while the shipped configuration had none of the three.
+    """
     beat = analysis.get("beat", {}) or {}
     mood = analysis.get("mood", {}) or {}
     freq = analysis.get("frequency", {}) or {}
@@ -294,7 +304,8 @@ def analysis_to_engine_kwargs(analysis: dict) -> dict:
     high_energy = bands.get("high", 0.0) + bands.get("high_mid", 0.0)
 
     return {
-        "energy": min(1.0, float(freq.get("rms_energy", 0.0)) * 2.0),
+        "energy": engine_energy(freq.get("rms_energy", 0.0)),
+        "programme_level": programme_level(freq.get("normalized_energy")),
         "bass": min(1.0, float(bass_energy)),
         "mid": min(1.0, float(mid_energy)),
         "high": min(1.0, float(high_energy)),

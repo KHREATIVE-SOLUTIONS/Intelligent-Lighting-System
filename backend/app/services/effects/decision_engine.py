@@ -685,6 +685,20 @@ class DecisionEngine:
             return (self._total_bars - self._last_effect_change_bar) >= min_bars
         return (self._total_bars - self._last_effect_change_bar) >= min_bars
 
+    def _genre_allows_strobe(self) -> bool:
+        """Does this genre's palette contain a strobe anywhere at all?
+
+        Read off `GENRE_SECTION_EFFECTS` rather than naming jazz again, so the
+        table stays the one place the restraint is written down. Jazz lists OFF
+        in every section, which is the whole of "jazz never strobes".
+        """
+        genre_effects = GENRE_SECTION_EFFECTS.get(self._genre, GENRE_SECTION_EFFECTS["edm"])
+        return any(
+            mode is not StrobeMode.OFF
+            for section in genre_effects.values()
+            for mode in section.get("strobe", ())
+        )
+
     def _build_genre_selection(self, section: str) -> EffectSelection:
         """Build effect selection from genre-specific palettes for a section."""
         selection = copy.deepcopy(self.selection)
@@ -725,7 +739,9 @@ class DecisionEngine:
         if selection.dimmer in (DimmerType.BEAT_SYNC, DimmerType.KICK_FOLLOWER):
             selection.beat_pattern = BEAT_PATTERNS.get("four_on_floor", []) if section in ("drop", "chorus") else BEAT_PATTERNS.get("half_time", [])
 
-        if section == "drop":
+        # `strobe_on_drop` is checked before `selection.strobe` downstream, so a
+        # genre with OFF in every section still got a drop burst through it.
+        if section == "drop" and self._genre_allows_strobe():
             selection.strobe_on_drop = True
             selection.strobe_preset = "drop_burst"
         else:
@@ -1008,8 +1024,7 @@ class DecisionEngine:
         self._anticipation_active = False
 
         # STROBE ON DROP! (genre-dependent)
-        genre_strobe = self._genre not in ("jazz",)  # Jazz never strobes
-        if self.bars_in_state == 0 and genre_strobe:
+        if self.bars_in_state == 0 and self._genre_allows_strobe():
             # The first bar of a drop spans ~120 frames; arming the burst once per
             # entry is what lets its envelope run instead of restarting each frame.
             if self._drop_accent_serial != self._state_serial:
@@ -1113,7 +1128,7 @@ class DecisionEngine:
             s.beat_pattern = BEAT_PATTERNS["half_time"]
 
         # Occasional strobe on strong beats
-        if audio.is_beat and audio.bass > 0.9:
+        if audio.is_beat and audio.bass > 0.9 and self._genre_allows_strobe():
             if self.cooldowns.is_available("strobe_burst"):
                 s.strobe = StrobeMode.BEAT_LOCKED
             else:

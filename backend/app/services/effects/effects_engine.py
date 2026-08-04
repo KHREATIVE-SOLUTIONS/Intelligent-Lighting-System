@@ -173,10 +173,31 @@ _CLOCK_CHALLENGE_S = 0.20
 _CLOCK_HARMONIC = 0.50
 _CLOCK_REPORTED_WEIGHT = 0.12
 _CLOCK_LOG_GAIN = 40.0
+# Section detection is deliberately level-invariant, so a ballad has the same relative
+# dynamics as a club track and would earn the same accents. Absolute level is what
+# separates them: measured across the synthetic material, sparse acoustic playing peaks
+# near 0.08 of full scale here and dance material sits above 0.25.
+ACCENT_ABSOLUTE_FLOOR = 0.12
 # One analysis block of RMS is a boxcar ending at the callback, and a percussive
 # attack spills into the block after the one it starts in, so the positive
 # difference of two blocks reports an attack about 0.7 of a block late.
 _CLOCK_ONSET_LEAD = 0.20
+
+# How long the drop look may hold the white strobe open once a drop commits.
+# Shorter than the detector's own drop hold, so the flash is the front of the
+# drop rather than the whole of it. It is still clamped by `strobe_hz_cap` and
+# only reaches a fixture while the accent governor has strobing armed.
+_SECTION_DROP_STROBE_S = 1.55
+
+# `strobe_hz_cap` is a promise about flashes per second, and the grid frequency
+# is not the same number. The flash predicate is `(t * hz) % 1 < duty` gated by
+# a window that opens on a musical event, so the partial flash at the moment the
+# window opens is an onset the grid never scheduled: a window opening just
+# before a grid edge delivers `1 + floor(hz + duty)` onsets in its first second.
+# Driven at a nominal 3.0 Hz with a 0.34 duty the rig measured four flashes in
+# one second on the drop track - the general-audience limit, breached. Keeping
+# `hz + duty` strictly under the cap keeps the delivered count inside it.
+_STROBE_HZ_STRICT_MARGIN = 0.06
 
 
 class EffectsEngine:
@@ -338,12 +359,10 @@ class EffectsEngine:
         self._busker_last_section_change_time: float = -999.0
         self._busker_low_energy_accum: float = 0.0
         self._rebuild_busker_enabled: bool = True
+        self._programme_level: Optional[float] = None
         self._rebuild_section: str = "verse"
         self._rebuild_section_changed_at: float = 0.0
         self._rebuild_drop_until: float = -999.0
-        self._rebuild_last_impact: float = -999.0
-        self._rebuild_prev_energy: float = 0.0
-        self._rebuild_prev_bass: float = 0.0
         self._rebuild_color_hold_until: float = 0.0
         self._rebuild_base_color: RGB = RGB(1.0, 1.0, 1.0)
         self._rebuild_snare_strobe_until: float = -999.0
@@ -532,13 +551,23 @@ class EffectsEngine:
         )
 
     def _rebuild_set_section(self, section_name: str):
-        """Set rebuilt busker section and sync section manager immediately."""
+        """Set rebuilt busker section and sync section manager immediately.
+
+        The sync is by comparison rather than on change, because the manager
+        starts at `unknown` and can be put back there by a song change: the
+        detector may legitimately hold one section for minutes, and a
+        change-triggered sync would leave everything reading the manager —
+        the cue templates and the decision engine — looking at `unknown` for
+        all of it.
+        """
         section_name = (section_name or "verse").lower()
-        if section_name == self._rebuild_section:
-            return
-        self._rebuild_section = section_name
-        self._rebuild_section_changed_at = self.time
-        if self._pro_lighting_enabled:
+        if section_name != self._rebuild_section:
+            self._rebuild_section = section_name
+            self._rebuild_section_changed_at = self.time
+        if (
+            self._pro_lighting_enabled
+            and self.section_manager.current_section.value != section_name
+        ):
             from ..lighting.section_manager import SongSection
             section_map = {
                 "verse": SongSection.VERSE,
@@ -550,34 +579,95 @@ class EffectsEngine:
             s = section_map.get(section_name, SongSection.VERSE)
             self.section_manager.trigger_section(s, immediate=True)
 
+    def _rebuild_downbeat_event(self) -> bool:
+        """Is the beat the analyser is reporting right now a usable bar line?
+
+        The analyser only counts beats, and its count is seeded by whichever
+        onset it happened to detect first, so which beat is beat one has to come
+        from the locked clock instead. `_beat_clock_bars` is aligned to the
+        voted downbeat and good to a few milliseconds, so rounding its fraction
+        to the nearest quarter identifies the beat within the bar even though
+        the analyser's event arrives up to one analysis block late.
+
+        Every bar line is offered rather than only four-bar phrase lines.
+        Skipping bars to hold out for a phrase leaves a two-bar gap, and the
+        detector will not wait more than one and a half bars for a boundary, so
+        holding out is what puts a commit *off* the grid rather than on a better
+        one.
+
+        Without a lock there is no trustworthy bar line at all, so nothing is
+        offered and the detector falls back to that bounded wait.
+        """
+        if not self._clock_locked:
+            return False
+        bars = self._beat_clock_bars()
+        if not (-1.0e9 < bars < 1.0e9):
+            return False
+        return int(math.floor((bars % 1.0) * 4.0 + 0.5)) % 4 == 0
+
+    def _strobe_cap_hz(self) -> float:
+        """The venue's flash-rate cap, or zero if it cannot be read as one."""
+        try:
+            cap = float(self.config.strobe_hz_cap)
+        except (TypeError, ValueError):
+            return 0.0
+        return cap if cap > 0.0 else 0.0
+
+    def _strobe_grid_hz(self, target_hz: float, duty: float) -> float:
+        """Grid rate that delivers no more flashes per second than the cap.
+
+        Returns 0.0 when the cap leaves no room, and 0.0 means *no strobe*:
+        the flash predicate is permanently true at zero, so a caller that ran
+        the grid anyway would hold the rig at full white.
+        """
+        try:
+            allowed = self._strobe_cap_hz() - float(duty) - _STROBE_HZ_STRICT_MARGIN
+            target = float(target_hz)
+        except (TypeError, ValueError):
+            return 0.0
+        if not (allowed > 0.0):
+            return 0.0
+        return min(allowed, max(0.0, target))
+
     def _rebuild_update_intent(self, delta_time: float):
-        """Clean-slate reactive section detector for live busking."""
-        e = float(self.audio_features.energy)
-        b = float(self.audio_features.bass)
-        f = float(getattr(self.audio_state, "spectral_flux", 0.0) or 0.0)
-        beat = bool(self.audio_features.is_beat)
-        de = e - self._rebuild_prev_energy
-        db = b - self._rebuild_prev_bass
-        now = self.time
+        """Advance the live section detector and publish its answer.
 
-        impact = beat and e > 0.48 and b > 0.54 and (de > 0.04 or db > 0.06 or f > 0.04)
-        if impact and (now - self._rebuild_last_impact) > 1.8:
-            self._rebuild_last_impact = now
-            self._rebuild_drop_until = now + 1.55
+        Classification, hysteresis, minimum hold, bar-line commit and the drop
+        refractory all live in `StreamingSectionDetector`; this supplies the
+        frame's features, the bar line and the engine clock, and does nothing
+        else. Thresholds are not restated here: the detector measures every
+        feature against its own running centre and spread, so it is scale free
+        and a threshold written against absolute energy would undo that.
 
-        if now < self._rebuild_drop_until:
-            self._rebuild_set_section("drop")
-        elif e < 0.22 and b < 0.28:
-            self._rebuild_set_section("breakdown")
-        elif e > 0.58 and (f > 0.05 or de > 0.015):
-            self._rebuild_set_section("buildup")
-        elif e > 0.64 and b > 0.48:
-            self._rebuild_set_section("chorus")
-        else:
-            self._rebuild_set_section("verse")
+        `now` is the engine's own clock rather than the wall clock. The
+        detector's filters advance on `delta_time` while its dwell, hold and
+        refractory timers used to read `time.time()`, so any caller stepping the
+        engine at other than real speed - the demo endpoint's fixed 1/60 per
+        HTTP tick, an offline render - folded minutes of audio into a detector
+        that believed it was still warming up.
 
-        self._rebuild_prev_energy = e
-        self._rebuild_prev_bass = b
+        Runs at 60 fps and must not raise: keeping the previous section is
+        always better than dropping the frame.
+        """
+        try:
+            section = self.section_manager.update_section_from_audio(
+                delta_time,
+                energy=float(self.audio_features.energy),
+                bass=float(self.audio_features.bass),
+                spectral_flux=float(getattr(self.audio_state, "spectral_flux", 0.0) or 0.0),
+                is_beat=bool(self.audio_features.is_beat),
+                beat_number=int(getattr(self.audio_state, "beat_number", 0) or 0),
+                bpm=float(self._smoothed_movement_bpm),
+                is_downbeat_event=self._rebuild_downbeat_event(),
+                programme_level=self._programme_level,
+                now=float(self.time),
+            )
+        except Exception:
+            return
+
+        if section == "drop" and self._rebuild_section != "drop":
+            self._rebuild_drop_until = self.time + _SECTION_DROP_STROBE_S
+        self._rebuild_set_section(section)
 
     def _update_fixtures_rebuild(self, delta_time: float):
         """Scratch-built pro busker rendering pipeline (single source of truth)."""
@@ -713,9 +803,15 @@ class EffectsEngine:
         visibility_first_mode = venue_mode in {"theatre", "broadcast", "corporate"}
         strobe_allowed_by_policy = (policy not in {"no_strobe", "off"}) and (not camera_mode) and (not visibility_first_mode)
         strobe_enabled_runtime = bool(self.config.strobe_enabled) and strobe_allowed_by_policy
-        drop_strobe_on = strobe_enabled_runtime and section == "drop" and self.time < self._rebuild_drop_until
+        strobe_duty = max(0.15, min(float(self.config.strobe_max_duty_cycle), 0.75))
         drop_strobe_target_freq = 22.0 if energy > 0.65 else 18.0
-        drop_strobe_freq = min(float(self.config.strobe_hz_cap), drop_strobe_target_freq)
+        drop_strobe_freq = self._strobe_grid_hz(drop_strobe_target_freq, strobe_duty)
+        drop_strobe_on = (
+            strobe_enabled_runtime
+            and drop_strobe_freq > 0.0
+            and section == "drop"
+            and self.time < self._rebuild_drop_until
+        )
         if drop_strobe_freq < drop_strobe_target_freq:
             self._record_safety_event(
                 "strobe_frequency_clamped",
@@ -723,17 +819,21 @@ class EffectsEngine:
                     "section": section,
                     "requested_hz": round(drop_strobe_target_freq, 3),
                     "applied_hz": round(drop_strobe_freq, 3),
-                    "cap_hz": round(float(self.config.strobe_hz_cap), 3),
+                    "cap_hz": round(self._strobe_cap_hz(), 3),
                 },
                 throttle_s=1.0,
                 throttle_key="strobe_frequency_clamped_drop",
             )
-        strobe_duty = max(0.15, min(float(self.config.strobe_max_duty_cycle), 0.75))
         drop_strobe_flash = drop_strobe_on and ((self.time * drop_strobe_freq) % 1.0) < strobe_duty
 
         # Snare strobe: very short fast white bursts on bright/transient hits.
+        # `high` and `flux` are measured against the programme's own level, so a brushed
+        # cymbal in a ballad reads as bright as a snare in a club. The absolute floor is
+        # what keeps quiet material from strobing: sparse acoustic material peaks around
+        # 0.08 here, while anything a room is dancing to sits above 0.25.
         snare_trigger = (
             (section in {"verse", "buildup", "chorus", "drop"})
+            and energy > ACCENT_ABSOLUTE_FLOOR
             and high > 0.58
             and flux > 0.055
             and (beat or high > 0.72)
@@ -743,9 +843,14 @@ class EffectsEngine:
             self._rebuild_snare_last_trigger = now
             snare_burst_s = min(0.11, max(0.05, float(self.config.strobe_burst_max_s)))
             self._rebuild_snare_strobe_until = now + snare_burst_s
-        snare_strobe_on = strobe_enabled_runtime and (not drop_strobe_on) and (now < self._rebuild_snare_strobe_until)
         snare_strobe_target_freq = 30.0 if high > 0.72 else 24.0
-        snare_strobe_freq = min(float(self.config.strobe_hz_cap), snare_strobe_target_freq)
+        snare_strobe_freq = self._strobe_grid_hz(snare_strobe_target_freq, strobe_duty)
+        snare_strobe_on = (
+            strobe_enabled_runtime
+            and snare_strobe_freq > 0.0
+            and (not drop_strobe_on)
+            and (now < self._rebuild_snare_strobe_until)
+        )
         if snare_strobe_freq < snare_strobe_target_freq:
             self._record_safety_event(
                 "strobe_frequency_clamped",
@@ -753,7 +858,7 @@ class EffectsEngine:
                     "section": section,
                     "requested_hz": round(snare_strobe_target_freq, 3),
                     "applied_hz": round(snare_strobe_freq, 3),
-                    "cap_hz": round(float(self.config.strobe_hz_cap), 3),
+                    "cap_hz": round(self._strobe_cap_hz(), 3),
                 },
                 throttle_s=1.0,
                 throttle_key="strobe_frequency_clamped_snare",
@@ -1346,11 +1451,17 @@ class EffectsEngine:
         spectral_flux: float = 0.0,
         bpm: float = 128.0,
         ml_data: dict = None,
+        programme_level: Optional[float] = None,
     ):
         """
         Update audio state from audio analyzer.
 
         Args:
+            programme_level: Loudness relative to this material's own running
+                reference (0.5 = the reference), or None when the source
+                publishes none. Playback-level invariant, and used only where
+                that invariance is what is wanted - it is deliberately not the
+                energy the rig renders from; see `schemas.audio.engine_energy`.
             energy: Overall RMS energy (0-1)
             bass: Bass band energy (0-1)
             mid: Mid band energy (0-1)
@@ -1416,6 +1527,7 @@ class EffectsEngine:
         self.audio_state.is_beat = is_beat
         self.audio_state.beat_number = beat_number
         self.audio_state.bpm = bpm
+        self._programme_level = programme_level
 
         # Update BPM (raw for reactive layers)
         self.config.bpm = bpm
@@ -1959,6 +2071,8 @@ class EffectsEngine:
                 beat_number=beat_number,
                 bars_elapsed=bars_elapsed,
                 is_downbeat_event=bool(self.audio_features.is_beat and beat_number > 0 and beat_number % 4 == 1),
+                programme_level=self._programme_level,
+                now=float(self.time),
             )
 
             # Fallback structure detector for purely reactive mode:

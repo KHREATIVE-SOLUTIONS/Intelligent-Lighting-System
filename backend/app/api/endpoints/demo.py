@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
 
+from ...schemas.audio import engine_energy, programme_level
 from ...services.demo.demo_simulation import DemoSimulation, DemoConfig
 from ...services.demo.venue_presets import VENUE_PRESETS, VenuePreset, create_venue_rig
 from ...services.effects.fixture_groups import canonical_channel_name
@@ -175,7 +176,8 @@ async def demo_update_tick(delta_time: float = 1.0 / 60.0):
             pass
 
         _effects_engine.update_audio(
-            energy=data["energy"],
+            energy=engine_energy(data["energy"], raw_scale=1.0),
+            programme_level=programme_level(data.get("normalized_energy")),
             bass=data["bass"],
             mid=data["mid"],
             high=data["high"],

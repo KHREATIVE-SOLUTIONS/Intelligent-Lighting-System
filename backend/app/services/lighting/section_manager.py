@@ -85,10 +85,21 @@ class StreamingSectionDetector:
     """Causal section detector: relative dynamics, hysteresis, bar-aligned commits.
 
     Every feature is measured against the running centre and spread of the same
-    feature on this track, so the classification is scale free: the same
-    performance 12 dB quieter lands in the same sections. Absolute energy
-    thresholds are what put the retired ladder in one section all night, because
-    `min(1.0, rms * 2)` on mastered programme material sits around 0.07.
+    feature on this track, so the classification is invariant to a change of
+    *gain*: the same performance 12 dB quieter lands in the same sections, on
+    the same frames. Absolute energy thresholds are what put the retired ladder
+    in one section all night, because `min(1.0, rms * 2)` on mastered programme
+    material sits around 0.07.
+
+    That invariance is multiplicative, and it is not invariance to an arbitrary
+    remap of the input. `_rel`'s scale floor is a fraction of the centre, which
+    is the right floor in a domain where zero means silence and doubling the
+    input doubles every excursion. Fed a loudness-normalised value instead -
+    an affine map of decibels, which parks programme around 0.5 whatever it
+    weighs - that floor reads the DC pedestal as "this track's normal excursion
+    is large" and every deviation term shrinks about fivefold: measured on the
+    drop track, the rise the drop test needs fell from 1.02 to 0.25 and no
+    frame in the run satisfied it. Feed this the raw energy.
 
     Two structural rules matter more than the constants:
 
@@ -156,6 +167,11 @@ class StreamingSectionDetector:
     _DROP_MIN_BASS = 0.55
     _DROP_MIN_FAST_Z = 1.4
     _DROP_MIN_RISE = 0.7
+    # Absolute, in the analyser's normalised-loudness domain: 0.5 is this
+    # material's own running reference and the scale is 30 dB wide, so this is
+    # "at least 3 dB above what this track has been averaging". A steady noise
+    # floor normalises to exactly 0.5 whatever its level, so it never clears it.
+    _DROP_MIN_PROGRAMME = 0.60
 
     # Rise is in deviation units, not in level units: the level saturates on any
     # real build and a saturated level has no slope left to read a build from.
@@ -254,6 +270,7 @@ class StreamingSectionDetector:
         beat_number: int = 0,
         bpm: float = 128.0,
         is_downbeat_event: Optional[bool] = None,
+        programme_level: Optional[float] = None,
         now: Optional[float] = None,
     ) -> SectionDecision:
         """Advance one frame and return the section to render.
@@ -271,6 +288,7 @@ class StreamingSectionDetector:
                 beat_number=beat_number,
                 bpm=bpm,
                 is_downbeat_event=is_downbeat_event,
+                programme_level=programme_level,
                 now=now,
             )
         except Exception:
@@ -295,6 +313,7 @@ class StreamingSectionDetector:
         beat_number: int,
         bpm: float,
         is_downbeat_event: Optional[bool],
+        programme_level: Optional[float],
         now: Optional[float],
     ) -> SectionDecision:
         t = time.time() if now is None else self._finite(now, time.time())
@@ -402,6 +421,18 @@ class StreamingSectionDetector:
 
         current = self._section
 
+        # Every other term here is relative, so all of them are satisfiable by
+        # a small excursion in quiet material. A drop is the one decision that
+        # reaches the strobe, and an accent in a quiet passage is worse than no
+        # accent, so it also has to be loud in absolute programme terms. That
+        # judgement needs a playback-level-invariant measure, which is exactly
+        # what the analyser's normalised loudness is; a source that publishes
+        # none abstains rather than blocking.
+        loud_enough = (
+            programme_level is None
+            or self._finite(programme_level, 1.0) >= self._DROP_MIN_PROGRAMME
+        )
+
         drop_impact = (
             warm
             and beat_event
@@ -410,6 +441,7 @@ class StreamingSectionDetector:
             and bfast >= self._DROP_MIN_BASS
             and fast_z >= self._DROP_MIN_FAST_Z
             and self._rise_fast >= self._DROP_MIN_RISE
+            and loud_enough
             and (t - self._last_drop_time) >= self._DROP_REFRACTORY_S
             and (t - self._section_since) >= self._IMPACT_MIN_HOLD_S
         )
@@ -934,12 +966,19 @@ class SectionManager:
         beat_number: int = 0,
         bpm: Optional[float] = None,
         is_downbeat_event: Optional[bool] = None,
+        programme_level: Optional[float] = None,
+        now: Optional[float] = None,
     ) -> str:
         """Run the live section detector for one frame and return its section.
 
         This is the entry point the renderer calls every frame. The returned
         name is always one of LIVE_SECTION_NAMES, and the manager's own section
         state is committed here so both stay in step.
+
+        `now` is the caller's clock. Passing it keeps the detector's timers on
+        the same timeline as its filters, which advance on `delta_time`; leaving
+        it out falls back to the wall clock and is only correct for a caller
+        stepping in real time.
         """
         decision = self._detector.update(
             delta_time,
@@ -950,6 +989,8 @@ class SectionManager:
             beat_number=beat_number,
             bpm=self._bpm if bpm is None else bpm,
             is_downbeat_event=is_downbeat_event,
+            programme_level=programme_level,
+            now=now,
         )
         if decision.changed:
             target = self._LIVE_SECTION_ENUM.get(decision.section)
@@ -966,6 +1007,8 @@ class SectionManager:
         beat_number: int = 0,
         bars_elapsed: Optional[int] = None,
         is_downbeat_event: Optional[bool] = None,
+        programme_level: Optional[float] = None,
+        now: Optional[float] = None,
     ) -> Optional[SongSection]:
         """Adapter kept for the non-rebuild render path.
 
@@ -981,6 +1024,8 @@ class SectionManager:
             is_beat=is_beat,
             beat_number=beat_number,
             is_downbeat_event=is_downbeat_event,
+            programme_level=programme_level,
+            now=now,
         )
         if not self._detector.decision.changed:
             return None

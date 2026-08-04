@@ -35,6 +35,7 @@ from app.services.midi.midi_controller import MIDIController, set_midi_controlle
 from app.services.effects.lfo_engine import LFOEngine
 from app.api.endpoints.lfo import set_lfo_engine
 from app.services.audio.system_audio_capture import SystemAudioCapture
+from app.schemas.audio import engine_energy, programme_level
 
 logger = logging.getLogger(__name__)
 
@@ -493,7 +494,10 @@ async def lifespan(app: FastAPI):
                                 high_energy = bands.get("high", 0.0) + bands.get("high_mid", 0.0)
 
                                 app.state.effects_engine.update_audio(
-                                    energy=min(1.0, float(freq.get("rms_energy", 0.0)) * 2.0),
+                                    energy=engine_energy(freq.get("rms_energy", 0.0)),
+                                    programme_level=programme_level(
+                                        freq.get("normalized_energy")
+                                    ),
                                     bass=min(1.0, float(bass_energy)),
                                     mid=min(1.0, float(mid_energy)),
                                     high=min(1.0, float(high_energy)),

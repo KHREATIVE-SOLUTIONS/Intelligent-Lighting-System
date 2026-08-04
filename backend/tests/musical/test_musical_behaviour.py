@@ -172,25 +172,34 @@ async def test_no_strobe_is_a_complete_off_switch():
 
     The gain matters. At 0 dB these tracks produce no white flashes under *any*
     posture, so a no_strobe assertion there is vacuous — it passes with every
-    policy gate in the codebase deleted. Each track is therefore first shown to
+    policy gate in the codebase deleted. The set is therefore first shown to
     flash under the permissive posture, and only then switched off.
+
+    Non-vacuity is asserted over the set rather than per track. Only material
+    with a real drop in it earns an accent: the dense track is twenty-four
+    seconds of the same bar, and a detector that reported a drop in it would be
+    flapping. Requiring every track to flash is what made this guard demand a
+    detector defect in order to pass.
     """
+    permissive_flashes = 0
     for track in (drop_track(), dense_track()):
         render = track.with_gain_db(9.0)
 
         permissive = await M.run_track(
             render, engine=M.build_venue_engine(accessibility_mode="performance")
         )
-        assert M.white_flash_times(permissive).size > 0, (
-            f"{render.name}: nothing flashes even when allowed, so switching it "
-            f"off proves nothing"
-        )
+        permissive_flashes += int(M.white_flash_times(permissive).size)
 
         off = await M.run_track(
             render, engine=M.build_venue_engine(accessibility_mode="no_strobe")
         )
         assert M.strobe_frame_fraction(off) == 0.0, render.name
         assert M.white_flash_times(off).size == 0, render.name
+
+    assert permissive_flashes > 0, (
+        "nothing flashes anywhere even when allowed, so switching it off "
+        "proves nothing"
+    )
 
 
 async def test_strobe_never_exceeds_the_venue_hz_cap():
@@ -210,6 +219,29 @@ async def test_strobe_never_exceeds_the_venue_hz_cap():
             assert rate <= cap, (
                 f"{render.name}: {rate} Hz exceeds the configured {cap} Hz cap"
             )
+
+
+async def test_the_venue_cap_holds_in_the_permissive_posture_too():
+    """The operator's cap is the cap, whatever posture the venue file names.
+
+    `accessibility_mode` and `strobe_hz_cap` are independent fields, so a venue
+    can run `performance` while still asking for three flashes a second. With
+    the rate correction applied per posture rather than where the flash grid is
+    chosen, that combination delivered four flashes inside one second on the
+    drop track — the operator's own cap breached, and no test above could see
+    it because every one of them runs the default posture.
+    """
+    cap = float(M.VENUE_ENGINE_KWARGS["strobe_hz_cap"])
+    for gain_db in (0.0, 9.0):
+        track = drop_track().with_gain_db(gain_db) if gain_db else drop_track()
+        result = await M.run_track(
+            track, engine=M.build_venue_engine(accessibility_mode="performance")
+        )
+        rate = M.peak_flash_rate_hz(result)
+        assert rate <= cap, (
+            f"{track.name} at performance: {rate} Hz exceeds the configured "
+            f"{cap} Hz cap; edges {M.white_flash_times(result).tolist()}"
+        )
 
 
 async def test_an_unrecognised_accessibility_posture_fails_closed():
@@ -242,30 +274,70 @@ async def test_an_unrecognised_accessibility_posture_fails_closed():
         assert governor.telemetry.faults == 0
 
 
-async def test_a_steady_noise_floor_is_not_normalised_up_to_mid_scale():
-    """An AGC normalises *any* steady input to mid scale by construction.
+def room_tone(level_dbfs: float, seconds: float = 30.0) -> SA.SyntheticTrack:
+    """A steady noise floor, the way a paused player on a mic input presents."""
+    rng = np.random.default_rng(11)
+    amplitude = 10.0 ** (level_dbfs / 20.0)
+    n = int(seconds * SA.SAMPLE_RATE)
+    return SA.SyntheticTrack(
+        name=f"room_tone@{level_dbfs:g}dBFS",
+        samples=(rng.standard_normal(n) * amplitude).astype(np.float32),
+        sample_rate=SA.SAMPLE_RATE,
+        bpm=128.0,
+        beat_samples=(),
+    )
 
-    The reference floor is the only thing that decides what counts as programme
-    at all, so with it set too low a paused player on a Stereo Mix or mic device
-    presents a room-tone noise floor and the normalised value settles at ~0.5 —
-    a fully lit rig with no music. Silence here is a realistic noise floor, not
-    the exact digital zeros the guard above uses, because multiplying by zero is
-    the one case that rescues itself.
+
+async def test_a_steady_noise_floor_leaves_the_rig_dark():
+    """The hazard, measured where it does harm: on the fixtures.
+
+    An AGC normalises *any* steady input to mid scale by construction, so the
+    analyser's normalised value settles at ~0.5 on room tone at or above its
+    reference floor whatever that floor is set to. That is only safe while the
+    value the rig renders from is not it. A paused player on a Stereo Mix or
+    mic device presenting a noise floor once produced a beat-synced 158 BPM
+    show with no music, and an earlier guard could not see it because it swept
+    only −70 and −60 dBFS and asserted on the analyser rather than the wire.
+
+    Silence here is a realistic noise floor, not the exact digital zeros the
+    guard above uses, because multiplying by zero is the one case that rescues
+    itself.
+    """
+    for level_dbfs in (-70.0, -60.0, -55.0, -50.0, -45.0):
+        track = room_tone(level_dbfs)
+        result = await M.run_track(track, engine=M.build_venue_engine())
+        assert result.frame_count > 0
+        assert float(result.intensity.max()) <= 0.05, (
+            f"{level_dbfs} dBFS room tone lit the rig to "
+            f"{float(result.intensity.max()):.4f} after 30 s of no music"
+        )
+        assert M.white_flash_times(result).size == 0, level_dbfs
+        assert M.accent_events(result).total == 0, level_dbfs
+
+
+async def test_room_tone_cannot_clear_the_drop_loudness_gate():
+    """The one place the normalised value does decide something.
+
+    It gates the drop, which is the decision that reaches the strobe. An AGC
+    parks a steady input at its target by construction — so room tone sits at
+    exactly `LOUDNESS_TARGET` at every level from the reference floor upwards,
+    and the gate has to sit clear of that number with margin rather than
+    happening to be above it.
     """
     from app.services.audio.audio_analyzer import AudioAnalyzer
+    from app.services.lighting.section_manager import StreamingSectionDetector
 
-    analyzer = AudioAnalyzer()
-    rng = np.random.default_rng(11)
-    chunk_n = SA.CHUNK_SIZE
-    for level_dbfs in (-70.0, -60.0):
+    gate = StreamingSectionDetector._DROP_MIN_PROGRAMME
+    assert gate > AudioAnalyzer.LOUDNESS_TARGET
+
+    for level_dbfs in (-70.0, -60.0, -55.0, -50.0, -45.0, -40.0):
         analyzer = AudioAnalyzer()
-        amplitude = 10.0 ** (level_dbfs / 20.0)
-        for _ in range(int(30.0 * analyzer.sample_rate / chunk_n)):
-            noise = (rng.standard_normal(chunk_n) * amplitude).astype(np.float32)
-            await analyzer.process_chunk(noise)
-        assert analyzer.normalized_energy <= 0.05, (
+        track = room_tone(level_dbfs, seconds=30.0)
+        for _, chunk in SA.iter_chunks(track):
+            await analyzer.process_chunk(np.asarray(chunk, dtype=np.float32))
+        assert analyzer.normalized_energy < gate, (
             f"{level_dbfs} dBFS room tone normalised to "
-            f"{analyzer.normalized_energy:.3f} after 30 s of no music"
+            f"{analyzer.normalized_energy:.4f}, at or above the {gate} drop gate"
         )
 
 
@@ -294,15 +366,27 @@ async def test_beat_timing_survives_quiet_material():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason="contract 1: section decisions are level-driven. Baseline frame-wise "
-           "agreement on the click track: -12 vs 0 dB = 1.000, 0 vs +9 dB = 0.577, "
-           "-12 vs +9 dB = 0.577. Remove this marker when normalisation lands.",
-)
-async def test_section_decisions_are_gain_invariant():
-    """The same track at -12, 0 and +9 dB has to light the same way."""
-    runs = [await run_cached(render) for render in gain_renders()]
-    labels = [f"{render.gain_db:+g}dB" for render in gain_renders()]
+@pytest.mark.parametrize("source", ["click", "structured"])
+async def test_section_decisions_are_gain_invariant(source):
+    """The same track at -12, 0 and +9 dB has to light the same way.
+
+    Run on a structured track as well as the click, and the structured run has
+    to visit several sections before its agreement counts. A detector wedged in
+    one section agrees with itself perfectly at every gain, so on single-section
+    material this measurement is 1.0000 for a detector that has stopped working
+    — which is exactly what the baseline it replaced was measuring.
+    """
+    base = click_track() if source == "click" else drop_track()
+    renders = tuple(SA.gain_sweep(base))
+    runs = [await run_cached(render) for render in renders]
+    labels = [f"{render.gain_db:+g}dB" for render in renders]
+
+    if source == "structured":
+        visited = {name for run in runs for name in M.section_occupancy(run)}
+        assert len(visited) >= 3, (
+            f"degenerate timeline, so agreement proves nothing: {visited}\n"
+            + "\n".join(f"{l}: {M.section_timeline(r)}" for l, r in zip(labels, runs))
+        )
 
     agreements = {}
     for i in range(len(runs)):
@@ -350,9 +434,13 @@ async def test_normalised_loudness_reaches_the_ui_and_recorder_payloads():
 
 
 @pytest.mark.xfail(
-    reason="contract 1: with raw RMS driving the ladder the engine never reaches the "
-           "buildup threshold (0.58) on a mastered reference render. Baseline energy "
-           "on the 0 dB click track: p50 0.069, p95 0.384.",
+    reason="contract 1: the click track is one bar repeated, so a detector that "
+           "measures each feature against this track's own running centre reads "
+           "every frame of it as normal. Occupancy on the 0 dB render: verse "
+           "100%, lively 0.000 against the 0.15 target. Material with real "
+           "structure does reach the high-energy sections (drop track: verse "
+           "35.0 / chorus 34.0 / buildup 22.2 / drop 8.9%), so what is missing "
+           "is a reading of absolute liveliness, not the detector.",
 )
 async def test_a_mastered_reference_render_reaches_the_high_energy_sections():
     """Verse for the whole night is the complaint; this is the measurement."""
@@ -377,8 +465,8 @@ async def test_engine_beat_phase_tracks_the_real_beat():
 
 @pytest.mark.xfail(
     reason="contract 2: the downbeat is a counter seeded by whichever onset was "
-           "detected first. Baseline bar phase error on the click track: mean "
-           "495.6 ms (0.272 of a bar), worst 767.6 ms.",
+           "detected first. Bar phase error on the click track: mean 513.6 ms "
+           "(0.274 of a bar), worst 935.8 ms.",
 )
 async def test_bar_phase_lands_on_real_downbeats():
     """The louder kick on beat one makes the true downbeat inferable from audio."""
@@ -424,11 +512,6 @@ async def test_beat_phase_holds_through_the_tempo_change_itself():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason="contract 3: the live ladder has no hysteresis or minimum hold. Baseline "
-           "on the sparse quiet track: 77.5 section changes per minute, shortest "
-           "hold 0.033 s (two frames).",
-)
 async def test_section_detector_does_not_flap():
     result = await run_cached(sparse_track())
     changes = M.section_changes_per_minute(result)
@@ -437,10 +520,6 @@ async def test_section_detector_does_not_flap():
     assert shortest >= 0.75, M.section_timeline(result)
 
 
-@pytest.mark.xfail(
-    reason="contract 3: on a quiet-intro/build/drop track the live detector reports "
-           "verse for 99.5% of the run and never reaches drop or buildup.",
-)
 async def test_intro_build_drop_is_reported_as_that_shape():
     track = drop_track()
     result = await run_cached(track)
@@ -458,9 +537,11 @@ async def test_intro_build_drop_is_reported_as_that_shape():
 
 
 @pytest.mark.xfail(
-    reason="contract 4: the drop never produces a material step in emitted level. "
-           "Baseline on the drop track: no 0.15 step ever occurs, and the largest "
-           "rise in the two seconds after the drop is 0.077.",
+    reason="contract 4: the step lands but late. On the reference engine the drop "
+           "track now steps 0.193 and crosses the 0.15 threshold 949.7 ms after "
+           "the true drop, against a 250 ms bound; on the venue engine the step "
+           "is 0.801 at 849.7 ms. The section decision itself arrives at 716 ms, "
+           "so what remains is the render's own rise time, not the detector's.",
 )
 async def test_the_drop_lands_in_the_output():
     track = drop_track()
@@ -472,9 +553,13 @@ async def test_the_drop_lands_in_the_output():
 
 
 @pytest.mark.xfail(
-    reason="contract 4: strobe is disabled in three places, so a drop is the same "
-           "colour and the same chase with the dimmer slightly higher. Baseline "
-           "accent count in the four seconds after the drop: 0.",
+    reason="contract 4: measured on the reference engine, which is built with "
+           "strobe_enabled=False and no accent governor, so the only accents it "
+           "could show are a bump or a hole in the light and it shows 0 of "
+           "either (peak rig level 0.396 in the window). The venue engine the "
+           "product ships does accent the same drop: 4 bumps, 3 blackouts and 4 "
+           "white flashes in the same four seconds. Remove this marker when the "
+           "un-accented render also reads as a discrete event.",
 )
 async def test_the_drop_gets_an_accent():
     """An accent means something discrete: a flash, a bump or a hole in the light."""
@@ -497,8 +582,11 @@ async def test_the_drop_gets_an_accent():
 
 @pytest.mark.xfail(
     reason="contract 5: dimmer is energy times one scalar per section, so the rig "
-           "has almost no contrast. Baseline p95-p5 of emitted intensity: 0.224 on "
-           "the drop track, 0.051 on the sparse quiet track.",
+           "has almost no contrast. p95-p5 of emitted intensity on the 0 dB drop "
+           "track: 0.286 against the 0.45 target, and 0.051 on the sparse quiet "
+           "track. It is also level dependent - 0.071 at -12 dB, 0.765 at +9 dB - "
+           "because the rig renders from raw energy, which is what keeps a room "
+           "tone floor dark.",
 )
 async def test_dimmer_dynamic_range_is_wide_enough_to_read():
     result = await run_cached(drop_track())

@@ -11,6 +11,9 @@ show wherever that is possible; `tests/musical` is where the same properties
 are checked against real DMX.
 """
 
+import ast
+from pathlib import Path
+
 import pytest
 
 from app.services.effects.effects_engine import EffectsConfig, EffectsEngine
@@ -20,6 +23,7 @@ from app.services.lighting.pro_effects import (
     ACCENT_MIN_HZ_CAP,
     AccentGovernor,
     AccentPosture,
+    ProEffects,
     ProStrobe,
     ProStrobeMode,
     attach_accent_governor,
@@ -28,10 +32,39 @@ from app.services.lighting.pro_effects import (
 FPS = 60.0
 DT = 1.0 / FPS
 
+# The Harding/Ofcom general-audience limit, in flashes actually delivered in any
+# one second. Stated here rather than imported so the guard cannot be satisfied
+# by moving the number it is measured against.
+GENERAL_AUDIENCE_FLASHES_PER_S = 3
+
+MAIN_PY = Path(__file__).resolve().parents[2] / "app" / "main.py"
+
 # A drop as the governor sees it: loud, and the low end arrives.
 DROP = dict(energy=0.85, bass=0.95)
 BUILD = dict(energy=0.45, bass=0.20)
 QUIET = dict(energy=0.02, bass=0.02)
+
+
+def shipped_effects_config() -> dict:
+    """The literal `EffectsConfig(...)` app/main.py builds at start-up.
+
+    Read out of the source rather than imported, because the call sits inside
+    the FastAPI lifespan and running that would start the DMX loop. Every
+    safety assertion here is made against *this*, not against `EffectsConfig()`
+    defaults: the defaults allow 24 Hz, and a guard test written against them
+    once passed while the product shipped a breach of its own 3 Hz cap.
+    """
+    tree = ast.parse(MAIN_PY.read_text(encoding="utf-8"))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "EffectsConfig"
+    ]
+    assert len(calls) == 1, f"expected one EffectsConfig in main.py, found {len(calls)}"
+    return {
+        kw.arg: ast.literal_eval(kw.value)
+        for kw in calls[0].keywords
+        if kw.arg and isinstance(kw.value, ast.Constant)
+    }
 
 
 def governor(genre: str = "edm", posture: AccentPosture = None) -> AccentGovernor:
@@ -49,6 +82,35 @@ def config(**overrides) -> EffectsConfig:
     )
     base.update(overrides)
     return EffectsConfig(**base)
+
+
+def flash_onsets(hz: float, duty: float, start: float, seconds: float):
+    """Rising edges of the renderer's own flash predicate, `(t * hz) % 1 < duty`.
+
+    Sampled at the frame rate the engine runs, and started cold, so the first
+    frame counts as an onset when the accent opens inside an on-phase — which
+    is the case that puts an extra flash into the second.
+    """
+    onsets = []
+    previous = False
+    for i in range(int(round(seconds * FPS))):
+        t = start + i * DT
+        on = ((t * hz) % 1.0) < duty
+        if on and not previous:
+            onsets.append(t)
+        previous = on
+    return onsets
+
+
+def worst_onsets_per_second(hz: float, duty: float, phases: int = 240) -> int:
+    """Most flashes any one second can hold, over every accent start phase."""
+    period = 1.0 / max(1e-6, hz)
+    worst = 0
+    for k in range(phases):
+        onsets = flash_onsets(hz, duty, k * period / phases, 3.0)
+        for start in onsets:
+            worst = max(worst, sum(1 for t in onsets if start <= t < start + 1.0))
+    return worst
 
 
 def play(gov: AccentGovernor, cfg, seconds: float, *, start: float = 0.0,
@@ -163,12 +225,134 @@ def test_a_hostile_venue_file_cannot_raise_the_flash_rate():
     assert gov.telemetry.hz_clamps >= 1
 
 
+def test_the_config_the_product_ships_is_the_conservative_one():
+    """The drift guard.
+
+    An earlier guard test asserted against `EffectsConfig()`'s 24 Hz default
+    and so stayed green while the shipped show breached its own cap. Read what
+    main.py actually builds, and fail here if it is ever loosened.
+    """
+    shipped = shipped_effects_config()
+    assert shipped["accessibility_mode"] == "conservative"
+    assert shipped["strobe_hz_cap"] == GENERAL_AUDIENCE_FLASHES_PER_S
+    assert shipped["strobe_max_duty_cycle"] <= 0.34
+    assert shipped["strobe_burst_max_s"] <= 0.10
+    assert shipped["strobe_refractory_s"] >= 0.30
+    assert shipped["auto_mode"] is True
+
+
+@pytest.mark.parametrize("policy", ["conservative", "performance"])
+def test_the_shipped_cap_cannot_put_four_flashes_in_a_second(policy):
+    """The property the venue is entitled to, at every accent start phase.
+
+    Measured on the wire this failed at exactly one phase — the drop track's —
+    which a single rendered run would have found only by luck. Sweeping the
+    phase is what makes the guarantee rather than the observation.
+
+    Both postures are swept, with the cap the product ships. The correction
+    used to live in the posture table and so was applied to `conservative`
+    only, which left a venue that had switched to `performance` while keeping
+    its 3.0 Hz cap delivering four flashes a second.
+    """
+    shipped = shipped_effects_config()
+    gov = governor()
+    cfg = config(
+        accessibility_mode=policy,
+        strobe_hz_cap=shipped["strobe_hz_cap"],
+        strobe_max_duty_cycle=shipped["strobe_max_duty_cycle"],
+    )
+    play(gov, cfg, 2.0, section="drop", **DROP)
+    assert cfg.strobe_hz_cap <= shipped["strobe_hz_cap"]
+
+    engine = EffectsEngine(cfg)
+    duty = max(0.15, min(float(cfg.strobe_max_duty_cycle), 0.75))
+    for target_hz in (18.0, 22.0, 24.0, 30.0):
+        grid_hz = engine._strobe_grid_hz(target_hz, duty)
+        worst = worst_onsets_per_second(grid_hz, duty)
+        assert worst <= GENERAL_AUDIENCE_FLASHES_PER_S, (
+            f"{policy}: {worst} flashes in one second at {grid_hz} Hz"
+        )
+
+    # ... and the nominal cap, driven straight onto the grid, genuinely could not.
+    assert worst_onsets_per_second(cfg.strobe_hz_cap, duty) == 4
+
+
+def test_the_venue_cap_reaches_pro_strobe_itself():
+    """`ProStrobe`'s own limits stop at 15 Hz and know nothing about the venue.
+
+    `ProEffects.trigger_drop` arms a 12 Hz burst, so without the hand-off a
+    show configured for three flashes a second had a twelve-flash path in it.
+    """
+    gov = governor()
+    cfg = config()
+    play(gov, cfg, 1.0, section="verse", **BUILD)
+    assert gov.strobe.hz_ceiling == pytest.approx(cfg.strobe_hz_cap)
+
+    pro = ProEffects()
+    pro.strobe.set_hz_ceiling(cfg.strobe_hz_cap)
+    pro.trigger_drop()
+    assert pro.strobe.params.burst_frequency <= cfg.strobe_hz_cap
+
+
+def test_poking_the_frequency_field_does_not_get_past_the_ceiling():
+    """The ceiling is applied at read time too, not only when a mode is armed."""
+    strobe = ProStrobe()
+    strobe.set_hz_ceiling(3.0)
+    strobe.set_mode(ProStrobeMode.CONTINUOUS, frequency=2.0)
+    strobe.params.frequency = 30.0
+
+    edges = 0
+    previous = False
+    for i in range(int(FPS)):
+        strobe.time = i * DT
+        on = strobe.get_value() > 0.0
+        edges += 1 if (on and not previous) else 0
+        previous = on
+    assert edges <= 3
+
+
+def test_an_unset_ceiling_leaves_a_bare_strobe_exactly_as_it_was():
+    strobe = ProStrobe()
+    strobe.set_mode(ProStrobeMode.BURST, burst_frequency=12.0)
+    assert strobe.params.burst_frequency == pytest.approx(12.0)
+    for bad in (0.0, -1.0, float("nan"), float("inf"), None, "fast"):
+        strobe.set_hz_ceiling(bad)
+        assert strobe.hz_ceiling == float("inf")
+
+
 def test_the_conservative_posture_holds_three_flashes_a_second():
+    """Three per second delivered, not three per second nominal.
+
+    The delivered rate has to sit below the flashes-per-second limit, because
+    an accent that opens part-way through an on-phase adds a flash of its own
+    ahead of the grid. Driven at a nominal 3.0 the rig measured four flashes
+    inside one second on the drop track, which is over the general-audience
+    limit the posture is named for.
+    """
     gov = governor()
     cfg = config(accessibility_mode="conservative", strobe_hz_cap=999.0)
     play(gov, cfg, 5.0, section="drop", **DROP)
-    assert cfg.strobe_hz_cap == 3.0
+    assert cfg.strobe_hz_cap <= GENERAL_AUDIENCE_FLASHES_PER_S
     assert cfg.strobe_max_duty_cycle <= 0.34
+
+    engine = EffectsEngine(cfg)
+    duty = max(0.15, min(float(cfg.strobe_max_duty_cycle), 0.75))
+    grid_hz = engine._strobe_grid_hz(22.0, duty)
+    assert grid_hz > 0.0
+    assert worst_onsets_per_second(grid_hz, duty) <= GENERAL_AUDIENCE_FLASHES_PER_S
+
+
+def test_a_cap_too_tight_to_flash_safely_switches_the_strobe_off():
+    """Zero grid rate means no strobe, never a grid running at zero.
+
+    `(t * 0) % 1 < duty` is permanently true, so a renderer that ran the grid
+    anyway would answer an unreachably tight cap with a held white blinder —
+    the opposite of what the operator asked for.
+    """
+    engine = EffectsEngine(config(strobe_hz_cap=ACCENT_MIN_HZ_CAP,
+                                  strobe_max_duty_cycle=0.75))
+    assert engine._strobe_grid_hz(22.0, 0.75) == 0.0
+    assert render(engine, 6.0, loud_programme) == []
 
 
 def test_a_venue_cap_tighter_than_the_posture_is_respected():
@@ -222,7 +406,7 @@ def test_a_sustained_drop_cannot_machine_gun_the_room():
     starts = [w[0] for w in found]
     gaps = [b - a for a, b in zip(starts, starts[1:])]
     assert all(g >= gov.posture.min_gap_s for g in gaps), gaps
-    assert all(len(w) * DT <= gov.posture.window_s + DT for w in found)
+    assert all(len(w) * DT <= gov.posture.window_max_s + DT for w in found)
 
 
 def test_quiet_material_is_left_alone():
@@ -574,3 +758,203 @@ def test_no_dip_is_armed_while_an_accent_is_running():
     gov._arm_dip(50.0)
     assert gov.telemetry.dips == before
     assert gov._dip_until < 50.0
+
+
+# ---------------------------------------------------------------------------
+# The accent has to land on the look, not before it
+#
+# The drop cue reads the low end and fires within about a tenth of a second.
+# The renderer paints the drop look only once the section detector commits,
+# and the detector commits on a bar line — measured at 0.72 s after the drop
+# on the harness's drop track. A window fixed at 0.70 s therefore overlapped
+# the look by 84 ms and the whole hit rendered as one stray flash.
+# ---------------------------------------------------------------------------
+
+COMMIT_LAG_S = 0.62     # what the section detector cost on the drop track
+
+
+def _drop_after_a_build(gov, cfg, *, lag: float, seconds: float = 9.0,
+                        drop_at: float = 4.0):
+    """Programme heard, then a drop, then the section catching up `lag` later."""
+    on = []
+    for i in range(int(round(seconds * FPS))):
+        now = i * DT
+        feats = DROP if now >= drop_at else BUILD
+        section = "drop" if now >= drop_at + lag else "verse"
+        gov.tick(now=now, delta_time=DT, section=section, config=cfg, **feats)
+        if cfg.strobe_enabled:
+            on.append(now)
+    return on
+
+
+def test_the_accent_is_still_open_when_the_drop_look_arrives():
+    gov = governor()
+    cfg = config()
+    on = _drop_after_a_build(gov, cfg, lag=COMMIT_LAG_S)
+
+    assert on, "no accent fired at all"
+    assert on[0] - 4.0 < 0.25, f"the drop cue took {on[0] - 4.0:.3f}s"
+
+    covered = [t for t in on if t >= 4.0 + COMMIT_LAG_S]
+    assert len(covered) * DT >= 0.5, (
+        f"only {len(covered) * DT:.3f}s of the accent overlapped the drop look"
+    )
+    # One drop, one accent: holding the window open is not a second spend.
+    assert gov.telemetry.accents == 1
+
+
+def test_holding_the_window_open_is_bounded():
+    gov = governor()
+    cfg = config()
+    on = _drop_after_a_build(gov, cfg, lag=COMMIT_LAG_S)
+    assert (on[-1] - on[0]) <= gov.posture.window_max_s + DT
+
+    # ... and a section that stays "drop" for a whole song cannot hold it either.
+    gov2 = governor()
+    cfg2 = config()
+    first = windows(play(gov2, cfg2, 40.0, section="drop", **DROP))[0]
+    assert len(first) * DT <= gov2.posture.window_max_s + DT
+
+
+def test_a_section_that_never_becomes_a_drop_gets_the_plain_window():
+    gov = governor()
+    cfg = config()
+    on = _drop_after_a_build(gov, cfg, lag=1e9)
+    assert (on[-1] - on[0]) <= gov.posture.window_s + DT
+
+
+# ---------------------------------------------------------------------------
+# On the wire, at the config the product ships
+#
+# Everything above drives the governor with numbers. These drive the real
+# renderer at main.py's own posture and read full-white flashes off the DMX
+# frame, because that is where an off switch either holds or does not.
+# ---------------------------------------------------------------------------
+
+
+def shipped_engine(genre: Genre = Genre.EDM, **overrides):
+    kwargs = dict(shipped_effects_config())
+    kwargs.update(overrides)
+    engine = EffectsEngine(EffectsConfig(**kwargs))
+    engine.enable_pro_lighting(True)
+    engine.set_genre(genre)
+    return engine, attach_accent_governor(engine)
+
+
+def _taps(engine):
+    taps = []
+    for fixture in engine.fixtures.fixtures.values():
+        base = int(getattr(fixture, "dmx_address", 0) or 0) - 1
+        channels = getattr(fixture, "channels", {}) or {}
+        if base < 0 or not {"dimmer", "red", "green", "blue"} <= set(channels):
+            continue
+        taps.append(tuple(base + channels[name]
+                          for name in ("dimmer", "red", "green", "blue"))
+                    + (int(getattr(fixture, "universe", 0) or 0),))
+    assert taps, "the engine came up with no addressable fixtures"
+    return taps
+
+
+def _white_on_wire(taps, frames) -> bool:
+    """Is any fixture flashing full white? The read tests/musical makes."""
+    for d, r, g, b, universe in taps:
+        frame = frames.get(universe)
+        if frame is None:
+            continue
+        if frame[d] / 255.0 >= 0.88 and min(frame[r], frame[g], frame[b]) >= 248:
+            return True
+    return False
+
+
+def render(engine, seconds: float, programme, *, bpm: float = 128.0):
+    """Run the real render path and return the time of every white flash onset."""
+    taps = _taps(engine)
+    frames = {}
+    engine.set_dmx_callback(lambda u, f: frames.__setitem__(int(u), list(f)))
+
+    beat_frames = max(1, int(round((60.0 / bpm) * FPS)))
+    onsets = []
+    previous = False
+    for i in range(int(round(seconds * FPS))):
+        engine.update_audio(is_beat=(i % beat_frames == 0),
+                            beat_number=i // beat_frames, bpm=bpm,
+                            **programme(i, beat_frames))
+        frames.clear()
+        engine.update(delta_time=DT)
+        white = _white_on_wire(taps, frames)
+        if white and not previous:
+            onsets.append(i * DT)
+        previous = white
+    return onsets
+
+
+def loud_programme(i, beat_frames):
+    """A kick pattern loud enough to earn an accent: the low end has to arrive."""
+    return dict(energy=0.92, bass=0.95 if (i // beat_frames) % 2 == 0 else 0.12,
+                mid=0.62, high=0.70, spectral_flux=0.30)
+
+
+def quiet_programme(i, beat_frames):
+    """A sparse quiet passage. An accent here is worse than no accent at all."""
+    return dict(energy=0.06, bass=0.04, mid=0.05, high=0.05, spectral_flux=0.01)
+
+
+def test_white_reaches_the_wire_at_the_shipped_posture():
+    """Without this the off-switch tests below would pass on an inert rig."""
+    engine, gov = shipped_engine()
+    onsets = render(engine, 25.0, loud_programme)
+    assert onsets, "no accent ever reached a fixture"
+    assert gov.telemetry.accents >= 1
+    assert gov.telemetry.faults == 0
+
+
+def test_the_emitted_flash_rate_stays_inside_the_general_audience_limit():
+    engine, _ = shipped_engine()
+    onsets = render(engine, 25.0, loud_programme)
+    worst = max((sum(1 for t in onsets if s <= t < s + 1.0) for s in onsets), default=0)
+    assert worst <= 3, f"{worst} flashes in one second: {onsets}"
+
+
+@pytest.mark.parametrize("policy", ["no_strobe", "off", "safe"])
+def test_no_strobe_puts_nothing_white_on_the_wire(policy):
+    engine, gov = shipped_engine(accessibility_mode=policy)
+    assert render(engine, 25.0, loud_programme) == []
+    assert gov.telemetry.accents == 0
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(camera_mode=True),
+    dict(venue_mode="theatre"),
+    dict(venue_mode="broadcast"),
+])
+def test_visibility_first_contexts_put_nothing_white_on_the_wire(kwargs):
+    engine, _ = shipped_engine(**kwargs)
+    assert render(engine, 25.0, loud_programme) == []
+
+
+def test_jazz_puts_nothing_white_on_the_wire():
+    engine, gov = shipped_engine(Genre.JAZZ)
+    assert render(engine, 25.0, loud_programme) == []
+    assert gov.telemetry.accents == 0
+    assert gov.telemetry.refused_by_budget > 0
+
+
+def test_a_quiet_passage_puts_nothing_white_on_the_wire():
+    engine, gov = shipped_engine()
+    assert render(engine, 40.0, quiet_programme) == []
+    assert gov.telemetry.accents == 0
+    assert gov.telemetry.faults == 0
+
+
+def test_a_hostile_venue_file_cannot_raise_the_rate_on_the_wire():
+    engine, gov = shipped_engine(
+        strobe_hz_cap=999.0, strobe_max_duty_cycle=0.99,
+        strobe_burst_max_s=10.0, strobe_refractory_s=0.0,
+    )
+    onsets = render(engine, 25.0, loud_programme)
+    worst = max((sum(1 for t in onsets if s <= t < s + 1.0) for s in onsets), default=0)
+    assert worst <= GENERAL_AUDIENCE_FLASHES_PER_S, (
+        f"{worst} flashes in one second: {onsets}"
+    )
+    assert engine.config.strobe_hz_cap <= GENERAL_AUDIENCE_FLASHES_PER_S
+    assert gov.telemetry.hz_clamps >= 1

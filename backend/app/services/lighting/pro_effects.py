@@ -108,6 +108,36 @@ class ProStrobe:
         self._strobe_count_this_song: int = 0
         self._strobe_budget: int = 999
 
+        # The venue's flash-rate ceiling. The per-mode limits below are this
+        # module's own idea of safe and know nothing about `strobe_hz_cap`, so
+        # a BURST armed at 12 Hz would outrun a venue configured for 3 Hz.
+        # Unset it is infinite, which leaves a bare ProStrobe exactly as it was.
+        self._hz_ceiling: float = float("inf")
+
+    @property
+    def hz_ceiling(self) -> float:
+        return self._hz_ceiling
+
+    def set_hz_ceiling(self, hz: float):
+        """Adopt the venue's flash-rate cap. Total: never raises, never widens.
+
+        Called every frame from the accent governor with the value it has
+        already clamped into the accessibility posture, so the cap the operator
+        configured is the cap the fixtures see whatever mode is running.
+        """
+        try:
+            value = float(hz)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(value) or value <= 0.0:
+            return
+        self._hz_ceiling = value
+        self._enforce_safety()
+
+    def _capped(self, hz: float) -> float:
+        """The rate a mode may actually run at, whatever it was asked for."""
+        return hz if hz <= self._hz_ceiling else self._hz_ceiling
+
     def set_genre(self, genre: str):
         """Set genre for strobe budget enforcement."""
         self._genre = genre.lower()
@@ -165,17 +195,17 @@ class ProStrobe:
         """Enforce OSHA-compliant frequency limits."""
         p = self.params
         if p.mode == ProStrobeMode.CONTINUOUS:
-            p.frequency = min(p.frequency, p.max_continuous_hz)
+            p.frequency = self._capped(min(p.frequency, p.max_continuous_hz))
         elif p.mode == ProStrobeMode.BURST:
-            p.burst_frequency = min(p.burst_frequency, p.max_burst_hz)
+            p.burst_frequency = self._capped(min(p.burst_frequency, p.max_burst_hz))
             p.burst_duration = min(p.burst_duration, p.max_burst_seconds)
         elif p.mode == ProStrobeMode.PROGRESSIVE:
-            p.progressive_start_hz = min(p.progressive_start_hz, p.max_burst_hz)
-            p.progressive_end_hz = min(p.progressive_end_hz, p.max_burst_hz)
+            p.progressive_start_hz = self._capped(min(p.progressive_start_hz, p.max_burst_hz))
+            p.progressive_end_hz = self._capped(min(p.progressive_end_hz, p.max_burst_hz))
         elif p.mode == ProStrobeMode.CHASE_STROBE:
             # CHASE_STROBE flashes on `frequency`, not `burst_frequency`, so it
             # is the continuous limit that applies to it.
-            p.frequency = min(p.frequency, p.max_continuous_hz)
+            p.frequency = self._capped(min(p.frequency, p.max_continuous_hz))
 
     def trigger_beat(self, beat_number: int):
         """Handle beat event."""
@@ -242,13 +272,13 @@ class ProStrobe:
             return 0.0
 
         if mode == ProStrobeMode.CONTINUOUS:
-            phase = (self.time * self.params.frequency + phase_offset) % 1.0
+            phase = (self.time * self._capped(self.params.frequency) + phase_offset) % 1.0
             return self.params.intensity if phase < 0.5 else 0.0
 
         elif mode == ProStrobeMode.BURST:
             if self._burst_start is None:
                 return 0.0
-            phase = (self.time * self.params.burst_frequency + phase_offset) % 1.0
+            phase = (self.time * self._capped(self.params.burst_frequency) + phase_offset) % 1.0
             return self.params.intensity if phase < 0.5 else 0.0
 
         elif mode == ProStrobeMode.BEAT_LOCKED:
@@ -270,7 +300,7 @@ class ProStrobe:
             current_freq = (self.params.progressive_start_hz +
                           (self.params.progressive_end_hz - self.params.progressive_start_hz) *
                           progress ** 2)
-            phase = (self.time * current_freq + phase_offset) % 1.0
+            phase = (self.time * self._capped(current_freq) + phase_offset) % 1.0
             return self.params.intensity * progress if phase < 0.5 else 0.0
 
         elif mode == ProStrobeMode.CHASE_STROBE:
@@ -279,7 +309,7 @@ class ProStrobe:
             distance = min(distance, total_fixtures - distance)
             if distance < self.params.chase_width:
                 # Strobe the active fixtures
-                strobe_phase = (self.time * self.params.frequency) % 1.0
+                strobe_phase = (self.time * self._capped(self.params.frequency)) % 1.0
                 if strobe_phase < 0.5:
                     return self.params.intensity * (1.0 - distance / self.params.chase_width)
             return 0.0
@@ -979,6 +1009,13 @@ class ProEffects:
 # general-audience limit in the Harding/Ofcom guidance is three flashes in any
 # one second, which is where the conservative posture sits. Nothing may be
 # configured above the hard ceiling, whatever the venue file asks for.
+#
+# These are flashes per second, which is the number an operator reads and the
+# number a venue file writes. The grid frequency that delivers them is smaller
+# and is derived where the grid is chosen - see `_strobe_grid_hz` in
+# effects_engine - because a window opening mid-flash adds an onset the grid
+# never scheduled. Deriving it here instead only corrected the one posture and
+# left a venue running `performance` with a 3.0 Hz cap delivering four.
 ACCENT_HZ_HARD_CEILING = 24.0
 ACCENT_POSTURE_HZ_CEILING = {
     "conservative": 3.0,
@@ -1015,6 +1052,7 @@ class AccentPosture:
     """
 
     window_s: float = 0.70          # length of one accent
+    window_max_s: float = 2.00      # ... and the most it may be held open for
     min_gap_s: float = 12.0         # restraint between accents the section asked for
     impact_gap_s: float = 4.0       # a real drop may interrupt sooner than that
     warmup_s: float = 3.0           # programme heard before the first accent
@@ -1087,6 +1125,7 @@ class AccentGovernor:
         self._wrote_cap: Optional[float] = None
 
         self._window_until = -1e9
+        self._window_started = -1e9
         self._last_window_end = -1e9
         self._dip_until = -1e9
         self._last_dip = -1e9
@@ -1145,6 +1184,7 @@ class AccentGovernor:
         """New song: budget back, anticipation forgotten."""
         self.strobe.reset_song_budget()
         self._window_until = -1e9
+        self._window_started = -1e9
         self._last_window_end = -1e9
         self._dip_until = -1e9
         self._last_dip = -1e9
@@ -1233,6 +1273,7 @@ class AccentGovernor:
                 self.telemetry.refused_by_gap += 1
             elif self.strobe.spend_accent():
                 self.telemetry.accents += 1
+                self._window_started = now
                 self._window_until = now + self.posture.window_s
                 # The dip is anticipation, so it is armed by the gap at the top
                 # of a build (see `_track_music`), never here: arming it on the
@@ -1240,6 +1281,18 @@ class AccentGovernor:
                 # i.e. remove light exactly as the drop lands.
             else:
                 self.telemetry.refused_by_budget += 1
+
+        # The drop cue fires off the low end within about a tenth of a second,
+        # but the look it punctuates does not exist until the section detector
+        # commits on a bar line, which is later. Left alone the accent is spent
+        # on the frames before the drop look arrives and the hit renders as one
+        # stray flash. So an open window is held while the show is inside a
+        # section it may punctuate — the same accent, not a new one, and never
+        # past `window_max_s` from where it opened.
+        if now < self._window_until and section.lower() in ACCENT_SECTIONS:
+            limit = self._window_started + self.posture.window_max_s
+            if self._window_until < limit:
+                self._window_until = min(now + self.posture.window_s, limit)
 
         self._write(config, strobe=now < self._window_until, cap=self._shaped_cap(now, dt))
 
@@ -1273,6 +1326,10 @@ class AccentGovernor:
         if clamped != hz:
             self.telemetry.hz_clamps += 1
             config.strobe_hz_cap = clamped
+        # `ProStrobe`'s own per-mode limits go up to 15 Hz and know nothing
+        # about the venue file, so the cap has to be handed to it as well or a
+        # burst armed elsewhere in the show outruns the number the venue set.
+        self.strobe.set_hz_ceiling(clamped)
 
         duty_ceiling = ACCENT_POSTURE_DUTY_CEILING.get(
             policy, ACCENT_POSTURE_DUTY_CEILING["conservative"]
