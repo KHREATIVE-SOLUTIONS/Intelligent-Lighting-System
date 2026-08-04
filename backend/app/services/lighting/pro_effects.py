@@ -121,13 +121,28 @@ class ProStrobe:
     def strobe_budget_remaining(self) -> int:
         return max(0, self._strobe_budget - self._strobe_count_this_song)
 
+    def spend_accent(self) -> bool:
+        """Take one accent out of this song's genre budget.
+
+        Returns False when the budget is gone, which is the whole answer for
+        jazz (0 per song) and the answer for rock after its third.
+        """
+        if self._strobe_count_this_song >= self._strobe_budget:
+            return False
+        self._strobe_count_this_song += 1
+        return True
+
     def set_mode(self, mode: ProStrobeMode, **kwargs):
         """Set strobe mode with safety checks and genre budget enforcement."""
-        # Genre budget check for burst/blinder modes
-        if mode in (ProStrobeMode.BURST, ProStrobeMode.BLINDER, ProStrobeMode.PROGRESSIVE):
+        # Every mode that emits repeated flashes is budgeted. CONTINUOUS and
+        # CHASE_STROBE only consume the budget on the transition into them, so
+        # a caller that re-asserts the same mode every frame cannot drain it.
+        if mode in (ProStrobeMode.BURST, ProStrobeMode.BLINDER, ProStrobeMode.PROGRESSIVE,
+                    ProStrobeMode.CONTINUOUS, ProStrobeMode.CHASE_STROBE):
             if self._strobe_count_this_song >= self._strobe_budget:
                 return  # Budget exhausted, silently refuse
 
+        was = self.params.mode
         self.params.mode = mode
         for key, value in kwargs.items():
             if hasattr(self.params, key):
@@ -143,6 +158,8 @@ class ProStrobe:
         elif mode == ProStrobeMode.BLINDER:
             self._blinder_start = self.time
             self._strobe_count_this_song += 1
+        elif mode in (ProStrobeMode.CONTINUOUS, ProStrobeMode.CHASE_STROBE) and was != mode:
+            self._strobe_count_this_song += 1
 
     def _enforce_safety(self):
         """Enforce OSHA-compliant frequency limits."""
@@ -152,6 +169,13 @@ class ProStrobe:
         elif p.mode == ProStrobeMode.BURST:
             p.burst_frequency = min(p.burst_frequency, p.max_burst_hz)
             p.burst_duration = min(p.burst_duration, p.max_burst_seconds)
+        elif p.mode == ProStrobeMode.PROGRESSIVE:
+            p.progressive_start_hz = min(p.progressive_start_hz, p.max_burst_hz)
+            p.progressive_end_hz = min(p.progressive_end_hz, p.max_burst_hz)
+        elif p.mode == ProStrobeMode.CHASE_STROBE:
+            # CHASE_STROBE flashes on `frequency`, not `burst_frequency`, so it
+            # is the continuous limit that applies to it.
+            p.frequency = min(p.frequency, p.max_continuous_hz)
 
     def trigger_beat(self, beat_number: int):
         """Handle beat event."""
@@ -945,3 +969,472 @@ class ProEffects:
     def flash(self, duration: float = 0.1):
         """Quick white flash (blinder)."""
         self.strobe.trigger_blinder(duration)
+
+
+# =============================================================================
+# ACCENT GOVERNOR
+# =============================================================================
+
+# Photosensitive epilepsy is a real hazard in a commercial venue. The
+# general-audience limit in the Harding/Ofcom guidance is three flashes in any
+# one second, which is where the conservative posture sits. Nothing may be
+# configured above the hard ceiling, whatever the venue file asks for.
+ACCENT_HZ_HARD_CEILING = 24.0
+ACCENT_POSTURE_HZ_CEILING = {
+    "conservative": 3.0,
+    "performance": ACCENT_HZ_HARD_CEILING,
+}
+ACCENT_POSTURE_DUTY_CEILING = {
+    "conservative": 0.34,
+    "performance": 0.42,
+}
+
+# A cap of zero does not mean "no flashing": the renderer's flash predicate is
+# (t * hz) % 1 < duty, which is permanently true at 0 Hz and would hold the rig
+# at full white. Accents are switched off by policy, never by a zero cap.
+ACCENT_MIN_HZ_CAP = 0.5
+ACCENT_MIN_REFRACTORY_S = 0.30
+ACCENT_MAX_BURST_S = 0.10
+
+ACCENT_OFF_POLICIES = frozenset({"no_strobe", "nostrobe", "off", "none", "safe"})
+ACCENT_OFF_VENUES = frozenset({"theatre", "broadcast", "corporate"})
+
+# Sections the show is allowed to punctuate. Everything else is a chase.
+ACCENT_SECTIONS = frozenset({"drop"})
+
+# Below this the input is room noise or a fade, not a performance.
+ACCENT_ENERGY_FLOOR = 0.05
+
+
+@dataclass
+class AccentPosture:
+    """How often the show may punctuate, and how hard.
+
+    The defaults are the conservative posture: accents on, but a handful a
+    minute at most, each shorter than a bar.
+    """
+
+    window_s: float = 0.70          # length of one accent
+    min_gap_s: float = 12.0         # restraint between accents the section asked for
+    impact_gap_s: float = 4.0       # a real drop may interrupt sooner than that
+    warmup_s: float = 3.0           # programme heard before the first accent
+    dip_s: float = 0.10             # pre-drop / pre-hit darkness
+    dip_level: float = 0.04         # intensity cap during the dip
+    dip_reuse_s: float = 0.80       # a dip this recent already gave the contrast
+    build_min_s: float = 1.5        # a rise this short is a phrase, not a build
+    build_ramp_s: float = 6.0       # time for the build ramp to reach full
+    build_depth: float = 0.15       # how far the ramp holds the rig back at its foot
+    build_release_s: float = 0.60   # time to return to nominal once a build ends
+
+    # Drop detection. Both cues are measured against the recent programme, so
+    # they mean the same thing at -12 dB and at +9 dB.
+    bass_step: float = 0.25         # jump in low-end balance that marks a drop
+    energy_norm_min: float = 0.55   # ... and it has to arrive near the recent peak
+    build_rise: float = 1.10        # slow/very-slow energy ratio that counts as building
+    build_gap_fraction: float = 0.72  # fall from the build's own peak = the gap
+
+
+@dataclass
+class AccentTelemetry:
+    """What the governor did, for the report and for tests."""
+
+    accents: int = 0
+    refused_by_budget: int = 0
+    refused_by_gap: int = 0
+    dips: int = 0
+    hz_clamps: int = 0
+    # The governor may not raise into the 60 fps path, so a fault is counted
+    # rather than thrown. A non-zero value here is a bug, not a policy.
+    faults: int = 0
+
+
+def _accent_ema(previous: float, value: float, dt: float, tau: float) -> float:
+    if tau <= 0.0:
+        return value
+    alpha = 1.0 - math.exp(-max(0.0, dt) / tau)
+    return previous + (value - previous) * alpha
+
+
+class AccentGovernor:
+    """Decides when the show may fire an accent, and shapes the run-up to it.
+
+    Three jobs, in this order.
+
+    * **Hold the venue governor.** The configured Hz cap and duty cycle are
+      clamped into what the accessibility posture allows before anything else
+      happens, and `no_strobe` (or camera/theatre mode) is an unconditional off
+      switch rather than a preference.
+    * **Spend the genre budget.** Every accent goes through
+      `ProStrobe.spend_accent`, so `GENRE_STROBE_BUDGET` decides how many a song
+      gets: jazz none, rock three. Once the budget is gone the flag stays off.
+    * **Shape anticipation.** A build ramp holds the rig back at the foot of a
+      build and releases it as the build climbs, and a short dip cuts the light
+      immediately before the accent so it has darkness to land against.
+
+    Drop detection lives here rather than being read off the section detector
+    because it has to work at the loudness the venue actually runs; both cues
+    are relative to the recent programme rather than absolute thresholds.
+    """
+
+    def __init__(self, strobe: ProStrobe, posture: Optional[AccentPosture] = None):
+        self.strobe = strobe
+        self.posture = posture or AccentPosture()
+        self.telemetry = AccentTelemetry()
+
+        self._master_enable = True
+        self._wrote_strobe: Optional[bool] = None
+        self._nominal_cap = 1.0
+        self._wrote_cap: Optional[float] = None
+
+        self._window_until = -1e9
+        self._last_window_end = -1e9
+        self._dip_until = -1e9
+        self._last_dip = -1e9
+
+        self._energy_fast = 0.0
+        self._energy_slow = 0.0
+        self._energy_vslow = 0.0
+        self._energy_peak = 0.0
+        self._bass_fast = 0.0
+        self._bass_slow = 0.0
+        self._heard_s = 0.0
+        self._seeded = False
+
+        self._build_level = 0.0
+        self._build_since: Optional[float] = None
+        self._build_peak = 0.0
+        self._cap_multiplier = 1.0
+
+    @property
+    def accent_active(self) -> bool:
+        return self._window_until > self._last_window_end
+
+    @property
+    def budget_remaining(self) -> int:
+        return self.strobe.strobe_budget_remaining
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Master switch an operator holds.
+
+        The governor writes `config.strobe_enabled` every frame and holds it
+        False between accents, so a value read back off the config carries no
+        information about who put it there: an operator writing False looks
+        exactly like the governor's own last write. Durable intent therefore has
+        to arrive here rather than through the field, and every path in `app/`
+        that means "strobe off until I say otherwise" calls this.
+        """
+        self._master_enable = bool(enabled)
+
+    def set_nominal_cap(self, cap: float) -> None:
+        """Adopt a venue audience-intensity cap set behind the governor's back.
+
+        Same reasoning as `set_enabled`: the governor writes
+        `audience_intensity_cap` every frame, and a tightening that happens to
+        equal the value it last wrote (a build ramp at 0.85 tightened to 0.90,
+        or a dip at 0.04) is invisible to a read-back comparison and would be
+        silently un-applied on the next frame.
+        """
+        try:
+            value = float(cap)
+        except (TypeError, ValueError):
+            return
+        if math.isfinite(value):
+            self._nominal_cap = max(0.0, min(1.0, value))
+
+    def reset_song(self):
+        """New song: budget back, anticipation forgotten."""
+        self.strobe.reset_song_budget()
+        self._window_until = -1e9
+        self._last_window_end = -1e9
+        self._dip_until = -1e9
+        self._last_dip = -1e9
+        self._build_level = 0.0
+        self._build_since = None
+        self._build_peak = 0.0
+
+    def tick(self, *, now: float, delta_time: float, energy: float, bass: float,
+             section: str = "", config=None) -> None:
+        """Decide this frame. Never raises: a dark rig with no traceback is worse."""
+        try:
+            self._tick(float(now), float(delta_time), float(energy), float(bass),
+                       str(section or ""), config)
+        except Exception:
+            self.telemetry.faults += 1
+            self._fail_plain(config)
+
+    def _fail_plain(self, config) -> None:
+        """Hand the venue back an un-accented but complete show."""
+        self._window_until = -1e9
+        self._dip_until = -1e9
+        self._cap_multiplier = 1.0
+        try:
+            config.strobe_enabled = False
+            config.audience_intensity_cap = self._nominal_cap
+        except Exception:
+            return
+        self._wrote_strobe = False
+        self._wrote_cap = self._nominal_cap
+
+    def _tick(self, now: float, delta_time: float, energy: float, bass: float,
+              section: str, config) -> None:
+        dt = max(0.0, min(0.25, delta_time)) if math.isfinite(delta_time) else 0.0
+        energy = max(0.0, min(1.0, energy)) if math.isfinite(energy) else 0.0
+        bass = max(0.0, min(1.0, bass)) if math.isfinite(bass) else 0.0
+
+        self._adopt_operator_changes(config)
+
+        policy = str(getattr(config, "accessibility_mode", "performance") or "").strip().lower()
+        venue = str(getattr(config, "venue_mode", "concert") or "").strip().lower()
+
+        self._clamp_venue_governor(config, policy)
+
+        # In manual mode the show is not driving itself, so the accent decision
+        # is not the governor's to make. It stands down: the Hz/duty ceilings
+        # above still apply, but `strobe_enabled` belongs to the operator, and
+        # writing it here would cancel a manual strobe within one frame.
+        if not bool(getattr(config, "auto_mode", True)):
+            self._window_until = -1e9
+            self._dip_until = -1e9
+            self._build_level = 0.0
+            self._build_since = None
+            self._cap_multiplier = 1.0
+            self._release_cap(config)
+            return
+
+        off = (
+            not self._master_enable
+            or policy in ACCENT_OFF_POLICIES
+            or bool(getattr(config, "camera_mode", False))
+            or venue in ACCENT_OFF_VENUES
+        )
+
+        if off:
+            self._window_until = -1e9
+            self._dip_until = -1e9
+            self._build_level = 0.0
+            self._build_since = None
+            self._cap_multiplier = 1.0
+            self._write(config, strobe=False, cap=self._nominal_cap)
+            return
+
+        # Close a finished accent before deciding, so two windows can never
+        # chain end to end and defeat the minimum gap.
+        if now >= self._window_until and self._window_until > self._last_window_end:
+            self._last_window_end = self._window_until
+
+        impact = self._track_music(now, dt, energy, bass)
+        wants_accent = impact or section.lower() in ACCENT_SECTIONS
+        # A drop the analyser can point at earns a shorter wait than merely
+        # sitting inside a section the detector has labelled "drop".
+        gap = self.posture.impact_gap_s if impact else self.posture.min_gap_s
+
+        if wants_accent and now >= self._window_until and self._heard_s >= self.posture.warmup_s:
+            if (now - self._last_window_end) < gap:
+                self.telemetry.refused_by_gap += 1
+            elif self.strobe.spend_accent():
+                self.telemetry.accents += 1
+                self._window_until = now + self.posture.window_s
+                # The dip is anticipation, so it is armed by the gap at the top
+                # of a build (see `_track_music`), never here: arming it on the
+                # frame the window opens would run the cut from t to t+dip_s,
+                # i.e. remove light exactly as the drop lands.
+            else:
+                self.telemetry.refused_by_budget += 1
+
+        self._write(config, strobe=now < self._window_until, cap=self._shaped_cap(now, dt))
+
+    def _adopt_operator_changes(self, config) -> None:
+        """Best-effort pickup of a write the governor can still see.
+
+        This only catches a value that *differs* from the governor's own last
+        write. A write equal to it — an operator switching strobe off between
+        accents, where the governor already holds the field False — is
+        indistinguishable here and must arrive via `set_enabled` /
+        `set_nominal_cap` instead. This is a net, not the mechanism.
+        """
+        enabled = bool(getattr(config, "strobe_enabled", False))
+        if self._wrote_strobe is None or enabled != self._wrote_strobe:
+            self._master_enable = enabled
+        cap = float(getattr(config, "audience_intensity_cap", 1.0))
+        if self._wrote_cap is None or abs(cap - self._wrote_cap) > 1e-9:
+            self._nominal_cap = max(0.0, min(1.0, cap))
+
+    def _clamp_venue_governor(self, config, policy: str) -> None:
+        # An unrecognised posture is a typo, an empty field or a name from a
+        # newer build. This is the one control in the project with a
+        # physical-harm dimension, so the unknown case buys the *tightest*
+        # ceiling, never the loosest.
+        ceiling = min(
+            ACCENT_POSTURE_HZ_CEILING.get(policy, ACCENT_POSTURE_HZ_CEILING["conservative"]),
+            ACCENT_HZ_HARD_CEILING,
+        )
+        hz = float(getattr(config, "strobe_hz_cap", ceiling))
+        clamped = max(ACCENT_MIN_HZ_CAP, min(hz, ceiling))
+        if clamped != hz:
+            self.telemetry.hz_clamps += 1
+            config.strobe_hz_cap = clamped
+
+        duty_ceiling = ACCENT_POSTURE_DUTY_CEILING.get(
+            policy, ACCENT_POSTURE_DUTY_CEILING["conservative"]
+        )
+        if float(getattr(config, "strobe_max_duty_cycle", duty_ceiling)) > duty_ceiling:
+            config.strobe_max_duty_cycle = duty_ceiling
+        if float(getattr(config, "strobe_burst_max_s", ACCENT_MAX_BURST_S)) > ACCENT_MAX_BURST_S:
+            config.strobe_burst_max_s = ACCENT_MAX_BURST_S
+        if float(getattr(config, "strobe_refractory_s", ACCENT_MIN_REFRACTORY_S)) < ACCENT_MIN_REFRACTORY_S:
+            config.strobe_refractory_s = ACCENT_MIN_REFRACTORY_S
+
+    def _track_music(self, now: float, dt: float, energy: float, bass: float) -> bool:
+        """Follow the programme; return True when a drop lands."""
+        p = self.posture
+        if not self._seeded and energy >= ACCENT_ENERGY_FLOOR:
+            # Start every average converged on the first real frame. Left at
+            # zero, the twelve-second average spends half a minute climbing and
+            # reads steady programme as one long build.
+            self._seeded = True
+            self._energy_fast = self._energy_slow = self._energy_vslow = energy
+            self._bass_fast = self._bass_slow = bass
+
+        self._energy_fast = _accent_ema(self._energy_fast, energy, dt, 0.12)
+        self._energy_slow = _accent_ema(self._energy_slow, energy, dt, 3.0)
+        self._energy_vslow = _accent_ema(self._energy_vslow, energy, dt, 12.0)
+        self._bass_fast = _accent_ema(self._bass_fast, bass, dt, 0.12)
+        self._bass_slow = _accent_ema(self._bass_slow, bass, dt, 2.5)
+
+        decay = 0.5 ** (dt / 10.0) if dt > 0.0 else 1.0
+        self._energy_peak = max(energy, self._energy_peak * decay)
+        energy_norm = self._energy_fast / self._energy_peak if self._energy_peak > 1e-6 else 0.0
+
+        live = self._energy_peak >= ACCENT_ENERGY_FLOOR and self._energy_fast >= ACCENT_ENERGY_FLOOR
+        self._heard_s = (self._heard_s + dt) if live else 0.0
+
+        # A build is a rise the slow average can see; comparing the fast average
+        # against it would call every kick drum a build.
+        building = (
+            live
+            and self._energy_vslow > 0.0
+            and self._energy_slow > self._energy_vslow * p.build_rise
+        )
+        if building:
+            if self._build_since is None:
+                self._build_since = now
+                self._build_peak = self._energy_slow
+            self._build_peak = max(self._build_peak, self._energy_slow)
+            held = now - self._build_since
+            self._build_level = (
+                min(1.0, held / max(0.1, p.build_ramp_s)) if held >= p.build_min_s else 0.0
+            )
+            if (
+                self._build_level >= 0.5
+                and self._energy_slow <= self._build_peak * p.build_gap_fraction
+            ):
+                self._arm_dip(now)
+        else:
+            self._build_since = None
+            self._build_peak = 0.0
+            self._build_level = max(0.0, self._build_level - dt / max(0.05, p.build_release_s))
+
+        return bool(
+            live
+            and (self._bass_fast - self._bass_slow) >= p.bass_step
+            and energy_norm >= p.energy_norm_min
+        )
+
+    def _arm_dip(self, now: float) -> None:
+        # Cutting the rig while an accent is running is not anticipation, it is
+        # a hole in the hit. The build gap can re-satisfy its own condition as
+        # the drop recovers, which lands the second dip inside the window.
+        if now < self._window_until:
+            return
+        if (now - self._last_dip) < self.posture.dip_reuse_s:
+            return
+        self._last_dip = now
+        self._dip_until = now + self.posture.dip_s
+        self.telemetry.dips += 1
+
+    def _shaped_cap(self, now: float, dt: float) -> float:
+        p = self.posture
+        target = 1.0 - p.build_depth * (1.0 - self._build_level) if self._build_level > 0.0 else 1.0
+        # Slew, so a build starting or ending is a move rather than a step.
+        rate = 1.6 * dt
+        if target > self._cap_multiplier:
+            self._cap_multiplier = min(target, self._cap_multiplier + rate)
+        else:
+            self._cap_multiplier = max(target, self._cap_multiplier - rate)
+
+        cap = self._nominal_cap * self._cap_multiplier
+        if now < self._dip_until:
+            cap = min(cap, p.dip_level)
+        return cap
+
+    def _release_cap(self, config) -> None:
+        """Hand the audience cap back without touching the strobe flag."""
+        try:
+            config.audience_intensity_cap = self._nominal_cap
+        except Exception:
+            return
+        self._wrote_cap = self._nominal_cap
+
+    def _write(self, config, *, strobe: bool, cap: float) -> None:
+        cap = max(0.0, min(1.0, cap)) if math.isfinite(cap) else self._nominal_cap
+        config.strobe_enabled = bool(strobe)
+        config.audience_intensity_cap = cap
+        self._wrote_strobe = bool(strobe)
+        self._wrote_cap = cap
+        if not strobe and self.strobe.params.mode is not ProStrobeMode.OFF:
+            self.strobe.stop()
+
+
+def _accent_inputs(engine) -> Tuple[float, float, float, str]:
+    features = getattr(engine, "audio_features", None)
+    section = getattr(engine, "_rebuild_section", None)
+    if not isinstance(section, str) or not section:
+        manager = getattr(engine, "section_manager", None)
+        current = getattr(manager, "current_section", None)
+        section = str(getattr(current, "value", current) or "")
+    return (
+        float(getattr(engine, "time", 0.0) or 0.0),
+        float(getattr(features, "energy", 0.0) or 0.0),
+        float(getattr(features, "bass", 0.0) or 0.0),
+        section,
+    )
+
+
+def attach_accent_governor(engine, posture: Optional[AccentPosture] = None) -> AccentGovernor:
+    """Put the accent governor in front of the engine's frame update.
+
+    The live renderer re-reads `strobe_enabled` and `audience_intensity_cap` on
+    every frame but never calls into this module, so the governor answers by
+    writing those two fields immediately before the frame that reads them. That
+    leaves exactly one owner of the decision: nothing else in the show may turn
+    an accent on.
+    """
+    existing = getattr(engine, "accent_governor", None)
+    if isinstance(existing, AccentGovernor):
+        return existing
+
+    governor = AccentGovernor(engine.pro_effects.strobe, posture)
+    base_update = engine.update
+    previous = {"now": None}
+
+    def governed_update(delta_time: float = None):
+        try:
+            now, energy, bass, section = _accent_inputs(engine)
+            if delta_time is not None:
+                dt = float(delta_time)
+            elif previous["now"] is not None:
+                # The live loop times itself; take the step from the engine's own
+                # clock rather than a second one that could disagree with it.
+                dt = now - previous["now"]
+            else:
+                dt = 1.0 / 60.0
+            previous["now"] = now
+            governor.tick(now=now, delta_time=dt, energy=energy, bass=bass,
+                          section=section, config=engine.config)
+        except Exception:
+            pass
+        return base_update(delta_time)
+
+    engine.update = governed_update
+    engine.accent_governor = governor
+    return governor

@@ -24,12 +24,20 @@ import math
 
 from .movement_patterns import MovementType, StaticLook, MOVEMENT_PRESETS
 from ..lighting.section_manager import (
+    DEFAULT_SECTION_CONFIGS,
+    SongSection,
     bars_until_boundary,
     is_downbeat,
     is_impact_event,
     next_musical_boundary_bar,
 )
-from .dimmer_effects import DimmerType, DIMMER_PRESETS, BEAT_PATTERNS
+from .dimmer_effects import (
+    DimmerType,
+    DIMMER_PRESETS,
+    BEAT_PATTERNS,
+    DynamicsFrame,
+    DynamicsShaper,
+)
 from .strobe_controller import StrobeMode, STROBE_PRESETS
 
 
@@ -171,6 +179,33 @@ GENRE_SECTION_EFFECTS: Dict[str, Dict[str, Dict[str, list]]] = {
         },
     },
 }
+
+# Successive drops are stepped down slightly so the fourth one still reads as an
+# event. Deterministic on purpose: this scales the rendered rig level, and the
+# render path has to produce the same frames for the same audio.
+DROP_FATIGUE_CYCLE: Tuple[float, ...] = (0.0, 0.10, 0.04, 0.14)
+
+# Renderer sections that are not SongSection members, mapped onto the table that
+# carries the intensity ranges.
+SECTION_RANGE_ALIASES: Dict[str, str] = {
+    "build_up": "buildup",
+    "pre-chorus": "pre_chorus",
+    "prechorus": "pre_chorus",
+    "break": "breakdown",
+    "hook": "chorus",
+}
+
+
+def section_intensity_range(section: str) -> Tuple[float, float]:
+    """The (min, max) intensity band a section is meant to occupy."""
+    name = SECTION_RANGE_ALIASES.get(str(section or "").lower(), str(section or "").lower())
+    try:
+        key = SongSection(name)
+    except ValueError:
+        key = SongSection.UNKNOWN
+    config = DEFAULT_SECTION_CONFIGS.get(key, DEFAULT_SECTION_CONFIGS[SongSection.UNKNOWN])
+    return config.intensity_range
+
 
 # Minimum bars between effect changes per genre
 GENRE_MIN_CHANGE_BARS: Dict[str, int] = {
@@ -469,7 +504,8 @@ class DecisionEngine:
 
         # Surprise factor for static looks
         self.last_static_time = 0.0
-        self.static_probability = 0.05  # 5% base chance
+        self.static_probability = 0.05  # per second
+        self._last_delta_time = 1.0 / 60.0
 
         # BUG-023 fix: use deque for O(1) append/eviction instead of O(n) list pop(0)
         self.energy_window = 32  # Frames
@@ -497,6 +533,22 @@ class DecisionEngine:
         self._intensity_history: deque = deque(maxlen=1800)  # ~30s at 60fps
         self._drop_count: int = 0
         self._drop_intensity_variation: float = 0.0  # Anti-fatigue offset
+
+        # Live dynamics
+        self._dynamics = DynamicsShaper()
+        self._dynamics_section: str = "unknown"
+
+        # Bumped on every state entry; decisions that belong to a state latch on it
+        # instead of re-rolling on every one of the 60 frames the state spans.
+        self._state_serial: int = 0
+        self._state_entry_time: float = 0.0
+        self._state_edge_unseen: bool = False
+        self._breakdown_look_serial: int = -1
+        self._breakdown_use_static: bool = False
+        self._breakdown_static_look: StaticLook = StaticLook.ALL_CENTER
+        self._breakdown_pattern: Tuple[MovementType, str] = (MovementType.TRUE_CIRCLE, "circle_slow")
+        self._drop_accent_serial: int = -1
+        self._drop_static_look: StaticLook = StaticLook.ALL_CENTER
 
         # v2: Anticipation
         self._anticipation_active: bool = False
@@ -559,17 +611,26 @@ class DecisionEngine:
         self._pending_state = new_state
         self._pre_cue_active = bars_until_boundary(self._total_bars) <= 1
 
+    def _enter_state(self, new_state: LightingState):
+        """Single entry point for state changes, so per-state latches stay honest."""
+        self.previous_state = self.state
+        self.state = new_state
+        self.state_start_time = time.time()
+        self._state_entry_time = self.time
+        self.bars_in_state = 0
+        self._state_serial += 1
+        self._state_edge_unseen = True
+
+        if new_state == LightingState.PEAK:
+            self._drop_count += 1
+            self._drop_intensity_variation = DROP_FATIGUE_CYCLE[
+                (self._drop_count - 1) % len(DROP_FATIGUE_CYCLE)
+            ]
+
     def _commit_section_change(self, section: str, new_state: LightingState):
         """Commit pending/immediate section transitions."""
         if new_state != self.state:
-            self.previous_state = self.state
-            self.state = new_state
-            self.state_start_time = time.time()
-            self.bars_in_state = 0
-
-            if new_state == LightingState.PEAK:
-                self._drop_count += 1
-                self._drop_intensity_variation = random.uniform(0.0, 0.15) if self._drop_count > 1 else 0.0
+            self._enter_state(new_state)
 
         if self._pending_selection is not None:
             self.selection = copy.deepcopy(self._pending_selection)
@@ -718,6 +779,55 @@ class DecisionEngine:
         """Track output intensity for dynamic range enforcement."""
         self._intensity_history.append(intensity)
 
+    def update_dynamics(
+        self,
+        energy: float,
+        section: str,
+        delta_time: float,
+        bass: float = 0.0,
+        is_beat: bool = False,
+    ) -> DynamicsFrame:
+        """Shape one frame of intensity. Call exactly once per rendered frame.
+
+        `frame.level` is a 0-1 drive level that replaces bare `energy` wherever
+        the renderer scales a dimmer by it: it carries the same zero floor
+        (silent in, black out) but has contrast inside a section instead of one
+        scalar for the whole of it.
+        """
+        # Nothing in here may raise: a dark rig with no traceback is worse than
+        # a frame of the old flat behaviour.
+        try:
+            name = str(section or "unknown").lower()
+            self._dynamics_section = name
+            frame = self._dynamics.update(
+                energy=energy,
+                delta_time=delta_time,
+                intensity_range=section_intensity_range(name),
+                bass=bass,
+                is_beat=is_beat,
+                scale=self.get_dynamic_intensity_scale(),
+            )
+            self._intensity_history.append(frame.level)
+            return frame
+        except Exception:
+            safe = 0.0
+            try:
+                safe = min(1.0, max(0.0, float(energy)))
+            except (TypeError, ValueError):
+                safe = 0.0
+            return DynamicsFrame(
+                level=safe, contrast=safe, accent=0.0, reference=0.0, scale=1.0, ratio=0.0
+            )
+
+    def get_dynamics(self) -> DynamicsFrame:
+        """The last shaped frame, for UI and debug readouts."""
+        return self._dynamics.last
+
+    def reset_dynamics(self):
+        """Forget the loudness reference (new song, new input device)."""
+        self._dynamics.reset()
+        self._intensity_history.clear()
+
     def update(self, audio: AudioState, delta_time: float):
         """
         Update decision engine with new audio state.
@@ -728,6 +838,7 @@ class DecisionEngine:
         """
         self.audio = audio
         self.time += delta_time
+        self._last_delta_time = max(0.0, min(0.25, delta_time))
 
         # Update energy history and trend (BUG-023 fix: deque handles eviction automatically)
         self.energy_history.append(audio.energy)
@@ -756,6 +867,14 @@ class DecisionEngine:
 
         # Make effect decisions
         self._decide_effects()
+
+        # `previous_state` is the only edge a consumer has. Left latched it makes
+        # every edge-triggered effect re-fire on every frame the state persists,
+        # so its envelope restarts and never completes.
+        if self._state_edge_unseen:
+            self._state_edge_unseen = False
+        else:
+            self.previous_state = self.state
 
     def _detect_structure_changes(self):
         """Detect build-ups, drops, breakdowns from audio."""
@@ -796,11 +915,19 @@ class DecisionEngine:
         elif self.state == LightingState.BREAKDOWN and audio.energy > 0.5:
             new_state = LightingState.BUILDUP
 
-        if new_state != self.state:
-            self.previous_state = self.state
-            self.state = new_state
-            self.state_start_time = time.time()
-            self.bars_in_state = 0
+        if new_state != self.state and self._state_change_allowed(new_state):
+            self._enter_state(new_state)
+
+    def _state_change_allowed(self, new_state: LightingState) -> bool:
+        """Hold a state for at least a bar so it cannot flap at frame rate.
+
+        A drop is exempt: an impact that waits for a hold has already missed.
+        """
+        if new_state == LightingState.PEAK and self.audio.is_drop:
+            return True
+        bpm = self.audio.bpm if self.audio.bpm and self.audio.bpm > 0 else 128.0
+        min_hold_s = max(0.8, min(3.0, (4.0 * 60.0) / bpm))
+        return (self.time - self._state_entry_time) >= min_hold_s
 
     def _decide_effects(self):
         """Decide which effects to use based on current state."""
@@ -883,17 +1010,21 @@ class DecisionEngine:
         # STROBE ON DROP! (genre-dependent)
         genre_strobe = self._genre not in ("jazz",)  # Jazz never strobes
         if self.bars_in_state == 0 and genre_strobe:
+            # The first bar of a drop spans ~120 frames; arming the burst once per
+            # entry is what lets its envelope run instead of restarting each frame.
+            if self._drop_accent_serial != self._state_serial:
+                self._drop_accent_serial = self._state_serial
+                self._drop_static_look = self._pick_static_look()
+                self.cooldowns.set_cooldown("strobe_burst", 64, audio.bpm)
+                self.cooldowns.set_cooldown("static_look", 16, audio.bpm)
+
             s.strobe_on_drop = True
             s.strobe = StrobeMode.BURST
             s.strobe_preset = "drop_burst"
 
             # Static look during strobe
             s.use_static_look = True
-            s.static_look = self._pick_static_look()
-
-            # Set cooldown
-            self.cooldowns.set_cooldown("strobe_burst", 64, audio.bpm)
-            self.cooldowns.set_cooldown("static_look", 16, audio.bpm)
+            s.static_look = self._drop_static_look
 
         # Movement: genre-specific high energy patterns (bar-boundary check)
         if self.cooldowns.is_available("pattern_change") and self._can_change_effect("movement"):
@@ -995,22 +1126,26 @@ class DecisionEngine:
         s = self.selection
         audio = self.audio
 
-        # Breakdown: calm, slow, dramatic looks
-        if random.random() < 0.5:
-            # Static look - dramatic positioning
+        # Breakdown: calm, slow, dramatic looks. Chosen once per breakdown; a
+        # re-roll every frame is a look that changes 60 times a second.
+        if self._breakdown_look_serial != self._state_serial:
+            self._breakdown_look_serial = self._state_serial
+            self._breakdown_use_static = random.random() < 0.5
+            if self._breakdown_use_static:
+                self._breakdown_static_look = self._pick_static_look()
+            else:
+                self._breakdown_pattern = random.choice([
+                    (MovementType.VERTICAL_SWEEP, "gentle_tilt"),
+                    (MovementType.TRUE_CIRCLE, "circle_slow"),
+                    (MovementType.SPIRAL, "spiral_expand"),
+                ])
+
+        if self._breakdown_use_static:
             s.use_static_look = True
-            s.static_look = self._pick_static_look()
+            s.static_look = self._breakdown_static_look
             s.movement = MovementType.NONE
         else:
-            # Slow, flowing movement
-            breakdown_patterns = [
-                (MovementType.VERTICAL_SWEEP, "gentle_tilt"),
-                (MovementType.TRUE_CIRCLE, "circle_slow"),
-                (MovementType.SPIRAL, "spiral_expand"),
-            ]
-            pattern, preset = random.choice(breakdown_patterns)
-            s.movement = pattern
-            s.movement_preset = preset
+            s.movement, s.movement_preset = self._breakdown_pattern
 
         # Dimmer: slow pulse
         s.dimmer = DimmerType.SINE_PULSE
@@ -1043,9 +1178,10 @@ class DecisionEngine:
         if not self.cooldowns.is_available("static_look"):
             return
 
-        # Probability increases with time since last static
+        # Probability increases with time since last static. `static_probability`
+        # is per second: as a per-frame chance it fires within a third of a second.
         time_since_static = self.time - self.last_static_time
-        probability = self.static_probability * (1 + time_since_static / 60)
+        probability = self.static_probability * (1 + time_since_static / 60) * self._last_delta_time
 
         if random.random() < probability:
             self.selection.use_static_look = True
@@ -1066,10 +1202,7 @@ class DecisionEngine:
 
     def force_state(self, state: LightingState):
         """Force a specific lighting state."""
-        self.previous_state = self.state
-        self.state = state
-        self.state_start_time = time.time()
-        self.bars_in_state = 0
+        self._enter_state(state)
         self._decide_effects()
 
     def force_static_look(self, look: StaticLook):

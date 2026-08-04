@@ -63,6 +63,10 @@ class FrequencyResponse(BaseModel):
     spectral_flux: float
     rms_energy: float = Field(..., ge=0, le=1)
     peak_amplitude: float = Field(..., ge=0, le=1)
+    # Loudness-normalised counterpart of rms_energy. Published alongside the raw
+    # value rather than replacing it: the UI and the training recorder read
+    # rms_energy and must keep seeing the raw number.
+    normalized_energy: float = Field(0.0, ge=0, le=1)
 
 
 class AudioAnalysisResponse(BaseModel):

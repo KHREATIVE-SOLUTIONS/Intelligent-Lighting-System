@@ -87,7 +87,7 @@ async def start_demo(request: DemoStartRequest):
         _effects_engine.config.auto_mode = True
         _effects_engine.config.movement_enabled = True
         _effects_engine.config.dimmer_enabled = True
-        _effects_engine.config.strobe_enabled = True
+        _effects_engine.set_strobe_layer_enabled(True)
         _effects_engine.config.color_enabled = True
 
         # Set genre
@@ -118,7 +118,7 @@ async def stop_demo():
         _effects_engine.config.auto_mode = True
         _effects_engine.config.movement_enabled = True
         _effects_engine.config.dimmer_enabled = True
-        _effects_engine.config.strobe_enabled = False
+        _effects_engine.set_strobe_layer_enabled(False)
 
     return {"status": "stopped"}
 

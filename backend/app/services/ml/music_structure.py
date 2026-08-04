@@ -2,21 +2,26 @@
 Music Structure Analyzer
 ========================
 
-Real-time and offline music structure analysis.
-Detects sections (verse, chorus, bridge, drop, breakdown, build_up, intro, outro),
-phrase boundaries, and provides anticipation predictions.
+Offline structure analysis plus phrase and anticipation bookkeeping.
 
-Integration point for All-In-One Music Structure Analyzer (offline)
-and custom causal structure detection (real-time).
+**This module no longer classifies sections in real time.** It used to run an
+energy state machine of its own, which published a section label into the ML
+pipeline and competed with the renderer's detector for control of the same
+`SectionManager`. The one live detector is
+`app.services.lighting.section_manager.StreamingSectionDetector`; this module
+drives an instance of it purely to know whether the music is building, and
+reports `SectionType.UNKNOWN` at zero confidence unless a genuine external
+source (All-In-One pre-analysis) has labelled the track.
 """
 
-import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Tuple
 from enum import Enum
 from collections import deque
 import logging
 import time
+
+from ..lighting.section_manager import StreamingSectionDetector
 
 logger = logging.getLogger(__name__)
 
@@ -73,18 +78,16 @@ class StructureAnalysis:
 
 
 class MusicStructureAnalyzer:
-    """Real-time music structure analysis with anticipation.
+    """Offline structure analysis plus real-time anticipation.
 
-    Combines:
+    Provides:
     1. All-In-One Music Structure Analyzer for offline/pre-analysis
-    2. Custom energy-based heuristics for real-time detection
-    3. Build-up/drop detection for EDM-specific anticipation
-    """
+    2. Phrase and bar bookkeeping
+    3. Build-up/drop anticipation, taken from the one live section detector
 
-    # EDM drop detection thresholds
-    BUILDUP_ENERGY_SLOPE = 0.05     # Minimum energy increase rate per bar
-    DROP_BASS_THRESHOLD = 0.6       # Bass level for drop detection
-    BREAKDOWN_ENERGY_CEILING = 0.3  # Max energy during breakdown
+    Section *classification* in real time is not this class's job; see the
+    module docstring.
+    """
 
     def __init__(self, sample_rate: int = 44100):
         self.sample_rate = sample_rate
@@ -99,13 +102,12 @@ class MusicStructureAnalyzer:
         self._bpm = 120.0
         self._beats_per_bar = 4
 
-        # Energy tracking for heuristic detection
+        # Energy tracking for transition prediction
         self._energy_history: deque = deque(maxlen=64)  # 64 bars of energy
-        self._bass_history: deque = deque(maxlen=64)
-        self._spectral_flux_history: deque = deque(maxlen=64)
-        self._centroid_history: deque = deque(maxlen=64)
 
-        # Buildup detection
+        # Buildup detection, from the shared detector
+        self._detector = StreamingSectionDetector()
+        self._detected_section = "verse"
         self._buildup_start_bar: Optional[int] = None
         self._in_buildup = False
 
@@ -184,8 +186,9 @@ class MusicStructureAnalyzer:
     ) -> StructureAnalysis:
         """Update with new beat information and return current structure.
 
-        Called on every audio analysis frame. Section detection runs
-        on downbeats (bar boundaries).
+        Called on every audio analysis frame. The reported section comes from
+        pre-analysis only; the build-up signal comes from the shared live
+        detector.
 
         Args:
             is_beat: Whether a beat was detected
@@ -205,12 +208,15 @@ class MusicStructureAnalyzer:
         if is_downbeat:
             self._bar_counter += 1
             self._energy_history.append(energy)
-            self._bass_history.append(bass)
-            self._spectral_flux_history.append(spectral_flux)
-            self._centroid_history.append(spectral_centroid)
 
-            # Run section detection on downbeats
-            self._detect_section(energy, bass, spectral_flux, spectral_centroid)
+        self._update_anticipation(
+            energy=energy,
+            bass=bass,
+            spectral_flux=spectral_flux,
+            is_beat=is_beat,
+            is_downbeat=is_downbeat,
+            bpm=bpm,
+        )
 
         beat_in_bar = (self._beat_counter % self._beats_per_bar) + 1
         bars_in_section = self._bar_counter - self._section_start_bar
@@ -236,7 +242,9 @@ class MusicStructureAnalyzer:
         return StructureAnalysis(
             current_section=SectionInfo(
                 section_type=self._current_section,
-                confidence=0.7 if not self._preanalyzed_sections else 0.9,
+                # Zero without pre-analysis: the confidence gate downstream is
+                # what stops this becoming a second section authority.
+                confidence=0.9 if self._preanalyzed_sections else 0.0,
                 progress=progress,
                 bars_elapsed=bars_in_section,
                 estimated_bars_remaining=max(0, typical_section_bars - bars_in_section),
@@ -252,76 +260,42 @@ class MusicStructureAnalyzer:
             timestamp=timestamp,
         )
 
-    def _detect_section(
+    def _update_anticipation(
         self,
+        *,
         energy: float,
         bass: float,
         spectral_flux: float,
-        spectral_centroid: float,
+        is_beat: bool,
+        is_downbeat: bool,
+        bpm: float,
     ):
-        """Detect section changes based on energy patterns.
+        """Track build-up state from the one live section detector.
 
-        Uses a state-machine approach with energy-based transitions.
+        Deliberately does not touch `_current_section`: this class no longer
+        classifies sections in real time.
         """
-        if len(self._energy_history) < 4:
+        decision = self._detector.update(
+            None,
+            energy=energy,
+            bass=bass,
+            spectral_flux=spectral_flux,
+            is_beat=is_beat,
+            beat_number=self._beat_counter,
+            bpm=bpm,
+            is_downbeat_event=is_downbeat,
+        )
+        self._detected_section = decision.section
+        if not decision.changed:
             return
 
-        recent_energy = list(self._energy_history)[-4:]
-        recent_bass = list(self._bass_history)[-4:]
-        avg_energy = np.mean(recent_energy)
-        energy_slope = recent_energy[-1] - recent_energy[0]
-        avg_bass = np.mean(recent_bass)
-
-        prev_section = self._current_section
-        bars_in_section = self._bar_counter - self._section_start_bar
-
-        # Build-up detection
-        if energy_slope > self.BUILDUP_ENERGY_SLOPE and avg_bass < 0.4:
-            if not self._in_buildup:
-                self._in_buildup = True
-                self._buildup_start_bar = self._bar_counter
-            if self._current_section != SectionType.BUILD_UP:
-                self._current_section = SectionType.BUILD_UP
-                self._section_start_bar = self._bar_counter
-
-        # Drop detection (after buildup)
-        elif (self._in_buildup and
-              bass > self.DROP_BASS_THRESHOLD and
-              spectral_flux > 0.4):
-            self._current_section = SectionType.DROP
-            self._section_start_bar = self._bar_counter
+        self._section_start_bar = self._bar_counter
+        if decision.section == "buildup":
+            self._in_buildup = True
+            self._buildup_start_bar = self._bar_counter
+        else:
             self._in_buildup = False
             self._buildup_start_bar = None
-
-        # Breakdown detection
-        elif avg_energy < self.BREAKDOWN_ENERGY_CEILING and bars_in_section >= 4:
-            if self._current_section in (SectionType.DROP, SectionType.CHORUS):
-                self._current_section = SectionType.BREAKDOWN
-                self._section_start_bar = self._bar_counter
-
-        # High energy sustained = chorus or peak
-        elif avg_energy > 0.6 and avg_bass > 0.4 and not self._in_buildup:
-            if self._current_section in (SectionType.VERSE, SectionType.BRIDGE,
-                                          SectionType.BUILD_UP, SectionType.INTRO):
-                self._current_section = SectionType.CHORUS
-                self._section_start_bar = self._bar_counter
-
-        # Medium energy = verse
-        elif 0.25 < avg_energy < 0.6 and bars_in_section >= 8:
-            if self._current_section in (SectionType.CHORUS, SectionType.BREAKDOWN,
-                                          SectionType.INTRO):
-                self._current_section = SectionType.VERSE
-                self._section_start_bar = self._bar_counter
-
-        # Very low energy at start = intro
-        elif self._bar_counter < 8 and avg_energy < 0.3:
-            self._current_section = SectionType.INTRO
-
-        # Very low energy after long play = outro
-        elif avg_energy < 0.15 and self._bar_counter > 32 and bars_in_section >= 8:
-            if energy_slope < -0.02:
-                self._current_section = SectionType.OUTRO
-                self._section_start_bar = self._bar_counter
 
     def _predict_transition(
         self,
@@ -460,9 +434,8 @@ class MusicStructureAnalyzer:
         self._bar_counter = 0
         self._beat_counter = 0
         self._energy_history.clear()
-        self._bass_history.clear()
-        self._spectral_flux_history.clear()
-        self._centroid_history.clear()
+        self._detector.reset()
+        self._detected_section = "verse"
         self._buildup_start_bar = None
         self._in_buildup = False
         self._preanalyzed_sections = []
@@ -473,6 +446,7 @@ class MusicStructureAnalyzer:
             "loaded": self.loaded,
             "has_allin1": self.allin1_model is not None,
             "current_section": self._current_section.value,
+            "detected_section": self._detected_section,
             "bar_count": self._bar_counter,
             "in_buildup": self._in_buildup,
             "preanalyzed_sections": len(self._preanalyzed_sections),

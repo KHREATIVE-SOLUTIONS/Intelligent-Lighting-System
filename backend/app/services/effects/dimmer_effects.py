@@ -6,7 +6,7 @@ Controls intensity/brightness for fixtures (Layer 3)
 """
 
 from enum import Enum
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Tuple
 from dataclasses import dataclass
 import math
 import random
@@ -376,3 +376,164 @@ BEAT_PATTERNS = {
     "chase_4": [1.0, 0.0, 0.0, 0.0],
     "chase_8": [1.0, 0.7, 0.4, 0.1, 0.0, 0.0, 0.0, 0.0]
 }
+
+
+# ---------------------------------------------------------------------------
+# Dynamics: contrast inside a section, not only between sections
+# ---------------------------------------------------------------------------
+
+
+def _finite(value, fallback: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return result if math.isfinite(result) else fallback
+
+
+def soft_knee(x: float, lo: float, hi: float) -> float:
+    """Expander curve: at or below `lo` is black, at or above `hi` is full."""
+    if not (hi > lo):
+        return 1.0 if x >= hi else 0.0
+    u = (x - lo) / (hi - lo)
+    if u <= 0.0:
+        return 0.0
+    if u >= 1.0:
+        return 1.0
+    return u * u * (3.0 - 2.0 * u)
+
+
+@dataclass(frozen=True)
+class DynamicsFrame:
+    """One frame of shaped intensity, plus the terms that produced it."""
+
+    level: float        # 0-1 drive level for the renderer's dimmer policy
+    contrast: float     # expander output before accent and fatigue scaling
+    accent: float       # transient lift, already folded into `level`
+    reference: float    # loudness this frame was judged against
+    scale: float        # anti-fatigue scalar, already folded into `level`
+    ratio: float        # energy / reference, before the knee
+
+
+_NEUTRAL_RANGE: Tuple[float, float] = (0.55, 0.8)
+
+
+class DynamicsShaper:
+    """Turn a flat energy stream into an intensity envelope that has shape.
+
+    `energy * one_scalar_per_section` gives every moment inside a section the
+    same relative level, so a quiet bar in a loud chorus reads as only slightly
+    less bright. This judges each frame against a rolling reference of how loud
+    the passage has actually been, then expands that ratio through a soft knee
+    whose corners come from the section's intensity range.
+
+    The expander is driven by the instantaneous energy and never by a smoothed
+    copy of it: digital silence has to emit exactly 0.0, and a decaying
+    envelope never reaches zero.
+    """
+
+    # A new loud passage is accepted over a phrase; the memory of it fades over
+    # a section, which is what makes a quiet bar inside a loud one go dark.
+    REFERENCE_ATTACK_S = 1.2
+    REFERENCE_RELEASE_S = 12.0
+    # Under this the room is genuinely quiet. Without it any whisper normalises
+    # to a full rig, which is a different statement from "silence is dark".
+    REFERENCE_FLOOR = 0.06
+    # Headroom above the reference, so a hit that is genuinely louder than the
+    # passage still has somewhere to go instead of saturating with it.
+    RATIO_MAX = 2.5
+
+    KNEE_BLACK_GAIN = 0.35      # how far into black a section is allowed to go
+    KNEE_WIDTH_MIN = 1.00
+    KNEE_WIDTH_GAIN = 2.10
+
+    ACCENT_DECAY_S = 0.16
+    ACCENT_GAIN = 0.12
+    ACCENT_KNEE = 0.70          # bass under this fraction of its own reference is not a hit
+
+    MAX_DELTA_S = 0.25
+
+    def __init__(self):
+        self._reference = 0.0
+        self._bass_reference = 0.0
+        self._accent = 0.0
+        self._last = DynamicsFrame(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+    def reset(self):
+        self.__init__()
+
+    @property
+    def last(self) -> DynamicsFrame:
+        return self._last
+
+    @staticmethod
+    def _follow(current: float, target: float, delta_time: float, attack_s: float, release_s: float) -> float:
+        tau = attack_s if target > current else release_s
+        if tau <= 0.0:
+            return target
+        alpha = 1.0 - math.exp(-delta_time / tau)
+        return current + (target - current) * alpha
+
+    @classmethod
+    def knee_for_range(cls, intensity_range: Tuple[float, float]) -> Tuple[float, float]:
+        """Where black ends and full begins, for a section's intensity range.
+
+        A high ceiling means the section should reach full readily and rarely
+        drop out; a low floor means it is allowed to breathe down to nothing.
+        """
+        try:
+            raw_lo, raw_hi = intensity_range[0], intensity_range[1]
+        except (TypeError, IndexError, KeyError):
+            raw_lo, raw_hi = _NEUTRAL_RANGE
+        lo_range = min(1.0, max(0.0, _finite(raw_lo, _NEUTRAL_RANGE[0])))
+        hi_range = min(1.0, max(lo_range, _finite(raw_hi, _NEUTRAL_RANGE[1])))
+        knee_lo = cls.KNEE_BLACK_GAIN * (1.0 - hi_range)
+        knee_hi = knee_lo + cls.KNEE_WIDTH_MIN + cls.KNEE_WIDTH_GAIN * (1.0 - lo_range)
+        return knee_lo, min(cls.RATIO_MAX, knee_hi)
+
+    def update(
+        self,
+        energy: float,
+        delta_time: float,
+        intensity_range: Tuple[float, float] = _NEUTRAL_RANGE,
+        bass: float = 0.0,
+        is_beat: bool = False,
+        scale: float = 1.0,
+    ) -> DynamicsFrame:
+        """Advance the envelope one frame and return the shaped level."""
+        e = min(1.0, max(0.0, _finite(energy)))
+        b = min(1.0, max(0.0, _finite(bass)))
+        dt = min(self.MAX_DELTA_S, max(0.0, _finite(delta_time)))
+        gain = min(1.0, max(0.0, _finite(scale, 1.0)))
+
+        if dt > 0.0:
+            self._reference = self._follow(
+                self._reference, e, dt, self.REFERENCE_ATTACK_S, self.REFERENCE_RELEASE_S
+            )
+            self._bass_reference = self._follow(
+                self._bass_reference, b, dt, self.REFERENCE_ATTACK_S, self.REFERENCE_RELEASE_S
+            )
+            self._accent *= math.exp(-dt / self.ACCENT_DECAY_S)
+
+        reference = max(self.REFERENCE_FLOOR, self._reference)
+        ratio = min(self.RATIO_MAX, e / reference) if reference > 0.0 else 0.0
+
+        knee_lo, knee_hi = self.knee_for_range(intensity_range)
+        contrast = soft_knee(ratio, knee_lo, knee_hi)
+
+        if is_beat and self._bass_reference > 0.0:
+            hit = soft_knee(b / max(self.REFERENCE_FLOOR, self._bass_reference), self.ACCENT_KNEE, 1.0)
+            self._accent = max(self._accent, hit * self.ACCENT_GAIN)
+
+        level = contrast * (1.0 + self._accent) * gain
+        level = min(1.0, max(0.0, level))
+
+        self._last = DynamicsFrame(
+            level=level,
+            contrast=contrast,
+            accent=self._accent,
+            reference=reference,
+            scale=gain,
+            ratio=ratio,
+        )
+        return self._last

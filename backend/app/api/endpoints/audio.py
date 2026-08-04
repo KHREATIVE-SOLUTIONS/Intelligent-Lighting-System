@@ -17,6 +17,7 @@ from app.schemas.audio import (
     AudioFingerprintResponse, BeatResponse, MoodResponse, FrequencyResponse,
 )
 from app.services.lighting.section_manager import SongSection
+from app.services.lighting.pro_effects import ACCENT_OFF_POLICIES
 
 router = APIRouter()
 
@@ -358,7 +359,11 @@ async def start_capture(
         effects_engine.config.auto_mode = True
         effects_engine.config.movement_enabled = True
         effects_engine.config.dimmer_enabled = True
-        effects_engine.config.strobe_enabled = False
+        # Accents follow the accessibility posture the venue is running, so
+        # starting capture never re-arms a rig the operator switched to
+        # "no_strobe" and never silences one they left on.
+        policy = str(getattr(effects_engine.config, "accessibility_mode", "") or "").strip().lower()
+        effects_engine.set_strobe_layer_enabled(policy not in ACCENT_OFF_POLICIES)
         effects_engine.enable_pro_lighting(True)
         try:
             effects_engine.set_section(SongSection.VERSE, immediate=True)

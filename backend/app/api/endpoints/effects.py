@@ -614,7 +614,7 @@ async def set_dimmer_enabled(enabled: bool):
 async def set_strobe_enabled(enabled: bool):
     """Enable/disable strobe layer."""
     engine = get_effects_engine()
-    engine.config.strobe_enabled = enabled
+    engine.set_strobe_layer_enabled(enabled)
     return {"status": "ok", "strobe_enabled": enabled}
 
 

@@ -7,6 +7,7 @@ frequency analysis, and ML pipeline integration (MERT, structure, genre).
 """
 
 import asyncio
+import math
 import numpy as np
 import time
 import logging
@@ -37,6 +38,42 @@ class AudioAnalyzer:
         "high": (4000, 8000),
         "brilliance": (8000, 20000),
     }
+
+    # Loudness normalisation. The reference is seeded from the audio itself, so
+    # over most of the range scaling the input scales the reference by the same
+    # factor and the normalised value is unchanged. That invariance is close but
+    # NOT exact: the gate is computed from the instantaneous chunk RMS against
+    # absolute constants, and the reference only adapts while the envelope is
+    # above GATE_HIGH, so on quiet material the ends of the gain sweep differ
+    # (sparse track, analyser-level max |delta| vs 0 dB: 0.13 at -6 dB, 0.28 at
+    # -12 dB). GATE and REF_FLOOR are the absolute levels in the stage and exist
+    # so that a noise floor stays dark instead of being normalised up to mid
+    # scale, which is what an AGC does to any steady input by construction.
+    LOUDNESS_ENV_RELEASE_S = 0.18
+    LOUDNESS_ACQUIRE_TAU_S = 0.5
+    LOUDNESS_TAU_UP_S = 60.0
+    LOUDNESS_TAU_DOWN_S = 30.0
+    LOUDNESS_RANGE_DB = 30.0
+    LOUDNESS_TARGET = 0.5
+    LOUDNESS_GATE_LOW = 0.0002
+    LOUDNESS_GATE_HIGH = 0.0008
+    # -45 dBFS. An AGC normalises *any* steady input to mid scale, so this floor
+    # is the only thing deciding what counts as programme at all: below it the
+    # reference stops following and the output falls away instead of amplifying
+    # a noise floor up to 0.5. It sits just under the quietest real material in
+    # the harness (the sparse track at -12 dB, -45.7 dBFS) so the gain sweep is
+    # not clamped, and 11.5 dB above the old value, which put -60 dBFS room tone
+    # at 0.387 and anything from -55 dBFS up at a permanent 0.502.
+    LOUDNESS_REF_FLOOR = 0.0056
+
+    # Beat-detector noise gates. These are NOT the loudness gate and must not be
+    # pointed at it: they are the last thing stopping the onset detector from
+    # locking onto a room-tone noise floor, and dropping them ~10 dB measurably
+    # degrades beat timing on quiet material (sparse track at -12 dB: mean beat
+    # error 37.0 -> 83.5 ms, worst 58.5 -> 221.0 ms) while changing nothing at
+    # 0 dB, where the median-relative term dominates instead.
+    BEAT_RMS_GATE = 0.0025
+    BEAT_CLOCK_RMS_GATE = 0.002
 
     def __init__(self, model_manager=None):
         """Initialize the audio analyzer."""
@@ -92,6 +129,14 @@ class AudioAnalyzer:
         self.peak_amplitude = 0.0
         self.beat_count = 0
 
+        # Loudness normalisation state
+        self.rms_envelope = 0.0
+        self.normalized_energy = 0.0
+        self.loudness_reference = 0.0
+        self.loudness_rel_db = -self.LOUDNESS_RANGE_DB
+        self._loudness_ref_db = None
+        self._loudness_active_s = 0.0
+
         # Latency tracking
         self.latency_ms = 0.0
 
@@ -135,8 +180,29 @@ class AudioAnalyzer:
 
     async def update_config(self, config: AudioStreamConfig):
         """Update analyzer configuration."""
-        self.sample_rate = config.sample_rate
+        self.set_sample_rate(config.sample_rate)
         self.chunk_size = config.chunk_size
+
+    def set_sample_rate(self, sample_rate: int):
+        """Follow the capture device's actual rate.
+
+        Every band edge, the spectral centroid and the beat detector's bass
+        mask are derived from this value, so a device running at 48000 while
+        this still says 44100 puts every edge ~9% high.
+        """
+        try:
+            rate = int(sample_rate)
+        except (TypeError, ValueError):
+            return
+        if rate <= 0 or rate == self.sample_rate:
+            return
+        self.sample_rate = rate
+        self.buffer_size = rate * 4
+        self.audio_buffer = np.zeros(self.buffer_size, dtype=np.float32)
+        self.buffer_index = 0
+        self.previous_beat_spectrum = None
+        self.previous_flux_spectrum = None
+        logger.info("Audio analyzer sample rate set to %d Hz", rate)
 
     async def process_chunk(self, audio_data: np.ndarray) -> Dict[str, Any]:
         """
@@ -152,6 +218,9 @@ class AudioAnalyzer:
 
         # Update buffer
         self._update_buffer(audio_data)
+
+        # Normalise loudness before anything reads a level-based threshold
+        self._update_loudness(audio_data)
 
         # Run core analyses
         beat_result = await self._analyze_beat(audio_data)
@@ -175,6 +244,72 @@ class AudioAnalyzer:
         result["latency_ms"] = self.latency_ms
 
         return result
+
+    def _update_loudness(self, audio_data: np.ndarray) -> float:
+        """Track programme loudness and derive a playback-level-invariant energy.
+
+        A running reference follows the smoothed loudness of the material with
+        a growing memory: it converges within the first second of audio, then
+        settles to a minute-scale constant so a sustained chorus is not
+        normalised back down into a verse. The published value is the current
+        envelope expressed relative to that reference, so the same performance
+        played 12 dB quieter or 9 dB louder produces the same number.
+        """
+        try:
+            n = int(len(audio_data)) if audio_data is not None else 0
+            if n > 0:
+                rms = float(np.sqrt(np.mean(np.square(np.asarray(audio_data, dtype=np.float64)))))
+            else:
+                rms = 0.0
+        except Exception:
+            n, rms = 0, 0.0
+        if not math.isfinite(rms) or rms < 0.0:
+            rms = 0.0
+
+        rate = float(self.sample_rate) if self.sample_rate else 44100.0
+        dt = min(1.0, max(1e-4, (n / rate) if rate > 0 else 1e-2))
+
+        if rms > self.rms_envelope:
+            self.rms_envelope = rms
+        else:
+            release = 1.0 - math.exp(-dt / self.LOUDNESS_ENV_RELEASE_S)
+            self.rms_envelope += (rms - self.rms_envelope) * release
+        if not math.isfinite(self.rms_envelope) or self.rms_envelope < 0.0:
+            self.rms_envelope = 0.0
+        envelope = self.rms_envelope
+
+        gate_span = self.LOUDNESS_GATE_HIGH - self.LOUDNESS_GATE_LOW
+        gate = (rms - self.LOUDNESS_GATE_LOW) / gate_span if gate_span > 0 else 0.0
+        gate = min(1.0, max(0.0, gate))
+
+        if envelope > self.LOUDNESS_GATE_HIGH:
+            envelope_db = 20.0 * math.log10(envelope)
+            if self._loudness_ref_db is None:
+                self._loudness_ref_db = envelope_db
+            self._loudness_active_s = min(1e6, self._loudness_active_s + dt)
+            settled = (
+                self.LOUDNESS_TAU_UP_S if envelope_db > self._loudness_ref_db
+                else self.LOUDNESS_TAU_DOWN_S
+            )
+            tau = min(settled, self.LOUDNESS_ACQUIRE_TAU_S + self._loudness_active_s)
+            self._loudness_ref_db += (envelope_db - self._loudness_ref_db) * (
+                1.0 - math.exp(-dt / max(1e-3, tau))
+            )
+
+        if self._loudness_ref_db is None or gate <= 0.0 or envelope <= 0.0:
+            self.normalized_energy = 0.0
+            self.loudness_rel_db = -self.LOUDNESS_RANGE_DB
+            return 0.0
+
+        reference_db = max(
+            self._loudness_ref_db, 20.0 * math.log10(self.LOUDNESS_REF_FLOOR)
+        )
+        self.loudness_reference = 10.0 ** (reference_db / 20.0)
+        rel_db = 20.0 * math.log10(max(envelope, 1e-12)) - reference_db
+        self.loudness_rel_db = max(-120.0, min(60.0, rel_db))
+        level = self.LOUDNESS_TARGET + rel_db / self.LOUDNESS_RANGE_DB
+        self.normalized_energy = min(1.0, max(0.0, level)) * gate
+        return self.normalized_energy
 
     async def _run_ml_pipeline(
         self, audio_data: np.ndarray, beat_result: Dict, frequency_result: Dict
@@ -232,7 +367,7 @@ class AudioAnalyzer:
             is_beat = beat_result.get("is_beat", False)
             is_downbeat = beat_result.get("is_downbeat", False)
             bpm = beat_result.get("bpm", 120.0)
-            rms_energy = frequency_result.get("rms_energy", 0.0)
+            normalized_energy = frequency_result.get("normalized_energy", 0.0)
             spectral_flux = frequency_result.get("spectral_flux", 0.0)
             spectral_centroid = frequency_result.get("spectral_centroid", 0.0)
 
@@ -246,7 +381,7 @@ class AudioAnalyzer:
                     is_beat=is_beat,
                     is_downbeat=is_downbeat,
                     bpm=bpm,
-                    energy=min(1.0, rms_energy * 2),
+                    energy=min(1.0, max(0.0, float(normalized_energy))),
                     bass=min(1.0, bass_energy),
                     spectral_flux=spectral_flux,
                     spectral_centroid=spectral_centroid,
@@ -378,7 +513,7 @@ class AudioAnalyzer:
                 min_beat_interval = max(0.22, median_interval * 0.75)
                 is_beat = (
                     (onset_score > 1.0 or bass_peak)
-                    and frame_rms > max(0.0025, median_rms * 0.9)
+                    and frame_rms > max(self.BEAT_RMS_GATE, median_rms * 0.9)
                     and (current_time - self.last_beat_time > min_beat_interval)
                 )
 
@@ -427,7 +562,7 @@ class AudioAnalyzer:
         # Fallback beat clock: keep beat-reactive systems alive when onset misses.
         if (
             not is_beat
-            and frame_rms > 0.002
+            and frame_rms > self.BEAT_CLOCK_RMS_GATE
             and self.current_bpm > 0
             and self.beat_confidence > 0.15
         ):
@@ -639,6 +774,9 @@ class AudioAnalyzer:
             "spectral_flux": round(self.spectral_flux, 6),
             "rms_energy": round(self.rms_energy, 4),
             "peak_amplitude": round(self.peak_amplitude, 4),
+            "normalized_energy": round(float(self.normalized_energy), 4),
+            "loudness_reference": round(float(self.loudness_reference), 6),
+            "loudness_rel_db": round(float(self.loudness_rel_db), 2),
         }
 
     def get_current_analysis(self) -> Optional[AudioAnalysisResponse]:
@@ -686,6 +824,7 @@ class AudioAnalyzer:
                 spectral_flux=self.spectral_flux,
                 rms_energy=self.rms_energy,
                 peak_amplitude=self.peak_amplitude,
+                normalized_energy=min(1.0, max(0.0, float(self.normalized_energy))),
             ),
         )
 
@@ -738,6 +877,7 @@ class AudioAnalyzer:
             spectral_flux=self.spectral_flux,
             rms_energy=self.rms_energy,
             peak_amplitude=self.peak_amplitude,
+            normalized_energy=min(1.0, max(0.0, float(self.normalized_energy))),
         )
 
     def get_current_fingerprint(self) -> Optional[bytes]:

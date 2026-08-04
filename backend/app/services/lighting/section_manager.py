@@ -8,6 +8,23 @@ Features:
 - Anticipation timing (pre-loads next look 1-2 bars ahead)
 - Build-up progressive ramp
 - Section detection from audio energy contour
+
+WHICH SECTION DETECTOR IS ACTUALLY LIVE (read before trusting any of them):
+
+* `EffectsEngine._rebuild_update_intent` is the one that decides the section the
+  venue sees. It is a threshold ladder with no hysteresis, and it still has the
+  ordering bug that makes `chorus` unreachable (the `e > 0.58` buildup branch is
+  tested before the `e > 0.64` chorus branch).
+* `EffectsEngine._update_busker_section_intent` and the fallback ladder in
+  `_update_fixtures_rebuild` are also live on their respective paths.
+* `StreamingSectionDetector` below is the good detector — multi-rate EMA
+  novelty, boundary probability, debounce, minimum hold, drop refractory — and
+  it is NOT wired into the renderer. `SectionManager.update_section_from_audio`
+  currently has no caller in `app/`. `MusicStructureAnalyzer` uses the same
+  class for its anticipation signal and no longer classifies sections itself.
+
+So promoting it is still outstanding work; do not read the presence of this
+class as evidence that the show runs on it.
 """
 
 import math
@@ -20,6 +37,11 @@ from typing import Dict, List, Optional, Tuple, Callable
 # Shared musical timing rules used by section/effect systems.
 ALLOWED_MUSICAL_BOUNDARIES: Tuple[int, ...] = (4, 8, 16)
 IMPACT_SECTIONS = {"drop"}
+
+# The section vocabulary the live renderer understands. Anything outside this
+# set falls through the renderer's section ladder to its defaults, so the
+# detector must never emit a name that is not here.
+LIVE_SECTION_NAMES: Tuple[str, ...] = ("breakdown", "verse", "buildup", "chorus", "drop")
 
 
 def is_downbeat(beat_number: int) -> bool:
@@ -43,6 +65,444 @@ def bars_until_boundary(completed_bars: int) -> int:
 def is_impact_event(section_name: str) -> bool:
     """Impact sections bypass normal boundary waiting."""
     return section_name.lower() in IMPACT_SECTIONS
+
+
+@dataclass
+class SectionDecision:
+    """One frame of detector output."""
+
+    section: str = "verse"
+    changed: bool = False
+    level: float = 0.5
+    trend: float = 0.0
+    bass_level: float = 0.5
+    flux_level: float = 0.5
+    drop_impact: bool = False
+    on_boundary: bool = False
+
+
+class StreamingSectionDetector:
+    """Causal section detector: relative dynamics, hysteresis, bar-aligned commits.
+
+    Every feature is measured against the running centre and spread of the same
+    feature on this track, so the classification is scale free: the same
+    performance 12 dB quieter lands in the same sections. Absolute energy
+    thresholds are what put the retired ladder in one section all night, because
+    `min(1.0, rms * 2)` on mastered programme material sits around 0.07.
+
+    Two structural rules matter more than the constants:
+
+    * Buildup is defined by a *rise* and chorus by a *sustain*, so the two
+      cannot shadow each other whichever order they are tested in. The retired
+      ladder made `chorus` unreachable precisely because both branches tested
+      level alone and buildup came first.
+    * The centre nearly stops chasing the level while the two are far apart, so
+      a long chorus is not dragged back to mid scale and demoted to a verse.
+      That guard is time limited, because a centre permanently held behind the
+      level keeps itself held behind the level.
+
+    Commits are held until a bar line. Phrase (4/8/16 bar) alignment is
+    deliberately not enforced: at 128 BPM the wait would be up to 15 s, which is
+    longer than the whole drop-latency budget. A drop is an impact event and
+    bypasses the wait entirely.
+    """
+
+    # Feature smoothing, seconds. The level constant has to be at least a bar
+    # or the per-kick swing of a steady groove reads as a section change.
+    _TAU_LEVEL = 2.2
+    _TAU_FAST = 0.18        # transient level, for impact detection
+    _TAU_CENTRE = 30.0      # what "normal" means on this track
+    _TAU_DEV = 20.0         # typical excursion away from that centre
+    _TAU_LAG = 6.0          # lagged level, for rise detection
+    _TAU_RISE_FAST = 1.0
+    _TAU_RISE_SLOW = 3.5
+
+    # Deviation scale. The relative term is what makes the detector gain
+    # invariant; the absolute term only stops the division exploding near
+    # digital silence.
+    _MIN_REL_DEV = 0.45
+    _ABS_DEV_FLOOR = 2e-3
+    _SILENCE_LEVEL = 1.5e-3
+
+    # Deviations beyond this many scale units read as fully high/low.
+    _Z_FULL = 1.6
+
+    # While the level is this far from the centre the centre nearly stops
+    # chasing it, so a long chorus is not dragged back to mid scale and demoted.
+    _ANTI_PUMP_Z = 0.9
+    _ANTI_PUMP_FACTOR = 0.22
+    _ANTI_PUMP_MAX_S = 20.0
+
+    # Commit machinery, seconds unless named otherwise.
+    _WARMUP_S = 4.0
+    _DWELL_S = 0.55
+    _MIN_HOLD_BARS = 2.0
+    _MIN_HOLD_S = 1.4
+    _BOUNDARY_WAIT_BARS = 1.5
+    _BOUNDARY_WAIT_MAX_S = 3.0
+    _IMPACT_MIN_HOLD_S = 0.8
+    _DROP_REFRACTORY_S = 4.0
+    _DROP_HOLD_S = 2.6
+
+    # Classification thresholds on the 0..1 relative level, with the band the
+    # detector is already in widened so it does not flap on its own edge.
+    _LOW = 0.24
+    _LOW_STICKY = 0.32
+    _HIGH = 0.66
+    _HIGH_STICKY = 0.58
+    _BUILDUP_MIN_LEVEL = 0.34
+    _CHORUS_MIN_BASS = 0.42
+    _DROP_MIN_LEVEL = 0.62
+    _DROP_MIN_BASS = 0.55
+    _DROP_MIN_FAST_Z = 1.4
+    _DROP_MIN_RISE = 0.7
+
+    # Rise is in deviation units, not in level units: the level saturates on any
+    # real build and a saturated level has no slope left to read a build from.
+    # It is averaged because a steady groove swings the level once a bar, and an
+    # instantaneous slope cannot tell that apart from a build.
+    _RISE = 0.55
+    _RISE_STICKY = 0.32
+    _RISE_FAST_FACTOR = 1.8
+    _RISE_SETTLED = 0.35
+
+    # A build is a climb towards a peak, so it cannot start inside one.
+    _POST_DROP_NO_BUILD_S = 12.0
+
+    # Sections a drop can be entered from. Without this a sustained drop
+    # re-triggers itself every refractory period and reads as flapping.
+    _DROP_FROM = ("breakdown", "verse", "buildup")
+
+    def __init__(self, now: Optional[float] = None):
+        self.reset(now)
+
+    def reset(self, now: Optional[float] = None) -> None:
+        self._section = "verse"
+        self._candidate = "verse"
+        self._last_beat_number = -1
+        self._rebase(time.time() if now is None else float(now))
+        self._seeded = False
+
+        self._level = 0.0
+        self._fast = 0.0
+        self._centre = 0.0
+        self._dev = 0.0
+        self._lag = 0.0
+        self._rise_fast = 0.0
+        self._rise_slow = 0.0
+        self._bass_level = 0.0
+        self._bass_fast = 0.0
+        self._bass_centre = 0.0
+        self._bass_dev = 0.0
+        self._flux_level = 0.0
+        self._flux_centre = 0.0
+        self._flux_dev = 0.0
+
+        self._decision = SectionDecision()
+
+    def _rebase(self, t: float) -> None:
+        """Restart every timer on `t`, keeping the current section."""
+        self._seeded = True
+        self._start_time = t
+        self._last_time = t
+        self._section_since = t
+        self._candidate_since = t
+        self._eligible_since: Optional[float] = None
+        self._z_high_since: Optional[float] = None
+        self._drop_until = t - 1e6
+        self._last_drop_time = t - 1e6
+
+    @property
+    def section(self) -> str:
+        return self._section
+
+    @property
+    def decision(self) -> SectionDecision:
+        return self._decision
+
+    @staticmethod
+    def _finite(value: float, fallback: float = 0.0) -> float:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        if v != v or v in (float("inf"), float("-inf")):
+            return fallback
+        return v
+
+    @staticmethod
+    def _clamp01(value: float) -> float:
+        return 0.0 if value < 0.0 else (1.0 if value > 1.0 else value)
+
+    @staticmethod
+    def _alpha(dt: float, tau: float) -> float:
+        return dt / (tau + dt)
+
+    def _rel(self, value: float, centre: float, dev: float) -> float:
+        scale = max(self._ABS_DEV_FLOOR, self._MIN_REL_DEV * centre, dev)
+        z = (value - centre) / scale / self._Z_FULL
+        return self._clamp01(0.5 + 0.5 * max(-1.0, min(1.0, z)))
+
+    def update(
+        self,
+        delta_time: Optional[float] = None,
+        *,
+        energy: float = 0.0,
+        bass: float = 0.0,
+        spectral_flux: float = 0.0,
+        is_beat: bool = False,
+        beat_number: int = 0,
+        bpm: float = 128.0,
+        is_downbeat_event: Optional[bool] = None,
+        now: Optional[float] = None,
+    ) -> SectionDecision:
+        """Advance one frame and return the section to render.
+
+        Runs inside the 60 fps update path, so it swallows its own arithmetic
+        failures and keeps showing the previous section rather than going dark.
+        """
+        try:
+            return self._update(
+                delta_time,
+                energy=energy,
+                bass=bass,
+                spectral_flux=spectral_flux,
+                is_beat=is_beat,
+                beat_number=beat_number,
+                bpm=bpm,
+                is_downbeat_event=is_downbeat_event,
+                now=now,
+            )
+        except Exception:
+            self._decision = SectionDecision(
+                section=self._section,
+                changed=False,
+                level=self._decision.level,
+                trend=self._decision.trend,
+                bass_level=self._decision.bass_level,
+                flux_level=self._decision.flux_level,
+            )
+            return self._decision
+
+    def _update(
+        self,
+        delta_time: Optional[float],
+        *,
+        energy: float,
+        bass: float,
+        spectral_flux: float,
+        is_beat: bool,
+        beat_number: int,
+        bpm: float,
+        is_downbeat_event: Optional[bool],
+        now: Optional[float],
+    ) -> SectionDecision:
+        t = time.time() if now is None else self._finite(now, time.time())
+
+        energy = max(0.0, self._finite(energy))
+        bass = max(0.0, self._finite(bass))
+        flux = max(0.0, self._finite(spectral_flux))
+        bpm = self._finite(bpm, 128.0)
+        bar_s = (4.0 * 60.0) / max(50.0, min(220.0, bpm if bpm > 0 else 128.0))
+
+        # The manager is constructed long before the first audio frame and the
+        # clock can be swapped underneath it, so the timeline is seeded here
+        # rather than in __init__.
+        if not self._seeded or t < self._last_time - 0.5 or t > self._last_time + 5.0:
+            self._rebase(t)
+            self._level = self._fast = self._centre = self._lag = energy
+            self._bass_level = self._bass_fast = self._bass_centre = bass
+            self._flux_level = self._flux_centre = flux
+            self._rise_fast = self._rise_slow = 0.0
+
+        dt = self._finite(delta_time, 0.0) if delta_time is not None else (t - self._last_time)
+        if not (0.0 < dt <= 0.25):
+            dt = 1.0 / 60.0
+        self._last_time = t
+
+        self._level += (energy - self._level) * self._alpha(dt, self._TAU_LEVEL)
+        self._fast += (energy - self._fast) * self._alpha(dt, self._TAU_FAST)
+        self._bass_level += (bass - self._bass_level) * self._alpha(dt, self._TAU_LEVEL)
+        self._bass_fast += (bass - self._bass_fast) * self._alpha(dt, self._TAU_FAST)
+        self._flux_level += (flux - self._flux_level) * self._alpha(dt, self._TAU_LEVEL)
+
+        scale = max(self._ABS_DEV_FLOOR, self._MIN_REL_DEV * self._centre, self._dev)
+        warm = (t - self._start_time) >= self._WARMUP_S
+        if not warm:
+            # The smoothed level climbs out of the seed during the first
+            # seconds. Averaging that ramp into the centre would bias every
+            # later comparison upwards for the rest of the track.
+            self._centre = self._level
+            self._lag = self._level
+            self._bass_centre = self._bass_level
+            self._flux_centre = self._flux_level
+            self._dev = self._bass_dev = self._flux_dev = 0.0
+            self._rise_fast = self._rise_slow = 0.0
+        else:
+            # The centre is the running mean since warm-up until the track is
+            # older than the centre time constant, then a plain EMA.
+            age = max(1e-3, t - self._start_time - self._WARMUP_S)
+            centre_tau = min(self._TAU_CENTRE, max(1.0, age))
+            dev_tau = min(self._TAU_DEV, max(1.0, age))
+
+            self._lag += (self._level - self._lag) * self._alpha(dt, self._TAU_LAG)
+
+            z = (self._level - self._centre) / scale
+            if abs(z) >= self._ANTI_PUMP_Z:
+                if self._z_high_since is None:
+                    self._z_high_since = t
+                # Time limited: an unbounded guard is self-reinforcing, because
+                # a centre held behind the level keeps |z| high forever.
+                pump = (
+                    self._ANTI_PUMP_FACTOR
+                    if (t - self._z_high_since) < self._ANTI_PUMP_MAX_S
+                    else 1.0
+                )
+            else:
+                self._z_high_since = None
+                pump = 1.0
+
+            self._centre += (self._level - self._centre) * self._alpha(dt, centre_tau) * pump
+            self._dev += (abs(self._level - self._centre) - self._dev) * self._alpha(dt, dev_tau)
+            self._bass_centre += (
+                self._bass_level - self._bass_centre
+            ) * self._alpha(dt, centre_tau)
+            self._bass_dev += (
+                abs(self._bass_level - self._bass_centre) - self._bass_dev
+            ) * self._alpha(dt, dev_tau)
+            self._flux_centre += (
+                self._flux_level - self._flux_centre
+            ) * self._alpha(dt, centre_tau)
+            self._flux_dev += (
+                abs(self._flux_level - self._flux_centre) - self._flux_dev
+            ) * self._alpha(dt, dev_tau)
+
+            scale = max(self._ABS_DEV_FLOOR, self._MIN_REL_DEV * self._centre, self._dev)
+            raw_rise = (self._level - self._lag) / scale
+            self._rise_fast += (raw_rise - self._rise_fast) * self._alpha(dt, self._TAU_RISE_FAST)
+            self._rise_slow += (raw_rise - self._rise_slow) * self._alpha(dt, self._TAU_RISE_SLOW)
+
+        # Flux is measured and published but not gated on: on this material it
+        # carries nothing the level does not already say. Left in so the next
+        # pass can see it rather than having to re-derive it.
+        lvl = self._rel(self._level, self._centre, self._dev)
+        blvl = self._rel(self._bass_level, self._bass_centre, self._bass_dev)
+        bfast = self._rel(self._bass_fast, self._bass_centre, self._bass_dev)
+        flvl = self._rel(self._flux_level, self._flux_centre, self._flux_dev)
+        fast_z = (self._fast - self._centre) / scale
+
+        beat_number = int(self._finite(beat_number, 0))
+        beat_event = bool(is_beat) and beat_number > 0 and beat_number != self._last_beat_number
+        if beat_event:
+            self._last_beat_number = beat_number
+        if is_downbeat_event is None:
+            downbeat_event = beat_event and is_downbeat(beat_number)
+        else:
+            downbeat_event = bool(is_downbeat_event) and beat_event
+
+        current = self._section
+
+        drop_impact = (
+            warm
+            and beat_event
+            and current in self._DROP_FROM
+            and lvl >= self._DROP_MIN_LEVEL
+            and bfast >= self._DROP_MIN_BASS
+            and fast_z >= self._DROP_MIN_FAST_Z
+            and self._rise_fast >= self._DROP_MIN_RISE
+            and (t - self._last_drop_time) >= self._DROP_REFRACTORY_S
+            and (t - self._section_since) >= self._IMPACT_MIN_HOLD_S
+        )
+
+        if self._centre <= self._SILENCE_LEVEL and self._level <= self._SILENCE_LEVEL:
+            target = "breakdown"
+        elif t < self._drop_until:
+            target = "drop"
+        else:
+            low = self._LOW_STICKY if current == "breakdown" else self._LOW
+            high = self._HIGH_STICKY if current == "chorus" else self._HIGH
+            rise_gate = self._RISE_STICKY if current == "buildup" else self._RISE
+            # Inside a peak nothing can be building, and a level still climbing
+            # out of the drop is the drop resolving, not a new section.
+            in_peak = (t - self._last_drop_time) < self._POST_DROP_NO_BUILD_S
+            rising = (
+                self._rise_slow >= rise_gate
+                or self._rise_fast >= rise_gate * self._RISE_FAST_FACTOR
+            ) and not in_peak
+            settled = in_peak or self._rise_fast < self._RISE_SETTLED
+            if lvl <= low:
+                target = "breakdown"
+            elif rising and lvl >= self._BUILDUP_MIN_LEVEL:
+                target = "buildup"
+            elif lvl >= high and blvl >= self._CHORUS_MIN_BASS and settled:
+                target = "chorus"
+            else:
+                target = "verse"
+
+        if drop_impact:
+            target = "drop"
+
+        if target != self._candidate:
+            self._candidate = target
+            self._candidate_since = t
+
+        changed = False
+        if target == current:
+            self._eligible_since = None
+        elif not warm:
+            self._eligible_since = None
+        elif drop_impact and is_impact_event(target):
+            changed = self._commit(target, t)
+        else:
+            dwell_ok = (t - self._candidate_since) >= self._DWELL_S
+            hold_ok = (t - self._section_since) >= max(
+                self._MIN_HOLD_S, self._MIN_HOLD_BARS * bar_s
+            )
+            if dwell_ok and hold_ok:
+                if self._eligible_since is None:
+                    self._eligible_since = t
+                waited = t - self._eligible_since
+                wait_cap = min(self._BOUNDARY_WAIT_MAX_S, self._BOUNDARY_WAIT_BARS * bar_s)
+                if downbeat_event or waited >= wait_cap:
+                    changed = self._commit(target, t)
+            else:
+                self._eligible_since = None
+
+        self._decision = SectionDecision(
+            section=self._section,
+            changed=changed,
+            level=lvl,
+            trend=self._rise_slow,
+            bass_level=blvl,
+            flux_level=flvl,
+            drop_impact=drop_impact,
+            on_boundary=downbeat_event,
+        )
+        return self._decision
+
+    def _commit(self, section: str, t: float) -> bool:
+        if section not in LIVE_SECTION_NAMES or section == self._section:
+            return False
+        self._section = section
+        self._section_since = t
+        self._eligible_since = None
+        if section == "drop":
+            self._last_drop_time = t
+            self._drop_until = t + self._DROP_HOLD_S
+        return True
+
+    def debug(self) -> Dict[str, float | str | bool]:
+        d = self._decision
+        return {
+            "section": d.section,
+            "level": round(d.level, 4),
+            "trend": round(d.trend, 4),
+            "bass_level": round(d.bass_level, 4),
+            "flux_level": round(d.flux_level, 4),
+            "drop_impact": bool(d.drop_impact),
+            "centre": round(self._centre, 5),
+            "dev": round(self._dev, 5),
+        }
 
 
 class SongSection(Enum):
@@ -216,46 +676,12 @@ class SectionManager:
         self._target_intensity = 0.5
         self._intensity_smoothing = 0.1
 
-        # Energy tracking for auto-detection
+        # Energy tracking for intensity smoothing
         self._energy_history: List[float] = []
-        self._bass_history: List[float] = []
-        self._flux_history: List[float] = []
         self._energy_window = 64  # frames
-        self._section_votes: Dict[SongSection, int] = {
-            SongSection.VERSE: 0,
-            SongSection.PRE_CHORUS: 0,
-            SongSection.CHORUS: 0,
-            SongSection.BUILDUP: 0,
-            SongSection.DROP: 0,
-            SongSection.BREAKDOWN: 0,
-        }
-        self._vote_max: int = 10
-        self._auto_min_hold_s: float = 0.85
-        self._drop_refractory_s: float = 2.2
-        self._last_auto_drop_time: float = -999.0
-        self._section_confidence_ema: Dict[SongSection, float] = {
-            SongSection.VERSE: 0.0,
-            SongSection.PRE_CHORUS: 0.0,
-            SongSection.CHORUS: 0.0,
-            SongSection.BUILDUP: 0.0,
-            SongSection.DROP: 0.0,
-            SongSection.BREAKDOWN: 0.0,
-        }
-        self._section_confidence_alpha: float = 0.22
-        self._boundary_candidate: Optional[SongSection] = None
-        self._boundary_candidate_frames: int = 0
-        self._boundary_debounce_frames: int = 3
-        self._section_min_hold_bars: int = 8
-        self._last_section_commit_bar: int = 0
-        self._high_conf_force_commit: float = 0.82
-        self._fast_energy_ema: float = 0.0
-        self._slow_energy_ema: float = 0.0
-        self._fast_bass_ema: float = 0.0
-        self._slow_bass_ema: float = 0.0
-        self._fast_flux_ema: float = 0.0
-        self._slow_flux_ema: float = 0.0
-        self._boundary_prob_ema: float = 0.0
-        self._last_detect_debug: Dict[str, float | str | bool] = {}
+
+        # The one live section detector.
+        self._detector = StreamingSectionDetector()
 
         # Callbacks
         self._on_section_change: Optional[Callable[[SongSection, SongSection], None]] = None
@@ -488,6 +914,49 @@ class SectionManager:
             return 0.0
         return self._buildup_progress
 
+    # Names the renderer switches on, mapped to the manager's richer enum.
+    _LIVE_SECTION_ENUM = {
+        "breakdown": SongSection.BREAKDOWN,
+        "verse": SongSection.VERSE,
+        "buildup": SongSection.BUILDUP,
+        "chorus": SongSection.CHORUS,
+        "drop": SongSection.DROP,
+    }
+
+    def update_section_from_audio(
+        self,
+        delta_time: Optional[float] = None,
+        *,
+        energy: float = 0.0,
+        bass: float = 0.0,
+        spectral_flux: float = 0.0,
+        is_beat: bool = False,
+        beat_number: int = 0,
+        bpm: Optional[float] = None,
+        is_downbeat_event: Optional[bool] = None,
+    ) -> str:
+        """Run the live section detector for one frame and return its section.
+
+        This is the entry point the renderer calls every frame. The returned
+        name is always one of LIVE_SECTION_NAMES, and the manager's own section
+        state is committed here so both stay in step.
+        """
+        decision = self._detector.update(
+            delta_time,
+            energy=energy,
+            bass=bass,
+            spectral_flux=spectral_flux,
+            is_beat=is_beat,
+            beat_number=beat_number,
+            bpm=self._bpm if bpm is None else bpm,
+            is_downbeat_event=is_downbeat_event,
+        )
+        if decision.changed:
+            target = self._LIVE_SECTION_ENUM.get(decision.section)
+            if target is not None and target != self._current_section:
+                self._execute_section_change(target)
+        return decision.section
+
     def detect_section_from_energy(
         self,
         energy: float,
@@ -498,221 +967,25 @@ class SectionManager:
         bars_elapsed: Optional[int] = None,
         is_downbeat_event: Optional[bool] = None,
     ) -> Optional[SongSection]:
+        """Adapter kept for the non-rebuild render path.
+
+        Delegates to the same detector as `update_section_from_audio` and
+        returns a section only on the frame it actually changes, which is the
+        `None means no change` contract this call site already expects.
         """
-        Auto-detect song section from audio features.
-        Returns suggested section or None if uncertain.
-
-        This is a heuristic fallback when no external section data is available.
-        """
-        def _clamp01(v: float) -> float:
-            return max(0.0, min(1.0, float(v)))
-
-        energy = _clamp01(energy)
-        bass = _clamp01(bass)
-        spectral_flux = _clamp01(spectral_flux)
-
-        # Track complementary feature history for context/debugging.
-        self._bass_history.append(bass)
-        self._flux_history.append(spectral_flux)
-        if len(self._bass_history) > self._energy_window:
-            self._bass_history = self._bass_history[-self._energy_window:]
-        if len(self._flux_history) > self._energy_window:
-            self._flux_history = self._flux_history[-self._energy_window:]
-
-        # Multi-rate causal smoothing (research-aligned: fast + slow streams).
-        fast_a = 0.35
-        slow_a = 0.06
-        self._fast_energy_ema += (energy - self._fast_energy_ema) * fast_a
-        self._slow_energy_ema += (energy - self._slow_energy_ema) * slow_a
-        self._fast_bass_ema += (bass - self._fast_bass_ema) * fast_a
-        self._slow_bass_ema += (bass - self._slow_bass_ema) * slow_a
-        self._fast_flux_ema += (spectral_flux - self._fast_flux_ema) * fast_a
-        self._slow_flux_ema += (spectral_flux - self._slow_flux_ema) * slow_a
-
-        if len(self._energy_history) < 8 or len(self._bass_history) < 8:
+        name = self.update_section_from_audio(
+            None,
+            energy=energy,
+            bass=bass,
+            spectral_flux=spectral_flux,
+            is_beat=is_beat,
+            beat_number=beat_number,
+            is_downbeat_event=is_downbeat_event,
+        )
+        if not self._detector.decision.changed:
             return None
-
-        recent = self._energy_history[-4:]
-        older = self._energy_history[-8:-4]
-        recent_bass = self._bass_history[-4:]
-        older_bass = self._bass_history[-8:-4]
-        recent_flux = self._flux_history[-4:]
-        avg_recent = sum(recent) / len(recent)
-        avg_older = sum(older) / len(older)
-        trend = avg_recent - avg_older
-        avg_recent_bass = sum(recent_bass) / len(recent_bass)
-        avg_older_bass = sum(older_bass) / len(older_bass)
-        avg_recent_flux = sum(recent_flux) / max(1, len(recent_flux))
-        bass_trend = avg_recent_bass - avg_older_bass
-        energy_spike = energy - avg_older
-        bass_spike = bass - avg_older_bass
-        now = time.time()
-        on_downbeat = bool(is_downbeat_event) if is_downbeat_event is not None else is_downbeat(int(beat_number))
-        completed_bars = int(bars_elapsed if bars_elapsed is not None else max(0, (int(beat_number) - 1) // 4))
-        phrase_boundary = completed_bars > 0 and (completed_bars % 4 == 0)
-
-        novelty = _clamp01(
-            max(0.0, self._fast_energy_ema - self._slow_energy_ema) * 1.7
-            + max(0.0, self._fast_bass_ema - self._slow_bass_ema) * 1.6
-            + max(0.0, self._fast_flux_ema) * 0.9
-        )
-        raw_boundary_prob = _clamp01(
-            0.60 * novelty
-            + 0.18 * (1.0 if on_downbeat else 0.0)
-            + 0.12 * (1.0 if phrase_boundary else 0.0)
-            + 0.10 * max(0.0, energy_spike)
-        )
-        self._boundary_prob_ema += (raw_boundary_prob - self._boundary_prob_ema) * 0.28
-
-        # Guard: avoid overly chatty section flapping unless strong impact.
-        if (now - self._section_start_time) < self._auto_min_hold_s:
-            drop_impact = (
-                is_beat
-                and energy > 0.56
-                and bass > 0.60
-                and (spectral_flux > 0.06 or novelty > 0.58 or energy_spike > 0.08 or bass_spike > 0.10)
-            )
-            if not drop_impact:
-                return None
-
-        # From-scratch section confidence model (continuous probabilities, causal).
-        drop_impact = (
-            is_beat
-            and on_downbeat
-            and energy > 0.58
-            and bass > 0.62
-            and (novelty > 0.56 or spectral_flux > 0.07 or energy_spike > 0.09)
-        )
-        p_drop = _clamp01(
-            (0.45 if drop_impact else 0.0)
-            + 0.25 * max(0.0, energy - 0.64)
-            + 0.20 * max(0.0, bass - 0.66)
-            + 0.20 * novelty
-        )
-        p_buildup = _clamp01(
-            0.40 * max(0.0, trend)
-            + 0.28 * max(0.0, bass_trend)
-            + 0.20 * max(0.0, avg_recent_flux - 0.06)
-            + 0.16 * max(0.0, avg_recent - 0.54)
-        )
-        p_chorus = _clamp01(
-            0.42 * max(0.0, avg_recent - 0.58)
-            + 0.28 * max(0.0, avg_recent_bass - 0.48)
-            + 0.22 * max(0.0, 0.09 - abs(trend))
-        )
-        p_pre = _clamp01(
-            0.35 * max(0.0, avg_recent - 0.48)
-            + 0.25 * max(0.0, trend)
-            + 0.20 * max(0.0, avg_recent_flux - 0.05)
-            + 0.10 * (1.0 if phrase_boundary else 0.0)
-        )
-        p_breakdown = _clamp01(
-            0.45 * max(0.0, 0.32 - avg_recent)
-            + 0.35 * max(0.0, 0.34 - avg_recent_bass)
-            + 0.20 * max(0.0, 0.06 - avg_recent_flux)
-        )
-        p_verse = _clamp01(
-            0.30 * max(0.0, 0.70 - abs(avg_recent - 0.50))
-            + 0.26 * max(0.0, 0.70 - abs(avg_recent_bass - 0.46))
-            + 0.18 * max(0.0, 0.10 - abs(trend))
-            + 0.10 * (1.0 if (not phrase_boundary) else 0.0)
-        )
-
-        raw_probs = {
-            SongSection.DROP: p_drop,
-            SongSection.BUILDUP: p_buildup,
-            SongSection.CHORUS: p_chorus,
-            SongSection.PRE_CHORUS: p_pre,
-            SongSection.VERSE: p_verse,
-            SongSection.BREAKDOWN: p_breakdown,
-        }
-
-        # Smooth probabilities and derive vote-like confidence.
-        alpha = max(0.01, min(0.95, float(self._section_confidence_alpha)))
-        for sec, raw_conf in raw_probs.items():
-            prev = self._section_confidence_ema.get(sec, 0.0)
-            smoothed = prev + (raw_conf - prev) * alpha
-            self._section_confidence_ema[sec] = smoothed
-            self._section_votes[sec] = int(round(smoothed * float(self._vote_max)))
-
-        # Convert votes to smoothed confidence curves (reduces section flapping).
-        ranked_conf = sorted(self._section_confidence_ema.items(), key=lambda kv: kv[1], reverse=True)
-        best_section, best_conf = ranked_conf[0]
-        second_conf = ranked_conf[1][1] if len(ranked_conf) > 1 else 0.0
-        if best_conf < 0.38 or (best_conf - second_conf) < 0.02:
-            self._boundary_candidate = None
-            self._boundary_candidate_frames = 0
-            self._last_detect_debug = {
-                "best_section": best_section.value,
-                "best_conf": round(best_conf, 4),
-                "boundary_prob": round(self._boundary_prob_ema, 4),
-                "commit": False,
-            }
-            return None
-        musical_boundary = on_downbeat or phrase_boundary
-
-        if self._boundary_candidate == best_section:
-            self._boundary_candidate_frames += 1
-        else:
-            self._boundary_candidate = best_section
-            self._boundary_candidate_frames = 1
-
-        persist_ok = self._boundary_candidate_frames >= max(1, int(self._boundary_debounce_frames))
-        boundary_ok = self._boundary_prob_ema >= 0.44 or best_section == SongSection.DROP
-
-        if best_section == SongSection.DROP:
-            if (now - self._last_auto_drop_time) < self._drop_refractory_s:
-                return None
-            if not (persist_ok and (drop_impact or self._boundary_prob_ema >= 0.56)):
-                return None
-            self._last_auto_drop_time = now
-            self._last_section_commit_bar = completed_bars
-            self._boundary_candidate = None
-            self._boundary_candidate_frames = 0
-            self._last_detect_debug = {
-                "best_section": best_section.value,
-                "best_conf": round(best_conf, 4),
-                "boundary_prob": round(self._boundary_prob_ema, 4),
-                "commit": True,
-                "reason": "drop_impact",
-            }
-            return SongSection.DROP
-
-        # Don't constantly demote a fresh drop.
-        if self._current_section == SongSection.DROP and (now - self._section_start_time) < 1.5:
-            return None
-
-        bars_since_commit = max(0, completed_bars - int(self._last_section_commit_bar))
-        hold_ok = bars_since_commit >= max(1, int(self._section_min_hold_bars))
-        force_commit = best_conf >= float(self._high_conf_force_commit)
-        if not (persist_ok and boundary_ok and (musical_boundary or force_commit) and (hold_ok or force_commit)):
-            self._last_detect_debug = {
-                "best_section": best_section.value,
-                "best_conf": round(best_conf, 4),
-                "boundary_prob": round(self._boundary_prob_ema, 4),
-                "persist_ok": bool(persist_ok),
-                "boundary_ok": bool(boundary_ok),
-                "musical_boundary": bool(musical_boundary),
-                "hold_ok": bool(hold_ok),
-                "force_commit": bool(force_commit),
-                "commit": False,
-            }
-            return None
-
-        self._last_section_commit_bar = completed_bars
-        self._boundary_candidate = None
-        self._boundary_candidate_frames = 0
-        self._last_detect_debug = {
-            "best_section": best_section.value,
-            "best_conf": round(best_conf, 4),
-            "boundary_prob": round(self._boundary_prob_ema, 4),
-            "commit": True,
-        }
-        return best_section
+        return self._LIVE_SECTION_ENUM.get(name)
 
     def get_detection_debug(self) -> Dict[str, float | str | bool]:
         """Get latest streaming structure-detector debug state."""
-        out: Dict[str, float | str | bool] = dict(self._last_detect_debug)
-        for sec, conf in self._section_confidence_ema.items():
-            out[f"p_{sec.value}"] = round(float(conf), 4)
-        return out
+        return self._detector.debug()

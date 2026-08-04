@@ -225,7 +225,18 @@ async def lifespan(app: FastAPI):
             auto_mode=True,
             movement_enabled=True,
             dimmer_enabled=True,
-            strobe_enabled=False,  # Keep off by default for cleaner looks
+            # Accents on, conservative. A drop that reads needs a discrete
+            # event, but a venue crowd includes people with photosensitive
+            # epilepsy, so the flash rate is held at the three-per-second
+            # general-audience limit and the accent governor spends the
+            # genre budget. Switching accessibility_mode back to "no_strobe"
+            # remains a complete off switch.
+            strobe_enabled=True,
+            accessibility_mode="conservative",
+            strobe_hz_cap=3.0,
+            strobe_max_duty_cycle=0.34,
+            strobe_burst_max_s=0.10,
+            strobe_refractory_s=0.30,
         ))
 
         # Connect effects engine to DMX controller
@@ -266,6 +277,10 @@ async def lifespan(app: FastAPI):
 
         # Keep pro lighting enabled by default so section/chase logic is always active.
         app.state.effects_engine.enable_pro_lighting(True)
+
+        # One owner for every accent: budget, Hz cap and anticipation.
+        from app.services.lighting.pro_effects import attach_accent_governor
+        app.state.accent_governor = attach_accent_governor(app.state.effects_engine)
         print("Professional lighting modules initialized and enabled")
 
         # Wire effects engine to demo module

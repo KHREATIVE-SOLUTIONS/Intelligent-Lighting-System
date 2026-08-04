@@ -16,6 +16,8 @@ import time
 from typing import Dict, List, Optional, Callable, Set, Tuple
 from dataclasses import dataclass
 
+import numpy as np
+
 from .fixture_groups import (
     Fixture, FixtureGroup, FixtureGroupManager, create_demo_rig
 )
@@ -142,6 +144,41 @@ def _travel(fixture, attribute: str) -> float:
         return 0.0
 
 
+# === Phase-locked musical clock ============================================
+# Tempo hypotheses for the onset-envelope comb, spaced 0.6% apart across the
+# range the renderer is willing to run its motion at.
+_CLOCK_MIN_BPM = 60.0
+_CLOCK_MAX_BPM = 190.0
+_CLOCK_CAND_BPM = _CLOCK_MIN_BPM * np.power(
+    1.006, np.arange(int(math.log(_CLOCK_MAX_BPM / _CLOCK_MIN_BPM) / math.log(1.006)) + 1)
+)
+_CLOCK_CAND_F = _CLOCK_CAND_BPM / 60.0
+_CLOCK_LOG_CAND = np.log(_CLOCK_CAND_BPM)
+# Human tempo preference curve: without it a strongly accented backbeat wins the
+# comb at half the real tempo and the whole show runs in double time.
+_CLOCK_PRIOR = np.exp(-0.5 * ((_CLOCK_LOG_CAND - math.log(124.0)) / 0.55) ** 2)
+
+_CLOCK_COMB_TAU = 2.0        # s, memory of the tempo comb
+_CLOCK_PHASE_TAU = 2.0       # s, memory of the phase detector
+_CLOCK_KP = 0.40             # share of the phase error corrected per beat
+_CLOCK_KI = 0.10             # share of the phase error fed to the period per beat
+_CLOCK_MAX_SLEW = 0.5        # correction may not exceed half the nominal rate,
+                             # which is what keeps the clock monotonic
+_CLOCK_CONF_MIN = 0.08
+_CLOCK_CONF_GOOD = 0.35
+_CLOCK_ACQUIRE_FLOOR = 0.12
+_CLOCK_EVIDENCE_S = 2.0
+_CLOCK_CHALLENGE_RATIO = 1.10
+_CLOCK_CHALLENGE_S = 0.20
+_CLOCK_HARMONIC = 0.50
+_CLOCK_REPORTED_WEIGHT = 0.12
+_CLOCK_LOG_GAIN = 40.0
+# One analysis block of RMS is a boxcar ending at the callback, and a percussive
+# attack spills into the block after the one it starts in, so the positive
+# difference of two blocks reports an attack about 0.7 of a block late.
+_CLOCK_ONSET_LEAD = 0.20
+
+
 class EffectsEngine:
     """
     Main effects engine coordinating all layers.
@@ -177,6 +214,31 @@ class EffectsEngine:
         # Beat tracking
         self.beat_count = 0
         self.last_beat_time = 0.0
+
+        # Phase-locked musical clock. `beat_phase` is 0 on the beat and
+        # `bar_phase` 0 on the downbeat; both are published for readers.
+        self.beat_phase = 0.0
+        self.bar_phase = 0.0
+        self._clock_beats = 0.0
+        self._clock_period = 60.0 / max(1.0, float(self.config.bpm))
+        self._clock_locked = False
+        self._clock_conf = 0.0
+        self._clock_pending = 0.0
+        self._clock_absorbed = 0.0
+        self._clock_hop = 1.0 / 21.5
+        self._clock_last_audio_t: Optional[float] = None
+        self._clock_prev_loudness = 0.0
+        self._clock_evidence = 0.0
+        self._clock_challenge = 0.0
+        self._clock_comb = np.zeros(len(_CLOCK_CAND_F), dtype=np.complex128)
+        self._clock_comb2 = np.zeros(len(_CLOCK_CAND_F), dtype=np.complex128)
+        self._clock_comb_norm = 1e-9
+        self._clock_zp = 0j
+        self._clock_zp_norm = 1e-9
+        self._clock_bar_offset = 0
+        self._clock_bar_votes = [0.0, 0.0, 0.0, 0.0]
+        self._clock_bar_moved_at = -1.0e9
+        self._clock_last_beat_number: Optional[int] = None
 
         # Song change detection for color palette locking
         self._silence_start_time: Optional[float] = None
@@ -287,7 +349,9 @@ class EffectsEngine:
         self._rebuild_snare_strobe_until: float = -999.0
         self._rebuild_snare_last_trigger: float = -999.0
         self._rebuild_active_pattern: str = "tilt_cross"
-        self._rebuild_pattern_hold_until_bar: int = 0
+        # Bar zero is a real bar on the locked clock, so the hold has to start
+        # before any bar the clock can report.
+        self._rebuild_pattern_hold_until_bar: int = -(10 ** 9)
 
         # Pro lighting integration enabled flag
         self._pro_lighting_enabled = False
@@ -530,7 +594,8 @@ class EffectsEngine:
         high = max(0.0, min(1.0, float(self.audio_features.high)))
         flux = float(getattr(self.audio_state, "spectral_flux", 0.0) or 0.0)
         beat = bool(self.audio_features.is_beat)
-        beat_phase = (self.time * (bpm / 60.0)) % 1.0
+        beats = float(self._clock_beats)
+        beat_phase = float(self.beat_phase)
 
         def _is_motion_capable(fx: Fixture) -> bool:
             channels = getattr(fx, "channels", {}) or {}
@@ -572,8 +637,8 @@ class EffectsEngine:
             chase_order.extend(selected_rows[ridx])
         chase_index = {fx.id: idx for idx, fx in enumerate(chase_order)}
 
-        # Movement patterns are BPM-locked and section-aware, with circle-heavy busker looks.
-        bar_clock = int(math.floor((self.time * (bpm / 60.0)) / 4.0))
+        # Movement patterns are beat-locked and section-aware, with circle-heavy busker looks.
+        bar_clock = int(math.floor(self._beat_clock_bars()))
         section_pattern_pool = {
             "breakdown": ["pan_wave", "tilt_circle", "circle"],
             "verse": ["tilt_cross", "circle", "pan_wave", "figure8"],
@@ -743,7 +808,7 @@ class EffectsEngine:
         chase_dir = 1
         if chase_active and chase_order:
             chase_len = len(chase_order)
-            chase_tick = int(math.floor(self.time * (bpm / 60.0) * chase_steps_per_beat))
+            chase_tick = int(math.floor(beats * chase_steps_per_beat))
             # Reverse direction every 2 bars for a busker-style sweep/bounce feel.
             chase_dir = -1 if (bar_clock % 4) >= 2 else 1
             chase_head = chase_tick % chase_len if chase_dir > 0 else (chase_len - 1 - (chase_tick % chase_len))
@@ -763,7 +828,7 @@ class EffectsEngine:
                 global_frac = (global_idx / max(1, global_count - 1)) if global_count > 1 else 0.5
                 frac = global_frac
                 row_sign = -1.0 if ridx % 2 == 0 else 1.0
-                phase = ((self.time * (bpm / 60.0) * move_speed) + frac) % 1.0
+                phase = ((beats * move_speed) + frac) % 1.0
 
                 pan = 0.0
                 tilt = 0.0
@@ -930,14 +995,234 @@ class EffectsEngine:
             self.pro_effects.chase.set_params(intensity=target_intensity)
 
     def _get_chase_bump_level(self) -> float:
-        """BPM-locked bump envelope for active chase steps (keeps them alive, not static)."""
-        bpm = max(60.0, min(200.0, float(self._smoothed_movement_bpm)))
-        beat_phase = (self.time * (bpm / 60.0)) % 1.0
+        """Beat-locked bump envelope for active chase steps (keeps them alive, not static)."""
+        beat_phase = float(self.beat_phase)
         # Fast peak at beat start, then smooth decay.
         if beat_phase < 0.22:
             peak = 1.0 - (beat_phase / 0.22)
             return 0.72 + 0.28 * peak
         return 0.72
+
+    # === Phase-locked musical clock ===
+
+    def _beat_clock_advance(self, delta_time: float):
+        """Advance the musical clock by one render frame.
+
+        Runs inside the 60 fps path and must never raise: every branch here is
+        a guard against a value that would otherwise poison the whole frame.
+        """
+        period = self._clock_period
+        if not (0.02 < period < 4.0):
+            period = 60.0 / 128.0
+            self._clock_period = period
+
+        dt = delta_time if delta_time else 0.0
+        if not (0.0 < dt < 1.0):
+            dt = 0.0
+        step = dt / period
+
+        pending = self._clock_pending
+        if pending:
+            if -1.0 < pending < 1.0:
+                cap = _CLOCK_MAX_SLEW * step
+                absorb = max(-cap, min(cap, pending))
+                self._clock_pending = pending - absorb
+                self._clock_absorbed += absorb
+                step += absorb
+            else:
+                self._clock_pending = 0.0
+
+        beats = self._clock_beats + step
+        if not (-1.0e9 < beats < 1.0e9):
+            beats = 0.0
+            self._clock_pending = 0.0
+            self._clock_absorbed = 0.0
+            self._clock_locked = False
+        self._clock_beats = beats
+        self.beat_phase = beats % 1.0
+        self.bar_phase = ((beats - self._clock_bar_offset) * 0.25) % 1.0
+
+    def _beat_clock_bars(self) -> float:
+        """Bars elapsed on the locked clock, aligned to the detected downbeat."""
+        return (self._clock_beats - self._clock_bar_offset) * 0.25
+
+    def _beat_clock_reset(self):
+        """Forget everything the clock believes; the audio stream restarted."""
+        self._clock_comb[:] = 0.0
+        self._clock_comb2[:] = 0.0
+        self._clock_comb_norm = 1e-9
+        self._clock_zp = 0j
+        self._clock_zp_norm = 1e-9
+        self._clock_locked = False
+        self._clock_conf = 0.0
+        self._clock_pending = 0.0
+        self._clock_absorbed = 0.0
+        self._clock_evidence = 0.0
+        self._clock_challenge = 0.0
+        self._clock_prev_loudness = 0.0
+
+    def _beat_clock_observe(self, energy: float, bpm: float, is_beat: bool, beat_number: int):
+        """Fold one analysis block into the musical clock.
+
+        The engine never sees audio, only one loudness value per analysis block
+        (~21 Hz). That is still far above the beat rate, so the positive
+        difference of block loudness is an onset envelope, and a complex comb
+        over it recovers tempo and phase to a few milliseconds — much finer than
+        the block grid the analyser's own beat events are quantised to.
+        """
+        now = float(self.time) + (time.time() - float(self.last_update))
+        if not (float(self.time) - 1.0 < now < float(self.time) + 1.0):
+            now = float(self.time)
+
+        last = self._clock_last_audio_t
+        self._clock_last_audio_t = now
+        if last is not None:
+            gap = now - last
+            if 0.004 < gap < 0.5:
+                self._clock_hop += (gap - self._clock_hop) * 0.25
+            elif gap <= 0.0 or gap > 2.0:
+                self._beat_clock_reset()
+        hop = self._clock_hop
+
+        level = max(0.0, min(4.0, float(energy)))
+        loudness = math.log1p(level * _CLOCK_LOG_GAIN)
+        onset = loudness - self._clock_prev_loudness
+        self._clock_prev_loudness = loudness
+        if onset < 0.0:
+            onset = 0.0
+
+        t = now - (0.5 + _CLOCK_ONSET_LEAD) * hop
+
+        if self._clock_absorbed:
+            # The phase reference moved under the accumulator; rotate what it
+            # already holds so the next error is measured against the new phase.
+            turn = -2.0 * math.pi * self._clock_absorbed
+            self._clock_zp *= complex(math.cos(turn), math.sin(turn))
+            self._clock_absorbed = 0.0
+
+        decay_comb = math.exp(-hop / _CLOCK_COMB_TAU)
+        decay_phase = math.exp(-hop / _CLOCK_PHASE_TAU)
+        self._clock_comb *= decay_comb
+        self._clock_comb2 *= decay_comb
+        self._clock_comb_norm *= decay_comb
+        self._clock_zp *= decay_phase
+        self._clock_zp_norm *= decay_phase
+
+        if onset > 1e-7:
+            self._clock_comb += onset * np.exp(-2j * math.pi * _CLOCK_CAND_F * t)
+            self._clock_comb2 += onset * np.exp(-4j * math.pi * _CLOCK_CAND_F * t)
+            self._clock_comb_norm += onset
+            lead = max(-hop, min(hop, t - float(self.time)))
+            phi = -2.0 * math.pi * (self._clock_beats + lead / self._clock_period)
+            self._clock_zp += onset * complex(math.cos(phi), math.sin(phi))
+            self._clock_zp_norm += onset
+
+        if level > 1e-4:
+            self._clock_evidence = min(30.0, self._clock_evidence + hop)
+        else:
+            self._clock_evidence = max(0.0, self._clock_evidence - hop)
+
+        self._clock_conf = abs(self._clock_zp) / max(1e-9, self._clock_zp_norm)
+        self._beat_clock_align_bar(is_beat, beat_number)
+
+        if self._clock_comb_norm < 1e-6 or self._clock_evidence < 0.2:
+            return
+
+        score = (np.abs(self._clock_comb) + _CLOCK_HARMONIC * np.abs(self._clock_comb2))
+        score = score / self._clock_comb_norm
+        weight = _CLOCK_PRIOR
+        reported = float(bpm)
+        if 40.0 <= reported <= 260.0:
+            log_reported = math.log(reported)
+            bump = np.zeros_like(weight)
+            for octave in (1.0, 0.5, 2.0):
+                bump += np.exp(
+                    -0.5 * ((_CLOCK_LOG_CAND - (log_reported + math.log(octave))) / 0.10) ** 2
+                )
+            weight = weight * (1.0 + _CLOCK_REPORTED_WEIGHT * bump)
+        total = score * weight
+        best = int(np.argmax(total))
+
+        if not self._clock_locked:
+            if self._clock_evidence >= _CLOCK_EVIDENCE_S and score[best] >= _CLOCK_ACQUIRE_FLOOR:
+                self._beat_clock_adopt(best, t, snap=True)
+            return
+
+        here = int(np.argmin(np.abs(_CLOCK_LOG_CAND - math.log(60.0 / self._clock_period))))
+        if total[best] > total[here] * _CLOCK_CHALLENGE_RATIO:
+            self._clock_challenge += hop
+            if self._clock_challenge >= _CLOCK_CHALLENGE_S:
+                self._clock_challenge = 0.0
+                self._beat_clock_adopt(best, t, snap=False)
+                return
+        else:
+            self._clock_challenge = max(0.0, self._clock_challenge - hop)
+
+        gain = (self._clock_conf - _CLOCK_CONF_MIN) / max(1e-6, _CLOCK_CONF_GOOD - _CLOCK_CONF_MIN)
+        gain = max(0.0, min(1.0, gain))
+        if gain <= 0.0:
+            return
+
+        error = -math.atan2(self._clock_zp.imag, self._clock_zp.real) / (2.0 * math.pi)
+        error = (error + 0.5) % 1.0 - 0.5
+        loop = gain * min(1.0, hop / self._clock_period)
+        self._clock_pending -= error * _CLOCK_KP * loop
+        period = self._clock_period * (1.0 + _CLOCK_KI * error * loop)
+        self._clock_period = min(60.0 / _CLOCK_MIN_BPM, max(60.0 / _CLOCK_MAX_BPM, period))
+
+    def _beat_clock_adopt(self, index: int, t: float, snap: bool):
+        """Take tempo and phase from the comb's best hypothesis."""
+        f = float(_CLOCK_CAND_F[index])
+        self._clock_period = 1.0 / f
+        arg = math.atan2(self._clock_comb[index].imag, self._clock_comb[index].real)
+        target = (f * t + arg / (2.0 * math.pi)) % 1.0
+        here = self._clock_beats + (t - float(self.time)) / self._clock_period
+        delta = (target - here + 0.5) % 1.0 - 0.5
+        if snap:
+            # Only while there is no lock at all, so nothing on stage is moving
+            # to the old phase yet.
+            self._clock_beats += delta
+            self._clock_pending = 0.0
+        else:
+            self._clock_pending = delta
+        self._clock_zp = 0j
+        self._clock_zp_norm = 1e-9
+        self._clock_absorbed = 0.0
+        self._clock_locked = True
+
+    def _beat_clock_align_bar(self, is_beat: bool, beat_number: int):
+        """Vote the four-beat bar into line with the analyser's downbeat count.
+
+        Deliberately indirect: the engine cannot see the audio, so which beat is
+        beat one has to come from the analyser. Votes decay, and the incumbent
+        has to be clearly beaten, so a run of missed or doubled beats cannot
+        shift the bar line under a running phrase.
+        """
+        if not is_beat or not self._clock_locked:
+            return
+        number = int(beat_number)
+        if number == self._clock_last_beat_number:
+            return
+        self._clock_last_beat_number = number
+
+        index = int(math.floor(self._clock_beats + 0.3))
+        slot = (index - number) % 4
+        votes = self._clock_bar_votes
+        for i in range(4):
+            votes[i] *= 0.97
+        votes[slot] += 1.0
+
+        best = max(range(4), key=lambda i: votes[i])
+        if best == self._clock_bar_offset:
+            return
+        if votes[best] <= votes[self._clock_bar_offset] * 2.0 + 1.0:
+            return
+        # Moving the bar line moves every phrase boundary with it, so it may not
+        # happen inside a phrase.
+        if (self._clock_beats * 0.25) - self._clock_bar_moved_at < 8.0:
+            return
+        self._clock_bar_offset = best
+        self._clock_bar_moved_at = self._clock_beats * 0.25
 
     def set_dmx_callback(self, callback: Callable[[int, List[int]], None]):
         """
@@ -1135,9 +1420,20 @@ class EffectsEngine:
         # Update BPM (raw for reactive layers)
         self.config.bpm = bpm
 
+        # Phase-lock the musical clock to this block. Wrapped because it runs on
+        # the audio callback: a bad frame of analysis must not stop the show.
+        try:
+            self._beat_clock_observe(energy, bpm, is_beat, beat_number)
+        except Exception:
+            pass
+
         # Smooth BPM for non-reactive movement clock to avoid jitter from detector noise.
         target_bpm = max(60.0, min(200.0, float(bpm)))
-        if self.config.movement_music_reactive:
+        if self._clock_locked:
+            # The locked clock is the engine's tempo; the reported BPM is only
+            # the fallback for material it cannot find a pulse in.
+            self._smoothed_movement_bpm = max(60.0, min(200.0, 60.0 / self._clock_period))
+        elif self.config.movement_music_reactive:
             self._smoothed_movement_bpm = target_bpm
         else:
             # Heavy low-pass keeps movement steady while still following long-term tempo drift.
@@ -1555,6 +1851,7 @@ class EffectsEngine:
             delta_time = current_time - self.last_update
         self.last_update = current_time
         self.time += delta_time
+        self._beat_clock_advance(delta_time)
 
         # Update decision engine - genre-aware mode when pro lighting is active
         if self.config.auto_mode and self._pro_lighting_enabled:
@@ -2468,6 +2765,32 @@ class EffectsEngine:
         n = max(1, min(300, int(limit or 50)))
         return list(self._safety_events[-n:])
 
+    def _commit_strobe_intent(self) -> None:
+        """Tell the accent governor that these two fields were set deliberately.
+
+        The governor owns `strobe_enabled` and `audience_intensity_cap` on every
+        frame, so a value it happens to have written itself is invisible to it
+        when something else writes the same value — an operator switching strobe
+        off between accents, or a profile tightening the cap to a number the
+        build ramp already produced. Anything that means the change to *last*
+        routes through here. Never raises: it sits on the operator's path, and
+        a failed hand-off must not take the show down.
+        """
+        governor = getattr(self, "accent_governor", None)
+        if governor is None:
+            return
+        try:
+            governor.set_enabled(bool(self.config.strobe_enabled))
+            governor.set_nominal_cap(float(self.config.audience_intensity_cap))
+        except Exception:
+            pass
+
+    def set_strobe_layer_enabled(self, enabled: bool) -> bool:
+        """Operator-level strobe switch. Durable against the accent governor."""
+        self.config.strobe_enabled = bool(enabled)
+        self._commit_strobe_intent()
+        return bool(enabled)
+
     def set_safety_profile(self, profile: str, camera_mode: Optional[bool] = None, venue_mode: Optional[str] = None) -> Dict:
         """Apply research-pack safety profile presets."""
         p = str(profile or "performance").lower()
@@ -2507,6 +2830,8 @@ class EffectsEngine:
             if self.config.venue_mode in {"theatre", "broadcast", "corporate"}:
                 self.config.audience_intensity_cap = min(self.config.audience_intensity_cap, 0.85)
 
+        self._commit_strobe_intent()
+
         self._record_safety_event(
             "safety_profile_applied",
             {
@@ -2538,6 +2863,7 @@ class EffectsEngine:
         self._white_strobe_decay = 0.0
         self._white_accent_level = 0.0
         self.config.strobe_enabled = False
+        self._commit_strobe_intent()
         self.pro_effects.strobe.stop()
         self.pro_effects.build.stop()
         self.pro_effects.chase.stop()
