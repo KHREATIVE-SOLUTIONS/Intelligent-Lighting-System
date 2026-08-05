@@ -12,6 +12,15 @@ pipeline and competed with the renderer's detector for control of the same
 drives an instance of it purely to know whether the music is building, and
 reports `SectionType.UNKNOWN` at zero confidence unless a genuine external
 source (All-In-One pre-analysis) has labelled the track.
+
+**`TransitionPrediction` is not the drop-anticipation surface.** That is
+`SectionManager.drop_prediction`, which projects onto the renderer's
+phase-locked bar clock and is accurate to a few tens of milliseconds.
+`TransitionPrediction` is kept because the ML payload publishes it and the
+renderer's build effects read it, but it counts bars on `_bar_counter` -- this
+module's own downbeat tally, a second and much coarser timebase -- so it can
+only ever say "about `n` bars", never *when*. It stays a coarse descriptor of
+where the build has got to; nothing should time a hit off it.
 """
 
 from dataclasses import dataclass, field
@@ -24,6 +33,10 @@ import time
 from ..lighting.section_manager import StreamingSectionDetector
 
 logger = logging.getLogger(__name__)
+
+# Detector rise, in its own deviation units, at which a build counts as fully
+# under way. Below it the build is losing steam and confidence goes with it.
+_RISE_FULL = 0.6
 
 
 class SectionType(Enum):
@@ -110,6 +123,7 @@ class MusicStructureAnalyzer:
         self._detected_section = "verse"
         self._buildup_start_bar: Optional[int] = None
         self._in_buildup = False
+        self._rise = 0.0
 
         # Pre-analyzed structure (from offline analysis)
         self._preanalyzed_sections: List[Dict] = []
@@ -286,6 +300,7 @@ class MusicStructureAnalyzer:
             is_downbeat_event=is_downbeat,
         )
         self._detected_section = decision.section
+        self._rise = float(decision.rise_fast)
         if not decision.changed:
             return
 
@@ -317,16 +332,25 @@ class MusicStructureAnalyzer:
         recent_energy = list(self._energy_history)[-8:] if len(self._energy_history) >= 8 else list(self._energy_history)
         energy_slope = (recent_energy[-1] - recent_energy[0]) / len(recent_energy)
 
-        # Buildup detection with progress tracking
+        # Buildup, measured against the 8- then 16-bar phrase a build actually
+        # runs to. The retired fixed 12 pinned `bars_until_transition` at zero
+        # and `buildup_progress` at one for the whole rest of the build, so a
+        # consumer gated on "about to drop" latched true and stayed there; and
+        # confidence grew with elapsed bars alone, so a build that stopped
+        # building still read as more and more certain.
         if self._in_buildup and self._buildup_start_bar is not None:
             buildup_bars = self._bar_counter - self._buildup_start_bar
-            # Typical buildup is 8-16 bars
-            prediction.is_buildup = True
-            prediction.buildup_progress = min(1.0, buildup_bars / 12.0)
-            prediction.bars_until_transition = max(0, 12 - buildup_bars)
-            prediction.predicted_next_section = SectionType.DROP
-            prediction.transition_type = "drop"
-            prediction.transition_confidence = min(0.9, 0.3 + buildup_bars * 0.05)
+            phrase = 8 if buildup_bars < 8 else 16
+            if buildup_bars <= phrase:
+                still_rising = min(1.0, max(0.0, self._rise / _RISE_FULL))
+                prediction.is_buildup = True
+                prediction.buildup_progress = min(1.0, buildup_bars / float(phrase))
+                prediction.bars_until_transition = phrase - buildup_bars
+                prediction.predicted_next_section = SectionType.DROP
+                prediction.transition_type = "drop"
+                prediction.transition_confidence = min(
+                    0.9, (0.3 + buildup_bars * 0.05) * still_rising
+                )
 
         # Approaching section boundary (typical section lengths)
         elif bars_in_section > 0:
@@ -438,6 +462,7 @@ class MusicStructureAnalyzer:
         self._detected_section = "verse"
         self._buildup_start_bar = None
         self._in_buildup = False
+        self._rise = 0.0
         self._preanalyzed_sections = []
 
     def get_info(self) -> Dict[str, Any]:

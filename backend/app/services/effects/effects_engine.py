@@ -199,6 +199,85 @@ _SECTION_DROP_STROBE_S = 1.55
 # `hz + duty` strictly under the cap keeps the delivered count inside it.
 _STROBE_HZ_STRICT_MARGIN = 0.06
 
+# Drop anticipation. The build is recognised many bars before the drop lands and
+# dance music puts the drop on a phrase boundary, so `SectionManager.drop_prediction`
+# can name the instant long before the reactive detector is willing to. The
+# response is split by what being wrong costs.
+#
+# The dip is speculative. A short darkening a beat or two before the projected
+# downbeat reads as musical intent when no drop arrives, and it is the contrast
+# that makes a real one land.
+_DROP_DIP_LEAD_BEATS = 2.0
+_DROP_DIP_DEPTH = 0.55
+_DROP_DIP_MIN_CONFIDENCE = 0.50
+# Confirmation that never comes gives the build its level back over a bar, which
+# is a fade rather than a snap.
+_DROP_DIP_RECOVER_BARS = 1.0
+# The dip may not deepen faster than its own approach ramp - full depth over the
+# two beats of lead. Without a bound in this direction any discontinuity in the
+# projected instant, or confidence crossing the arming threshold, steps the whole
+# rig in a single frame; `_clock_bar_offset` is allowed to move three beats once
+# every eight bars, which is exactly such a discontinuity.
+_DROP_DIP_ONSET_LEAD_BEATS = _DROP_DIP_LEAD_BEATS
+
+# The hit is confirmed. Full level waits for the audio to agree, inside this much
+# either side of the projected downbeat, and to keep agreeing for `DWELL`. One
+# 60 fps sample of a decaying transient is not a drop: a lone kick over a quiet
+# pad reads as almost pure bass for exactly as long as the kick rings, and
+# measures 0.98 on the harness's own build/impact/breakdown.
+_DROP_CONFIRM_WINDOW_S = 0.35
+_DROP_CONFIRM_DWELL_S = 0.05
+# What agreement means. Every term is measured against something this programme
+# is already doing, so all of them read the same at -12 dB as at +9 dB:
+#
+# * the low end the build filtered out is back, against the build's own bass
+#   reference. A build whose low end is already up moves it a couple of
+#   hundredths across its own phrase boundary; only a drop moves it by
+#   `AccentPosture.bass_step`, the same jump the accent governor calls a drop.
+# * the moment is louder than this build has been. Measured as a ratio to the
+#   build's own energy rather than against an absolute floor: `energy` is a
+#   multiple of the input level, so any absolute term makes the confirmation a
+#   function of the fader position. Measured across the harness drop track the
+#   real drop steps the build's energy by 1.42x at -12, -6 and 0 dB and by 1.26x
+#   at +9 dB, where the analyser's own ceiling compresses it; a moderate one-shot
+#   over a decaying build reaches 1.07x.
+# * the programme is loud in its own normalised terms.
+#
+# None of that is the detector's drop rule, which also weighs level, fast-band
+# z-score, rise and a refractory against its running centre and spread. This is
+# a narrower, cheaper question - "did the thing the projection predicted actually
+# happen?" - asked only inside a window the projection already chose, and its
+# answer opens a sustained level and nothing else. Accents stay with the detector.
+_DROP_CONFIRM_BASS_STEP = 0.25
+_DROP_CONFIRM_HEADROOM = 0.45
+_DROP_CONFIRM_BASS_FLOOR = 0.45
+_DROP_CONFIRM_ENERGY_STEP = 1.15
+# How fast those references forget a peak, in level per second.
+_DROP_BASS_REF_DECAY = 0.25
+_DROP_ENERGY_REF_DECAY = 0.25
+# `StreamingSectionDetector._DROP_MIN_PROGRAMME`, restated so the render path
+# refuses a confirmation the detector itself would refuse on this term. A steady
+# noise floor normalises to 0.5 whatever its level, so it never clears this. It
+# is also re-asked on every frame of the anticipated window: a window opened by
+# evidence has to close when the evidence goes away, and a build that impacts and
+# then breaks down falls back under this within a few frames.
+_DROP_CONFIRM_MIN_PROGRAMME = 0.60
+
+# The drop bed. Every level in this renderer is a multiple of energy, and energy
+# peaks near a third of full scale on real programme, so a drop rendered as
+# `energy x 1.0` was no brighter than the verse it followed - which is why the
+# drop used to read as a strobe rather than as a bigger room. This is the
+# multiple that makes it bigger; the ceiling leaves the accents somewhere to go.
+_DROP_SUSTAIN_GAIN = 2.6
+_DROP_SUSTAIN_CEILING = 0.80
+# How fast the rig crosses from the section's own level to that bed. The dip is
+# there to make the contrast as large as possible, so without a bound the
+# dip-to-commit step is the largest luminance transient the show makes - and it
+# is one no strobe rule can see, because it is not a flash. At this rate the
+# crossing takes an eighth of a second and no single frame moves the rig further
+# than the reactive path already does at its own section boundary.
+_DROP_BED_RISE_PER_S = 8.0
+
 
 class EffectsEngine:
     """
@@ -371,6 +450,17 @@ class EffectsEngine:
         # Bar zero is a real bar on the locked clock, so the hold has to start
         # before any bar the clock can report.
         self._rebuild_pattern_hold_until_bar: int = -(10 ** 9)
+
+        # Drop anticipation: speculative dip, confirmed hit.
+        self._drop_dip: float = 0.0
+        self._drop_armed: bool = False
+        self._drop_confirm_gate: float = 1.0
+        self._drop_confirm_energy_gate: float = 1.0
+        self._drop_confirm_held: float = 0.0
+        self._drop_bass_ref: float = 0.0
+        self._drop_energy_ref: float = 0.0
+        self._drop_hit_until: float = -999.0
+        self._drop_bed_mix: float = 0.0
 
         # Pro lighting integration enabled flag
         self._pro_lighting_enabled = False
@@ -646,9 +736,15 @@ class EffectsEngine:
         HTTP tick, an offline render - folded minutes of audio into a detector
         that believed it was still warming up.
 
+        The bar clock is handed over as well. It feeds the drop predictor only -
+        the section returned here is the same one it would be without it - and
+        without it there is no grid to project a drop onto and no anticipation
+        at all.
+
         Runs at 60 fps and must not raise: keeping the previous section is
         always better than dropping the frame.
         """
+        bar_seconds = self._clock_period * 4.0
         try:
             section = self.section_manager.update_section_from_audio(
                 delta_time,
@@ -661,13 +757,181 @@ class EffectsEngine:
                 is_downbeat_event=self._rebuild_downbeat_event(),
                 programme_level=self._programme_level,
                 now=float(self.time),
+                bar_position=self._beat_clock_bars(),
+                clock_locked=bool(self._clock_locked),
+                clock_confidence=float(self._clock_conf),
+                bar_seconds=bar_seconds,
             )
         except Exception:
+            # No section this frame means no candidate either, and a dip left
+            # armed by a frame that never finished would hold the rig down for
+            # as long as the fault lasted.
+            self._drop_dip = 0.0
+            self._drop_armed = False
+            self._drop_confirm_held = 0.0
             return
 
+        self._drop_anticipation_update(delta_time, section, bar_seconds)
+
+        # The strobe window stays where it always was: on the detector's own drop
+        # decision. The anticipation path opens a sustained level and nothing
+        # else, so a projection that turns out to be wrong cannot place an accent.
         if section == "drop" and self._rebuild_section != "drop":
             self._rebuild_drop_until = self.time + _SECTION_DROP_STROBE_S
         self._rebuild_set_section(section)
+
+    def _drop_anticipation_update(self, delta_time: float, section: str, bar_seconds: float):
+        """Act on the projected drop: dip on speculation, commit on confirmation.
+
+        Runs at 60 fps and must not raise. Every failure path here leaves the dip
+        at zero and the hit in the past, which is exactly the behaviour that
+        predates the predictor: the reactive detector still names the drop and
+        the render still responds to it, only later.
+        """
+        try:
+            self._drop_anticipation_step(delta_time, section, bar_seconds)
+        except Exception:
+            self._drop_dip = 0.0
+            self._drop_armed = False
+            self._drop_confirm_held = 0.0
+            self._drop_hit_until = -999.0
+
+    def _drop_anticipation_step(self, delta_time: float, section: str, bar_seconds: float):
+        dt = float(delta_time) if delta_time else 0.0
+        if not (0.0 < dt <= 0.25):
+            dt = 1.0 / 60.0
+        bar_s = float(bar_seconds)
+        if not (0.8 <= bar_s <= 5.0):
+            bar_s = 4.0 * 60.0 / 128.0
+        now = float(self.time)
+
+        energy = max(0.0, min(1.0, float(self.audio_features.energy)))
+        bass = max(0.0, min(1.0, float(self.audio_features.bass)))
+        self._drop_bass_ref = max(bass, self._drop_bass_ref - _DROP_BASS_REF_DECAY * dt)
+        self._drop_energy_ref = max(energy, self._drop_energy_ref - _DROP_ENERGY_REF_DECAY * dt)
+
+        # An anticipated window is open on the strength of evidence the detector
+        # has not seen. Ask again every frame: a build that impacts and then
+        # breaks down stops being a drop long before the window would have run
+        # out, and holding the rig up through the breakdown is the loudest way to
+        # be wrong.
+        if now < self._drop_hit_until and not self._drop_sustains():
+            self._drop_hit_until = -999.0
+
+        # Nothing holds the rig back through a drop, whether this path called it
+        # or the detector did.
+        if now < self._drop_hit_until or (section or "").lower() == "drop":
+            self._drop_dip = 0.0
+            self._drop_armed = False
+            self._drop_confirm_held = 0.0
+            return
+
+        prediction = getattr(self.section_manager, "drop_prediction", None)
+        seconds_to = float(getattr(prediction, "seconds_to_drop", 0.0) or 0.0)
+        lead = _DROP_DIP_LEAD_BEATS * (bar_s * 0.25)
+        armed = (
+            prediction is not None
+            and bool(getattr(prediction, "pending", False))
+            and float(getattr(prediction, "confidence", 0.0) or 0.0) >= _DROP_DIP_MIN_CONFIDENCE
+            and -_DROP_CONFIRM_WINDOW_S <= seconds_to <= lead
+        )
+
+        if armed:
+            if not self._drop_armed:
+                # Frozen at arming, so the drop's own low end and its own level
+                # cannot raise the bar they have to clear.
+                self._drop_armed = True
+                self._drop_confirm_held = 0.0
+                self._drop_confirm_gate = max(
+                    _DROP_CONFIRM_BASS_FLOOR,
+                    self._drop_bass_ref + _DROP_CONFIRM_BASS_STEP,
+                    self._drop_bass_ref + (1.0 - self._drop_bass_ref) * _DROP_CONFIRM_HEADROOM,
+                )
+                self._drop_confirm_energy_gate = self._drop_energy_ref * _DROP_CONFIRM_ENERGY_STEP
+            if abs(seconds_to) <= _DROP_CONFIRM_WINDOW_S and self._drop_confirms(energy, bass):
+                self._drop_confirm_held += dt
+            else:
+                self._drop_confirm_held = 0.0
+            if self._drop_confirm_held >= _DROP_CONFIRM_DWELL_S:
+                self._drop_commit(now)
+                return
+            # Past the projected instant the dip has already bought all the
+            # contrast it is going to; from there it is only a hole in the light,
+            # so it starts being given back at the instant rather than at the end
+            # of the confirmation window.
+            if seconds_to >= 0.0:
+                ramp = (lead - seconds_to) / lead
+            else:
+                ramp = 1.0 + seconds_to / _DROP_CONFIRM_WINDOW_S
+            target = _DROP_DIP_DEPTH * max(0.0, min(1.0, ramp))
+        else:
+            self._drop_armed = False
+            self._drop_confirm_held = 0.0
+            target = 0.0
+
+        if target >= self._drop_dip:
+            onset = _DROP_DIP_DEPTH / max(0.05, _DROP_DIP_ONSET_LEAD_BEATS * bar_s * 0.25)
+            self._drop_dip = min(target, self._drop_dip + onset * dt)
+        else:
+            recover = _DROP_DIP_DEPTH / max(0.5, _DROP_DIP_RECOVER_BARS * bar_s)
+            self._drop_dip = max(target, self._drop_dip - recover * dt)
+
+    def _drop_sustains(self) -> bool:
+        """Is the audio still behaving like the drop this path committed to?
+
+        Cheap and level-free on purpose: it is asked on every frame of the
+        anticipated window, and the one thing a build/impact/breakdown stops
+        doing immediately is being loud in its own normalised terms.
+        """
+        programme = self._programme_level
+        if programme is None:
+            return False
+        return float(programme) >= _DROP_CONFIRM_MIN_PROGRAMME
+
+    def _drop_confirms(self, energy: float, bass: float) -> bool:
+        """Has the audio agreed that the projected drop actually landed?
+
+        Three refusals, and a mispredicted downbeat trips all of them: the low
+        end the build filtered out has to be back, the moment has to be louder
+        than this build has been, and the programme has to be loud in its own
+        normalised terms. Every one is a ratio or a normalised measure, so the
+        answer does not move with the fader.
+        """
+        if energy <= 0.0 or energy < self._drop_confirm_energy_gate:
+            return False
+        if not self._drop_sustains():
+            return False
+        return bass >= self._drop_confirm_gate
+
+    def _drop_commit(self, now: float):
+        """The audio agreed: release the dip and open the sustained drop level.
+
+        Deliberately not the strobe window. `_rebuild_drop_until` is what arms
+        the white accents, and that stays with the detector, which weighs level,
+        fast-band z-score, rise and its own refractory against this track's
+        running centre and spread. Being wrong here costs a second of extra
+        light; being wrong there costs a flash in someone's face.
+        """
+        self._drop_dip = 0.0
+        self._drop_armed = False
+        self._drop_confirm_held = 0.0
+        self._drop_hit_until = now + _SECTION_DROP_STROBE_S
+
+    def _reset_drop_anticipation(self):
+        """Forget the candidate; a new song is a new grid."""
+        self._drop_dip = 0.0
+        self._drop_armed = False
+        self._drop_confirm_gate = 1.0
+        self._drop_confirm_energy_gate = 1.0
+        self._drop_confirm_held = 0.0
+        self._drop_bass_ref = 0.0
+        self._drop_energy_ref = 0.0
+        self._drop_hit_until = -999.0
+        self._drop_bed_mix = 0.0
+        try:
+            self.section_manager.reset_drop_prediction()
+        except Exception:
+            pass
 
     def _update_fixtures_rebuild(self, delta_time: float):
         """Scratch-built pro busker rendering pipeline (single source of truth)."""
@@ -795,6 +1059,32 @@ class EffectsEngine:
             tilt_amp = 25.0
             move_speed = 0.85
             base_floor = 1.0
+
+        # The drop look, whether the detector named it or the anticipation path
+        # committed to it a beat earlier. It is one sustained level across the
+        # whole rig with the accents as punctuation on top, not a square wave
+        # between full and black; and it is still a multiple of energy, so
+        # silence is still darkness.
+        #
+        # The rig crosses to that bed from wherever the section had it, at a
+        # bounded rate. The dip exists to make this step as large as it can be,
+        # and a step is not a flash, so no strobe rule sees it: without the bound
+        # it is the largest luminance transient in the show and `no_strobe` does
+        # nothing about it.
+        drop_look = section == "drop" or self.time < self._drop_hit_until
+        if drop_look:
+            step = float(delta_time) if delta_time else 0.0
+            if not (0.0 < step <= 0.25):
+                step = 1.0 / 60.0
+            self._drop_bed_mix = min(1.0, self._drop_bed_mix + _DROP_BED_RISE_PER_S * step)
+        else:
+            self._drop_bed_mix = 0.0
+        drop_target = min(_DROP_SUSTAIN_CEILING, energy * _DROP_SUSTAIN_GAIN)
+        # Never start the crossing above where it is going. On a saturated input
+        # the ceiling sits below `energy x base_floor`, and a crossing that began
+        # there would read as the rig dimming into the drop.
+        drop_from = min(energy * base_floor, drop_target)
+        drop_bed = drop_from + (drop_target - drop_from) * self._drop_bed_mix
 
         # Drop strobes: pure white only, gated by safety policy.
         policy = str(getattr(self.config, "accessibility_mode", "performance") or "performance").lower()
@@ -967,8 +1257,8 @@ class EffectsEngine:
             # All paths scale from zero when no audio — beams form on activation.
             if section == "breakdown":
                 dim = energy * 0.40
-            elif drop_strobe_on:
-                dim = 1.0 if strobe_flash else 0.06 * energy
+            elif drop_look:
+                dim = 1.0 if strobe_flash else drop_bed
             elif snare_strobe_on:
                 dim = 1.0 if snare_strobe_flash else energy * 0.16
             elif chase_active and is_mover and chase_head >= 0 and fixture.id in chase_index:
@@ -987,6 +1277,9 @@ class EffectsEngine:
                 dim = min(1.0, best_peak * beat_bump * energy)
             else:
                 dim = energy * base_floor
+            # The speculative dip, applied as a fraction of whatever the frame
+            # was going to be so a dip at zero energy is still zero.
+            dim *= 1.0 - self._drop_dip
             fixture.dimmer = max(0.0, min(1.0, dim))
             audience_cap = max(0.0, min(1.0, float(self.config.audience_intensity_cap)))
             if fixture.dimmer > audience_cap:
@@ -1645,6 +1938,8 @@ class EffectsEngine:
             self.section_manager.trigger_section(SongSection.UNKNOWN, immediate=True)
             self.pro_effects.build.stop()
             self._ml_emotion_mapping = None
+
+        self._reset_drop_anticipation()
 
         # Reset section-template "home" state and MIB transitions for next song
         self._song_home_section = None

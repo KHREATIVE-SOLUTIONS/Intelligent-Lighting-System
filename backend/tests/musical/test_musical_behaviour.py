@@ -19,8 +19,10 @@ undone.
 Run `pytest tests/musical -s -k baseline_table` to print the whole metric table.
 """
 
+import contextlib
 from functools import lru_cache
 from typing import Dict, Tuple
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -68,6 +70,178 @@ def dense_track() -> SA.SyntheticTrack:
 @lru_cache(maxsize=None)
 def tempo_track() -> SA.SyntheticTrack:
     return SA.tempo_change_track()
+
+
+@lru_cache(maxsize=None)
+def build_without_drop_track() -> SA.SyntheticTrack:
+    """The drop track's build, carrying on past the boundary instead of dropping.
+
+    The anticipation path's case is that a build projects onto the phrase grid,
+    so the material that can show it is not merely guessing is a build that
+    reaches that boundary and continues. Everything before
+    `drop_track().drop_time` is the drop track's own audio, so the build is
+    recognised in exactly the same place and the projection is made from the
+    same anchor; from there the build's last bar repeats, which holds the level,
+    the grid and the instrumentation and withholds only the drop.
+
+    `drop_sample` is None on purpose: there is no drop here for anything to be
+    late for, and any drop metric asked about this track has to say so.
+    """
+    source = SA.intro_build_drop_track()
+    rate = source.sample_rate
+    cut = int(source.drop_sample)
+    bar = int(round(4.0 * 60.0 / source.bpm * rate))
+    fade = int(round(0.005 * rate))
+    ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+
+    head = np.asarray(source.samples[:cut], dtype=np.float32).copy()
+    head[-fade:] *= ramp[::-1]
+    loop = np.asarray(source.samples[cut - bar:cut], dtype=np.float32)
+    pieces = [head]
+    for _ in range(12):
+        segment = loop.copy()
+        segment[:fade] *= ramp
+        segment[-fade:] *= ramp[::-1]
+        pieces.append(segment)
+
+    samples = np.concatenate(pieces).astype(np.float32)
+    beat = int(round(60.0 / source.bpm * rate))
+    lead = int(source.beat_samples[0])
+    return SA.SyntheticTrack(
+        name="build_without_drop",
+        samples=samples,
+        sample_rate=rate,
+        bpm=source.bpm,
+        beat_samples=tuple(range(lead, len(samples), beat)),
+        downbeat_samples=tuple(range(lead, len(samples), beat * 4)),
+    )
+
+
+@lru_cache(maxsize=None)
+def build_with_a_false_impact_track() -> SA.SyntheticTrack:
+    """Build, one moderate hit on the projected downbeat, then a breakdown.
+
+    `build_without_drop_track` withholds the boundary entirely, so it can only
+    ever exercise the dip: nothing happens at bar 16 for a confirmation to look
+    at. This is the material that reaches the confirmation and has to be refused
+    by it — the build/impact/breakdown that is as much a part of dance music as
+    the drop, and the shape a projected downbeat is most likely to be wrong
+    about, because the projection is right about *when* and wrong about *what*.
+
+    Everything is this track's own audio: the drop track's build up to the
+    boundary, a fifth of a bar of its real drop at a quarter weight as the
+    impact, and its intro — a pad at a tenth of full weight with one soft kick a
+    bar — as the breakdown underneath. The detector never calls any of it a drop.
+    """
+    source = SA.intro_build_drop_track()
+    rate = source.sample_rate
+    cut = int(source.drop_sample)
+    lead = int(source.beat_samples[0])
+    bar = int(round(4.0 * 60.0 / source.bpm * rate))
+    fade = int(round(0.005 * rate))
+    ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+
+    head = np.asarray(source.samples[:cut], dtype=np.float32).copy()
+    head[-fade:] *= ramp[::-1]
+    tail = np.asarray(source.samples[lead:lead + 8 * bar], dtype=np.float32).copy()
+    tail[:fade] *= ramp
+    hit = np.asarray(source.samples[cut:cut + bar // 5], dtype=np.float32) * 0.25
+    tail[:hit.size] += hit
+
+    samples = np.concatenate([head, tail]).astype(np.float32)
+    beat = int(round(60.0 / source.bpm * rate))
+    return SA.SyntheticTrack(
+        name="build_with_a_false_impact",
+        samples=samples,
+        sample_rate=rate,
+        bpm=source.bpm,
+        beat_samples=tuple(range(lead, len(samples), beat)),
+        downbeat_samples=tuple(range(lead, len(samples), beat * 4)),
+    )
+
+
+@lru_cache(maxsize=None)
+def two_drop_track() -> Tuple[SA.SyntheticTrack, SA.SyntheticTrack]:
+    """The drop track played twice over, on one continuous bar clock.
+
+    A set is not one drop, and nothing else here plays two. The first copy is
+    cut on its own bar line so the second starts in phase, which is what makes
+    this a test of the anticipation path rather than of the beat clock: the
+    grid never moves, only the detector's idea of what is unusual on this track.
+
+    Returned as a pair carrying the same audio and the same name — so the
+    harness renders it once — labelled with the first drop and with the second,
+    so every drop metric can be asked about either.
+    """
+    source = SA.intro_build_drop_track()
+    rate = source.sample_rate
+    lead = int(source.beat_samples[0])
+    bar = int(round(4.0 * 60.0 / source.bpm * rate))
+    cut = lead + 28 * bar
+    fade = int(round(0.005 * rate))
+    ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+
+    first = np.asarray(source.samples[:cut], dtype=np.float32).copy()
+    first[-fade:] *= ramp[::-1]
+    second = np.asarray(source.samples[lead:cut], dtype=np.float32).copy()
+    second[:fade] *= ramp
+
+    samples = np.concatenate([first, second]).astype(np.float32)
+    beat = int(round(60.0 / source.bpm * rate))
+    common = dict(
+        name="two_drops",
+        samples=samples,
+        sample_rate=rate,
+        bpm=source.bpm,
+        beat_samples=tuple(range(lead, len(samples), beat)),
+        downbeat_samples=tuple(range(lead, len(samples), beat * 4)),
+    )
+    return (
+        SA.SyntheticTrack(drop_sample=int(source.drop_sample), **common),
+        SA.SyntheticTrack(drop_sample=cut + int(source.drop_sample) - lead, **common),
+    )
+
+
+@contextlib.contextmanager
+def anticipation_disabled():
+    """Render with the drop predictor unable to publish a candidate.
+
+    `DropPredictor.update` is the only thing that ever moves the published
+    prediction off the `NO_DROP_PREDICTION` its constructor set, so patching it
+    leaves the renderer reading exactly what it read before this path existed.
+    Nothing else about the engine, the detector or the analyser is touched,
+    which is what makes the difference between two such runs attributable to
+    the anticipation path and to nothing else.
+    """
+    from app.services.lighting.section_manager import (
+        DropPredictor, NO_DROP_PREDICTION,
+    )
+
+    with mock.patch.object(
+        DropPredictor, "update", lambda self, **kwargs: NO_DROP_PREDICTION
+    ):
+        yield
+
+
+_FOOTPRINTS: Dict[Tuple, Tuple] = {}
+
+
+async def anticipation_footprint(track: SA.SyntheticTrack):
+    """The same track rendered with and without anticipation, and the difference.
+
+    Returns `(live, blind, delta)` where `delta` is per-frame, per-fixture
+    emitted intensity, live minus blind. Every claim about what the
+    anticipation path did — or, on material with no drop in it, did not do — is
+    made against `delta` rather than against a threshold chosen by hand.
+    """
+    key = (track.name, round(track.gain_db, 4))
+    if key not in _FOOTPRINTS:
+        live = await M.run_track(track, engine=M.build_engine())
+        with anticipation_disabled():
+            blind = await M.run_track(track, engine=M.build_engine())
+        assert live.frame_count == blind.frame_count, track.name
+        _FOOTPRINTS[key] = (live, blind, live.intensity - blind.intensity)
+    return _FOOTPRINTS[key]
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +307,8 @@ async def test_harness_reads_the_real_engine_not_a_model():
 
 async def test_every_track_renders_without_raising_in_the_update_path():
     """A dark rig with no traceback is the worst outcome in this codebase."""
-    for track in (click_track(), drop_track(), sparse_track(), dense_track(), tempo_track()):
+    for track in (click_track(), drop_track(), sparse_track(), dense_track(),
+                  tempo_track(), build_without_drop_track()):
         result = await run_cached(track)
         assert result.frame_count > 0, track.name
         assert result.intensity.shape[1] == len(result.fixture_ids)
@@ -536,31 +711,23 @@ async def test_intro_build_drop_is_reported_as_that_shape():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason="contract 4: the step lands but late. On the reference engine the drop "
-           "track now steps 0.193 and crosses the 0.15 threshold 949.7 ms after "
-           "the true drop, against a 250 ms bound; on the venue engine the step "
-           "is 0.801 at 849.7 ms. The section decision itself arrives at 716 ms, "
-           "so what remains is the render's own rise time, not the detector's.",
-)
 async def test_the_drop_lands_in_the_output():
+    """The contract's headline number, on the un-accented reference engine.
+
+    The detector still names the drop 716 ms late and is meant to: its
+    hysteresis and minimum hold are what took section flapping to zero. What
+    this measures is the anticipation path in front of it, which projects the
+    drop onto the phrase grid and commits when the audio confirms.
+    """
     track = drop_track()
     result = await run_cached(track)
     latency = M.drop_latency_ms(result, track)
     step = M.drop_intensity_step(result, track)
     assert latency is not None, f"output never moved; step was {step}"
     assert latency <= 250.0, latency
+    assert step >= 0.15, step
 
 
-@pytest.mark.xfail(
-    reason="contract 4: measured on the reference engine, which is built with "
-           "strobe_enabled=False and no accent governor, so the only accents it "
-           "could show are a bump or a hole in the light and it shows 0 of "
-           "either (peak rig level 0.396 in the window). The venue engine the "
-           "product ships does accent the same drop: 4 bumps, 3 blackouts and 4 "
-           "white flashes in the same four seconds. Remove this marker when the "
-           "un-accented render also reads as a discrete event.",
-)
 async def test_the_drop_gets_an_accent():
     """An accent means something discrete: a flash, a bump or a hole in the light."""
     track = drop_track()
@@ -573,6 +740,374 @@ async def test_the_drop_gets_an_accent():
         f"the drop is rendered as more of the same: {accents.as_dict()}, "
         f"peak rig level {float(window.rig_mean.max()):.3f}"
     )
+
+
+async def test_the_drop_reads_as_a_sustained_lift_not_a_strobe():
+    """A drop should read as the room getting bigger, not as a square wave.
+
+    The response used to be full-on alternating with near-black across
+    consecutive frames — 1.000 / 0.004 / 1.000 — which measures as a large
+    "step" and as several accents while the room is, on average, no brighter
+    than the build it followed. Every assertion here is therefore about the
+    *floor* of the drop window rather than its peak: the dimmest frames have to
+    be brighter than the build's brightest, and no fixture may be anywhere near
+    black.
+
+    The pre-drop window stops 1.2 s before the drop so that the speculative dip
+    — which is deliberately darker than the build — is not what "the build's
+    level" is measured from.
+    """
+    track = drop_track()
+    cap = float(M.VENUE_ENGINE_KWARGS["strobe_hz_cap"])
+    for label in ("reference", "venue"):
+        result = (
+            await run_cached(track) if label == "reference"
+            else await M.run_track(track, engine=M.build_venue_engine())
+        )
+        pre = result.between(track.drop_time - 4.0, track.drop_time - 1.2)
+        post = result.between(track.drop_time + 0.25, track.drop_time + 4.0)
+        assert pre.frame_count > 0 and post.frame_count > 0
+
+        quiet_after = float(np.percentile(post.rig_mean, 5))
+        loud_before = float(np.percentile(pre.rig_mean, 95))
+        assert quiet_after >= loud_before, (
+            f"{label}: the drop oscillates rather than lifts — p5 after "
+            f"{quiet_after:.4f} against p95 before {loud_before:.4f}"
+        )
+        assert float(post.rig_mean.mean()) >= 2.0 * float(pre.rig_mean.mean()), (
+            f"{label}: mean rig level {float(post.rig_mean.mean()):.4f} after vs "
+            f"{float(pre.rig_mean.mean()):.4f} before"
+        )
+        assert float(post.intensity.min()) >= 0.10, (
+            f"{label}: a fixture went to {float(post.intensity.min()):.4f} inside "
+            "the drop, which is the strobe-shaped response, not a lift"
+        )
+        assert M.peak_flash_rate_hz(result) <= cap, label
+
+
+async def test_a_build_that_impacts_and_breaks_down_is_never_strobed():
+    """The false-positive guard the contract asks for, on material that can fail it.
+
+    This is the case the whole speculation rule exists for. The projection is
+    *right* — bar 16 is where the phrase turns — and wrong about what happens
+    there: one moderate hit and then the floor drops out. The confirmation is
+    reached and evaluated on 42 frames here, so a gate that let it through would
+    put a full-white strobe on a breakdown.
+
+    The comparison is the whole wire against the same render with the predictor
+    unable to publish anything. `delta.max() <= 0` is the load-bearing line: it
+    fails the instant *any* term of the confirmation is loosened enough to
+    commit, whichever term that is, because a commit can only ever add light.
+    The safety counts are stated separately because they are what the failure
+    would cost.
+    """
+    track = build_with_a_false_impact_track()
+    live, blind, delta = await anticipation_footprint(track)
+
+    assert float(delta.max()) <= 0.0, (
+        f"the anticipation path put {float(delta.max()):.4f} of extra light in "
+        f"the room on a build that impacted and broke down; sections "
+        f"{M.section_timeline(live)}"
+    )
+    assert float(delta.min()) <= -0.05, (
+        "nothing dipped, so this track never reached the anticipation path"
+    )
+
+    venue = await M.run_track(track, engine=M.build_venue_engine())
+    assert "drop" not in M.section_names(venue), M.section_timeline(venue)
+    assert M.white_flash_times(venue).size == 0, (
+        f"a build that never dropped was strobed at "
+        f"{M.white_flash_times(venue).tolist()}"
+    )
+    assert M.accent_events(venue).total == 0, M.accent_events(venue).as_dict()
+    assert M.peak_flash_rate_hz(venue) <= float(M.VENUE_ENGINE_KWARGS["strobe_hz_cap"])
+
+
+async def test_the_speculative_dip_has_a_floor():
+    """How dark the renderer is allowed to get on a guess.
+
+    The dip is a fraction of whatever the frame was going to be, so its cost is
+    stated as a ratio to the un-anticipated render rather than as a level: on
+    every frame of a build that never drops, the room keeps at least this much
+    of the light it would have had. Without a bound here, deepening the dip
+    turns every projected downbeat — including all the ones that never drop —
+    into a near-blackout of the whole rig, and nothing else measures it.
+    """
+    live, blind, _ = await anticipation_footprint(build_without_drop_track())
+    lit = blind.rig_mean > 0.02
+    assert np.any(lit)
+    kept = float((live.rig_mean[lit] / blind.rig_mean[lit]).min())
+    assert kept >= 0.40, (
+        f"the speculative dip took the rig to {kept:.4f} of the level it would "
+        "have had, which is a blackout rather than a darkening"
+    )
+    assert kept <= 0.75, "the dip is too shallow to read as intent"
+
+
+async def test_anticipation_stays_invisible_on_music_that_never_drops():
+    """The same comparison on material with no build in it at all.
+
+    Being faster on a drop is worth little beside not lurching on music that
+    never has one. Rather than pick a threshold for "lurch", the same track is
+    rendered twice — once normally and once with the predictor unable to
+    publish anything — and the two DMX streams have to agree frame for frame
+    and fixture for fixture.
+
+    Note what this can and cannot see: on both tracks the predictor publishes no
+    candidate on any frame, so the agreement is exact by construction and the
+    confirmation is never reached. `test_a_build_that_impacts_and_breaks_down_is_never_strobed`
+    is the guard that exercises it. The drop track closes the loop here: the
+    identical comparison has to *disagree* there, or this test is measuring a
+    comparison that cannot see anything.
+    """
+    for track in (sparse_track(), click_track()):
+        live, blind, delta = await anticipation_footprint(track)
+        worst = float(np.abs(delta).max())
+        assert worst == 0.0, (
+            f"{track.name}: anticipation moved the rig by {worst:.4f} on material "
+            f"with no drop in it; sections {M.section_timeline(live)}"
+        )
+        assert M.accent_events(live).total == 0, track.name
+        assert M.white_flash_times(live).size == 0, track.name
+
+    _, _, drop_delta = await anticipation_footprint(drop_track())
+    assert float(np.abs(drop_delta).max()) > 0.1, (
+        "the anticipation path changes nothing even on the drop track, so the "
+        "guard above would pass with the whole mechanism deleted"
+    )
+
+
+async def test_a_predicted_drop_that_never_arrives_costs_the_show_nothing():
+    """The speculation rule, on a build that reaches the boundary and carries on.
+
+    The dip is the part the renderer is allowed to be wrong about, and it is
+    only allowed because being wrong costs light rather than adds it. Five
+    separate claims, because "it recovers smoothly" hides four of them:
+
+    * it only ever dims — no unconfirmed hit, no overshoot on release;
+    * it really did dim, so nothing below is vacuous;
+    * the rig comes back to exactly the frames it would have rendered with no
+      prediction at all, which is what "returns to the build's level with no
+      residual" means when it is measured rather than asserted;
+    * it is back there again by the end of the track, so nothing is stuck;
+    * and it took longer than a beat to get there, so it faded rather than
+      snapped.
+    """
+    track = build_without_drop_track()
+    boundary = drop_track().drop_time
+    live, blind, delta = await anticipation_footprint(track)
+
+    assert float(delta.max()) <= 0.0, (
+        f"a drop that never arrived put {float(delta.max()):.4f} of extra light "
+        "in the room"
+    )
+    assert float(delta.min()) <= -0.05, (
+        "nothing dipped, so this track is not exercising the speculation rule"
+    )
+
+    times = live.frame_times
+    settled = (times >= boundary + 3.0) & (times <= boundary + 11.0)
+    assert np.any(settled)
+    assert float(np.abs(delta[settled]).max()) == 0.0, (
+        "the rig never came back to where the build had it"
+    )
+    tail = times >= track.duration_s - 5.0
+    assert np.any(tail)
+    assert float(np.abs(delta[tail]).max()) == 0.0, "the dip is stuck on"
+
+    # How long the deepest point of the dip took to come back. Stated as a
+    # duration rather than as a per-frame rate because the chase underneath is
+    # swinging the rig by far more than the dip is, so no bound on the rig's own
+    # frame-to-frame movement can resolve the release at all.
+    footprint = delta.mean(axis=1)
+    deepest = int(np.argmin(footprint))
+    settled_at = next(
+        (
+            i for i in range(deepest + 1, len(footprint) - 10)
+            if float(np.abs(footprint[i:i + 10]).max()) == 0.0
+        ),
+        None,
+    )
+    assert settled_at is not None, "the dip never finished being given back"
+    assert times[settled_at] - times[deepest] >= 1.0, (
+        f"the dip was given back over {times[settled_at] - times[deepest]:.3f} s, "
+        "which is inside a beat and reads as a snap"
+    )
+    window = (times >= boundary - 2.5) & (times <= boundary + 3.5)
+    assert float(np.max(np.diff(live.rig_mean[window]))) <= float(
+        np.max(np.diff(blind.rig_mean[window]))
+    ) + 1e-9, "releasing the dip is the largest jump the rig makes"
+
+
+async def test_a_mispredicted_drop_does_not_flash_the_room():
+    """Safety, on the machine the venue runs rather than the reference engine.
+
+    A dip is cheap when it is wrong. An accent is not: the strobe budget, the
+    Hz cap and the duty cycle exist because the cost of being wrong there is a
+    person in the audience, not a dull moment in the show.
+    """
+    track = build_without_drop_track()
+    result = await M.run_track(track, engine=M.build_venue_engine())
+
+    assert M.white_flash_times(result).size == 0, (
+        f"a build that never dropped was strobed at "
+        f"{M.white_flash_times(result).tolist()}"
+    )
+    assert M.accent_events(result).total == 0, M.accent_events(result).as_dict()
+    assert M.peak_flash_rate_hz(result) <= float(M.VENUE_ENGINE_KWARGS["strobe_hz_cap"])
+    assert "drop" not in M.section_names(result), M.section_timeline(result)
+
+
+async def test_the_commit_is_not_the_biggest_step_the_rig_makes():
+    """The transient no strobe rule can see, measured where it is worst.
+
+    Coming out of the dip into the drop is a rise, not a flash, so the Hz cap,
+    the duty cycle, the genre budget and `no_strobe` all have nothing to say
+    about it — and the dip exists precisely to make it as large as possible. In
+    the accessibility posture that exists to protect photosensitive viewers, the
+    rig went 0.05 to 0.80 in one 16.7 ms frame.
+
+    The bound is the reactive path's own worst step on the same track and the
+    same posture, so it cannot be satisfied by making the show duller: whatever
+    the section boundary already does, anticipating it may not do more.
+    """
+    track = drop_track()
+    for mode in ("no_strobe", "conservative"):
+        live = await M.run_track(track, engine=M.build_venue_engine(accessibility_mode=mode))
+        with anticipation_disabled():
+            blind = await M.run_track(track, engine=M.build_venue_engine(accessibility_mode=mode))
+
+        worst_live = float(np.diff(live.intensity, axis=0).max())
+        worst_blind = float(np.diff(blind.intensity, axis=0).max())
+        assert worst_live <= worst_blind + 1e-9, (
+            f"{mode}: anticipating the drop stepped a fixture by {worst_live:.4f} "
+            f"in one frame against {worst_blind:.4f} without it"
+        )
+        assert float(np.max(np.diff(live.rig_mean))) <= float(
+            np.max(np.diff(blind.rig_mean))
+        ) + 1e-9, mode
+    assert M.white_flash_times(
+        await M.run_track(track, engine=M.build_venue_engine(accessibility_mode="no_strobe"))
+    ).size == 0
+
+
+async def test_two_drops_in_one_session_are_both_landed():
+    """Anticipation is opportunistic; the fallback underneath it is not.
+
+    The projection is anchored on where the detector's fast rise crosses its
+    gate, and that gate is measured against a spread which adapts to the track:
+    on the second pass over the same audio the climb is found two bars later and
+    the eight-bar projection points two bars past the drop. The candidate is
+    then consumed by the detector naming the drop, so nothing lurches — the
+    second drop simply falls back to the reactive path.
+
+    Measured on the reference engine, this track: 49.7 ms on the first drop,
+    499.3 ms on the second, which is the number the reactive path renders with
+    the predictor silenced. Anything worse than that on the second drop means
+    the mispointed candidate has started costing light rather than merely not
+    saving any.
+    """
+    early, late = two_drop_track()
+    result = await run_cached(early)
+
+    first = M.drop_latency_ms(result, early)
+    second = M.drop_latency_ms(result, late)
+    assert first is not None and second is not None, (
+        f"{first} / {second}; sections {M.section_timeline(result)}"
+    )
+    assert first <= 250.0, first
+    assert second <= 1000.0, second
+    assert M.section_names(result).count("drop") == 2, M.section_timeline(result)
+    assert M.shortest_section_hold_s(result) >= 2.0, M.section_timeline(result)
+
+
+async def test_turning_the_playback_down_never_makes_the_drop_darker():
+    """The fader must not be able to turn the anticipation into a net loss.
+
+    Every level in this renderer is a multiple of energy, so a quiet track gets
+    a quiet show and the *step* the latency metric looks for shrinks with it.
+    That is the zero-floor model and it is fine. What is not fine is the
+    anticipation taking light away and giving none back: the dip is spent up
+    front on a promise, so if the confirmation is a function of playback level
+    there is a gain at which the promise is never kept and the room is darker
+    through the drop than with the whole path switched off.
+
+    Measured against the same render with the predictor silenced, across the
+    contract's own gain sweep, from a quarter of a second after the drop — which
+    is the far side of the confirmation window, so the dip itself is not what is
+    being measured. On the rig mean, because that is how much light is in the
+    room: per fixture the drop's flat bed is below the peak of the chase it
+    replaced, which is a shape change and not a loss.
+    """
+    track = drop_track()
+    for gain_db in (9.0, 0.0, -12.0):
+        rendered = track if gain_db == 0.0 else track.with_gain_db(gain_db)
+        live, blind, _ = await anticipation_footprint(rendered)
+
+        after = live.frame_times >= track.drop_time + 0.25
+        assert np.any(after)
+        room = (live.rig_mean - blind.rig_mean)[after]
+        assert float(room.min()) >= -1e-9, (
+            f"{gain_db:+g} dB: the room was {-float(room.min()):.4f} darker "
+            "through the drop than with anticipation switched off"
+        )
+        assert float(room.max()) > 0.05, f"{gain_db:+g} dB: nothing was won either"
+
+        latency = M.drop_latency_ms(live, track)
+        reactive = M.drop_latency_ms(blind, track)
+        assert latency is not None, (
+            f"{gain_db:+g} dB: the drop never landed; step "
+            f"{M.drop_intensity_step(live, track)}"
+        )
+        # Either the contract's bound, or — where the rig is too quiet for a
+        # 0.15 step to be reachable at all — no worse than the reactive path.
+        # Measured: 49.7 ms at +9 and 0 dB, 483.0 against 949.7 at -12 dB.
+        assert latency <= 250.0 or (reactive is not None and latency <= reactive), (
+            f"{gain_db:+g} dB: anticipated {latency:.1f} ms against a reactive "
+            f"{reactive}"
+        )
+        assert M.section_names(live) == M.section_names(blind), (
+            f"{M.section_timeline(live)} vs {M.section_timeline(blind)}"
+        )
+
+
+async def test_the_metrics_the_contract_guards_have_not_moved():
+    """One place to check every number the anticipation work must not disturb.
+
+    These are the previous phase's results, quoted from the contract's own
+    table. They are asserted here as bounds with the measured baseline in the
+    message, so a failure says which number moved and by how much rather than
+    only that something did.
+    """
+    sparse = await run_cached(sparse_track())
+    assert M.section_changes_per_minute(sparse) == 0.0, (
+        f"sparse quiet flaps again: {M.section_timeline(sparse)}"
+    )
+    assert M.accent_events(sparse).total == 0, M.accent_events(sparse).as_dict()
+
+    # The sparse track never changes section at all, so its 24.0 s hold is the
+    # length of the track rather than a hold anything decided. The drop track is
+    # where this number is a hold: four sections, shortest 4.83 s.
+    assert M.shortest_section_hold_s(sparse) >= 2.0, M.section_timeline(sparse)
+    structured = await run_cached(drop_track())
+    assert len(M.section_names(structured)) >= 3, M.section_timeline(structured)
+    assert M.shortest_section_hold_s(structured) >= 2.0, M.section_timeline(structured)
+
+    quiet, reference, loud = [await run_cached(render) for render in gain_renders()]
+    assert M.section_agreement(reference, loud) == 1.0, "baseline 1.0000 at +9 dB"
+    assert M.section_agreement(quiet, reference) == 1.0, "baseline 1.0000 at -12 dB"
+
+    phase = M.beat_phase_error(reference, click_track())
+    assert phase.mean_ms <= 8.0, f"baseline 6.32 ms: {phase.as_dict()}"
+    assert phase.worst_ms <= 16.0, f"baseline 13.21 ms: {phase.as_dict()}"
+
+    occupancy = M.section_occupancy(await run_cached(drop_track()))
+    for name, baseline in (("verse", 0.350), ("chorus", 0.340),
+                           ("buildup", 0.222), ("drop", 0.089)):
+        assert abs(occupancy.get(name, 0.0) - baseline) <= 0.05, (
+            f"{name} occupancy moved from {baseline} to "
+            f"{occupancy.get(name, 0.0)}: {occupancy}"
+        )
 
 
 # ---------------------------------------------------------------------------

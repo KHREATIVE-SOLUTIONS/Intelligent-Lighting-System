@@ -25,6 +25,12 @@ WHICH SECTION DETECTOR IS ACTUALLY LIVE (read before trusting any of them):
 
 So promoting it is still outstanding work; do not read the presence of this
 class as evidence that the show runs on it.
+
+`DropPredictor` runs beside the detector rather than inside it. It reads the
+detector's output plus the caller's phase-locked bar clock and publishes a
+projected drop through `SectionManager.drop_prediction`; it writes nothing
+back, so the detector's certainty, hysteresis and holds are unchanged whether
+or not anything is listening.
 """
 
 import math
@@ -79,6 +85,7 @@ class SectionDecision:
     flux_level: float = 0.5
     drop_impact: bool = False
     on_boundary: bool = False
+    rise_fast: float = 0.0
 
 
 class StreamingSectionDetector:
@@ -299,6 +306,7 @@ class StreamingSectionDetector:
                 trend=self._decision.trend,
                 bass_level=self._decision.bass_level,
                 flux_level=self._decision.flux_level,
+                rise_fast=self._decision.rise_fast,
             )
             return self._decision
 
@@ -509,6 +517,7 @@ class StreamingSectionDetector:
             flux_level=flvl,
             drop_impact=drop_impact,
             on_boundary=downbeat_event,
+            rise_fast=self._rise_fast,
         )
         return self._decision
 
@@ -535,6 +544,304 @@ class StreamingSectionDetector:
             "centre": round(self._centre, 5),
             "dev": round(self._dev, 5),
         }
+
+
+@dataclass(frozen=True)
+class DropPrediction:
+    """A projected drop instant, or the explicit absence of one.
+
+    `pending` false means there is no candidate at all and the renderer has
+    nothing to anticipate with; `reason` says which rule refused. Every other
+    field is meaningless in that state and is left at zero rather than at a
+    stale value, so a caller that forgets to check `pending` gets "now, at zero
+    confidence" and not a confident wrong instant.
+    """
+
+    pending: bool = False
+    seconds_to_drop: float = 0.0     # negative once the projected instant passes
+    bars_to_drop: float = 0.0
+    confidence: float = 0.0          # 0..1, how far the renderer may commit
+    target_bar: float = 0.0          # position on the caller's own bar clock
+    anchor_bar: float = 0.0
+    phrase_bars: int = 0             # 8 or 16; 0 when nothing is pending
+    reason: str = "idle"
+
+
+NO_DROP_PREDICTION = DropPrediction()
+
+
+class DropPredictor:
+    """Project where a build is heading, on the caller's bar clock.
+
+    The reactive detector is deliberately slow and certain, so by the time it
+    can name a drop the drop has already happened. The warning, however, is
+    already there: the build is recognised many bars early, and dance music
+    puts its drop on a phrase boundary. This class turns that warning into an
+    instant the renderer can pre-arm against, and publishes how much it should
+    be trusted.
+
+    It has no timebase of its own. `bar_position` is the caller's musical
+    clock in bars, and every instant here is expressed on it; without one
+    there is no candidate at all. Nothing in here feeds back into the
+    detector's classification, hysteresis, minimum hold or drop refractory.
+
+    The anchor, and what it is not
+    ------------------------------
+    The climb is found from the detector's fast rise term and floored to a bar
+    line, because a filtered rise crosses its gate *after* the music turned,
+    never before. `_ANCHOR_LAG_BARS` then measures the *fractional* part of
+    that crossing and spends it as confidence.
+
+    That is the whole of the anchor, and it is worth being exact about what it
+    therefore cannot do. The rise gate is crossed when the detector's own
+    running spread says the climb is significant, and that spread adapts to the
+    track: measured on the harness drop track played twice in one session, the
+    first build's climb was found 0.33 bars after its true start and the
+    second's 2.46 bars after, once the spread had widened around the first
+    drop. A whole-bar error is invisible to a check on the fraction, so the
+    second build projects 8 bars from the wrong bar line and points two bars
+    past the drop.
+
+    The consequence is a *missed* anticipation, not a wrong one: the candidate
+    is still counting down when the drop lands, the dip only arms within
+    `_DROP_DIP_LEAD_BEATS` of the projected instant, and the detector naming
+    `drop` consumes the candidate before the wrong instant arrives. So the show
+    falls back to the reactive path, which is the behaviour that predates this
+    class. Anticipation is opportunistic; nothing downstream may assume it
+    fires on every build.
+
+    A candidate expires when
+    ------------------------
+    * the bar clock is absent or unlocked - there is no grid to project onto;
+    * the section leaves `buildup` for anything but `drop`;
+    * the rise falls below `_FADE_RISE` for `_FADE_HOLD_S` - a build that
+      fades out instead of dropping;
+    * the projected instant passes by more than `_GRACE_BARS` without the
+      detector confirming a drop. The first miss re-projects 8 bars to 16,
+      which is the one thing an 8-bar guess is commonly wrong about; a second
+      miss means this material is not on an 8/16 grid from this anchor and
+      nothing further is offered for this build;
+    * the detector commits `drop`, which consumes the candidate.
+
+    Every one of those leaves the renderer with today's reactive behaviour.
+    """
+
+    # Gates on the detector's fast rise, which is in deviation units and so is
+    # gain invariant, the same currency as the detector's own `_RISE` family.
+    _CLIMB_ON = 0.20
+    _CLIMB_OFF = 0.08
+    _FADE_RISE = 0.15
+    _FADE_HOLD_S = 1.0
+
+    # How far past a bar line the climb may be found and still be attributed
+    # to it. Filter lag alone is around half a bar at club tempos. This bounds
+    # the fraction only; a lag of a whole bar or more is not observable here.
+    _ANCHOR_LAG_BARS = 0.75
+
+    _PHRASES: Tuple[int, ...] = (8, 16)
+    _GRACE_BARS = 1.0
+    _MAX_LEAD_BARS = 20.0
+
+    _MIN_BAR_S = 0.8
+    _MAX_BAR_S = 5.0
+
+    # Clock confidence below the floor buys nothing; a projected downbeat is
+    # only as good as the phase it is projected from. It is smoothed because
+    # the raw coherence swings a third of its range between adjacent frames,
+    # and a renderer thresholding on the published number would chatter on
+    # estimator noise rather than on anything the music did.
+    _CONF_CLOCK_MIN = 0.30
+    _CONF_CLOCK_GOOD = 0.55
+    _TAU_CLOCK_TERM = 0.5
+
+    _APPROACH_FLOOR = 0.35
+    _REPROJECT_PENALTY = 0.7
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._climb_from: Optional[float] = None
+        self._fade_since: Optional[float] = None
+        self._last_t: Optional[float] = None
+        self._clock_term = 0.0
+        self._anchor = 0.0
+        self._anchor_lag = 0.0
+        self._phrase_index = 0
+        self._target = 0.0
+        self._armed = False
+        self._prediction = NO_DROP_PREDICTION
+
+    @property
+    def prediction(self) -> DropPrediction:
+        return self._prediction
+
+    def _disarm(self) -> None:
+        self._armed = False
+        self._phrase_index = 0
+
+    @staticmethod
+    def _finite(value: float, fallback: float = 0.0) -> float:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        if v != v or v in (float("inf"), float("-inf")):
+            return fallback
+        return v
+
+    @staticmethod
+    def _clamp01(value: float) -> float:
+        return 0.0 if value < 0.0 else (1.0 if value > 1.0 else value)
+
+    def update(
+        self,
+        *,
+        section: str,
+        rise_fast: float,
+        bar_position: Optional[float] = None,
+        clock_locked: bool = False,
+        clock_confidence: float = 0.0,
+        bar_seconds: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> DropPrediction:
+        """Advance one frame and return the candidate, if there is one.
+
+        Runs inside the 60 fps update path. A prediction that cannot be made is
+        an absent prediction, never an exception and never a stale one.
+        """
+        try:
+            self._prediction = self._update(
+                section=section,
+                rise_fast=rise_fast,
+                bar_position=bar_position,
+                clock_locked=clock_locked,
+                clock_confidence=clock_confidence,
+                bar_seconds=bar_seconds,
+                now=now,
+            )
+        except Exception:
+            self._disarm()
+            self._prediction = DropPrediction(reason="error")
+        return self._prediction
+
+    def _update(
+        self,
+        *,
+        section: str,
+        rise_fast: float,
+        bar_position: Optional[float],
+        clock_locked: bool,
+        clock_confidence: float,
+        bar_seconds: Optional[float],
+        now: Optional[float],
+    ) -> DropPrediction:
+        t = time.time() if now is None else self._finite(now, time.time())
+        dt = t - self._last_t if self._last_t is not None else 0.0
+        if not (0.0 < dt <= 0.25):
+            dt = 1.0 / 60.0
+        self._last_t = t
+        rise = self._finite(rise_fast)
+        name = str(section or "").lower()
+
+        bars = self._finite(bar_position, float("nan")) if bar_position is not None else float("nan")
+        bar_s = self._finite(bar_seconds, 0.0)
+        if (
+            not clock_locked
+            or bar_position is None
+            or not (-1.0e6 < bars < 1.0e6)
+            or not (self._MIN_BAR_S <= bar_s <= self._MAX_BAR_S)
+        ):
+            # Every bar figure held here is expressed on that clock, so without
+            # it they mean nothing and are thrown away rather than reused.
+            self._disarm()
+            self._climb_from = None
+            self._fade_since = None
+            self._clock_term = 0.0
+            return DropPrediction(reason="no_bar_clock")
+
+        raw_clock = self._clamp01(
+            (self._finite(clock_confidence) - self._CONF_CLOCK_MIN)
+            / (self._CONF_CLOCK_GOOD - self._CONF_CLOCK_MIN)
+        )
+        self._clock_term += (raw_clock - self._clock_term) * (dt / (self._TAU_CLOCK_TERM + dt))
+
+        if rise >= self._CLIMB_ON:
+            if self._climb_from is None:
+                self._climb_from = bars
+        elif rise < self._CLIMB_OFF:
+            self._climb_from = None
+
+        if name == "drop":
+            self._disarm()
+            self._climb_from = None
+            self._fade_since = None
+            return DropPrediction(reason="confirmed")
+
+        if name != "buildup":
+            self._disarm()
+            self._fade_since = None
+            return DropPrediction(reason="no_build")
+
+        if rise < self._FADE_RISE:
+            if self._fade_since is None:
+                self._fade_since = t
+            elif (t - self._fade_since) >= self._FADE_HOLD_S:
+                self._disarm()
+                return DropPrediction(reason="build_faded")
+        else:
+            self._fade_since = None
+
+        if not self._armed:
+            if self._climb_from is None:
+                return DropPrediction(reason="no_anchor")
+            anchor = math.floor(self._climb_from)
+            lag = self._climb_from - anchor
+            if lag > self._ANCHOR_LAG_BARS:
+                return DropPrediction(reason="anchor_off_grid")
+            for index, phrase in enumerate(self._PHRASES):
+                if (anchor + phrase) - bars > -self._GRACE_BARS:
+                    self._anchor = float(anchor)
+                    self._anchor_lag = lag
+                    self._phrase_index = index
+                    self._target = float(anchor + phrase)
+                    self._armed = True
+                    break
+            else:
+                return DropPrediction(reason="stale_anchor")
+
+        bars_to = self._target - bars
+        if bars_to < -self._GRACE_BARS:
+            nxt = self._phrase_index + 1
+            if nxt >= len(self._PHRASES):
+                self._disarm()
+                return DropPrediction(reason="grid_missed")
+            self._phrase_index = nxt
+            self._target = self._anchor + self._PHRASES[nxt]
+            bars_to = self._target - bars
+        if bars_to > self._MAX_LEAD_BARS:
+            self._disarm()
+            return DropPrediction(reason="out_of_horizon")
+
+        phrase = self._PHRASES[self._phrase_index]
+        anchor_term = 1.0 - 0.5 * (self._anchor_lag / self._ANCHOR_LAG_BARS)
+        approach = self._APPROACH_FLOOR + (1.0 - self._APPROACH_FLOOR) * self._clamp01(
+            (phrase - bars_to) / float(phrase)
+        )
+        confidence = self._clock_term * anchor_term * approach
+        if self._phrase_index > 0:
+            confidence *= self._REPROJECT_PENALTY
+
+        return DropPrediction(
+            pending=True,
+            seconds_to_drop=bars_to * bar_s,
+            bars_to_drop=bars_to,
+            confidence=self._clamp01(confidence),
+            target_bar=self._target,
+            anchor_bar=self._anchor,
+            phrase_bars=phrase,
+            reason="armed",
+        )
 
 
 class SongSection(Enum):
@@ -714,6 +1021,9 @@ class SectionManager:
 
         # The one live section detector.
         self._detector = StreamingSectionDetector()
+
+        # The anticipation surface that runs alongside it.
+        self._drop_predictor = DropPredictor()
 
         # Callbacks
         self._on_section_change: Optional[Callable[[SongSection, SongSection], None]] = None
@@ -968,6 +1278,10 @@ class SectionManager:
         is_downbeat_event: Optional[bool] = None,
         programme_level: Optional[float] = None,
         now: Optional[float] = None,
+        bar_position: Optional[float] = None,
+        clock_locked: bool = False,
+        clock_confidence: float = 0.0,
+        bar_seconds: Optional[float] = None,
     ) -> str:
         """Run the live section detector for one frame and return its section.
 
@@ -979,6 +1293,12 @@ class SectionManager:
         the same timeline as its filters, which advance on `delta_time`; leaving
         it out falls back to the wall clock and is only correct for a caller
         stepping in real time.
+
+        `bar_position`, `clock_locked`, `clock_confidence` and `bar_seconds`
+        describe the caller's phase-locked musical clock and feed `DropPredictor`
+        only. They change nothing about the section returned here. A caller that
+        omits them gets `drop_prediction.pending` false for the whole run, which
+        is the behaviour that predates the predictor.
         """
         decision = self._detector.update(
             delta_time,
@@ -990,6 +1310,15 @@ class SectionManager:
             bpm=self._bpm if bpm is None else bpm,
             is_downbeat_event=is_downbeat_event,
             programme_level=programme_level,
+            now=now,
+        )
+        self._drop_predictor.update(
+            section=decision.section,
+            rise_fast=decision.rise_fast,
+            bar_position=bar_position,
+            clock_locked=clock_locked,
+            clock_confidence=clock_confidence,
+            bar_seconds=bar_seconds,
             now=now,
         )
         if decision.changed:
@@ -1031,6 +1360,30 @@ class SectionManager:
             return None
         return self._LIVE_SECTION_ENUM.get(name)
 
+    @property
+    def drop_prediction(self) -> DropPrediction:
+        """The anticipation surface, refreshed by the last detector frame.
+
+        Read it every frame; it is never None. `pending` false means there is
+        no candidate and the renderer must behave exactly as it did before the
+        predictor existed.
+        """
+        return self._drop_predictor.prediction
+
+    def reset_drop_prediction(self) -> None:
+        """Forget the current candidate; the stream or the track changed."""
+        self._drop_predictor.reset()
+
     def get_detection_debug(self) -> Dict[str, float | str | bool]:
         """Get latest streaming structure-detector debug state."""
-        return self._detector.debug()
+        debug = self._detector.debug()
+        prediction = self._drop_predictor.prediction
+        debug.update(
+            {
+                "drop_pending": bool(prediction.pending),
+                "drop_in_s": round(prediction.seconds_to_drop, 3),
+                "drop_confidence": round(prediction.confidence, 3),
+                "drop_reason": prediction.reason,
+            }
+        )
+        return debug
