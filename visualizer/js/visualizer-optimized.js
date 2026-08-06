@@ -25,6 +25,7 @@ class ILSVisualizerOptimized {
         this.dmxTarget = new Array(512).fill(0);
         this.audioData = null;
         this.lookSpec = null;
+        this.fixtureStates = {};  // Per-fixture gobo/optics state from effects engine
         this.lookProfile = {
             beamWidth: 0.5,
             beamDensity: 0.9,
@@ -568,24 +569,39 @@ class ILSVisualizerOptimized {
         return this.clamp01(lookFallback);
     }
 
-    getSemanticFixtureControls(dmx, def, caps) {
+    getSemanticFixtureControls(dmx, def, caps, fixtureIndex) {
         const zoomLook = this.lookSpec?.spot?.zoom ?? 0.5;
         const focusMode = this.lookSpec?.spot?.focus_mode || 'texture';
         const goboMode = this.lookSpec?.spot?.gobo_mode || 'clean';
 
-        const zoom = this.readSemanticChannel(dmx, def, 'zoom', zoomLook);
-        const frostLook = focusMode === 'performer' ? 0.2 : 0.55;
-        const frost = this.readSemanticChannel(dmx, def, 'frost', frostLook);
-        const irisLook = focusMode === 'performer' ? 0.72 : 0.45;
-        const iris = this.readSemanticChannel(dmx, def, 'iris', irisLook);
-        const goboLook = goboMode === 'texture' ? 0.75 : 0.12;
-        const gobo = this.readSemanticChannel(dmx, def, 'gobo', goboLook);
+        // Try to use per-fixture gobo/optics data from effects engine (more accurate)
+        const fixtureId = def.id || `fixture_${fixtureIndex}`;
+        const fxState = this.fixtureStates?.[fixtureId];
+
+        let zoom, frost, iris, gobo;
+
+        if (fxState && fxState.gobo !== undefined) {
+            // Use per-fixture optics data from the gobo engine
+            zoom = fxState.zoom ?? zoomLook;
+            frost = fxState.frost ?? 0.0;
+            iris = fxState.iris ?? 1.0;
+            gobo = fxState.gobo ?? 0.0;
+        } else {
+            // Fallback to DMX channel reads / look spec
+            zoom = this.readSemanticChannel(dmx, def, 'zoom', zoomLook);
+            const frostLook = focusMode === 'performer' ? 0.2 : 0.55;
+            frost = this.readSemanticChannel(dmx, def, 'frost', frostLook);
+            const irisLook = focusMode === 'performer' ? 0.72 : 0.45;
+            iris = this.readSemanticChannel(dmx, def, 'iris', irisLook);
+            const goboLook = goboMode === 'texture' ? 0.75 : 0.12;
+            gobo = this.readSemanticChannel(dmx, def, 'gobo', goboLook);
+        }
 
         return {
             zoom: caps.supports_zoom ? zoom : this.lerp(zoomLook, zoom, 0.35),
-            frost: caps.supports_frost ? frost : this.lerp(frostLook, frost, 0.25),
-            iris: caps.supports_iris ? iris : this.lerp(irisLook, iris, 0.35),
-            gobo: caps.supports_gobo ? gobo : this.lerp(goboLook, gobo, 0.4)
+            frost: caps.supports_frost ? frost : this.lerp(0.0, frost, 0.25),
+            iris: caps.supports_iris ? iris : this.lerp(1.0, iris, 0.35),
+            gobo: caps.supports_gobo ? gobo : this.lerp(0.0, gobo, 0.4)
         };
     }
 
@@ -733,7 +749,7 @@ class ILSVisualizerOptimized {
             const dmx = this.dmxData;
             const role = getFixtureRole(def);
             const caps = getFixtureCapabilities(def);
-            const semantic = this.getSemanticFixtureControls(dmx, def, caps);
+            const semantic = this.getSemanticFixtureControls(dmx, def, caps, fixtureIndex);
             const roleIndex = role === FIXTURE_ROLES.BEAM ? beamIndex : spotIndex;
             const roleTotal = role === FIXTURE_ROLES.BEAM ? beamTotal : (role === FIXTURE_ROLES.SPOT ? spotTotal : 1);
             if (role === FIXTURE_ROLES.BEAM) beamIndex += 1;
@@ -896,8 +912,11 @@ class ILSVisualizerOptimized {
                         const goboMode = this.lookSpec?.spot?.gobo_mode || 'clean';
                         const keyPriority = this.lookSpec?.spot?.key_priority ?? 0.6;
                         const focusTightness = focusMode === 'performer' ? 0.7 : 1.0;
-                        const goboPulse = (caps.supports_gobo && goboMode === 'texture')
-                            ? (0.86 + 0.14 * Math.sin(time * 6 + fixtureIndex * 0.35))
+                        // Use per-fixture gobo rotation for more accurate gobo pulse
+                        const fxGoboRot = this.fixtureStates?.[def.id || `fixture_${fixtureIndex}`]?.gobo_rotation ?? 0;
+                        const goboRotPhase = fxGoboRot > 0 ? fxGoboRot * Math.PI * 2 : time * 6 + fixtureIndex * 0.35;
+                        const goboPulse = (caps.supports_gobo && semantic.gobo > 0.05)
+                            ? (0.82 + 0.18 * Math.sin(goboRotPhase))
                             : 1.0;
                         const zoomSupportScale = caps.supports_zoom ? this.lerp(0.7, 1.25, semantic.zoom) : 0.85;
                         const focusSupportScale = caps.supports_focus ? 1.0 : 1.2;
@@ -1292,6 +1311,16 @@ class ILSVisualizerOptimized {
                             beat: msg.beat ? msg.beat.is_beat : false
                         };
                     }
+                    // Store per-fixture state for gobo/optics data
+                    if (msg.lighting && msg.lighting.fixtures) {
+                        this.fixtureStates = {};
+                        for (const fs of msg.lighting.fixtures) {
+                            if (fs && fs.id) {
+                                this.fixtureStates[fs.id] = fs;
+                            }
+                        }
+                    }
+
                     if (msg.look_spec) {
                         this.lookSpec = msg.look_spec;
                     } else if (msg.lighting && msg.lighting.look_spec) {

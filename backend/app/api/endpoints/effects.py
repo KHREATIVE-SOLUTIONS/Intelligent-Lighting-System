@@ -143,6 +143,28 @@ class MLTargetGatingRequest(BaseModel):
 
 # === Endpoints ===
 
+@router.get("/fixture-states")
+async def get_fixture_states(request: Request):
+    """Get current fixture state snapshot for visualizer."""
+    engine = getattr(request.app.state, "effects_engine", None) or get_effects_engine()
+    fixture_states = engine.get_fixture_state_snapshot()
+    if not fixture_states:
+        fixture_states = []
+        for fixture in engine.fixtures.fixtures.values():
+            fixture_states.append({
+                'id': fixture.id, 'pan': fixture.pan, 'tilt': fixture.tilt,
+                'dimmer': fixture.dimmer, 'r': fixture.red, 'g': fixture.green,
+                'b': fixture.blue, 'zoom': getattr(fixture, 'zoom', 0.5),
+                'gobo': getattr(fixture, 'gobo_index', 0.0),
+            })
+    section = ""
+    try:
+        section = engine._rebuild_section or ""
+    except Exception:
+        pass
+    return {"fixture_states": fixture_states, "section": section}
+
+
 @router.get("/status", response_model=EffectsStatus)
 async def get_status(request: Request):
     """Get current effects engine status."""

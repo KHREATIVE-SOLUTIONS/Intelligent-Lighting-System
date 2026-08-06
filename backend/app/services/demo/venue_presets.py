@@ -22,6 +22,7 @@ class VenueSize(Enum):
     PRO_BEAM_ROOM = "pro_beam_room"
     LARGE_CONCERT = "large_concert"
     FESTIVAL_MAINSTAGE = "festival_mainstage"
+    BIGROOM_EDM = "bigroom_edm"
 
 
 @dataclass
@@ -460,6 +461,107 @@ def _build_festival_mainstage() -> VenuePreset:
     )
 
 
+def _build_bigroom_edm() -> VenuePreset:
+    """Big-room EDM nightclub: 44 fixtures modeling Hakkasan/Amnesia style rig."""
+    stage = StageSpec(width=14.0, depth=10.0, height=7.0, truss_lines=3)
+    fixtures = []
+    addr = 1
+    universe = 0
+
+    def next_addr(ch_count):
+        nonlocal addr, universe
+        if addr + ch_count > 512:
+            universe += 1
+            addr = 1
+        current = addr
+        addr += ch_count
+        return current, universe
+
+    # 10 beam movers on upstage truss (main aerial beams)
+    # Spread across 10m width at height 6.5m, z=-2.0
+    for i, (x, y, z) in enumerate(_distribute_positions(10, (-5.0, 5.0), 6.5, -2.0)):
+        a, u = next_addr(MOVER_CH_COUNT)
+        fixtures.append(FixtureSpec("mover", f"beam_up{i+1}", f"Beam Upstage {i+1}", a, u, x, y, z))
+
+    # 8 spot movers on mid truss
+    # Spread 8m width at height 6.0m, z=0.0
+    for i, (x, y, z) in enumerate(_distribute_positions(8, (-4.0, 4.0), 6.0, 0.0)):
+        a, u = next_addr(MOVER_CH_COUNT)
+        fixtures.append(FixtureSpec("mover", f"mover_mid{i+1}", f"Mover Mid {i+1}", a, u, x, y, z))
+
+    # 6 wash fixtures on downstage truss
+    # Spread 7m width at height 5.5m, z=2.0
+    for i, (x, y, z) in enumerate(_distribute_positions(6, (-3.5, 3.5), 5.5, 2.0)):
+        a, u = next_addr(WASH_CH_COUNT)
+        fixtures.append(FixtureSpec("wash", f"wash_ds{i+1}", f"Wash Downstage {i+1}", a, u, x, y, z))
+
+    # 4 LED bars on floor (z=-3.0, y=0.3)
+    for i, (x, y, z) in enumerate(_distribute_positions(4, (-5.0, 5.0), 0.3, -3.0)):
+        a, u = next_addr(BAR_CH_COUNT)
+        fixtures.append(FixtureSpec("bar", f"bar_floor{i+1}", f"Bar Floor {i+1}", a, u, x, y, z))
+
+    # 4 LED bars on rear truss (z=-2.5, y=6.0)
+    for i, (x, y, z) in enumerate(_distribute_positions(4, (-5.0, 5.0), 6.0, -2.5)):
+        a, u = next_addr(BAR_CH_COUNT)
+        fixtures.append(FixtureSpec("bar", f"bar_rear{i+1}", f"Bar Rear {i+1}", a, u, x, y, z))
+
+    # 4 strobes (2 left, 2 right) at height 6.0m
+    strobe_positions = [
+        ("strobe_l1", "Strobe Left 1", -6.5, 6.0, -1.0),
+        ("strobe_l2", "Strobe Left 2", -6.5, 6.0, 1.0),
+        ("strobe_r1", "Strobe Right 1", 6.5, 6.0, -1.0),
+        ("strobe_r2", "Strobe Right 2", 6.5, 6.0, 1.0),
+    ]
+    for sid, sname, sx, sy, sz in strobe_positions:
+        a, u = next_addr(STROBE_CH_COUNT)
+        fixtures.append(FixtureSpec("strobe", sid, sname, a, u, sx, sy, sz))
+
+    # 4 blinders (modeled as strobes with strobe channels) - center cluster at height 5.5m, z=1.0
+    for i, (x, y, z) in enumerate(_distribute_positions(4, (-1.5, 1.5), 5.5, 1.0)):
+        a, u = next_addr(STROBE_CH_COUNT)
+        fixtures.append(FixtureSpec("strobe", f"blinder{i+1}", f"Blinder {i+1}", a, u, x, y, z))
+
+    # 4 spot fixtures (followspot positions) at corners
+    spot_positions = [
+        ("spot_dl", "Spot Downstage Left", -5.0, 6.0, 2.5),
+        ("spot_dr", "Spot Downstage Right", 5.0, 6.0, 2.5),
+        ("spot_ul", "Spot Upstage Left", -5.0, 6.0, -2.0),
+        ("spot_ur", "Spot Upstage Right", 5.0, 6.0, -2.0),
+    ]
+    for sid, sname, sx, sy, sz in spot_positions:
+        a, u = next_addr(SPOT_CH_COUNT)
+        fixtures.append(FixtureSpec("spot", sid, sname, a, u, sx, sy, sz))
+
+    key_zones = [
+        KeyZoneSpec("aerial_beams", ["beam_up1", "beam_up2", "beam_up3", "beam_up4", "beam_up5",
+                                      "beam_up6", "beam_up7", "beam_up8", "beam_up9", "beam_up10"],
+                    active=True, min_intensity=0.5),
+        KeyZoneSpec("mid_movers", ["mover_mid1", "mover_mid2", "mover_mid3", "mover_mid4",
+                                    "mover_mid5", "mover_mid6", "mover_mid7", "mover_mid8"],
+                    active=True, min_intensity=0.45),
+        KeyZoneSpec("wash_lights", ["wash_ds1", "wash_ds2", "wash_ds3", "wash_ds4", "wash_ds5", "wash_ds6"],
+                    active=True, min_intensity=0.4),
+        KeyZoneSpec("dance_floor", ["bar_floor1", "bar_floor2", "bar_floor3", "bar_floor4"],
+                    active=True, min_intensity=0.5),
+    ]
+
+    return VenuePreset(
+        name="bigroom_edm",
+        display_name="Big-Room EDM",
+        description=(
+            "Hakkasan/Amnesia-style big-room nightclub with 44 fixtures: "
+            "10 aerial beams, 8 mid movers, 6 washes, 8 LED bars, 4 strobes, 4 blinders, 4 spots. "
+            "14x10m stage, 7m ceiling, optimized for high-energy EDM."
+        ),
+        size=VenueSize.BIGROOM_EDM,
+        stage=stage,
+        fixtures=fixtures,
+        key_zones=key_zones,
+        default_genre="edm",
+        default_bpm=128.0,
+    )
+
+
 # Build all presets
 VENUE_PRESETS: Dict[str, VenuePreset] = {
     "small_nightclub": _build_small_nightclub(),
@@ -467,6 +569,7 @@ VENUE_PRESETS: Dict[str, VenuePreset] = {
     "pro_beam_room": _build_pro_beam_room(),
     "large_concert": _build_large_concert(),
     "festival_mainstage": _build_festival_mainstage(),
+    "bigroom_edm": _build_bigroom_edm(),
 }
 
 

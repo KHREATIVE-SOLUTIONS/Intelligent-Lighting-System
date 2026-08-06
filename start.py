@@ -34,13 +34,22 @@ if str(VENV_PYTHON) not in sys.executable and VENV_PYTHON.exists():
 
 # Now we're in venv - import packages
 try:
-    import pyaudiowpatch as pyaudio
+    if sys.platform == "win32":
+        import pyaudiowpatch as pyaudio
+    else:
+        import pyaudio
     import numpy as np
     import websockets
 except ImportError as e:
     print(f"ERROR: Missing package: {e}")
-    print("Make sure the backend venv has all dependencies installed:")
-    print("  cd backend && venv\\Scripts\\pip install pyaudiowpatch numpy websockets")
+    if sys.platform == "win32":
+        print("Make sure the backend venv has all dependencies installed:")
+        print("  cd backend && venv\\Scripts\\pip install pyaudiowpatch numpy websockets")
+    else:
+        print("Make sure the backend venv has all dependencies installed:")
+        print("  cd backend && source venv/bin/activate && pip install pyaudio numpy websockets")
+        if sys.platform == "darwin":
+            print("  (You may need: brew install portaudio)")
     sys.exit(1)
 
 # Add scripts dir to path
@@ -85,10 +94,19 @@ def start_visualizer():
 
 
 def list_audio_devices():
-    """List available WASAPI loopback devices."""
+    """List available audio capture devices (platform-aware)."""
     print("\n" + "=" * 60)
-    print("  AUDIO LOOPBACK DEVICES (capture system audio)")
+    if sys.platform == "win32":
+        print("  AUDIO LOOPBACK DEVICES (WASAPI)")
+    elif sys.platform == "darwin":
+        print("  AUDIO INPUT DEVICES (CoreAudio)")
+        print("  Tip: Install BlackHole for system audio capture")
+    else:
+        print("  AUDIO INPUT DEVICES")
     print("=" * 60)
+
+    # macOS virtual audio device keywords
+    _macos_loopback = ["blackhole", "loopback", "soundflower", "virtual", "aggregate"]
 
     p = pyaudio.PyAudio()
     loopback_devices = []
@@ -97,19 +115,32 @@ def list_audio_devices():
         for i in range(p.get_device_count()):
             device_info = p.get_device_info_by_index(i)
 
-            if device_info.get('isLoopbackDevice', False):
-                name = device_info['name']
-                channels = device_info['maxInputChannels']
-                sample_rate = int(device_info['defaultSampleRate'])
-
-                print(f"  [{i:2d}] {name[:50]}")
-                loopback_devices.append({
-                    'index': i,
-                    'name': name,
-                    'channels': channels,
-                    'sample_rate': sample_rate,
-                    'info': device_info
-                })
+            if sys.platform == "win32":
+                # Windows: use pyaudiowpatch loopback flag
+                if device_info.get('isLoopbackDevice', False):
+                    name = device_info['name']
+                    channels = device_info['maxInputChannels']
+                    sample_rate = int(device_info['defaultSampleRate'])
+                    print(f"  [{i:2d}] {name[:50]}")
+                    loopback_devices.append({
+                        'index': i, 'name': name, 'channels': channels,
+                        'sample_rate': sample_rate, 'info': device_info,
+                    })
+            else:
+                # macOS/Linux: list input devices, highlight virtual ones
+                max_in = device_info.get('maxInputChannels', 0)
+                if max_in > 0:
+                    name = device_info['name']
+                    channels = max_in
+                    sample_rate = int(device_info['defaultSampleRate'])
+                    name_lower = name.lower()
+                    is_virtual = any(kw in name_lower for kw in _macos_loopback)
+                    marker = " [VIRTUAL]" if is_virtual else ""
+                    print(f"  [{i:2d}] {name[:45]}{marker}")
+                    loopback_devices.append({
+                        'index': i, 'name': name, 'channels': channels,
+                        'sample_rate': sample_rate, 'info': device_info,
+                    })
 
     finally:
         p.terminate()
@@ -399,8 +430,13 @@ def main():
     devices = list_audio_devices()
 
     if not devices:
-        print("  ERROR: No audio loopback devices found!")
-        print("  Make sure you have audio output devices.")
+        print("  ERROR: No audio capture devices found!")
+        if sys.platform == "darwin":
+            print("  Install BlackHole (free) to capture system audio:")
+            print("    brew install blackhole-2ch")
+            print("  Or select a microphone for live input.")
+        else:
+            print("  Make sure you have audio output devices.")
         return
 
     selected_device = select_audio_device(devices)

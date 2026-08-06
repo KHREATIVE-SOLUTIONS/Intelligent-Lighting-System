@@ -319,7 +319,11 @@ async def start_capture(
     request: Request,
     device_index: int = Query(..., description="Explicit audio capture device index"),
 ):
-    """Start system audio capture (WASAPI loopback).
+    """Start system audio capture.
+
+    On Windows uses WASAPI loopback. On macOS uses CoreAudio (virtual audio
+    devices like BlackHole provide system audio capture). On Linux uses
+    PulseAudio/ALSA monitor devices.
 
     Args:
         device_index: Specific device index to use.
@@ -336,8 +340,13 @@ async def start_capture(
         selected = next((d for d in devices if d.get("index") == device_index), None)
         if not selected:
             raise HTTPException(404, f"Audio device index {device_index} not found")
-        if not selected.get("is_loopback", False):
+        # On Windows, require loopback device. On macOS/Linux, allow any input
+        # device (loopback is provided by virtual audio drivers like BlackHole).
+        import sys
+        if sys.platform == "win32" and not selected.get("is_loopback", False):
             raise HTTPException(400, "Selected device is not a loopback output-capture device")
+        if not selected.get("is_loopback", False) and not selected.get("is_input", False):
+            raise HTTPException(400, "Selected device has no input channels")
     except HTTPException:
         raise
     except Exception:

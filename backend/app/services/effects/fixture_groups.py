@@ -86,6 +86,14 @@ class Fixture:
         """Check whether the fixture's profile declares a channel type."""
         return name in self.channels
 
+    # Beam optics state (0-1 normalized)
+    gobo_index: float = 0.0        # 0 = open/no gobo, >0 = gobo pattern selection
+    gobo_rotation: float = 0.0     # Gobo rotation speed/position
+    zoom: float = 0.5              # Zoom (0 = narrow, 1 = wide)
+    iris: float = 1.0              # Iris (0 = closed, 1 = open)
+    frost: float = 0.0             # Frost (0 = sharp, 1 = full frost)
+    prism: float = 0.0             # Prism (0 = out, 1 = in)
+
     def get_channel_address(self, channel_name: str) -> Optional[int]:
         """Get absolute DMX address for a channel."""
         if channel_name in self.channels:

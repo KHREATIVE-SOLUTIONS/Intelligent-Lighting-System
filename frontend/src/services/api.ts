@@ -625,7 +625,9 @@ export interface AudioCaptureDevice {
   default_samplerate?: number;
   hostapi: string;
   is_loopback: boolean;
+  is_input?: boolean;
   device_type?: string;
+  platform?: string;
 }
 
 export interface AudioCaptureStatus {
