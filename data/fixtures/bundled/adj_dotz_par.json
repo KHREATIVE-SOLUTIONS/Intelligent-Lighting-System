@@ -33,7 +33,10 @@
         {"channel_number": 2, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 3, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 4, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 5, "channel_type": "strobe", "name": "Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+        {"channel_number": 5, "channel_type": "strobe", "name": "Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "No function", "min_value": 0, "max_value": 0},
+          {"name": "Strobe slow->fast", "min_value": 1, "max_value": 255}
+        ]}
       ]
     },
     {
@@ -44,9 +47,50 @@
         {"channel_number": 1, "channel_type": "red", "name": "Red", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 2, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 3, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 4, "channel_type": "macro", "name": "Color Macro", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 4, "channel_type": "macro", "name": "Color Macro", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "No function", "min_value": 0, "max_value": 0},
+          {"name": "Bastard Amber", "min_value": 1, "max_value": 7},
+          {"name": "Medium Amber", "min_value": 8, "max_value": 15},
+          {"name": "Pale Amber Gold", "min_value": 16, "max_value": 23},
+          {"name": "Gallo Gold", "min_value": 24, "max_value": 31},
+          {"name": "Golden Amber", "min_value": 32, "max_value": 39},
+          {"name": "Light Red", "min_value": 40, "max_value": 47},
+          {"name": "Medium Red", "min_value": 48, "max_value": 55},
+          {"name": "Medium Pink", "min_value": 56, "max_value": 63},
+          {"name": "Broadway Pink", "min_value": 64, "max_value": 71},
+          {"name": "Follies Pink", "min_value": 72, "max_value": 79},
+          {"name": "Light Lavender", "min_value": 80, "max_value": 87},
+          {"name": "Special Lavender", "min_value": 88, "max_value": 95},
+          {"name": "Lavender", "min_value": 96, "max_value": 103},
+          {"name": "Indigo", "min_value": 104, "max_value": 111},
+          {"name": "Hemsley Blue", "min_value": 112, "max_value": 119},
+          {"name": "Tipton Blue", "min_value": 120, "max_value": 127},
+          {"name": "Light Steel Blue", "min_value": 128, "max_value": 135},
+          {"name": "Light Sky Blue", "min_value": 136, "max_value": 143},
+          {"name": "Sky Blue", "min_value": 144, "max_value": 151},
+          {"name": "Brilliant Blue", "min_value": 152, "max_value": 159},
+          {"name": "Light Green Blue", "min_value": 160, "max_value": 167},
+          {"name": "Bright Blue", "min_value": 168, "max_value": 175},
+          {"name": "Primary Blue", "min_value": 176, "max_value": 183},
+          {"name": "Congo Blue", "min_value": 184, "max_value": 191},
+          {"name": "Pale Yellow Green", "min_value": 192, "max_value": 199},
+          {"name": "Moss Green", "min_value": 200, "max_value": 207},
+          {"name": "Primary Green", "min_value": 208, "max_value": 215},
+          {"name": "Double CTB", "min_value": 216, "max_value": 223},
+          {"name": "Full Red", "min_value": 224, "max_value": 231},
+          {"name": "Full Green", "min_value": 232, "max_value": 239},
+          {"name": "Full Blue", "min_value": 240, "max_value": 247},
+          {"name": "White", "min_value": 248, "max_value": 255}
+        ]},
         {"channel_number": 5, "channel_type": "strobe", "name": "Strobe/Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 6, "channel_type": "macro", "name": "Program", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "macro", "name": "Program", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "No function", "min_value": 0, "max_value": 0},
+          {"name": "Color fade/change", "min_value": 1, "max_value": 20},
+          {"name": "7 colors", "min_value": 21, "max_value": 60},
+          {"name": "3 colors", "min_value": 61, "max_value": 100},
+          {"name": "Effect", "min_value": 101, "max_value": 140},
+          {"name": "No function", "min_value": 141, "max_value": 255}
+        ]},
         {"channel_number": 7, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
       ]
     }

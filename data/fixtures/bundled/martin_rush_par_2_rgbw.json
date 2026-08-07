@@ -35,7 +35,18 @@
         {"channel_number": 3, "channel_type": "green", "name": "Green", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 4, "channel_type": "blue", "name": "Blue", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 5, "channel_type": "white", "name": "White", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 6, "channel_type": "strobe", "name": "Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "strobe", "name": "Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Closed", "min_value": 0, "max_value": 7},
+          {"name": "Open", "min_value": 8, "max_value": 15},
+          {"name": "Strobe slow->fast", "min_value": 16, "max_value": 131},
+          {"name": "Open", "min_value": 132, "max_value": 139},
+          {"name": "Ramp up slow->fast", "min_value": 140, "max_value": 181},
+          {"name": "Open", "min_value": 182, "max_value": 189},
+          {"name": "Ramp down slow->fast", "min_value": 190, "max_value": 231},
+          {"name": "Open", "min_value": 232, "max_value": 239},
+          {"name": "Strobe (random)", "min_value": 240, "max_value": 247},
+          {"name": "Open", "min_value": 248, "max_value": 255}
+        ]},
         {"channel_number": 7, "channel_type": "zoom", "name": "Zoom", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 8, "channel_type": "macro", "name": "Control/Reset", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
       ]
