@@ -15,6 +15,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
 from datetime import datetime
 import numpy as np
 
+from ...core.config import settings
 from ...core.security import verify_token
 from ...schemas.audio import engine_energy, programme_level
 from ...services.ml.training_recorder import get_recorder
@@ -28,6 +29,10 @@ async def reject_unauthenticated(websocket: WebSocket) -> bool:
     Must run before accept(): an accepted socket is already in the broadcast set
     and starts receiving DMX frames and analysis at 30fps.
     """
+    # Dev mode: auth disabled -> accept every socket (matches the HTTP gate).
+    if not settings.AUTH_ENABLED:
+        return False
+
     token = websocket.query_params.get("token", "")
     try:
         valid = bool(token) and bool(verify_token(token))
