@@ -69,6 +69,8 @@ api.interceptors.response.use(
 export interface AuthStatus {
   configured: boolean;
   authenticated: boolean;
+  // false when the backend runs with AUTH_ENABLED=false (dev mode)
+  enabled: boolean;
 }
 
 interface TokenPayload {
@@ -85,6 +87,8 @@ export const authApi = {
     return {
       configured: Boolean(response.data?.configured),
       authenticated: Boolean(response.data?.authenticated),
+      // Absent field defaults to enabled=true (older backends were always gated).
+      enabled: response.data?.enabled !== false,
     };
   },
 

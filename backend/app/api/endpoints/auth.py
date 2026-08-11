@@ -491,6 +491,10 @@ class ChangePasswordRequest(BaseModel):
 @router.get("/status")
 async def auth_status(request: Request, db: AsyncSession = Depends(get_db)):
     """Report whether a password exists and whether this caller is signed in."""
+    # Dev mode: auth disabled -> nothing to configure, everyone is "in".
+    if not settings.AUTH_ENABLED:
+        return {"configured": True, "authenticated": True, "enabled": False}
+
     await apply_pending_recovery(db)
     configured = await is_configured(db)
 
@@ -502,7 +506,7 @@ async def auth_status(request: Request, db: AsyncSession = Depends(get_db)):
 
     token = bearer_token(request)
     authenticated = bool(token and security.verify_token(token))
-    return {"configured": configured, "authenticated": authenticated}
+    return {"configured": configured, "authenticated": authenticated, "enabled": True}
 
 
 @router.post("/setup")

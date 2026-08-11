@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     SECRET_KEY: str = Field(default="")
 
+    # When False, the operator-auth middleware is bypassed entirely (dev only).
+    # Defaults True so production stays gated; set AUTH_ENABLED=false to disable.
+    AUTH_ENABLED: bool = True
+
     # Database
     DATABASE_URL: str = Field(
         default="postgresql://postgres:postgres@localhost:5432/lighting_db"

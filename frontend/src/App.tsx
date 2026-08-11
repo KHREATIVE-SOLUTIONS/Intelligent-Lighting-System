@@ -31,6 +31,7 @@ const Loading = () => (
 function App() {
   const token = useAuthStore((state) => state.token);
   const setConfigured = useAuthStore((state) => state.setConfigured);
+  const setSession = useAuthStore((state) => state.setSession);
   const clearSession = useAuthStore((state) => state.clearSession);
   const [checkedSession, setCheckedSession] = useState(false);
 
@@ -42,6 +43,11 @@ function App() {
       .then((status) => {
         if (cancelled) return;
         setConfigured(status.configured);
+        // Dev mode (AUTH_ENABLED=false): no login required, drop straight in.
+        if (!status.enabled) {
+          if (!useAuthStore.getState().token) setSession('dev-auth-disabled');
+          return;
+        }
         if (useAuthStore.getState().token && !status.authenticated) {
           clearSession();
         }
@@ -56,7 +62,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [setConfigured, clearSession]);
+  }, [setConfigured, setSession, clearSession]);
 
   const handleLogout = () => {
     disconnectAllWebSockets();

@@ -606,6 +606,9 @@ OPERATOR_TOKEN_HEADER = "X-Operator-Token"
 
 def route_requires_auth(method: str, path: str) -> bool:
     """Single source of truth for what the operator token protects."""
+    # Dev escape hatch: AUTH_ENABLED=false bypasses the gate for every route.
+    if not settings.AUTH_ENABLED:
+        return False
     path = path.rstrip("/") or "/"
     if path != "/api" and not path.startswith("/api/"):
         return False

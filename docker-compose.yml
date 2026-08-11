@@ -43,6 +43,8 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/lighting_db
       - REDIS_URL=redis://redis:6379
       - DEBUG=true
+      # Dev only: skip the operator login. Set true (or remove) before shipping.
+      - AUTH_ENABLED=false
       - CORS_ORIGINS=["http://localhost:3000","http://localhost:5173","http://localhost:80","http://localhost"]
     depends_on:
       postgres:
@@ -52,6 +54,7 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./ml_models:/app/ml_models
+      - ./data:/data
       - ./visualizer:/app/visualizer:ro
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     healthcheck:
