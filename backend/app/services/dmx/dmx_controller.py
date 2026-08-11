@@ -9,6 +9,7 @@ import asyncio
 import logging
 import socket
 import struct
+import threading
 import time
 from typing import Dict, List, Optional, Set, Any
 from collections import defaultdict
@@ -89,6 +90,9 @@ class DMXController:
     UNSPECIFIED_ADDRESSES = ('', '0.0.0.0')
     # Frames leave at DMX_FPS, so a gap this long means the output loop stopped.
     TRANSMIT_STALE_AFTER = 1.0
+    # How long shutdown waits for the transmitter. Generous next to a frame, short
+    # next to a person waiting for the process to exit.
+    THREAD_JOIN_TIMEOUT = 2.0
 
     def __init__(self):
         """Initialize the DMX controller."""
@@ -127,7 +131,14 @@ class DMXController:
         self.subscribers: Set[asyncio.Queue] = set()
 
         # Output loop
-        self.output_task: Optional[asyncio.Task] = None
+        # The transmitter runs on its own thread rather than the event loop. sendto
+        # is blocking, and a destination that answers with ICMP port-unreachable
+        # makes it stall - which on the event loop takes the HTTP API, the
+        # WebSocket broadcast and the 60fps engine down with it. Observed: pointing
+        # ArtNet at a port with no listener froze the whole server while the process
+        # stayed alive.
+        self.output_thread: Optional[threading.Thread] = None
+        self._output_stop = threading.Event()
         self.test_pattern_task: Optional[asyncio.Task] = None
 
     @property
@@ -176,8 +187,11 @@ class DMXController:
             # not own, which fights any other console already merging on it.
             self.is_connected = True
 
-            # Start output loop
-            self.output_task = asyncio.create_task(self._output_loop())
+            self._output_stop.clear()
+            self.output_thread = threading.Thread(
+                target=self._output_loop, name="artnet-tx", daemon=True
+            )
+            self.output_thread.start()
 
         except Exception as e:
             self.is_connected = False
@@ -186,45 +200,75 @@ class DMXController:
     async def disconnect(self):
         """Disconnect from the ArtNet interface."""
         self.is_connected = False
+        self._output_stop.set()
 
-        if self.output_task:
-            self.output_task.cancel()
-            try:
-                await self.output_task
-            except asyncio.CancelledError:
-                pass
+        thread, self.output_thread = self.output_thread, None
+        if thread is not None and thread.is_alive():
+            # Joined before the socket closes: a send already in flight must finish
+            # against a live socket rather than a closed one. Bounded, because a
+            # wedged driver must not stop the app from shutting down.
+            await asyncio.get_running_loop().run_in_executor(
+                None, thread.join, self.THREAD_JOIN_TIMEOUT
+            )
+            if thread.is_alive():
+                logger.warning(
+                    "ArtNet transmitter did not stop within %.1fs; leaving it to exit "
+                    "on its own", self.THREAD_JOIN_TIMEOUT
+                )
 
         if self.socket:
             self.socket.close()
             self.socket = None
 
-    async def _output_loop(self):
-        """Main output loop sending DMX frames at target FPS."""
+    def _output_loop(self):
+        """Send every live universe at the target frame rate, on our own thread.
+
+        Paced against a running deadline rather than by sleeping a frame each time:
+        a sleep-the-remainder loop adds its own overshoot to every frame and walks
+        away from the rate, and Windows' default timer granularity is most of a
+        frame at 40fps. Missed frames are dropped rather than queued - a stale
+        lighting frame is worth nothing once the next one exists.
+        """
         frame_time = 1.0 / self.target_fps
         fps_counter = 0
-        fps_start_time = time.time()
+        fps_start = time.perf_counter()
+        next_frame = time.perf_counter()
 
-        while self.is_connected:
-            loop_start = time.time()
-
-            # Snapshot: _send_universe awaits, and other tasks add or drop universes.
+        while not self._output_stop.is_set() and self.is_connected:
             for universe_num, universe in list(self.universes.items()):
-                await self._send_universe(universe_num, bytes(universe.data))
+                if self._output_stop.is_set():
+                    break
+                try:
+                    self._send_universe(universe_num, bytes(universe.data))
+                except Exception as e:
+                    # This thread is the only thing keeping the rig lit; it does not
+                    # get to die on one bad frame.
+                    self.send_error_count += 1
+                    self.last_send_error = str(e)
+                    if not self._send_error_logged:
+                        logger.warning("ArtNet output error (suppressing repeats): %s", e)
+                        self._send_error_logged = True
 
-            # FPS tracking
             fps_counter += 1
-            elapsed = time.time() - fps_start_time
+            elapsed = time.perf_counter() - fps_start
             if elapsed >= 1.0:
                 self.current_fps = fps_counter / elapsed
                 fps_counter = 0
-                fps_start_time = time.time()
+                fps_start = time.perf_counter()
 
-            # Wait for next frame
-            elapsed = time.time() - loop_start
-            sleep_time = max(0, frame_time - elapsed)
-            await asyncio.sleep(sleep_time)
+            next_frame += frame_time
+            delay = next_frame - time.perf_counter()
+            if delay < -frame_time:
+                # Fell far enough behind that catching up would burst frames at the
+                # nodes. Give up the lost time and pace from now.
+                next_frame = time.perf_counter() + frame_time
+                delay = frame_time
+            if delay > 0:
+                self._output_stop.wait(delay)
 
-    async def _send_universe(self, universe: int, data: bytes):
+        self.current_fps = 0.0
+
+    def _send_universe(self, universe: int, data: bytes):
         """Send a single universe of DMX data."""
         if not self.socket or not self.is_connected:
             return
