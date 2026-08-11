@@ -14,6 +14,7 @@ import asyncio
 import logging
 import sys
 import threading
+from pathlib import Path
 from typing import Optional, Callable
 
 import numpy as np
@@ -24,6 +25,15 @@ logger = logging.getLogger(__name__)
 # Platform detection
 # ---------------------------------------------------------------------------
 PLATFORM = sys.platform  # "win32" | "darwin" | "linux"
+
+# How long a driver gets to describe itself before we give up on it. Enumeration
+# is sub-second on a healthy machine; anything past this is a wedged driver.
+DEVICE_SCAN_TIMEOUT_S = 12.0
+
+# Backends that must not be probed in this process because they can hang or abort
+# it rather than raise. Measured on Windows: soundcard.all_speakers() returns, then
+# reading a speaker's properties never comes back.
+_UNSAFE_IN_PROCESS_BACKENDS = frozenset({"soundcard"} if PLATFORM == "win32" else set())
 
 # ---------------------------------------------------------------------------
 # Lazy imports — each backend is imported on first use and cached.
@@ -130,12 +140,34 @@ class SystemAudioCapture:
     # ------------------------------------------------------------------
     @staticmethod
     def list_devices() -> list:
-        """Return unified device list with stable API indices for this process."""
+        """Every audio device this machine offers, loopback ones included.
+
+        Enumeration is done in a child process. Asking a driver to describe itself
+        runs native code that this process cannot defend against: on Windows the
+        soundcard backend hangs forever partway through enumerating speakers, and a
+        bad probe elsewhere can abort the interpreter outright. Neither is a Python
+        exception, so `try` does not help and a worker thread cannot be killed - and
+        both would take the show down, because this shares an event loop with the
+        DMX output. A child can simply be waited on and abandoned.
+        """
+        devices = _enumerate_via_subprocess()
+        if devices is not None:
+            return devices
+
+        logger.warning(
+            "Device enumeration subprocess unavailable; enumerating in-process "
+            "without the backends known to hang here"
+        )
+        return SystemAudioCapture._enumerate_devices(skip=_UNSAFE_IN_PROCESS_BACKENDS)
+
+    @staticmethod
+    def _enumerate_devices(skip=frozenset()) -> list:
+        """Walk every installed backend that is not in `skip`."""
         result = []
         api_index = 0
 
         # --- soundcard (macOS CoreAudio / Linux PulseAudio / Windows WASAPI) ---
-        sc = _get_soundcard()
+        sc = None if "soundcard" in skip else _get_soundcard()
         if sc is not None:
             try:
                 for speaker in sc.all_speakers():
@@ -158,7 +190,7 @@ class SystemAudioCapture:
                 logger.debug(f"Error listing soundcard devices: {e}")
 
         # --- sounddevice (cross-platform PortAudio) ---
-        sd = _get_sounddevice()
+        sd = None if "sounddevice" in skip else _get_sounddevice()
         if sd is not None:
             patterns = _loopback_patterns()
             try:
@@ -186,7 +218,7 @@ class SystemAudioCapture:
                 logger.debug(f"Error listing sounddevice devices: {e}")
 
         # --- pyaudiowpatch (Windows WASAPI loopback only) ---
-        pa = _get_pyaudio()
+        pa = None if "pyaudiowpatch" in skip else _get_pyaudio()
         if pa is not None:
             p = pa.PyAudio()
             try:
@@ -546,3 +578,84 @@ class SystemAudioCapture:
             "last_rms": self._last_rms,
             "last_peak": self._last_peak,
         }
+
+
+def _enumerate_via_subprocess():
+    """Device list assembled from one child process per backend.
+
+    One child per backend rather than one for all of them: a driver that never
+    returns then costs only its own devices, and the backends that do work still
+    report. Enumerating all three in a single child means one wedged driver hides
+    every device on the machine.
+
+    Returns None only if no backend produced anything at all.
+    """
+    import json
+    import subprocess
+
+    root = str(Path(__file__).resolve().parents[3])
+    merged = []
+    any_ok = False
+
+    for backend in ("pyaudiowpatch", "sounddevice", "soundcard"):
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "app.services.audio.system_audio_capture",
+                 "--list-json", backend],
+                cwd=root, capture_output=True, timeout=DEVICE_SCAN_TIMEOUT_S, text=True,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Audio backend %r did not return from enumeration within %.0fs and was "
+                "killed; its devices are unavailable", backend, DEVICE_SCAN_TIMEOUT_S
+            )
+            continue
+        except Exception as e:
+            logger.warning("Could not scan audio backend %r: %s", backend, e)
+            continue
+
+        if proc.returncode != 0:
+            logger.warning(
+                "Audio backend %r aborted the scan (exit %s); its devices are "
+                "unavailable", backend, proc.returncode
+            )
+            continue
+
+        payload = None
+        for line in (proc.stdout or "").splitlines():
+            if line.startswith("DEVICES_JSON:"):
+                try:
+                    payload = json.loads(line[len("DEVICES_JSON:"):])
+                except ValueError as e:
+                    logger.warning("Audio backend %r returned unreadable output: %s", backend, e)
+                break
+
+        if payload is None:
+            continue
+        any_ok = True
+        merged.extend(payload)
+
+    if not any_ok:
+        return None
+
+    # Indices are handed back to the UI as the device selector, so they have to be
+    # dense and stable for this list rather than carrying each child's numbering.
+    for i, dev in enumerate(merged):
+        dev["index"] = i
+    return merged
+
+
+if __name__ == "__main__":
+    # Child entry point for list_devices(). Enumerates exactly one backend and
+    # prints a single JSON line, so whatever the audio libraries write to stdout on
+    # import cannot be mistaken for the payload.
+    import json as _json
+
+    if "--list-json" in sys.argv:
+        logging.disable(logging.CRITICAL)
+        _pos = sys.argv.index("--list-json")
+        _only = sys.argv[_pos + 1] if len(sys.argv) > _pos + 1 else None
+        _all = {"soundcard", "sounddevice", "pyaudiowpatch"}
+        _skip = frozenset(_all - {_only}) if _only in _all else frozenset()
+        print("DEVICES_JSON:" + _json.dumps(SystemAudioCapture._enumerate_devices(skip=_skip)),
+              flush=True)
