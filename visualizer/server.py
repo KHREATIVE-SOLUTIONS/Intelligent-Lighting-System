@@ -431,6 +431,18 @@ async def root():
     return FileResponse("index.html")
 
 
+@app.get("/index.html")
+async def index_html():
+    """Serve the 3D visualizer directly (also embedded by the operator console)."""
+    return FileResponse("index.html")
+
+
+@app.get("/operator.html")
+async def operator_console():
+    """Serve the dedicated operator console (training mode)."""
+    return FileResponse("operator.html")
+
+
 @app.get("/api/dmx")
 async def get_dmx():
     """Get current DMX values."""
