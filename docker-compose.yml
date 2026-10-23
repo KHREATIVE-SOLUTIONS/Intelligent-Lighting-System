@@ -54,6 +54,10 @@ services:
       # run with AUTH_ENABLED=false in the shell.
       - AUTH_ENABLED=${AUTH_ENABLED:-true}
       - CORS_ORIGINS=["http://localhost:3000","http://localhost:5173","http://localhost:80","http://localhost"]
+      # Art-Net leaves a container's bridge network by unicast only, so set this
+      # to your node's IP. Broadcast (the default) needs the Linux venue file:
+      # docker-compose.venue-linux.example.yml.
+      - ARTNET_IP=${ARTNET_IP:-255.255.255.255}
     depends_on:
       postgres:
         condition: service_healthy

@@ -42,6 +42,18 @@ ILS_BACKEND_URL = os.getenv("ILS_BACKEND_URL", "http://127.0.0.1:8014")
 ILS_TOKEN = os.getenv("ILS_TOKEN", "").strip()
 
 
+# Rig to drive. Unset means the active rig; rig 5 used to be hardcoded, which
+# on any other database was someone else's rig or none.
+ILS_RIG_ID = os.getenv("ILS_RIG_ID", "").strip()
+
+
+def _reactive_on() -> dict:
+    message = {"type": "reactive_on"}
+    if ILS_RIG_ID.isdigit() and int(ILS_RIG_ID) > 0:
+        message["rig_id"] = int(ILS_RIG_ID)
+    return message
+
+
 def _backend_ws_url(path: str) -> str:
     base = ILS_BACKEND_URL.replace("http://", "ws://").replace("https://", "wss://")
     url = f"{base}{path}"
@@ -308,7 +320,7 @@ async def backend_ws_relay():
                 print(f"Connected to backend WebSocket!")
 
                 # Enable reactive mode so the backend starts sending analysis data
-                await backend_ws.send(json.dumps({"type": "reactive_on", "rig_id": 5}))
+                await backend_ws.send(json.dumps(_reactive_on()))
 
                 async for message in backend_ws:
                     try:
@@ -350,7 +362,7 @@ async def _get_backend_audio_ws():
         try:
             _backend_audio_ws = await ws_lib.connect(ws_url, ping_interval=20, ping_timeout=10)
             # Enable reactive mode
-            await _backend_audio_ws.send(json.dumps({"type": "reactive_on", "rig_id": 5}))
+            await _backend_audio_ws.send(json.dumps(_reactive_on()))
             print(f"Audio proxy: connected to backend at {ws_url.split('?')[0]}")
             return _backend_audio_ws
         except Exception as e:
@@ -537,4 +549,6 @@ async def start_artnet_receiver():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    # 0.0.0.0 inside a container (compose publishes it on 127.0.0.1 only);
+    # set VISUALIZER_HOST=127.0.0.1 when it shares the host's network.
+    uvicorn.run(app, host=os.getenv("VISUALIZER_HOST", "0.0.0.0"), port=8080)

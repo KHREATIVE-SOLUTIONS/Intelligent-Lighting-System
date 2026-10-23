@@ -16,6 +16,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 import queue
@@ -47,6 +48,13 @@ except ImportError:
 # Configuration
 BACKEND_URL = "http://localhost:8000"
 WS_URL = "ws://localhost:8000/ws/audio"
+# With operator login on (the default), the backend refuses an untokened
+# socket. Pass a token from POST /api/auth/login, or use start.py, which
+# issues its own.
+_ILS_TOKEN = os.getenv("ILS_TOKEN", "").strip()
+if _ILS_TOKEN:
+    from urllib.parse import quote
+    WS_URL += f"?token={quote(_ILS_TOKEN)}"
 CHUNK_SIZE = 2048
 
 
@@ -405,7 +413,7 @@ def choose_device(
 async def main(
     auto_select: bool = False,
     device_index: Optional[int] = None,
-    rig_id: int = 5,
+    rig_id: Optional[int] = None,
     list_only: bool = False,
 ):
     """Main entry point."""
@@ -448,7 +456,7 @@ async def main(
         return
 
     # Start capture
-    print(f"\nUsing rig ID: {rig_id} (demo rig)")
+    print(f"\nDriving {'rig ' + str(rig_id) if rig_id else 'the active rig'}")
 
     capture = AudioCapture()
 
@@ -462,7 +470,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audio Capture for ILS")
     parser.add_argument("--auto", action="store_true", help="Auto-select recommended loopback device")
     parser.add_argument("--device", type=int, help="Explicit loopback device index")
-    parser.add_argument("--rig-id", type=int, default=5, help="Rig ID for reactive lighting")
+    parser.add_argument("--rig-id", type=int, default=None, help="Rig ID to drive (default: the active rig)")
     parser.add_argument("--list-devices", action="store_true", help="List loopback devices and exit")
     args = parser.parse_args()
 

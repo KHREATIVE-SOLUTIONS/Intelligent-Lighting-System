@@ -5,12 +5,20 @@ Database Configuration
 SQLAlchemy database setup and session management.
 """
 
+from pathlib import Path
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 
 from app.core.config import settings
+
+# SQLite will not create the folder its file lives in.
+if settings.DATABASE_URL.startswith("sqlite:///"):
+    _db_file = settings.DATABASE_URL.split("///", 1)[1]
+    if _db_file and _db_file != ":memory:":
+        Path(_db_file).parent.mkdir(parents=True, exist_ok=True)
 
 # Handle different database backends
 if settings.DATABASE_URL.startswith("sqlite"):

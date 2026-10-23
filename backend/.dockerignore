@@ -1,12 +1,14 @@
 # Keep local state and secrets out of the image. A locally built image used to
 # carry the token signing key, so anyone holding the image could mint tokens.
 secret_key
+**/secret_key
 *.secret_key
+data/
 .env
 .env.*
 !.env.example
-*.db
-*.sqlite
+**/*.db
+**/*.sqlite
 logs/
 ml_training_data/
 .pytest_cache/

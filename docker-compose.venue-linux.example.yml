@@ -1,0 +1,53 @@
+# Venue install on a Linux box: Art-Net broadcast and the box's own audio input.
+#
+#   cp docker-compose.venue-linux.example.yml docker-compose.override.yml
+#   docker compose up -d
+#
+# The default compose file runs everything on Docker's private network. From
+# there Art-Net reaches a node by unicast (set ARTNET_IP to the node's IP) but a
+# broadcast never leaves the bridge, and the backend has no sound card. This
+# file puts the backend, frontend and visualizer on the host's network and hands
+# the backend the sound devices.
+#
+# Needs Docker Compose 2.24 or newer (for !reset). Linux only: Docker Desktop on
+# Windows and macOS gives a container no LAN broadcast and no audio devices. On
+# those, run start.py on the host instead, or keep Docker and set ARTNET_IP to
+# the node's IP and send audio from the host with scripts/audio_capture.py.
+services:
+  # The datastores stay on this machine only.
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  backend:
+    network_mode: host
+    ports: !reset []
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@127.0.0.1:5432/lighting_db
+      - REDIS_URL=redis://127.0.0.1:6379
+      - ARTNET_IP=${ARTNET_IP:-255.255.255.255}
+    # Operators still come in through the frontend on port 80.
+    command: uvicorn app.main:app --host 127.0.0.1 --port 8000
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+
+  frontend:
+    network_mode: host
+    ports: !reset []
+    # nginx proxies to backend:8000, which is now this machine.
+    extra_hosts:
+      - "backend:127.0.0.1"
+
+  visualizer:
+    network_mode: host
+    ports: !reset []
+    environment:
+      - ILS_BACKEND_URL=http://127.0.0.1:8000
+      - VISUALIZER_HOST=127.0.0.1
+      - ILS_TOKEN=${ILS_TOKEN:-}

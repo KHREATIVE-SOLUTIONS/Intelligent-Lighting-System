@@ -82,6 +82,36 @@ For local development (login off, hot reload, database on 127.0.0.1:5432):
 cp docker-compose.override.example.yml docker-compose.override.yml
 ```
 
+## Installing at a Venue
+
+Pick one of three ways, by machine:
+
+- **Windows or macOS (recommended): run natively.** Install the backend
+  (see Development below), then `python start.py`. It starts the backend and
+  visualizer, captures audio from the box, signs its own audio feed in, and
+  drives the active rig. Without a `.env` it keeps its database in
+  `backend/data/lighting.db`. For an unattended start, pass the audio device:
+  `python start.py --device "Main Out" --no-browser` (or set
+  `ILS_AUDIO_DEVICE`). A failed start stops everything it started.
+- **Linux: Docker with the venue file.** It puts the backend on the host
+  network, so Art-Net broadcast reaches the lights, and gives it the box's
+  sound card:
+
+  ```bash
+  cp docker-compose.venue-linux.example.yml docker-compose.override.yml
+  docker compose up -d
+  ```
+
+- **Docker on Windows or macOS.** Docker Desktop gives containers no LAN
+  broadcast and no audio devices. Set `ARTNET_IP` to your Art-Net node's IP
+  (unicast works), then send audio from the host with
+  `scripts/audio_capture.py`. It needs an operator token in `ILS_TOKEN`.
+
+Patch the venue's rig in the app and activate it. Until then, the built-in
+demo rig drives the visualizer but nothing is sent to the network.
+`ILS_RIG_ID` pins start.py, the visualizer or the capture script to one rig;
+otherwise they follow the active rig.
+
 ## Development
 
 ```bash
