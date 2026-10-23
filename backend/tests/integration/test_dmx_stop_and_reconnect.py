@@ -56,7 +56,12 @@ def controller(listener):
     return ctrl
 
 
-async def test_stopping_output_blacks_out_the_rig(controller, listener):
+def test_holding_the_last_look_is_the_default():
+    """The roadmap's rule: never black the room as a side effect."""
+    assert DMXController().blackout_on_stop is False
+
+
+async def test_blackout_on_stop_puts_zeros_on_the_wire(controller, listener):
     _, packets = listener
     await controller.connect()
     controller.universes[0] = DMXUniverse(universe=0)
@@ -71,7 +76,7 @@ async def test_stopping_output_blacks_out_the_rig(controller, listener):
     )
 
 
-async def test_hold_last_look_is_an_explicit_choice(controller, listener):
+async def test_hold_last_look_leaves_the_last_frame(controller, listener):
     _, packets = listener
     controller.blackout_on_stop = False
     await controller.connect()

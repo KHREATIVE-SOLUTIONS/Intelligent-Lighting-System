@@ -123,10 +123,11 @@ class Settings(BaseSettings):
     ARTNET_PORT: int = 6454
     DMX_UNIVERSE: int = 0
     DMX_FPS: int = 40
-    # Send zeros to every universe when output stops (shutdown, disconnect,
-    # reconfigure). Nodes otherwise hold the last frame forever, strobes included.
-    # Set false only for a rig whose nodes run their own fallback look.
-    DMX_BLACKOUT_ON_STOP: bool = True
+    # What the nodes are left showing when output stops cleanly (shutdown,
+    # disconnect, reconfigure). False holds the last look, per the roadmap's
+    # "never black the room as a side effect". True sends zeros to every
+    # universe so nothing - a running strobe included - stays latched on.
+    DMX_BLACKOUT_ON_STOP: bool = False
 
     # WebSocket
     WS_HEARTBEAT_INTERVAL: int = 30
