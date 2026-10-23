@@ -6,7 +6,9 @@ API endpoints for searching, browsing, and importing fixtures from
 the Open Fixture Library (OFL) and local bundled fixtures.
 """
 
+import asyncio
 import logging
+import re
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,8 +22,14 @@ from app.schemas.fixture import FixtureResponse, FixtureCreate
 from app.services.fixture_library.ofl_client import (
     OFLClient,
     OFLUnavailableError,
-    convert_ofl_to_internal,
 )
+from app.services.fixture_library.ofl_snapshot import get_snapshot, summarise
+from app.services.fixture_library.importer import (
+    FixtureNotInLibrary,
+    converted_definition,
+    import_ofl_fixture,
+)
+from app.services.rig.fixture_choice import mode_features, recommend_mode
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,74 +45,44 @@ def get_ofl_client() -> OFLClient:
     return _ofl_client
 
 
-def _library_fixture(fixture_data: dict) -> Fixture:
-    """The library row for a converted definition, carrying all it parsed.
-
-    Travel the converter could not read is left absent so the column default
-    stands, rather than written as None.
-    """
-    fixture = Fixture(
-        manufacturer=fixture_data["manufacturer"],
-        model=fixture_data["model"],
-        fixture_type=FixtureType(fixture_data.get("fixture_type", "other")),
-        weight=fixture_data.get("weight"),
-        power=fixture_data.get("power"),
-        beam_angle=fixture_data.get("beam_angle"),
-        has_rgb=fixture_data.get("has_rgb", False),
-        has_cmy=fixture_data.get("has_cmy", False),
-        has_color_wheel=fixture_data.get("has_color_wheel", False),
-        source=fixture_data.get("source"),
-        source_id=fixture_data.get("source_id"),
-        categories=fixture_data.get("categories"),
-    )
-    for key in ("pan_range", "tilt_range"):
-        if fixture_data.get(key) is not None:
-            setattr(fixture, key, fixture_data[key])
-    return fixture
-
-
-def _library_channel(mode_id: int, ch_data: dict) -> FixtureChannel:
-    return FixtureChannel(
-        mode_id=mode_id,
-        channel_number=ch_data["channel_number"],
-        channel_type=ChannelType(ch_data.get("channel_type", "other")),
-        name=ch_data.get("name", f"Channel {ch_data['channel_number']}"),
-        default_value=ch_data.get("default_value", 0),
-        min_value=ch_data.get("min_value", 0),
-        max_value=ch_data.get("max_value", 255),
-        is_fine=ch_data.get("is_fine", False),
-        coarse_channel=ch_data.get("coarse_channel"),
-        value_ranges=ch_data.get("value_ranges"),
-    )
-
-
-async def _fetch_fixture(client: OFLClient, manufacturer_key: str, fixture_key: str) -> dict:
-    """Fetch one OFL definition, mapping transport and key failures to statuses."""
-    try:
-        ofl_data = await client.get_fixture(manufacturer_key, fixture_key)
-    except OFLUnavailableError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if not ofl_data:
-        raise HTTPException(status_code=404, detail="Fixture not found on OFL")
-    return ofl_data
-
-
 @router.get("/search")
 async def search_fixtures_online(
     query: str = Query(..., min_length=1),
     manufacturer: Optional[str] = None,
 ):
-    """Search the Open Fixture Library for fixtures."""
+    """Search the Open Fixture Library for fixtures.
+
+    The offline snapshot answers first so a venue with no internet can still
+    find its fixtures; the online library is only asked when the snapshot has
+    nothing, which catches a fixture added upstream since the snapshot was cut.
+    """
+    snapshot = get_snapshot()
+    results = await asyncio.to_thread(snapshot.search, query, None, manufacturer, 50)
+    if results:
+        return {"results": results, "source": "ofl-offline"}
+
     client = get_ofl_client()
     try:
         results = await client.search_fixtures(query, manufacturer)
     except OFLUnavailableError as e:
+        if snapshot.available:
+            # The offline library was searched and had nothing: that is the answer.
+            return {"results": [], "source": "ofl-offline", "online_error": str(e)}
         # 503 rather than an empty list: a venue offline at load-in must be told the
         # library is unreachable, not that their fixture does not exist.
         raise HTTPException(status_code=503, detail=str(e))
     return {"results": results, "source": "ofl"}
+
+
+async def _import_or_raise(db: AsyncSession, manufacturer_key: str, fixture_key: str):
+    try:
+        return await import_ofl_fixture(db, manufacturer_key, fixture_key, client=get_ofl_client())
+    except OFLUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except FixtureNotInLibrary as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/import")
@@ -114,44 +92,9 @@ async def import_fixture(
     db: AsyncSession = Depends(get_db),
 ):
     """Import a single fixture from OFL into the local library."""
-    # Check if already imported
-    source_id = f"{manufacturer_key}/{fixture_key}"
-    result = await db.execute(
-        select(Fixture).where(Fixture.source_id == source_id).limit(1)
-    )
-    existing = result.scalars().first()
-    if existing:
-        return {"message": "Fixture already imported", "fixture_id": existing.id}
-
-    # Fetch from OFL
-    client = get_ofl_client()
-    ofl_data = await _fetch_fixture(client, manufacturer_key, fixture_key)
-
-    # Convert to our format
-    fixture_data = convert_ofl_to_internal(ofl_data, manufacturer_key, fixture_key)
-
-    # Create in database
-    modes_data = fixture_data.pop("modes", [])
-    fixture = _library_fixture(fixture_data)
-    db.add(fixture)
-    await db.flush()
-
-    # Create modes and channels
-    for mode_data in modes_data:
-        channels_data = mode_data.pop("channels", [])
-        mode = FixtureMode(
-            fixture_id=fixture.id,
-            name=mode_data["name"],
-            channel_count=mode_data["channel_count"],
-        )
-        db.add(mode)
-        await db.flush()
-
-        for ch_data in channels_data:
-            db.add(_library_channel(mode.id, ch_data))
-
-    await db.flush()
-
+    fixture, created = await _import_or_raise(db, manufacturer_key, fixture_key)
+    if not created:
+        return {"message": "Fixture already imported", "fixture_id": fixture.id}
     return {"message": "Fixture imported successfully", "fixture_id": fixture.id}
 
 
@@ -175,42 +118,10 @@ async def import_fixtures_bulk(
         fix_key = item.get("fixture_key", "")
         source_id = f"{mfr_key}/{fix_key}"
 
-        result = await db.execute(
-            select(Fixture).where(Fixture.source_id == source_id).limit(1)
-        )
-        existing = result.scalars().first()
-        if existing:
-            skipped.append(source_id)
-            continue
-
         try:
-            ofl_data = await client.get_fixture(mfr_key, fix_key)
-            if not ofl_data:
-                errors.append({"source_id": source_id, "error": "Not found"})
-                continue
-
-            fixture_data = convert_ofl_to_internal(ofl_data, mfr_key, fix_key)
-            modes_data = fixture_data.pop("modes", [])
-
-            fixture = _library_fixture(fixture_data)
-            db.add(fixture)
-            await db.flush()
-
-            for mode_data in modes_data:
-                channels_data = mode_data.pop("channels", [])
-                mode = FixtureMode(
-                    fixture_id=fixture.id,
-                    name=mode_data["name"],
-                    channel_count=mode_data["channel_count"],
-                )
-                db.add(mode)
-                await db.flush()
-
-                for ch_data in channels_data:
-                    db.add(_library_channel(mode.id, ch_data))
-
+            fixture, created = await import_ofl_fixture(db, mfr_key, fix_key, client=client)
             await db.commit()
-            imported.append(source_id)
+            (imported if created else skipped).append(source_id)
         except OFLUnavailableError as e:
             # One unreachable library is not N separate fixture failures. Stop
             # rather than reporting the rest of the batch as missing fixtures,
@@ -218,6 +129,9 @@ async def import_fixtures_bulk(
             await db.rollback()
             unavailable = str(e)
             break
+        except FixtureNotInLibrary:
+            await db.rollback()
+            errors.append({"source_id": source_id, "error": "Not found"})
         except Exception as e:
             await db.rollback()
             errors.append({"source_id": source_id, "error": str(e)})
@@ -385,3 +299,135 @@ def _fixture_to_dict(fixture: Fixture) -> dict:
             for m in (fixture.modes or [])
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Catalog: what the rig editor's fixture picker searches
+# ---------------------------------------------------------------------------
+
+
+def _library_summary(fixture: Fixture) -> dict:
+    """A local library fixture in the same shape as an offline OFL hit."""
+    modes = sorted(fixture.modes or [], key=lambda m: m.id or 0)
+    recommended = recommend_mode(modes)
+    mfr_key, _, fix_key = (fixture.source_id or "").partition("/") if fixture.source == "ofl" else ("", "", "")
+    return {
+        "key": fixture.source_id if fixture.source == "ofl" else f"library/{fixture.id}",
+        "manufacturer_key": mfr_key or None,
+        "fixture_key": fix_key or None,
+        "manufacturer": fixture.manufacturer,
+        "name": fixture.model,
+        "fixture_type": fixture.fixture_type.value if fixture.fixture_type else "other",
+        "categories": fixture.categories or [],
+        "modes": [
+            {
+                "id": m.id,
+                "name": m.name,
+                "channel_count": m.channel_count,
+                "features": mode_features(m),
+                "recommended": m is recommended,
+            }
+            for m in modes
+        ],
+        "recommended_mode": recommended.name if recommended else None,
+        "source": fixture.source or "manual",
+        "fixture_id": fixture.id,
+        "in_library": True,
+    }
+
+
+def _matches_words(words: List[str], *fields: str) -> bool:
+    text = " ".join(f or "" for f in fields).lower()
+    tokens = set(re.findall(r"[a-z0-9]+", text))
+    compact = "".join(re.findall(r"[a-z0-9]+", text))
+    return all(any(t.startswith(w) for t in tokens) or w in compact for w in words)
+
+
+@router.get("/catalog")
+async def search_catalog(
+    q: str = Query(default="", max_length=100),
+    fixture_type: Optional[str] = None,
+    manufacturer: Optional[str] = None,
+    limit: int = Query(default=30, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every fixture the operator can patch: the local library, then the offline OFL.
+
+    Works with no internet. Each hit lists its modes, what each can do, and the
+    mode we would patch, so the picker can patch in one step.
+    """
+    words = re.findall(r"[a-z0-9]+", q.lower())
+
+    result = await db.execute(
+        select(Fixture).options(selectinload(Fixture.modes).selectinload(FixtureMode.channels))
+    )
+    local = []
+    in_library = {}
+    for fixture in result.scalars().all():
+        if fixture.source == "ofl" and fixture.source_id:
+            in_library[fixture.source_id] = fixture.id
+        if fixture_type and (fixture.fixture_type.value if fixture.fixture_type else "other") != fixture_type:
+            continue
+        if manufacturer and not _matches_words([manufacturer.lower()], fixture.manufacturer, fixture.source_id or ""):
+            continue
+        if words and not _matches_words(words, fixture.manufacturer, fixture.model, fixture.source_id or ""):
+            continue
+        local.append(fixture)
+    local.sort(key=lambda f: (-(f.popularity_score or 0), f.manufacturer.lower(), f.model.lower()))
+
+    results = [_library_summary(f) for f in local[:limit]]
+    seen = {r["key"] for r in results}
+
+    snapshot = get_snapshot()
+    offline = await asyncio.to_thread(snapshot.search, q, fixture_type, manufacturer, limit)
+    for hit in offline:
+        if len(results) >= limit:
+            break
+        if hit["key"] in seen:
+            continue
+        results.append({**hit, "fixture_id": in_library.get(hit["key"]), "in_library": hit["key"] in in_library})
+
+    return {"results": results, "offline_library": snapshot.info()}
+
+
+@router.get("/catalog/{manufacturer_key}/{fixture_key}")
+async def preview_catalog_fixture(manufacturer_key: str, fixture_key: str):
+    """A fixture's modes channel by channel, before anything is imported."""
+    try:
+        converted = await converted_definition(
+            manufacturer_key, fixture_key, client=get_ofl_client()
+        )
+    except OFLUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except FixtureNotInLibrary as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    summary = summarise(converted, converted["source_id"])
+    channels_by_mode = {m["name"]: m["channels"] for m in converted.get("modes") or []}
+    for mode in summary["modes"]:
+        mode["channels"] = [
+            {
+                "channel_number": ch["channel_number"],
+                "name": ch["name"],
+                "channel_type": ch["channel_type"],
+                "is_fine": ch.get("is_fine", False),
+            }
+            for ch in channels_by_mode.get(mode["name"], [])
+        ]
+    summary.update({
+        "weight": converted.get("weight"),
+        "power": converted.get("power"),
+        "beam_angle": converted.get("beam_angle"),
+        "pan_range": converted.get("pan_range"),
+        "tilt_range": converted.get("tilt_range"),
+    })
+    return summary
+
+
+@router.get("/status")
+async def library_status():
+    """Whether the offline library is installed, how big it is and how old."""
+    snapshot = get_snapshot()
+    return {"offline_library": await asyncio.to_thread(snapshot.info)}

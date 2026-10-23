@@ -310,7 +310,85 @@ export const rigsApi = {
     const response = await api.post(`/rigs/${rigId}/fixtures/duplicate/${fixtureId}`);
     return response.data;
   },
+
+  /** Patch one or more fixtures by make and model, importing the profile if needed. */
+  patchFromLibrary: async (rigId: number, request: LibraryPatchRequest): Promise<LibraryPatchResult> => {
+    const response = await api.post(`/rigs/${rigId}/patch-from-library`, request);
+    return response.data;
+  },
 };
+
+// Fixture library catalog (offline Open Fixture Library + the local library)
+export interface CatalogMode {
+  id?: number;
+  name: string;
+  channel_count: number;
+  features: string[];
+  recommended: boolean;
+}
+
+export interface CatalogFixture {
+  key: string;
+  manufacturer_key: string | null;
+  fixture_key: string | null;
+  manufacturer: string;
+  name: string;
+  fixture_type: string;
+  categories: string[];
+  modes: CatalogMode[];
+  recommended_mode: string | null;
+  source: string;
+  fixture_id: number | null;
+  in_library: boolean;
+}
+
+export interface OfflineLibraryInfo {
+  available: boolean;
+  fixture_count: number;
+  manufacturer_count: number;
+  commit?: string | null;
+  generated?: string | null;
+}
+
+export interface CatalogSearchResult {
+  results: CatalogFixture[];
+  offline_library: OfflineLibraryInfo;
+}
+
+export interface LibraryPatchRequest {
+  library_key?: string;
+  fixture_id?: number;
+  mode_name?: string;
+  quantity: number;
+  universe: number;
+  start_address?: number;
+  group_name?: string;
+  mounting_position?: string;
+}
+
+export interface LibraryPatchResult {
+  rig_id: number;
+  fixture: {
+    id: number;
+    manufacturer: string;
+    model: string;
+    fixture_type: string;
+    imported: boolean;
+  };
+  mode: { id: number; name: string; channel_count: number; features: string[]; chosen_by: string };
+  group_name: string | null;
+  mounting_position: string;
+  patched: Array<{
+    id: number;
+    name: string;
+    fixture_number: number;
+    universe: number;
+    dmx_address: number;
+    last_address: number;
+  }>;
+  applied_live: boolean;
+  notes: string[];
+}
 
 // Flash-to-identify walkthrough API
 export interface IdentifyStep {
@@ -566,6 +644,17 @@ export const fixturesApi = {
       results: Array.isArray(raw) ? raw.flatMap(normalizeOnlineFixture) : [],
       error: typeof payload?.error === 'string' ? payload.error : undefined,
     };
+  },
+
+  searchCatalog: async (
+    query: string,
+    fixtureType?: string,
+    limit = 30
+  ): Promise<CatalogSearchResult> => {
+    const params = new URLSearchParams({ q: query, limit: String(limit) });
+    if (fixtureType) params.append('fixture_type', fixtureType);
+    const response = await api.get(`/fixtures/library/catalog?${params}`);
+    return response.data;
   },
 
   importFromLibrary: async (manufacturerKey: string, fixtureKey: string) => {
