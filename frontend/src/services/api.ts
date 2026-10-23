@@ -23,7 +23,7 @@ import type {
   Genre,
   ProLightingState,
 } from '../types';
-import type { DmxStatusPayload } from '../utils/showHealth';
+import type { BoxHealthPayload, DmxStatusPayload } from '../utils/showHealth';
 
 const API_BASE_URL = '/api';
 
@@ -774,6 +774,18 @@ export const audioApi = {
 
   stopCapture: async (): Promise<{ status: string }> => {
     const response = await api.post('/audio/capture/stop');
+    return response.data;
+  },
+};
+
+// Box health: the same report as /health, under /api so the browser can reach
+// it. A degraded box answers 503 with the report in the body, which is exactly
+// when the operator needs it, so 503 is not treated as a failure here.
+export const healthApi = {
+  get: async (): Promise<BoxHealthPayload> => {
+    const response = await api.get('/health', {
+      validateStatus: (status) => status === 200 || status === 503,
+    });
     return response.data;
   },
 };

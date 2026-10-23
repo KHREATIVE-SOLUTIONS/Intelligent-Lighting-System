@@ -25,13 +25,29 @@ export function buildSetupSteps(input: {
   activeRig: ActiveRigSummary | null;
   dmx: HealthReading;
   audio: HealthReading;
+  // From the box's health report; absent on boxes that do not send it.
+  database?: string | null;
 }): SetupStep[] {
-  const { effects, activeRig, dmx, audio } = input;
-  return [rigStep(effects, activeRig), dmxStep(dmx), audioStep(audio), autopilotStep(effects)];
+  const { effects, activeRig, dmx, audio, database = null } = input;
+  return [rigStep(effects, activeRig, database), dmxStep(dmx), audioStep(audio), autopilotStep(effects)];
 }
 
-function rigStep(effects: EffectsStatus | null, activeRig: ActiveRigSummary | null): SetupStep {
+function rigStep(
+  effects: EffectsStatus | null,
+  activeRig: ActiveRigSummary | null,
+  database: string | null
+): SetupStep {
   const title = 'Venue rig';
+  // Without the database the engine cannot load any patched rig, so pointing
+  // the tech at the rig wizard would only lose their work.
+  if (database === 'unavailable') {
+    return {
+      key: 'rig',
+      title,
+      state: 'todo',
+      detail: 'The box started without its database, so the venue rig cannot load. Restart the box.',
+    };
+  }
   if (!effects) {
     return { key: 'rig', title, state: 'warn', detail: 'Cannot tell which rig the engine is running.' };
   }

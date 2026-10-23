@@ -10,6 +10,7 @@ like a professional operator would.
 """
 
 import json
+import re
 import time
 import numpy as np
 from datetime import datetime
@@ -70,6 +71,11 @@ class TrainingRecorder:
         recorder.export_training_data("training_data.jsonl")
     """
 
+    # About an hour of paired frames at 60 fps. Each frame carries every
+    # fixture's state, so a session left recording all night would otherwise
+    # grow by gigabytes and take the show down with it.
+    MAX_FRAMES = 60 * 60 * 60
+
     def __init__(self, output_dir: str = "ml_training_data"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -89,10 +95,22 @@ class TrainingRecorder:
         self.frame_count = 0
         self.audio_frames = 0
         self.lighting_frames = 0
+        self.dropped_frames = 0
 
         # Thread-safe queue for async recording
         self._record_queue = queue.Queue()
         self._record_thread: Optional[threading.Thread] = None
+
+    @staticmethod
+    def _safe_name(name: str) -> str:
+        """A bare file name with no directory part or traversal.
+
+        Both names arrive from the API. "../../x" or an absolute path used to
+        write wherever it pointed - including over the app's own source.
+        """
+        base = Path(str(name)).name
+        base = re.sub(r"[^A-Za-z0-9._-]", "_", base).lstrip(".")
+        return base[:120] or "session"
 
     def start_recording(self, session_name: str = None):
         """Start a new recording session."""
@@ -100,9 +118,12 @@ class TrainingRecorder:
             print("Already recording!")
             return
 
-        self.session_name = session_name or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.session_name = self._safe_name(
+            session_name or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
         self.start_time = time.time()
         self.frames = []
+        self.dropped_frames = 0
         self.frame_count = 0
         self.audio_frames = 0
         self.lighting_frames = 0
@@ -201,8 +222,14 @@ class TrainingRecorder:
                             audio=self._current_audio,
                             lighting=self._current_lighting
                         )
-                        self.frames.append(training_frame)
-                        self.frame_count += 1
+                        if len(self.frames) < self.MAX_FRAMES:
+                            self.frames.append(training_frame)
+                            self.frame_count += 1
+                        else:
+                            if not self.dropped_frames:
+                                print(f"[Recorder] Session is full at {self.MAX_FRAMES} frames; "
+                                      "export it and start a new one to keep recording")
+                            self.dropped_frames += 1
 
                         # Clear for next pair
                         self._current_audio = None
@@ -219,7 +246,9 @@ class TrainingRecorder:
             print("[Recorder] No frames to export!")
             return ""
 
-        filename = filename or f"{self.session_name}.jsonl"
+        filename = self._safe_name(filename or f"{self.session_name}.jsonl")
+        if not filename.endswith(".jsonl"):
+            filename += ".jsonl"
         filepath = self.output_dir / filename
 
         with open(filepath, 'w') as f:
@@ -258,6 +287,8 @@ class TrainingRecorder:
             'frame_count': self.frame_count,
             'audio_frames': self.audio_frames,
             'lighting_frames': self.lighting_frames,
+            'dropped_frames': self.dropped_frames,
+            'full': len(self.frames) >= self.MAX_FRAMES,
             'duration_seconds': duration,
             'fps': self.frame_count / duration if duration > 0 else 0
         }

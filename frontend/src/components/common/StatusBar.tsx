@@ -10,6 +10,7 @@ import { useHealthStore } from '../../stores/healthStore';
 import { audioWebSocket } from '../../services/websocket';
 import {
   readAudioHealth,
+  readDatabaseHealth,
   readDmxHealth,
   readLinkHealth,
   type HealthLevel,
@@ -75,7 +76,7 @@ function Pill({ reading, onClick, testId }: { reading: HealthReading; onClick?: 
 // to the engine. Colour plus icon plus words, so it still reads under coloured
 // stage wash or to someone colour-blind.
 export default function StatusBar() {
-  const { reachable, dmx, capture, link, lastAnalysisAt } = useHealthStore();
+  const { reachable, dmx, capture, box, link, lastAnalysisAt } = useHealthStore();
   const [now, setNow] = useState(() => Date.now());
 
   // Re-evaluate staleness even when no new data arrives; that is exactly when
@@ -85,8 +86,9 @@ export default function StatusBar() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const dmxReading = readDmxHealth(dmx, reachable);
-  const audioReading = readAudioHealth(capture, reachable, lastAnalysisAt, now);
+  const dmxReading = readDmxHealth(dmx, reachable, box);
+  const audioReading = readAudioHealth(capture, reachable, lastAnalysisAt, now, box);
+  const databaseReading = readDatabaseHealth(box, reachable);
   const linkReading = readLinkHealth(link, reachable);
   const canRetry = reachable && link !== 'connected';
 
@@ -97,6 +99,7 @@ export default function StatusBar() {
       aria-live="polite"
       sx={{ display: 'flex', gap: 1, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'nowrap' }}
     >
+      {databaseReading && <Pill reading={databaseReading} testId="status-database" />}
       <Pill reading={dmxReading} testId="status-dmx" />
       <Pill reading={audioReading} testId="status-audio" />
       <Pill

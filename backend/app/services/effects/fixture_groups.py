@@ -167,9 +167,12 @@ def _level(value, default: float = 0.0) -> float:
     if value is None:
         return default
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return default
+    # NaN survived the clamps downstream as full on (max(0, min(1, nan)) is 1),
+    # sending a dimmer to 255 and a head to its end stop; inf aborted the frame.
+    return number if math.isfinite(number) else default
 
 
 def _to_byte(value) -> int:

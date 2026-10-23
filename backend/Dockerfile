@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     libsndfile1 \
+    libportaudio2 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 

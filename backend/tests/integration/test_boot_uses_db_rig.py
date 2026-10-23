@@ -118,6 +118,18 @@ elif MODE == "patched":
     with TestClient(app):
         print("RESULT" + json.dumps(snapshot()))
 
+elif MODE == "live":
+    # No restart: activating the patched rig has to reach the running show.
+    with TestClient(app) as c:
+        sign_in(c)
+        held_on_demo = app.state.dmx_output_held
+        patch_rig(c, int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]))
+        result = snapshot()
+        result["held_on_demo"] = held_on_demo
+        result["held_after_patch"] = app.state.dmx_output_held
+        result["live_rig_demo"] = app.state.live_rig["demo"]
+        print("RESULT" + json.dumps(result))
+
 elif MODE == "two_rigs":
     with TestClient(app) as c:
         sign_in(c)
@@ -197,3 +209,18 @@ def test_boot_follows_the_most_recently_activated_rig():
     patch = [tuple(p) for p in result["patch"]]
     assert (5, 100) in patch, "boot followed the wrong rig: %s" % patch
     assert (PATCH_UNIVERSE, PATCH_ADDRESS) not in patch
+
+
+def test_activating_a_rig_reaches_the_running_show_without_a_restart():
+    """The show used to load a rig only at boot, so a new patch did nothing until a restart."""
+    result = _run("live", PATCH_UNIVERSE, PATCH_ADDRESS, SECOND_ADDRESS)
+
+    patch = [tuple(p) for p in result["patch"]]
+    assert (PATCH_UNIVERSE, PATCH_ADDRESS) in patch, (
+        "the running show kept its old rig after activation: %s" % patch[:6]
+    )
+    assert result["count"] == 2
+    # The demo rig was kept off the wire; the venue's own patch goes out.
+    assert result["held_on_demo"] is True
+    assert result["held_after_patch"] is False
+    assert result["live_rig_demo"] is False

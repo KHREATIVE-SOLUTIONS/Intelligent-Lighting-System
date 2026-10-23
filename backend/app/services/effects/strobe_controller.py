@@ -93,6 +93,8 @@ class StrobeController:
         """Enforce safety frequency limits."""
         if self.params.mode == StrobeMode.CONTINUOUS:
             # Continuous strobe limited to 4Hz
+            if not (self.params.frequency >= 0):  # negative or NaN
+                self.params.frequency = 0.0
             if self.params.frequency > self.params.max_continuous_hz:
                 self.params.frequency = self.params.max_continuous_hz
 
@@ -317,7 +319,13 @@ class DropStrobeSequence:
         """Start build-up phase before drop."""
         self.phase = "buildup"
         self.start_time = self.controller.time
-        self.buildup_duration = duration
+        # A zero length divided by zero every frame from then on, and a negative
+        # one never ended and drove the strobe rate negative.
+        try:
+            duration = float(duration)
+        except (TypeError, ValueError):
+            duration = 4.0
+        self.buildup_duration = duration if math.isfinite(duration) and duration >= 0.5 else 0.5
         self.controller.set_mode(
             StrobeMode.CONTINUOUS,
             frequency=1.0
