@@ -401,6 +401,10 @@ async def stop_capture(request: Request):
         raise HTTPException(500, "Audio capture not available")
 
     request.app.state.audio_capture.stop()
+    # Stopped on purpose, so the engine must not read it as a lost cable.
+    engine = getattr(request.app.state, 'effects_engine', None)
+    if engine is not None:
+        engine.audio_input_stopped()
     return {"status": "stopped"}
 
 

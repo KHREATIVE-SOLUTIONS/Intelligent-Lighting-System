@@ -18,6 +18,7 @@ import scipy.signal as signal
 
 from app.core.config import settings
 from app.services.audio.tempo_tracker import TempoTracker
+from app.services.audio.track_change import TrackChangeDetector
 from app.schemas.audio import (
     AudioStreamConfig, AudioAnalysisResponse,
     BeatResponse, MoodResponse, FrequencyResponse, FrequencyBand
@@ -101,6 +102,8 @@ class AudioAnalyzer:
         # The tempo a lighting operator would count, from the drums themselves.
         # Supersedes the beat-interval estimate below whenever it is confident.
         self._tempo = TempoTracker(self.sample_rate, hop=self.hop_length)
+        # Which record is playing, so a DJ mix is not one six-hour song.
+        self._track = TrackChangeDetector(self.sample_rate)
         self.tempo_confidence = 0.0
         self.last_beat_time = 0.0
         self.beat_phase = 0.0
@@ -208,6 +211,7 @@ class AudioAnalyzer:
         self.previous_beat_spectrum = None
         self.previous_flux_spectrum = None
         self._tempo.set_sample_rate(rate)
+        self._track.set_sample_rate(rate)
         logger.info("Audio analyzer sample rate set to %d Hz", rate)
 
     def _sanitize_chunk(self, audio_data) -> np.ndarray:
@@ -256,6 +260,7 @@ class AudioAnalyzer:
             "beat": beat_result,
             "mood": mood_result,
             "frequency": frequency_result,
+            "track": self._analyze_track(audio_data),
         }
 
         # Run ML pipeline models (MERT, structure, genre)
@@ -269,6 +274,28 @@ class AudioAnalyzer:
         result["latency_ms"] = self.latency_ms
 
         return result
+
+    def _analyze_track(self, audio_data: np.ndarray) -> Dict[str, Any]:
+        """Which record is playing: see `TrackChangeDetector`.
+
+        Never raises. A fault here costs the set its track boundaries, which is
+        how it behaved before this existed, and must not cost it the analysis.
+        """
+        detector = self._track
+        try:
+            trusted = self._tempo_is_trusted()
+            detector.push(
+                audio_data,
+                bpm=self._tempo.bpm if trusted else None,
+                tempo_confidence=self._tempo.confidence if trusted else 0.0,
+            )
+        except Exception:
+            detector.changed = False
+        return {
+            "id": int(detector.track_id),
+            "changed": bool(detector.changed),
+            "transition": round(float(detector.transition), 3),
+        }
 
     def _update_loudness(self, audio_data: np.ndarray) -> float:
         """Track programme loudness and derive a playback-level-invariant energy.
