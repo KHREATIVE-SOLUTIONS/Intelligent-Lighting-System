@@ -530,10 +530,12 @@ class EffectsEngine:
         # ML emotion mapping state (set by _apply_ml_data)
         self._ml_emotion_mapping = None
 
-        # Confidence gates for ML-driven target switching
+        # Confidence gates for ML-driven target switching. The starting genre is
+        # a default, not a detection, so it carries no confidence: seeded at
+        # 1.0 it could never be beaten and detection never changed the genre.
         self._ml_genre_gate = _TargetGateState(
             current=self.genre_manager.current_genre.value,
-            current_confidence=1.0,
+            current_confidence=0.0,
         )
         self._ml_section_gate = _TargetGateState(
             current=self.section_manager.current_section.value,
@@ -1443,6 +1445,47 @@ class EffectsEngine:
             })
         self._fixture_state_snapshot = snapshot
 
+    # Audio older than this is treated as lost.
+    AUDIO_STALE_S = _AUDIO_LOSS_AFTER_S
+    # Where the analysed levels settle while the feed is gone, for renderers
+    # that read them directly: a calm, lit room rather than a dark one (the
+    # cable may be the only thing that stopped) and rather than the last beat
+    # replayed for ever. The rebuild renderer shows the ambient hold instead.
+    AUDIO_IDLE_LEVEL = 0.25
+    AUDIO_IDLE_SETTLE_S = 3.0
+
+    @property
+    def audio_age(self) -> Optional[float]:
+        """Seconds since the last audio update, or None before any arrived."""
+        if self._last_audio_t is None:
+            return None
+        return max(0.0, self.time - self._last_audio_t)
+
+    def _settle_if_audio_lost(self, delta_time: float) -> None:
+        """Stop following music that is no longer arriving, on every renderer.
+
+        Nothing refreshed the audio state when the feed died (capture thread
+        gone, cable out, sender crashed), so the show kept dancing to the last
+        chunk all night: energy frozen, and is_beat stuck on, which also counted
+        a new bar every frame and broke every bar-based hold.
+        """
+        age = self.audio_age
+        if age is None or age < self.AUDIO_STALE_S:
+            return
+        self.audio_features.is_beat = False
+        self.audio_features.beat_intensity = 0.0
+        self.audio_state.is_beat = False
+        # A room that never heard music before the feed went has nothing to
+        # hold, and stays dark, the same rule as the ambient hold.
+        idle = self.AUDIO_IDLE_LEVEL if self._music_heard else 0.0
+        pull = min(1.0, max(0.0, float(delta_time or 0.0)) / self.AUDIO_IDLE_SETTLE_S)
+        for target in (self.audio_features, self.audio_state):
+            for band in ("energy", "bass", "mid", "high"):
+                value = float(getattr(target, band, 0.0) or 0.0)
+                setattr(target, band, value + (idle - value) * pull)
+        if hasattr(self.audio_state, "spectral_flux"):
+            self.audio_state.spectral_flux = 0.0
+
     def _audio_loss_check(self) -> None:
         """Notice audio that was playing and has stopped arriving at all.
 
@@ -1537,6 +1580,8 @@ class EffectsEngine:
         self._last_audio_t = None
         self._audio_lost = False
         self._ambient_mix = 0.0
+        # Whatever plays next may come from another input at another level.
+        self.decision.reset_dynamics()
 
     def _rebuild_get_emotional_color(self, section: str) -> RGB:
         """Return mood color from valence/arousal with section-aware warmth/coolth shaping."""
@@ -1978,9 +2023,20 @@ class EffectsEngine:
         """Enable professional lighting integration."""
         self._pro_lighting_enabled = enabled
 
-    def set_genre(self, genre, crossfade: bool = True):
-        """Set the active genre profile."""
+    def set_genre(self, genre, crossfade: bool = True, pin: Optional[bool] = True):
+        """Set the active genre profile.
+
+        `pin` says how firmly genre detection may move it afterwards. True (an
+        operator's choice) holds it against detection; False (a startup
+        default) lets the first confident detection replace it; None leaves the
+        detection gate as it is, for detection's own switches.
+        """
         from ..lighting.movement_patterns import apply_genre_defaults
+        if pin is not None:
+            self._ml_genre_gate.current = genre.value
+            self._ml_genre_gate.current_confidence = 1.0 if pin else 0.0
+            self._ml_genre_gate.pending = None
+            self._ml_genre_gate.pending_count = 0
         self.genre_manager.set_genre(genre, crossfade)
         self.key_lighting.set_genre(genre.value)
         # Apply genre speed defaults to pro movement
@@ -2136,6 +2192,7 @@ class EffectsEngine:
             self._beat_clock_observe(energy, bpm, is_beat, beat_number)
         except Exception:
             pass
+        self._sync_section_manager_tempo(bpm)
 
         # Smooth BPM for non-reactive movement clock to avoid jitter from detector noise.
         target_bpm = max(60.0, min(200.0, float(bpm)))
@@ -2235,6 +2292,24 @@ class EffectsEngine:
                 self._palette_locked = True
                 print(f"[Effects] Palette locked: {self._current_song_palette.value}")
 
+    def _sync_section_manager_tempo(self, bpm: float) -> None:
+        """Give the section manager the tempo the show is counting.
+
+        It times its crossfades, anticipation and build-up ramps in bars, and
+        it never heard a tempo after construction, so every song ran on the
+        default 128 BPM: a 2-bar build at 87 BPM ended a bar and a half early.
+        The locked clock's tempo is preferred over the raw detector's.
+        """
+        try:
+            if self._clock_locked and self._clock_period > 0:
+                tempo = 60.0 / self._clock_period
+            else:
+                tempo = float(bpm)
+            if math.isfinite(tempo) and tempo > 0:
+                self.section_manager.set_bpm(tempo)
+        except Exception:
+            pass
+
     def _on_song_change(self):
         """Handle song change - pick new color palette and reset ML state."""
         # Cycle to next palette
@@ -2257,6 +2332,10 @@ class EffectsEngine:
             self._ml_emotion_mapping = None
 
         self._reset_drop_anticipation()
+
+        # A new record has its own loudness: the last one's reference would
+        # squash a quieter intro or clip a hotter master.
+        self.decision.reset_dynamics()
 
         # Reset section-template "home" state and MIB transitions for next song
         self._song_home_section = None
@@ -2414,7 +2493,9 @@ class EffectsEngine:
 
         # --- Genre auto-switching ---
         genre_data = ml_data.get("genre")
-        if genre_data:
+        # A heuristic guess is shown, never obeyed: it would retune the whole
+        # show to the wrong genre (it reads club music as ambient).
+        if genre_data and genre_data.get("source") != "heuristic":
             detected_genre = genre_data.get("genre", "").lower()
             confidence = genre_data.get("genre_confidence", 0.0)
             gate_passed = (
@@ -2444,7 +2525,7 @@ class EffectsEngine:
                 }
                 genre_enum = genre_map.get(detected_genre)
                 if genre_enum and genre_enum != self.genre_manager.current_genre:
-                    self.set_genre(genre_enum)
+                    self.set_genre(genre_enum, pin=None)
                     # Reset strobe budget for genre change
                     self.pro_effects.strobe.set_genre(detected_genre)
                     self.pro_effects.strobe.reset_song_budget()
@@ -2582,6 +2663,10 @@ class EffectsEngine:
         self.last_update = current_time
         self.time += delta_time
         self._beat_clock_advance(delta_time)
+        # Every renderer, not only the rebuild path, has to stop following a
+        # feed that is no longer arriving.
+        self._audio_loss_check()
+        self._settle_if_audio_lost(delta_time)
 
         # Update decision engine - genre-aware mode when pro lighting is active
         if self.config.auto_mode and self._pro_lighting_enabled:
@@ -2615,7 +2700,6 @@ class EffectsEngine:
         # Clean-slate runtime path: one renderer only, avoids conflicting overlays.
         # Respect auto/manual mode so manual controls still work when auto is disabled.
         if self.config.auto_mode and self._rebuild_busker_enabled:
-            self._audio_loss_check()
             if not self._audio_lost:
                 # With no audio arriving the section would be decided on stale
                 # analysis; it holds where it was instead.

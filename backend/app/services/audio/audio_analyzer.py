@@ -162,6 +162,33 @@ class AudioAnalyzer:
         self._last_emotion_vector = None
         self._last_emotion_mapping = None
         self._last_genre_result = None
+        # Models load in the background after startup; see `_pull_ml_models`.
+        self._ml_models_pulled = False
+        # MERT and HuBERT run as background tasks, never awaited by the audio
+        # path; the latest finished result is what the show reads.
+        self._mert_task: Optional[asyncio.Task] = None
+        self._mood_task: Optional[asyncio.Task] = None
+        self._last_mood_time = 0.0
+
+    def _pull_ml_models(self) -> None:
+        """Pick up the ML models once the manager has finished loading them.
+
+        The manager loads in the background, so at startup every model was
+        still None when it was handed over, and nothing handed them over again:
+        the genre classifier never ran and the show stayed on its default genre
+        all night. The analyser now takes them itself, once, as soon as loading
+        is complete. A MERT that failed to load is left out.
+        """
+        manager = self.model_manager
+        if self._ml_models_pulled or manager is None or not getattr(manager, "loaded", False):
+            return
+        self._ml_models_pulled = True
+        mert = getattr(manager, "mert_model", None)
+        self.set_ml_models(
+            mert_model=mert if getattr(mert, "loaded", False) else self._mert_model,
+            structure_analyzer=getattr(manager, "structure_analyzer", None) or self._structure_analyzer,
+            genre_classifier=getattr(manager, "genre_classifier", None) or self._genre_classifier,
+        )
 
     def set_ml_models(self, mert_model=None, structure_analyzer=None, genre_classifier=None):
         """Set ML model references from model_manager.
@@ -243,6 +270,7 @@ class AudioAnalyzer:
         start_time = datetime.utcnow()
 
         audio_data = self._sanitize_chunk(audio_data)
+        self._pull_ml_models()
 
         # Update buffer
         self._update_buffer(audio_data)
@@ -376,17 +404,21 @@ class AudioAnalyzer:
         current_time = time.time()
         ml_output: Dict[str, Any] = {}
 
-        # --- MERT emotion recognition (2Hz) ---
+        # --- MERT emotion recognition (2Hz, in the background) ---
         if self._mert_model is not None:
             self._mert_model.feed_audio(audio_data, self.sample_rate)
-            if current_time - self._last_mert_time >= self._mert_interval:
-                self._last_mert_time = current_time
+            task = self._mert_task
+            if task is not None and task.done():
+                self._mert_task = None
                 try:
-                    emotion = await self._mert_model.get_emotion()
+                    emotion = task.result()
                     self._last_emotion_vector = emotion
                     self._last_emotion_mapping = self._mert_model.map_to_lighting(emotion)
                 except Exception as e:
                     logger.warning("MERT inference error: %s", e)
+            if self._mert_task is None and current_time - self._last_mert_time >= self._mert_interval:
+                self._last_mert_time = current_time
+                self._mert_task = asyncio.ensure_future(self._mert_model.get_emotion())
 
         if self._last_emotion_vector is not None:
             ev = self._last_emotion_vector
@@ -485,6 +517,11 @@ class AudioAnalyzer:
                 "genre_confidence": gr.genre_confidence,
                 "subgenre": gr.subgenre,
                 "genre_scores": gr.genre_scores,
+                "source": (
+                    "heuristic"
+                    if getattr(self._genre_classifier, "HEURISTIC_ONLY", False)
+                    else "model"
+                ),
             }
 
         return ml_output if ml_output else None
@@ -684,19 +721,43 @@ class AudioAnalyzer:
         tracker = self._tempo
         return tracker.bpm is not None and tracker.confidence >= tracker.MIN_CONFIDENCE
 
+    def _mood_in_background(self, audio_data: np.ndarray) -> None:
+        """Collect the last finished mood result and start the next, at 2 Hz."""
+        task = self._mood_task
+        if task is not None and task.done():
+            self._mood_task = None
+            try:
+                result = task.result()
+                self.current_valence = result['valence']
+                self.current_arousal = result['arousal']
+            except Exception as e:
+                logger.warning("Mood classification error: %s", e)
+        now = time.time()
+        if self._mood_task is None and now - self._last_mood_time >= self._mert_interval:
+            self._last_mood_time = now
+            self._mood_task = asyncio.ensure_future(
+                self.model_manager.classify_mood(np.array(audio_data, copy=True), self.sample_rate)
+            )
+
     async def _analyze_mood(self, audio_data: np.ndarray) -> Dict[str, Any]:
         """
         Classify mood using valence-arousal model.
 
         Uses spectral features to estimate emotional content.
         """
-        # Use ML model if available (prefer MERT over HuBERT)
-        if self.model_manager and (
+        # Use ML model if available (prefer MERT over HuBERT). Neither is
+        # awaited here: MERT runs in the ML pipeline's background task, HuBERT
+        # in its own, and the mood is the latest result either has finished.
+        mert = self._mert_model
+        if mert is not None and getattr(mert, "loaded", False):
+            emotion = self._last_emotion_vector
+            if emotion is not None:
+                self.current_valence = float(emotion.valence)
+                self.current_arousal = float(emotion.arousal)
+        elif self.model_manager and (
             self.model_manager.has_model('mert') or self.model_manager.has_model('hubert')
         ):
-            result = await self.model_manager.classify_mood(audio_data)
-            self.current_valence = result['valence']
-            self.current_arousal = result['arousal']
+            self._mood_in_background(audio_data)
         else:
             # Fallback: Estimate from spectral features
             spectrum = np.abs(np.fft.rfft(audio_data))

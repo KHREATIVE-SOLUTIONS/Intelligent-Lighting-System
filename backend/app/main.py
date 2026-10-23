@@ -7,6 +7,7 @@ Entry point for the Intelligent Lighting System backend.
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -202,13 +203,8 @@ async def lifespan(app: FastAPI):
         print(" Creating AudioAnalyzer...")
         app.state.audio_analyzer = AudioAnalyzer(app.state.model_manager)
 
-        # Wire ML pipeline models into audio analyzer
-        if app.state.model_manager:
-            app.state.audio_analyzer.set_ml_models(
-                mert_model=app.state.model_manager.mert_model,
-                structure_analyzer=app.state.model_manager.structure_analyzer,
-                genre_classifier=app.state.model_manager.genre_classifier,
-            )
+        # The ML models are still loading in the background here; the
+        # analyser picks them up from the manager once loading completes.
     except Exception as e:
         print(f"Warning: Could not initialize audio analyzer: {e}")
         app.state.audio_analyzer = None
@@ -268,7 +264,7 @@ async def lifespan(app: FastAPI):
         from app.services.effects.color_mapper import RGB
 
         # Set default genre
-        app.state.effects_engine.set_genre(Genre.EDM)
+        app.state.effects_engine.set_genre(Genre.EDM, pin=False)
 
         # Configure DJ booth key lighting
         app.state.effects_engine.key_lighting.configure_zone(
@@ -466,25 +462,44 @@ async def lifespan(app: FastAPI):
     # Auto-starts via a delayed async task after the server is listening,
     # so the blocking soundcard COM init never stalls the event loop.
     try:
-        # Throttle flag: only one process_chunk at a time to avoid saturating the event loop
-        _processing = [False]
+        # Throttle flag: only one process_chunk at a time to avoid saturating the
+        # event loop. It holds the time the pending chunk was sent, so one chunk
+        # that never finishes cannot hold the gate shut for the rest of the night.
+        _processing = [None]
+        _PROCESS_TIMEOUT_S = 2.0
+
+        async def _process_with_timeout(audio_data, sample_rate):
+            # Follow the device's real rate (WASAPI loopback opens at the
+            # device's own rate, usually 48 kHz): every tempo and band edge is
+            # derived from it. Done here, on the loop, between chunks; a no-op
+            # when it has not changed.
+            if sample_rate:
+                app.state.audio_analyzer.set_sample_rate(sample_rate)
+            return await asyncio.wait_for(
+                app.state.audio_analyzer.process_chunk(audio_data), _PROCESS_TIMEOUT_S
+            )
 
         def on_audio_chunk(audio_data):
             """Process captured system audio through the analysis pipeline."""
-            if _processing[0]:
-                return  # Skip this chunk - previous one still processing
+            pending_since = _processing[0]
+            if pending_since is not None:
+                if time.monotonic() - pending_since < 2 * _PROCESS_TIMEOUT_S:
+                    return  # Skip this chunk - previous one still processing
+                logger.warning("Audio analysis stopped answering; resuming with fresh chunks")
             if not (app.state.audio_analyzer and app.state.effects_engine):
                 return
             try:
+                capture = getattr(app.state, "audio_capture", None)
+                sample_rate = getattr(capture, "sample_rate", None)
                 _loop = app.state._audio_loop
                 if _loop and _loop.is_running():
-                    _processing[0] = True
+                    _processing[0] = time.monotonic()
                     future = asyncio.run_coroutine_threadsafe(
-                        app.state.audio_analyzer.process_chunk(audio_data),
+                        _process_with_timeout(audio_data, sample_rate),
                         _loop,
                     )
                     def _on_result(fut):
-                        _processing[0] = False
+                        _processing[0] = None
                         try:
                             result = fut.result()
                             if result:
@@ -521,7 +536,7 @@ async def lifespan(app: FastAPI):
                             print(f"Audio pipeline update error: {e}")
                     future.add_done_callback(_on_result)
             except Exception:
-                _processing[0] = False
+                _processing[0] = None
 
         app.state._audio_loop = asyncio.get_event_loop()
         app.state.audio_capture = SystemAudioCapture(
@@ -531,25 +546,37 @@ async def lifespan(app: FastAPI):
             on_audio_chunk=on_audio_chunk,
         )
 
-        # Delayed auto-start: waits 2s for server to bind, then starts capture
-        # in an executor thread so the blocking soundcard COM init is off the event loop.
-        if settings.AUDIO_CAPTURE_AUTO_START:
+        # Delayed start: waits 2s for server to bind, then starts capture in an
+        # executor thread so the blocking soundcard COM init is off the event
+        # loop. Capture comes back on its own after a reboot when the operator
+        # left it running (on the device they picked, found by name), or when
+        # AUDIO_CAPTURE_AUTO_START asks for the auto chain. It keeps retrying
+        # in the background if the interface is not up yet.
+        from app.services.audio import capture_settings
+
+        remembered = capture_settings.load()
+        if remembered["running"] or settings.AUDIO_CAPTURE_AUTO_START:
             async def _delayed_audio_start():
                 await asyncio.sleep(2)
                 loop = asyncio.get_event_loop()
                 try:
                     capture = app.state.audio_capture
                     success = await loop.run_in_executor(
-                        None, lambda: capture.start(loop=loop)
+                        None,
+                        lambda: capture.start(
+                            loop=loop,
+                            device_name=remembered["device_name"] if remembered["running"] else None,
+                            keep_trying=True,
+                        ),
                     )
                     if success:
                         print(f"Audio capture started: {capture.device_name}")
-                        if app.state.effects_engine:
-                            app.state.effects_engine.config.auto_mode = True
-                            app.state.effects_engine.enable_pro_lighting(True)
-                            print("Auto mode + pro lighting ENABLED")
                     else:
-                        print("Audio capture failed to auto-start - use UI/API to configure")
+                        print("Audio capture not available yet - retrying in the background")
+                    from app.api.endpoints.audio import arm_show_for_live_audio
+
+                    arm_show_for_live_audio(app.state.effects_engine)
+                    print("Auto mode + pro lighting ENABLED")
                 except Exception as e:
                     print(f"Audio auto-start error: {e}")
 

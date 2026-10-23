@@ -9,6 +9,8 @@ capture tonal, rhythmic, and timbral information.
 Output: EmotionVector with 7 lighting-relevant dimensions.
 """
 
+import asyncio
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
@@ -128,8 +130,9 @@ class MERTModel:
                 providers.append("CUDAExecutionProvider")
             providers.append("CPUExecutionProvider")
 
-            self.onnx_session = ort.InferenceSession(
-                str(onnx_path), providers=providers
+            # Building the session takes seconds; keep it off the event loop.
+            self.onnx_session = await asyncio.to_thread(
+                ort.InferenceSession, str(onnx_path), providers=providers
             )
             active_provider = self.onnx_session.get_providers()[0]
             self.device = "cuda" if "CUDA" in active_provider or "Tensorrt" in active_provider else "cpu"
@@ -141,7 +144,15 @@ class MERTModel:
             return False
 
     async def _load_pytorch(self) -> bool:
-        """Load PyTorch MERT model from HuggingFace format."""
+        """Load PyTorch MERT model from HuggingFace format.
+
+        Loading reads hundreds of megabytes and builds the network, which would
+        freeze the event loop (and with it the light show) for many seconds, so
+        it runs on a worker thread.
+        """
+        return await asyncio.to_thread(self._load_pytorch_sync)
+
+    def _load_pytorch_sync(self) -> bool:
         try:
             from transformers import AutoModel, AutoFeatureExtractor
             import torch
@@ -255,16 +266,25 @@ class MERTModel:
         audio_window = self._get_audio_window()
         input_data = audio_window.reshape(1, -1).astype(np.float32)
 
-        outputs = self.onnx_session.run(
-            None, {"audio_input": input_data}
+        # Inference runs on a worker thread so the audio path never waits on it.
+        outputs = await asyncio.to_thread(
+            self.onnx_session.run, None, {"audio_input": input_data}
         )
         return self._parse_model_output(outputs[0][0])
 
     async def _infer_pytorch(self) -> EmotionVector:
-        """Run PyTorch inference."""
-        import torch
+        """Run PyTorch inference on a worker thread.
 
+        A forward pass of MERT-95M takes hundreds of milliseconds on a CPU. Run
+        on the event loop it stalled every websocket, the DMX broadcast and the
+        audio path twice a second. The window is copied here, on the loop, so
+        the thread never reads the buffer while new audio is written into it.
+        """
         audio_window = self._get_audio_window()
+        return await asyncio.to_thread(self._infer_pytorch_sync, audio_window)
+
+    def _infer_pytorch_sync(self, audio_window: np.ndarray) -> EmotionVector:
+        import torch
 
         # Process through MERT feature extractor
         inputs = self.processor(
