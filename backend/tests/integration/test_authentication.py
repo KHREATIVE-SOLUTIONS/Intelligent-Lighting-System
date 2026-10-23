@@ -539,14 +539,17 @@ async def test_the_correct_password_gets_through_a_lockout(operator_token, monke
                 break
         assert response.status_code == 429, "the bucket was never locked"
 
-        # Someone keeps guessing wrong at the same address, forever.
+        # Someone keeps guessing wrong at the same address, forever. The operator
+        # tries first in each round: a probe opens every 0.5s and goes to whoever
+        # asks first, so with the wrong guess first the correct one only won when
+        # the probe happened to open in the few ms between the two requests.
         deadline = asyncio.get_running_loop().time() + 20.0
         while asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.2)
-            await shared.post(AUTH_LOGIN_URL, json=login_payload("still-wrong"))
             response = await shared.post(AUTH_LOGIN_URL, json=login_payload())
             if response.status_code == 200:
                 break
+            await shared.post(AUTH_LOGIN_URL, json=login_payload("still-wrong"))
 
     assert response.status_code == 200, (
         "the operator's own password never got through a lockout someone else "
