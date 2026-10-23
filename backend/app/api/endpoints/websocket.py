@@ -393,6 +393,8 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         spectral_flux=spectral_flux,
         bpm=bpm,
         tempo_confidence=beat.get('tempo_confidence'),
+        track_id=(analysis.get('track') or {}).get('id'),
+        track_transition=(analysis.get('track') or {}).get('transition'),
         ml_data=ml_data,
     )
 
@@ -703,6 +705,9 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                     elif msg_type == "stop":
                         if audio_analyzer:
                             await audio_analyzer.stop()
+                        # Stopped on purpose: not a lost cable, so no ambient hold.
+                        if effects_engine is not None:
+                            effects_engine.audio_input_stopped()
                         await websocket.send_json({"type": "stopped"})
 
             except asyncio.TimeoutError:

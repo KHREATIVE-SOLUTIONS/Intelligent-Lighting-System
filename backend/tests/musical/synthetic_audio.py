@@ -586,6 +586,147 @@ def drum_pattern_track(
     )
 
 
+# Chord progressions, one chord per bar, as frequency triads. "a_minor" and
+# "a_minor_chorus" share a key (the chorus adds an E major's G sharp, as real
+# choruses do); "e_flat" is three flats away, the kind of key change a DJ makes
+# going into the next record.
+PROGRESSIONS = {
+    "a_minor": ((220.0, 261.6, 329.6), (174.6, 220.0, 261.6), (261.6, 329.6, 392.0), (196.0, 246.9, 293.7)),
+    "a_minor_chorus": ((293.7, 349.2, 440.0), (220.0, 261.6, 329.6), (329.6, 415.3, 493.9), (220.0, 261.6, 329.6)),
+    "e_flat": ((311.1, 392.0, 466.2), (207.7, 261.6, 311.1), (233.1, 293.7, 349.2), (261.6, 311.1, 392.0)),
+}
+
+
+def _song_buffer(
+    progression: Tuple[Tuple[float, ...], ...],
+    bars: int,
+    bpm: float,
+    sample_rate: int,
+    rng: np.random.Generator,
+    hats_per_beat: int = 2,
+    breakdown: Tuple[int, int] = (-1, -1),
+    chorus: Optional[Tuple[Tuple[float, ...], ...]] = None,
+    chorus_bars: Tuple[int, int] = (-1, -1),
+) -> np.ndarray:
+    """Chord stabs, root bass and a four-on-the-floor kit, starting at sample 0.
+
+    Bars in `breakdown` keep the chords and lose the drums and bass. Bars in
+    `chorus_bars` play `chorus` instead of `progression`.
+    """
+    period = 60.0 / bpm
+    n = int(round(bars * 4 * period * sample_rate))
+    buf = np.zeros(n, dtype=np.float32)
+    kick, snare, hat = _kick(sample_rate, rng), _snare(sample_rate, rng), _hat(sample_rate, rng)
+    for bar in range(bars):
+        chords = chorus if (chorus and chorus_bars[0] <= bar < chorus_bars[1]) else progression
+        triad = chords[bar % len(chords)]
+        stab = _chord(sample_rate, triad, dur=period * 0.9)
+        drums = not (breakdown[0] <= bar < breakdown[1])
+        for beat in range(4):
+            pos = int(round((bar * 4 + beat) * period * sample_rate))
+            _place(buf, pos, stab, 0.45)
+            if not drums:
+                continue
+            _place(buf, pos, kick, 1.0)
+            if beat in (1, 3):
+                _place(buf, pos, snare, 0.6)
+            for j in range(hats_per_beat):
+                _place(buf, pos + int(round(j / hats_per_beat * period * sample_rate)), hat, 0.15)
+            _place(buf, pos, _bass_note(sample_rate, triad[0] / 4.0, period * 0.9), 0.5)
+    return buf
+
+
+def song_track(
+    progression: str = "a_minor",
+    bars: int = 64,
+    bpm: float = 126.0,
+    breakdown: Tuple[int, int] = (-1, -1),
+    chorus_bars: Tuple[int, int] = (-1, -1),
+    sample_rate: int = SAMPLE_RATE,
+    name: Optional[str] = None,
+) -> SyntheticTrack:
+    """One track with harmony, optionally with a breakdown and a same-key chorus.
+
+    The negative case for track-change detection: everything here is one record.
+    """
+    rng = _rng(11)
+    lead = int(round(LEAD_IN_S * sample_rate))
+    body = _song_buffer(
+        PROGRESSIONS[progression], bars, bpm, sample_rate, rng,
+        breakdown=breakdown, chorus=PROGRESSIONS["a_minor_chorus"], chorus_bars=chorus_bars,
+    )
+    buf = np.zeros(lead + len(body) + sample_rate, dtype=np.float32)
+    buf[lead:lead + len(body)] += body
+    period = 60.0 / bpm
+    beats = tuple(lead + int(round(i * period * sample_rate)) for i in range(bars * 4))
+    return SyntheticTrack(
+        name=name or f"song_{progression}",
+        samples=_master(buf),
+        sample_rate=sample_rate,
+        bpm=bpm,
+        beat_samples=beats,
+        downbeat_samples=beats[::4],
+    )
+
+
+def dj_mix_track(
+    bpm: float = 126.0,
+    outgoing_bars: int = 40,
+    blend_bars: int = 16,
+    incoming_bars: int = 40,
+    incoming: str = "e_flat",
+    incoming_bpm: Optional[float] = None,
+    sample_rate: int = SAMPLE_RATE,
+    name: Optional[str] = None,
+) -> SyntheticTrack:
+    """Two records beatmatched and crossfaded with no gap, as a DJ mixes them.
+
+    The incoming record starts at bar `outgoing_bars`, plays under the outgoing
+    one for `blend_bars` on an equal-power crossfade, then carries on alone.
+    Ground truth: `tempo_change_sample` marks the middle of the blend, the
+    earliest instant a listener would say the new track has taken over.
+    """
+    rng_a, rng_b = _rng(21), _rng(22)
+    lead = int(round(LEAD_IN_S * sample_rate))
+    period = 60.0 / bpm
+    bar_samples = 4 * period * sample_rate
+    out_bars = outgoing_bars + blend_bars
+    a = _song_buffer(PROGRESSIONS["a_minor"], out_bars, bpm, sample_rate, rng_a)
+    in_bpm = incoming_bpm or bpm
+    b = _song_buffer(PROGRESSIONS[incoming], blend_bars + incoming_bars, in_bpm, sample_rate, rng_b, hats_per_beat=4)
+
+    start_b = int(round(outgoing_bars * bar_samples))
+    blend_len = int(round(blend_bars * bar_samples))
+    n = lead + max(len(a), start_b + len(b)) + sample_rate
+    buf = np.zeros(n, dtype=np.float32)
+
+    fade = np.linspace(0.0, 1.0, blend_len, dtype=np.float32)
+    a_gain = np.ones(len(a), dtype=np.float32)
+    a_gain[start_b:start_b + blend_len] = np.cos(fade * np.pi / 2.0)
+    a_gain[start_b + blend_len:] = 0.0
+    b_gain = np.ones(len(b), dtype=np.float32)
+    b_gain[:blend_len] = np.sin(fade * np.pi / 2.0)
+    buf[lead:lead + len(a)] += a * a_gain
+    buf[lead + start_b:lead + start_b + len(b)] += b * b_gain
+
+    beats = [lead + int(round(i * period * sample_rate)) for i in range((outgoing_bars + blend_bars) * 4)]
+    in_period = 60.0 / in_bpm
+    beats += [
+        lead + start_b + int(round(i * in_period * sample_rate))
+        for i in range(blend_bars * 4, (blend_bars + incoming_bars) * 4)
+    ]
+    return SyntheticTrack(
+        name=name or f"dj_mix_a_minor_to_{incoming}",
+        samples=_master(buf),
+        sample_rate=sample_rate,
+        bpm=bpm,
+        beat_samples=tuple(beats),
+        downbeat_samples=tuple(beats[::4]),
+        tempo_change_sample=lead + start_b + blend_len // 2,
+        bpm_after=in_bpm,
+    )
+
+
 def silence_track(duration_s: float = 4.0, sample_rate: int = SAMPLE_RATE) -> SyntheticTrack:
     """No input at all. The rig must go dark and stay dark."""
     return SyntheticTrack(
