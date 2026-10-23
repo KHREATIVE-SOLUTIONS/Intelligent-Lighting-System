@@ -23,6 +23,26 @@ interface FixtureState {
 
 const MAX_SECTION_HISTORY = 50;
 
+const GENRES: readonly Genre[] = ['EDM', 'ROCK', 'POP', 'HIP_HOP', 'JAZZ'];
+const SECTIONS: readonly SongSection[] = [
+  'INTRO', 'VERSE', 'PRE_CHORUS', 'CHORUS', 'DROP', 'BREAKDOWN', 'BRIDGE',
+  'BUILDUP', 'OUTRO', 'INSTRUMENTAL', 'SOLO', 'UNKNOWN',
+];
+
+// The engine sends enum values ("verse", "hip_hop"); the UI keys on the
+// upper-case names. Without this the section chip always read "Unknown".
+export function normalizeGenre(value: unknown): Genre | null {
+  if (typeof value !== 'string') return null;
+  const upper = value.toUpperCase() as Genre;
+  return GENRES.includes(upper) ? upper : null;
+}
+
+export function normalizeSection(value: unknown): SongSection {
+  if (typeof value !== 'string') return 'UNKNOWN';
+  const upper = value.toUpperCase() as SongSection;
+  return SECTIONS.includes(upper) ? upper : 'UNKNOWN';
+}
+
 interface DMXState {
   // Connection status
   isConnected: boolean;
@@ -54,8 +74,9 @@ interface DMXState {
   setFixtureStates: (fixtures: FixtureState[]) => void;
   setEffectsInfo: (state: string, movement: string, dimmer: string) => void;
   setBlackout: (blackout: boolean) => void;
-  setGenre: (genre: Genre | null) => void;
-  setSection: (section: SongSection, intensity: number) => void;
+  // Accept the engine's raw strings; they are normalized on the way in.
+  setGenre: (genre: Genre | string | null) => void;
+  setSection: (section: SongSection | string, intensity: number) => void;
   setActiveEffects: (effects: Partial<ProEffect>) => void;
   setKeyLightingZones: (zones: KeyLightingZone[]) => void;
   setEmotionVector: (emotion: EmotionVector | null) => void;
@@ -144,13 +165,21 @@ export const useDMXStore = create<DMXState>((set) => ({
 
   setGenre: (genre) =>
     set((state) => ({
-      proLighting: { ...state.proLighting, genre },
+      proLighting: { ...state.proLighting, genre: normalizeGenre(genre) },
     })),
 
-  setSection: (section, intensity) =>
+  setSection: (rawSection, intensity) =>
     set((state) => {
+      const section = normalizeSection(rawSection);
+      // The engine repeats the current section on every frame; only a change
+      // starts a new timeline entry, or the history fills in under two seconds.
+      if (section === state.proLighting.section && state.proLighting.sectionHistory.length > 0) {
+        return {
+          proLighting: { ...state.proLighting, sectionIntensity: intensity },
+        };
+      }
       const now = Date.now();
-      const history = [...state.proLighting.sectionHistory];
+      const history = state.proLighting.sectionHistory.map((entry) => ({ ...entry }));
 
       // Close the previous section entry
       if (history.length > 0 && !history[history.length - 1].endTime) {

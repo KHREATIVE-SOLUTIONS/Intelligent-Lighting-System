@@ -28,17 +28,17 @@ const bandLabels: Record<string, string> = {
 export default function FrequencyBands({ bands }: FrequencyBandsProps) {
   if (bands.length === 0) {
     return (
-      <Box sx={{ textAlign: 'center', py: 4 }}>
+      <Box component="div" sx={{ textAlign: 'center', py: 4 }}>
         <Typography color="text.secondary">No frequency data available</Typography>
       </Box>
     );
   }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <Box component="div" sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       {bands.map((band) => (
-        <Box key={band.name}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+        <Box component="div" key={band.name}>
+          <Box component="div" sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
             <Typography variant="body2">
               {bandLabels[band.name] || band.name}
             </Typography>
@@ -64,6 +64,7 @@ export default function FrequencyBands({ bands }: FrequencyBandsProps) {
 
       {/* Frequency spectrum visualization */}
       <Box
+        component="div"
         sx={{
           display: 'flex',
           alignItems: 'flex-end',
@@ -77,6 +78,7 @@ export default function FrequencyBands({ bands }: FrequencyBandsProps) {
       >
         {bands.map((band) => (
           <Box
+            component="div"
             key={band.name}
             sx={{
               flex: 1,

@@ -13,7 +13,12 @@ import {
   ListItemText,
   IconButton,
   Divider,
-  Chip,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
 } from '@mui/material';
 import {
   Menu as MenuIcon,
@@ -22,9 +27,14 @@ import {
   Settings as RigsIcon,
   Lightbulb as LightbulbIcon,
   Visibility as VisualizerIcon,
+  Logout as LogoutIcon,
 } from '@mui/icons-material';
-import { useAudioStore } from '../../stores/audioStore';
-import { useDMXStore } from '../../stores/dmxStore';
+import { useAuthStore } from '../../stores/authStore';
+import { disconnectAllWebSockets } from '../../services/websocket';
+import { useShowHealth } from '../../hooks/useShowHealth';
+import StatusBar from './StatusBar';
+import MasterControl from '../dashboard/MasterControl';
+import AutopilotControl from '../dashboard/AutopilotControl';
 
 const DRAWER_WIDTH = 240;
 
@@ -38,12 +48,18 @@ const menuItems = [
 
 export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [confirmLogout, setConfirmLogout] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const clearSession = useAuthStore((state) => state.clearSession);
 
-  const isStreaming = useAudioStore((state) => state.isStreaming);
-  const dmxConnected = useDMXStore((state) => state.isConnected);
-  const fps = useDMXStore((state) => state.fps);
+  useShowHealth();
+
+  const handleLogout = () => {
+    setConfirmLogout(false);
+    disconnectAllWebSockets();
+    clearSession();
+  };
 
   const handleDrawerToggle = () => {
     setMobileOpen(!mobileOpen);
@@ -63,7 +79,11 @@ export default function Layout() {
           <ListItem key={item.text} disablePadding>
             <ListItemButton
               selected={location.pathname === item.path}
-              onClick={() => navigate(item.path)}
+              onClick={() => {
+                navigate(item.path);
+                setMobileOpen(false);
+              }}
+              sx={{ minHeight: 52 }}
             >
               <ListItemIcon>{item.icon}</ListItemIcon>
               <ListItemText primary={item.text} />
@@ -72,23 +92,17 @@ export default function Layout() {
         ))}
       </List>
       <Divider />
-      <Box component="div" sx={{ p: 2 }}>
-        <Typography variant="caption" color="text.secondary" display="block" mb={1}>
-          Status
-        </Typography>
-        <Box component="div" sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          <Chip
-            size="small"
-            label={isStreaming ? 'Audio Active' : 'Audio Idle'}
-            color={isStreaming ? 'success' : 'default'}
-          />
-          <Chip
-            size="small"
-            label={dmxConnected ? `DMX ${fps.toFixed(0)} FPS` : 'DMX Offline'}
-            color={dmxConnected ? 'success' : 'error'}
-          />
-        </Box>
-      </Box>
+      <List>
+        <ListItem disablePadding>
+          {/* Lives in the drawer, behind a confirm: a stray tap mid-show must not drop the session. */}
+          <ListItemButton onClick={() => setConfirmLogout(true)}>
+            <ListItemIcon>
+              <LogoutIcon />
+            </ListItemIcon>
+            <ListItemText primary="Log out" />
+          </ListItemButton>
+        </ListItem>
+      </List>
     </Box>
   );
 
@@ -110,9 +124,17 @@ export default function Layout() {
           >
             <MenuIcon />
           </IconButton>
-          <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
+          <Typography
+            variant="h6"
+            noWrap
+            component="div"
+            sx={{ flexGrow: 1, display: { xs: 'none', md: 'block' } }}
+          >
             Intelligent Lighting Control
           </Typography>
+          <Box component="div" sx={{ flexGrow: { xs: 1, md: 0 } }}>
+            <StatusBar />
+          </Box>
         </Toolbar>
       </AppBar>
 
@@ -148,15 +170,54 @@ export default function Layout() {
         component="main"
         sx={{
           flexGrow: 1,
-          p: 3,
+          px: 3,
+          pb: 3,
           width: { sm: `calc(100% - ${DRAWER_WIDTH}px)` },
           mt: '64px',
           height: 'calc(100vh - 64px)',
           overflow: 'auto',
         }}
       >
+        {/* Blackout, grand master and the autopilot takeovers stay pinned on every page. */}
+        <Box
+          component="div"
+          sx={{
+            position: 'sticky',
+            top: 0,
+            zIndex: (theme) => theme.zIndex.appBar - 1,
+            mx: -3,
+            px: 3,
+            pt: 1,
+            pb: 2,
+            mb: 1,
+            bgcolor: 'background.default',
+          }}
+        >
+          <Box component="div" sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <MasterControl />
+            <AutopilotControl />
+          </Box>
+        </Box>
         <Outlet />
       </Box>
+
+      <Dialog open={confirmLogout} onClose={() => setConfirmLogout(false)}>
+        <DialogTitle>Log out of this screen?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            The lights keep running on the box. This screen stops showing live status until
+            someone logs back in.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmLogout(false)} autoFocus>
+            Stay logged in
+          </Button>
+          <Button onClick={handleLogout} color="error">
+            Log out
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

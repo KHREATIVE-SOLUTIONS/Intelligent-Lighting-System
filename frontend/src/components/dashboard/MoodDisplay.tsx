@@ -20,7 +20,7 @@ const emotionColors: Record<string, string> = {
 export default function MoodDisplay({ mood }: MoodDisplayProps) {
   if (!mood) {
     return (
-      <Box sx={{ textAlign: 'center', py: 4 }}>
+      <Box component="div" sx={{ textAlign: 'center', py: 4 }}>
         <Typography color="text.secondary">No mood data available</Typography>
       </Box>
     );
@@ -30,9 +30,9 @@ export default function MoodDisplay({ mood }: MoodDisplayProps) {
   const color = emotionColors[emotion] || emotionColors.neutral;
 
   return (
-    <Box>
+    <Box component="div">
       {/* Primary emotion */}
-      <Box sx={{ textAlign: 'center', mb: 3 }}>
+      <Box component="div" sx={{ textAlign: 'center', mb: 3 }}>
         <Chip
           label={emotion.charAt(0).toUpperCase() + emotion.slice(1)}
           sx={{
@@ -48,6 +48,7 @@ export default function MoodDisplay({ mood }: MoodDisplayProps) {
 
       {/* Valence-Arousal plot */}
       <Box
+        component="div"
         sx={{
           position: 'relative',
           width: '100%',
@@ -85,6 +86,7 @@ export default function MoodDisplay({ mood }: MoodDisplayProps) {
 
         {/* Axes */}
         <Box
+          component="div"
           sx={{
             position: 'absolute',
             top: '50%',
@@ -95,6 +97,7 @@ export default function MoodDisplay({ mood }: MoodDisplayProps) {
           }}
         />
         <Box
+          component="div"
           sx={{
             position: 'absolute',
             top: 0,
@@ -107,6 +110,7 @@ export default function MoodDisplay({ mood }: MoodDisplayProps) {
 
         {/* Mood point */}
         <Box
+          component="div"
           sx={{
             position: 'absolute',
             left: `${(mood.valence + 1) * 50}%`,
@@ -123,20 +127,20 @@ export default function MoodDisplay({ mood }: MoodDisplayProps) {
       </Box>
 
       {/* Values */}
-      <Box sx={{ mt: 2, display: 'flex', justifyContent: 'space-between' }}>
-        <Box>
+      <Box component="div" sx={{ mt: 2, display: 'flex', justifyContent: 'space-between' }}>
+        <Box component="div">
           <Typography variant="caption" color="text.secondary">
             Valence
           </Typography>
           <Typography variant="body2">{mood.valence.toFixed(2)}</Typography>
         </Box>
-        <Box>
+        <Box component="div">
           <Typography variant="caption" color="text.secondary">
             Arousal
           </Typography>
           <Typography variant="body2">{mood.arousal.toFixed(2)}</Typography>
         </Box>
-        <Box>
+        <Box component="div">
           <Typography variant="caption" color="text.secondary">
             Confidence
           </Typography>
