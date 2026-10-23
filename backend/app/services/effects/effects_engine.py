@@ -313,6 +313,8 @@ class EffectsEngine:
 
         # Audio state
         self.audio_features = AudioFeatures()
+        # Engine time of the last audio update; None until audio first arrives.
+        self._last_audio_at: Optional[float] = None
         self.audio_state = AudioState()
 
         # DMX output callback
@@ -802,6 +804,43 @@ class EffectsEngine:
         if section == "drop" and self._rebuild_section != "drop":
             self._rebuild_drop_until = self.time + _SECTION_DROP_STROBE_S
         self._rebuild_set_section(section)
+
+    # Audio older than this is treated as lost.
+    AUDIO_STALE_S = 2.0
+    # Where the features settle while the feed is gone: a calm, lit room rather
+    # than a dark one (the cable may be the only thing that stopped) and rather
+    # than the last beat replayed for ever.
+    AUDIO_IDLE_LEVEL = 0.25
+    AUDIO_IDLE_SETTLE_S = 3.0
+
+    @property
+    def audio_age(self) -> Optional[float]:
+        """Seconds since the last audio update, or None before any arrived."""
+        if self._last_audio_at is None:
+            return None
+        return max(0.0, self.time - self._last_audio_at)
+
+    def _settle_if_audio_lost(self, delta_time: float) -> None:
+        """Stop following music that is no longer arriving.
+
+        Nothing refreshed the audio state when the feed died (capture thread
+        gone, cable out, sender crashed), so the show kept dancing to the last
+        chunk all night: energy frozen, and is_beat stuck on - which also counted
+        a new bar every frame and broke every bar-based hold.
+        """
+        age = self.audio_age
+        if age is None or age < self.AUDIO_STALE_S:
+            return
+        self.audio_features.is_beat = False
+        self.audio_features.beat_intensity = 0.0
+        self.audio_state.is_beat = False
+        pull = min(1.0, max(0.0, float(delta_time)) / self.AUDIO_IDLE_SETTLE_S)
+        for target in (self.audio_features, self.audio_state):
+            for band in ("energy", "bass", "mid", "high"):
+                value = float(getattr(target, band, 0.0) or 0.0)
+                setattr(target, band, value + (self.AUDIO_IDLE_LEVEL - value) * pull)
+        if hasattr(self.audio_state, "spectral_flux"):
+            self.audio_state.spectral_flux = 0.0
 
     # How long an operator Drop holds the autopilot in its drop look.
     OPERATOR_DROP_HOLD_S = 8.0
@@ -1824,6 +1863,8 @@ class EffectsEngine:
             last = getattr(self.audio_state, "bpm", 128.0)
             bpm = last if isinstance(last, (int, float)) and math.isfinite(last) and last > 0 else 128.0
 
+        self._last_audio_at = self.time
+
         # Mood values may arrive as either [0..1] or [-1..1] depending on source.
         # Normalize once here so color logic is stable and explicit.
         raw_valence = float(valence)
@@ -2321,6 +2362,7 @@ class EffectsEngine:
         self.last_update = current_time
         self.time += delta_time
         self._beat_clock_advance(delta_time)
+        self._settle_if_audio_lost(delta_time)
 
         # Update decision engine - genre-aware mode when pro lighting is active
         if self.config.auto_mode and self._pro_lighting_enabled:

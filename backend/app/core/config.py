@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     # "never black the room as a side effect". True sends zeros to every
     # universe so nothing - a running strobe included - stays latched on.
     DMX_BLACKOUT_ON_STOP: bool = False
+    # Whether the built-in demo rig (used when nothing is patched yet) is sent
+    # to the network. Off: on a fresh install the venue's own fixtures, hazers
+    # and effects included, would receive a show written for a different patch.
+    # Turn on to watch the demo in previs software.
+    DEMO_RIG_DMX_OUTPUT: bool = False
 
     # WebSocket
     WS_HEARTBEAT_INTERVAL: int = 30
