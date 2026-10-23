@@ -42,6 +42,7 @@ import {
 } from '@mui/icons-material';
 import { rigsApi, fixturesApi } from '../../services/api';
 import FixtureTestPanel from './FixtureTestPanel';
+import LibraryFixturePicker from './LibraryFixturePicker';
 import type { Rig, Fixture, RigFixtureCreate, PatchConflict, FixtureChannel } from '../../types';
 
 export default function RigEditor() {
@@ -51,6 +52,7 @@ export default function RigEditor() {
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
   const [loading, setLoading] = useState(true);
   const [addFixtureOpen, setAddFixtureOpen] = useState(false);
+  const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
   const [conflicts, setConflicts] = useState<PatchConflict[]>([]);
   const [autoPatching, setAutoPatching] = useState(false);
 
@@ -358,14 +360,21 @@ export default function RigEditor() {
                     Test All
                   </Button>
                   <Button
-                    startIcon={<AddIcon />}
+                    size="small"
                     onClick={async () => {
                       const addr = await getNextAddress();
                       setNewFixture({ ...newFixture, dmx_address: addr });
                       setAddFixtureOpen(true);
                     }}
                   >
-                    Add Fixture
+                    Add Manually
+                  </Button>
+                  <Button
+                    variant="contained"
+                    startIcon={<AddIcon />}
+                    onClick={() => setLibraryPickerOpen(true)}
+                  >
+                    Add Fixtures
                   </Button>
                 </Box>
               </Box>
@@ -439,7 +448,7 @@ export default function RigEditor() {
                   <ListItem>
                     <ListItemText
                       primary="No fixtures"
-                      secondary="Click 'Add Fixture' to add fixtures to this rig"
+                      secondary="Click 'Add Fixtures' to find your lights by make and model"
                     />
                   </ListItem>
                 )}
@@ -459,6 +468,16 @@ export default function RigEditor() {
           onClose={() => { setTestAnchor(null); setTestFixtureId(null); }}
         />
       )}
+
+      <LibraryFixturePicker
+        open={libraryPickerOpen}
+        rigId={rig.id}
+        onClose={() => setLibraryPickerOpen(false)}
+        onPatched={() => {
+          fetchRig(rig.id);
+          fetchFixtureLibrary();
+        }}
+      />
 
       {/* Add Fixture Dialog */}
       <Dialog open={addFixtureOpen} onClose={() => setAddFixtureOpen(false)} maxWidth="sm" fullWidth>
