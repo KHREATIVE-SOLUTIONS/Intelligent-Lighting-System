@@ -97,5 +97,7 @@ class DMXCueCommand(BaseModel):
 
 class DMXBlackoutCommand(BaseModel):
     """Command to blackout all fixtures."""
-    fade_time: float = Field(default=0.0, ge=0)
+    # Bounded: Infinity (which JSON parsing accepts) overflowed the fade and the
+    # blackout never happened; a huge value held the request open for ever.
+    fade_time: float = Field(default=0.0, ge=0, le=60, allow_inf_nan=False)
     universes: Optional[List[int]] = None  # None = all universes

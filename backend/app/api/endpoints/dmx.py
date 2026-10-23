@@ -5,6 +5,7 @@ DMX Control API Endpoints
 Endpoints for DMX/ArtNet control operations.
 """
 
+import asyncio
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -152,6 +153,25 @@ async def set_channel(
     return {"status": "set", "universe": universe, "channel": channel, "value": value}
 
 
+async def _fade_engine_to_blackout(engine, fade_time: float) -> None:
+    """Ramp the engine's grand master to zero, latch the blackout, put the master back.
+
+    The master is restored once the latch holds, so a later restore() returns the
+    room to the level the operator had set rather than to zero.
+    """
+    start = engine.grand_master
+    steps = int(fade_time * 30) if fade_time > 0 else 0
+    try:
+        for step in range(1, steps + 1):
+            if engine.blackout_active:
+                break
+            engine.set_grand_master(start * (1 - step / steps))
+            await asyncio.sleep(fade_time / steps)
+    finally:
+        engine.blackout()
+        engine.set_grand_master(start)
+
+
 @router.post("/blackout")
 async def blackout(
     command: DMXBlackoutCommand,
@@ -161,15 +181,22 @@ async def blackout(
     if not hasattr(request.app.state, 'dmx_controller'):
         raise HTTPException(status_code=500, detail="DMX controller not initialized")
 
-    await request.app.state.dmx_controller.blackout(
+    # The effects engine rewrites every universe each frame, so a blackout made
+    # only here would last one frame. A full blackout latches the engine too, and
+    # the engine fades with the controller rather than holding full for the whole
+    # fade and then snapping to black.
+    engine = getattr(request.app.state, "effects_engine", None)
+    controller_blackout = request.app.state.dmx_controller.blackout(
         universes=command.universes,
         fade_time=command.fade_time
     )
-    # The effects engine rewrites every universe each frame, so a blackout made
-    # only here would last one frame. A full blackout latches the engine too.
-    engine = getattr(request.app.state, "effects_engine", None)
     if not command.universes and engine is not None:
-        engine.blackout()
+        await asyncio.gather(
+            controller_blackout,
+            _fade_engine_to_blackout(engine, command.fade_time),
+        )
+    else:
+        await controller_blackout
     return {"status": "blackout", "universes": command.universes or "all"}
 
 
@@ -378,8 +405,9 @@ async def configure_for_broadcast(
         ip_address="255.255.255.255",  # Broadcast address
         port=6454,
         broadcast=True,
-        net=0,
-        subnet=0,
+        # Keep the rig's Net/Sub-Net: zeroing them moved every universe.
+        net=request.app.state.dmx_controller.config.net,
+        subnet=request.app.state.dmx_controller.config.subnet,
         universes=universes or [0],
     )
 
@@ -423,8 +451,8 @@ async def configure_for_unicast(
         ip_address=target_ip,
         port=6454,
         broadcast=False,
-        net=0,
-        subnet=0,
+        net=request.app.state.dmx_controller.config.net,
+        subnet=request.app.state.dmx_controller.config.subnet,
         universes=universes or [0],
     )
 
@@ -442,7 +470,7 @@ async def configure_for_unicast(
 @router.post("/previs/test-connection")
 async def test_previs_connection(
     request: Request,
-    duration: float = 3.0,
+    duration: float = Query(3.0, gt=0, le=30),
 ):
     """Send a test pattern to verify previs connection.
 
@@ -452,20 +480,30 @@ async def test_previs_connection(
     if not hasattr(request.app.state, 'dmx_controller'):
         raise HTTPException(status_code=500, detail="DMX controller not initialized")
 
-    import asyncio
-
     controller = request.app.state.dmx_controller
 
     # Run a quick test pattern
     async def test_sequence():
-        # Flash first few channels in sequence
-        for _ in range(int(duration * 10)):  # 10 Hz update rate
+        # Flash the first few channels in sequence until the deadline. Counting
+        # passes instead made a 3 second test run for 18.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + duration
+        try:
+            while loop.time() < deadline:
+                for i in range(12):
+                    await controller.set_channel(0, i + 1, 255)
+                    await asyncio.sleep(0.05)
+                    await controller.set_channel(0, i + 1, 0)
+                    if loop.time() >= deadline:
+                        break
+        finally:
             for i in range(12):
-                await controller.set_channel(0, i + 1, 255)
-                await asyncio.sleep(0.05)
-                await controller.set_channel(0, i + 1, 0)
+                controller.get_universe(0).set_channel(i + 1, 0)
 
-    asyncio.create_task(test_sequence())
+    # Held as the controller's test pattern so /test/stop and a blackout end it,
+    # and so the task is not garbage-collected mid-run.
+    await controller.stop_test_pattern()
+    controller.test_pattern_task = asyncio.create_task(test_sequence())
 
     return {
         "status": "testing",

@@ -287,6 +287,9 @@ class EffectsEngine:
     Main effects engine coordinating all layers.
     """
 
+    # Longest step update() will take from its own clock.
+    MAX_FRAME_DELTA = 0.5
+
     def __init__(self, config: EffectsConfig = None):
         self.config = config or EffectsConfig()
 
@@ -304,7 +307,9 @@ class EffectsEngine:
         # State
         self.running = False
         self.time = 0.0
-        self.last_update = time.time()
+        # Monotonic: an NTP step when the venue network comes up moved the wall
+        # clock by an hour, which made one frame's delta huge or negative.
+        self.last_update = time.monotonic()
 
         # Audio state
         self.audio_features = AudioFeatures()
@@ -1476,7 +1481,7 @@ class EffectsEngine:
         over it recovers tempo and phase to a few milliseconds — much finer than
         the block grid the analyser's own beat events are quantised to.
         """
-        now = float(self.time) + (time.time() - float(self.last_update))
+        now = float(self.time) + (time.monotonic() - float(self.last_update))
         if not (float(self.time) - 1.0 < now < float(self.time) + 1.0):
             now = float(self.time)
 
@@ -2262,9 +2267,14 @@ class EffectsEngine:
         Args:
             delta_time: Time since last update (auto-calculated if None)
         """
-        current_time = time.time()
+        current_time = time.monotonic()
         if delta_time is None:
-            delta_time = current_time - self.last_update
+            # Bounded so a stalled loop resumes where it was instead of jumping
+            # every effect phase forward by the length of the stall.
+            delta_time = min(max(current_time - self.last_update, 0.0), self.MAX_FRAME_DELTA)
+        elif not (0.0 <= delta_time < float("inf")):
+            # One NaN step made self.time NaN for the rest of the night.
+            delta_time = 0.0
         self.last_update = current_time
         self.time += delta_time
         self._beat_clock_advance(delta_time)

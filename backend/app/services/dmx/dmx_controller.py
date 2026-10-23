@@ -7,6 +7,7 @@ Controls DMX output via ArtNet protocol.
 
 import asyncio
 import logging
+import math
 import socket
 import struct
 import threading
@@ -144,6 +145,7 @@ class DMXController:
         self.output_thread: Optional[threading.Thread] = None
         self._output_stop = threading.Event()
         self.test_pattern_task: Optional[asyncio.Task] = None
+        self._conn_lock: Optional[asyncio.Lock] = None
 
     @property
     def active_universes(self) -> List[int]:
@@ -173,8 +175,22 @@ class DMXController:
         target = self.target_ip
         return target == self.BROADCAST_ADDRESS or target.endswith('.255')
 
+    def _connection_lock(self) -> asyncio.Lock:
+        # Created lazily so the controller can be built before an event loop runs.
+        if self._conn_lock is None:
+            self._conn_lock = asyncio.Lock()
+        return self._conn_lock
+
     async def connect(self):
         """Connect to the ArtNet interface."""
+        # Serialised with disconnect/update_config. Without it a connect landing
+        # while a disconnect awaited its thread join had its new socket closed by
+        # the resuming disconnect: status read connected, nothing went out, and
+        # every later connect returned early.
+        async with self._connection_lock():
+            await self._connect()
+
+    async def _connect(self):
         if self.is_connected:
             return
 
@@ -207,9 +223,14 @@ class DMXController:
 
     async def disconnect(self):
         """Disconnect from the ArtNet interface."""
+        async with self._connection_lock():
+            await self._disconnect()
+
+    async def _disconnect(self):
         self.is_connected = False
         self._output_stop.set()
 
+        sock = self.socket
         thread, self.output_thread = self.output_thread, None
         if thread is not None and thread.is_alive():
             # Joined before the socket closes: a send already in flight must finish
@@ -224,9 +245,11 @@ class DMXController:
                     "on its own", self.THREAD_JOIN_TIMEOUT
                 )
 
-        if self.socket:
-            self.socket.close()
-            self.socket = None
+        # Close only the socket this disconnect owned, never one a later connect made.
+        if sock is not None:
+            sock.close()
+            if self.socket is sock:
+                self.socket = None
 
     def _output_loop(self, stop: Optional[threading.Event] = None):
         """Send every live universe at the target frame rate, on our own thread.
@@ -405,15 +428,16 @@ class DMXController:
 
     async def update_config(self, config: ArtNetConfig):
         """Update configuration."""
-        was_connected = self.is_connected
+        async with self._connection_lock():
+            was_connected = self.is_connected
 
-        if was_connected:
-            await self.disconnect()
+            if was_connected:
+                await self._disconnect()
 
-        self.config = config
+            self.config = config
 
-        if was_connected:
-            await self.connect()
+            if was_connected:
+                await self._connect()
 
     def get_universe(self, universe: int) -> DMXUniverse:
         """Get the current state of a universe."""
@@ -423,6 +447,7 @@ class DMXController:
 
     async def set_frame(self, universe: int, frame: DMXFrame):
         """Set DMX values from a frame."""
+        universe = self._universe_number(universe)
         if universe not in self.universes:
             self.universes[universe] = DMXUniverse(universe=universe)
 
@@ -438,6 +463,7 @@ class DMXController:
 
     async def set_channel(self, universe: int, channel: int, value: int):
         """Set a single DMX channel value."""
+        universe = self._universe_number(universe)
         if universe not in self.universes:
             self.universes[universe] = DMXUniverse(universe=universe)
 
@@ -453,6 +479,10 @@ class DMXController:
 
     async def blackout(self, universes: Optional[List[int]] = None, fade_time: float = 0.0):
         """Blackout specified universes."""
+        # A running test pattern rewrites its universe every few ms; left going it
+        # kept strobing straight through the blackout.
+        await self.stop_test_pattern()
+        fade_time = self._safe_duration(fade_time)
         target_universes = universes or list(self.universes.keys())
 
         # Save current state
@@ -476,6 +506,7 @@ class DMXController:
 
     async def restore(self, fade_time: float = 0.0):
         """Restore from blackout."""
+        fade_time = self._safe_duration(fade_time)
         for universe, data in self.pre_blackout_state.items():
             if fade_time > 0:
                 await self._fade_universe(universe, data, fade_time)
@@ -486,6 +517,38 @@ class DMXController:
         self.pre_blackout_state.clear()
 
         await self._notify_subscribers({"type": "restore"})
+
+    MAX_FADE_SECONDS = 60.0
+
+    @classmethod
+    def _safe_duration(cls, value) -> float:
+        """A fade length that cannot overflow or hang the caller (inf, NaN, -1)."""
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(value) or value <= 0:
+            return 0.0
+        return min(value, cls.MAX_FADE_SECONDS)
+
+    @staticmethod
+    def _universe_number(universe) -> int:
+        """A universe key as an int in the Art-Net range.
+
+        A WebSocket client sending "1" used to create a string key the
+        transmitter then failed on every frame, silently dropping that universe.
+        """
+        if isinstance(universe, bool):
+            raise ValueError("universe must be an integer 0-32767")
+        try:
+            number = int(universe)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("universe must be an integer 0-32767")
+        if number != universe and not isinstance(universe, str):
+            raise ValueError("universe must be an integer 0-32767")
+        if not 0 <= number <= 32767:
+            raise ValueError("universe must be an integer 0-32767")
+        return number
 
     async def _fade_universes(
         self,
@@ -721,7 +784,8 @@ class DMXController:
         import math
         hue = 0.0
         while True:
-            for i in range(0, 512, 3):
+            # 510 is the last start that fits a whole RGB triple in 512 slots.
+            for i in range(0, 510, 3):
                 # Simple HSV to RGB
                 h = (hue + i / 512) % 1.0
                 r, g, b = self._hsv_to_rgb(h, 1.0, 1.0)
@@ -737,12 +801,16 @@ class DMXController:
         return colorsys.hsv_to_rgb(h, s, v)
 
     async def _strobe_pattern(self, universe: int):
-        """Strobe pattern."""
+        """Strobe pattern, held to the show's three-flashes-a-second limit.
+
+        It used to flash every channel at 10 Hz, inside the photosensitive range,
+        bypassing the strobe cap the engine keeps for a venue crowd.
+        """
         while True:
             self.universes[universe].data = [255] * 512
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
             self.universes[universe].data = [0] * 512
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.24)
 
     async def _fade_pattern(self, universe: int):
         """Fade up/down pattern."""
