@@ -6,6 +6,7 @@ CRUD operations for lighting rigs.
 """
 
 import io
+import logging
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Body, Request
 from fastapi.responses import JSONResponse
@@ -23,6 +24,9 @@ from app.schemas.rig import (
 )
 from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
 from app.services.rig.rig_detector import RigDetector, DemoRigGenerator, PatternGenerator
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -178,9 +182,32 @@ async def delete_rig(
     await db.delete(rig)
 
 
+async def _put_active_rig_on_stage(app, db: AsyncSession) -> bool:
+    """Point the running show at the rig now marked active.
+
+    The show only loaded a rig at boot, so activating a newly patched rig
+    changed the database and nothing on stage until the box restarted.
+    Returns False (and leaves the show on its current rig) when the active
+    rig has nothing drivable.
+    """
+    from app.main import _install_fixture_manager
+    from app.services.rig.rig_loader import load_active_rig
+
+    try:
+        manager, _ = await load_active_rig(db)
+    except Exception as e:
+        logger.error("Could not load the newly active rig: %s", e, exc_info=True)
+        return False
+    if manager is None or not manager.fixtures:
+        return False
+    _install_fixture_manager(app, manager)
+    return True
+
+
 @router.post("/{rig_id}/activate", response_model=RigResponse)
 async def activate_rig(
     rig_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Set a rig as the active rig (deactivates others)."""
@@ -199,7 +226,10 @@ async def activate_rig(
         raise HTTPException(status_code=404, detail="Rig not found")
 
     rig.is_active = True
-    await db.flush()
+    # Committed before going live, so the stage never runs a rig the database
+    # then rolls back.
+    await db.commit()
+    await _put_active_rig_on_stage(request.app, db)
     return await _load_rig(db, rig_id)
 
 

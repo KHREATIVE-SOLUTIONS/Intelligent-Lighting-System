@@ -322,6 +322,8 @@ class EffectsEngine:
         # every effect layer has written its levels, so nothing the show does
         # can outvote them: a latched blackout stays black until it is released.
         self._grand_master: float = 1.0
+        # kind -> (preset name, the copy a layer holds); see _take_preset.
+        self._held_presets: Dict[str, tuple] = {}
         self._blackout_latched: bool = False
 
         # Beat tracking
@@ -455,6 +457,11 @@ class EffectsEngine:
         self._rebuild_section: str = "verse"
         self._rebuild_section_changed_at: float = 0.0
         self._rebuild_drop_until: float = -999.0
+        # Operator Drop/Buildup on the autopilot: the section to show, until when,
+        # and what follows it (a buildup lands on a drop).
+        self._operator_section: Optional[str] = None
+        self._operator_section_until: float = -999.0
+        self._operator_then: Optional[Tuple[str, float]] = None
         self._rebuild_color_hold_until: float = 0.0
         self._rebuild_base_color: RGB = RGB(1.0, 1.0, 1.0)
         self._rebuild_snare_strobe_until: float = -999.0
@@ -786,12 +793,37 @@ class EffectsEngine:
 
         self._drop_anticipation_update(delta_time, section, bar_seconds)
 
+        # An operator's Drop or Buildup outranks the detector while it lasts.
+        section = self._operator_section_for(section)
+
         # The strobe window stays where it always was: on the detector's own drop
         # decision. The anticipation path opens a sustained level and nothing
         # else, so a projection that turns out to be wrong cannot place an accent.
         if section == "drop" and self._rebuild_section != "drop":
             self._rebuild_drop_until = self.time + _SECTION_DROP_STROBE_S
         self._rebuild_set_section(section)
+
+    # How long an operator Drop holds the autopilot in its drop look.
+    OPERATOR_DROP_HOLD_S = 8.0
+
+    def _force_section(self, section: str, seconds: float,
+                       then: Optional[Tuple[str, float]] = None) -> None:
+        """Hold the autopilot in `section` for `seconds`, then optionally another."""
+        self._operator_section = section
+        self._operator_section_until = self.time + max(0.0, float(seconds))
+        self._operator_then = then
+
+    def _operator_section_for(self, detected: str) -> str:
+        if self._operator_section is None:
+            return detected
+        if self.time < self._operator_section_until:
+            return self._operator_section
+        if self._operator_then is not None:
+            section, seconds = self._operator_then
+            self._force_section(section, seconds)
+            return section
+        self._operator_section = None
+        return detected
 
     def _drop_anticipation_update(self, delta_time: float, section: str, bar_seconds: float):
         """Act on the projected drop: dip on speculation, commit on confirmation.
@@ -1781,6 +1813,17 @@ class EffectsEngine:
             bpm: Detected BPM
             ml_data: ML pipeline output (emotion_vector, emotion_mapping, structure, genre)
         """
+        # A tempo of 0, negative or NaN (silence, a detector that has not locked)
+        # divided by zero in the decision engine's cooldowns and dropped frames.
+        # Hold the last good tempo until a real one arrives.
+        try:
+            bpm = float(bpm)
+        except (TypeError, ValueError):
+            bpm = float("nan")
+        if not (math.isfinite(bpm) and bpm > 0):
+            last = getattr(self.audio_state, "bpm", 128.0)
+            bpm = last if isinstance(last, (int, float)) and math.isfinite(last) and last > 0 else 128.0
+
         # Mood values may arrive as either [0..1] or [-1..1] depending on source.
         # Normalize once here so color logic is stable and explicit.
         raw_valence = float(valence)
@@ -2540,10 +2583,10 @@ class EffectsEngine:
             and self.config.movement_music_reactive
             and template.movement_preset in MOVEMENT_PRESETS
         ):
-            self.movement.params = MOVEMENT_PRESETS[template.movement_preset]
+            self._take_preset(self.movement, "movement", MOVEMENT_PRESETS, template.movement_preset)
 
         if self.config.dimmer_enabled and template.dimmer_preset in DIMMER_PRESETS:
-            self.dimmer.params = DIMMER_PRESETS[template.dimmer_preset]
+            self._take_preset(self.dimmer, "dimmer", DIMMER_PRESETS, template.dimmer_preset)
 
         if self.config.strobe_enabled:
             strobe_map = {
@@ -2555,7 +2598,24 @@ class EffectsEngine:
             if strobe_key is None:
                 self.strobe.stop()
             elif strobe_key in STROBE_PRESETS:
-                self.strobe.params = STROBE_PRESETS[strobe_key]
+                self._take_preset(self.strobe, "strobe", STROBE_PRESETS, strobe_key)
+
+    def _take_preset(self, layer, kind: str, table: dict, name: str) -> None:
+        """Give a layer its own copy of a named preset.
+
+        The preset tables are module-level and the layers change their params in
+        place (tempo every frame, a strobe switching itself off, a static look),
+        so handing out the shared object rewrote the preset for the rest of the
+        process: after a few minutes "circle_slow" no longer moved. The copy is
+        only remade when the selection changes, so in-place state a layer keeps
+        for itself (a finished burst staying off) still holds frame to frame.
+        """
+        held = self._held_presets.get(kind)
+        if held is not None and held[0] == name and layer.params is held[1]:
+            return
+        params = copy.deepcopy(table[name])
+        layer.params = params
+        self._held_presets[kind] = (name, params)
 
     def _apply_mib_transition(self, fixture: Fixture, desired_dimmer: float) -> float:
         """Per-fixture move-in-black state machine for large pan/tilt moves."""
@@ -2604,8 +2664,7 @@ class EffectsEngine:
                     base_look=selection.static_look
                 )
             elif selection.movement_preset in MOVEMENT_PRESETS:
-                preset = MOVEMENT_PRESETS[selection.movement_preset]
-                self.movement.params = preset
+                self._take_preset(self.movement, "movement", MOVEMENT_PRESETS, selection.movement_preset)
             else:
                 self.movement.params.pattern = selection.movement
         elif self.config.movement_enabled:
@@ -2615,21 +2674,19 @@ class EffectsEngine:
         # Dimmer
         if self.config.dimmer_enabled:
             if selection.dimmer_preset in DIMMER_PRESETS:
-                preset = DIMMER_PRESETS[selection.dimmer_preset]
-                self.dimmer.params = preset
+                self._take_preset(self.dimmer, "dimmer", DIMMER_PRESETS, selection.dimmer_preset)
             else:
                 self.dimmer.params.effect_type = selection.dimmer
 
             if selection.beat_pattern:
-                self.dimmer.params.beat_pattern = selection.beat_pattern
+                self.dimmer.params.beat_pattern = list(selection.beat_pattern)
 
         # Strobe
         if self.config.strobe_enabled:
             if selection.strobe_on_drop:
                 self.trigger_drop_strobe()
             elif selection.strobe_preset in STROBE_PRESETS:
-                preset = STROBE_PRESETS[selection.strobe_preset]
-                self.strobe.params = preset
+                self._take_preset(self.strobe, "strobe", STROBE_PRESETS, selection.strobe_preset)
             else:
                 self.strobe.params.mode = selection.strobe
 
@@ -3284,6 +3341,7 @@ class EffectsEngine:
 
     def clean_stage(self):
         """Research-pack 'clean stage' macro: stop risky FX and return safe readable base."""
+        self.clear_operator_section()
         self._rebuild_set_section("verse")
         self._rebuild_drop_until = -999.0
         self._rebuild_snare_strobe_until = -999.0
@@ -3294,7 +3352,9 @@ class EffectsEngine:
         self._commit_strobe_intent()
         self.pro_effects.strobe.stop()
         self.pro_effects.build.stop()
-        self.pro_effects.chase.stop()
+        # ProChase has no stop(); calling it made this safety macro raise before
+        # the readable base colour below was ever applied.
+        self.pro_effects.chase.set_params(intensity=0.0)
         self._rebuild_base_color = RGB(0.95, 0.95, 0.95)
         self._rebuild_color_hold_until = self.time + 1.0
 
@@ -3338,11 +3398,22 @@ class EffectsEngine:
     def trigger_drop_strobe(self):
         """Trigger full drop strobe sequence."""
         self.drop_sequence.trigger_drop()
+        # The autopilot renderer never reads drop_sequence, so on its own this
+        # did nothing while auto mode ran. Steer the autopilot's section as well;
+        # its strobe window stays under the venue's accessibility policy.
+        self._force_section("drop", self.OPERATOR_DROP_HOLD_S)
 
     def trigger_buildup(self, duration: float = 4.0):
         """Trigger build-up sequence."""
         self.drop_sequence.trigger_buildup(duration)
         self.decision.force_state(LightingState.BUILDUP)
+        duration = self.drop_sequence.buildup_duration
+        self._force_section("buildup", duration, then=("drop", self.OPERATOR_DROP_HOLD_S))
+
+    def clear_operator_section(self) -> None:
+        """Hand the section back to the detector."""
+        self._operator_section = None
+        self._operator_then = None
 
     def set_color_palette(self, palette: ColorPalette):
         """Set color palette."""
@@ -3483,16 +3554,16 @@ class EffectsEngine:
         if preset["movement"]:
             move_preset, move_kwargs = preset["movement"]
             if move_preset and move_preset in MOVEMENT_PRESETS:
-                self.movement.params = MOVEMENT_PRESETS[move_preset]
+                self._take_preset(self.movement, "movement", MOVEMENT_PRESETS, move_preset)
             self.movement.params.base_look = move_kwargs.get("base_look", StaticLook.ALL_CENTER)
 
         # Dimmer
         if preset["dimmer"] and preset["dimmer"] in DIMMER_PRESETS:
-            self.dimmer.params = DIMMER_PRESETS[preset["dimmer"]]
+            self._take_preset(self.dimmer, "dimmer", DIMMER_PRESETS, preset["dimmer"])
 
         # Strobe
         if preset["strobe"] and preset["strobe"] in STROBE_PRESETS:
-            self.strobe.params = STROBE_PRESETS[preset["strobe"]]
+            self._take_preset(self.strobe, "strobe", STROBE_PRESETS, preset["strobe"])
         else:
             self.strobe.stop()
 

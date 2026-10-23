@@ -22,6 +22,15 @@ from app.services.lighting.pro_effects import ACCENT_OFF_POLICIES
 router = APIRouter()
 
 
+def _analyzer(request: Request):
+    """The running analyzer, or None.
+
+    Startup stores None when the analyzer fails to start, so hasattr() was
+    always true and every endpoint here answered 500 instead of 503.
+    """
+    return getattr(request.app.state, "audio_analyzer", None)
+
+
 @router.get("/config", response_model=AudioStreamConfig)
 async def get_audio_config():
     """Get current audio stream configuration."""
@@ -34,7 +43,7 @@ async def update_audio_config(
     request: Request,
 ):
     """Update audio stream configuration."""
-    if hasattr(request.app.state, 'audio_analyzer'):
+    if _analyzer(request) is not None:
         await request.app.state.audio_analyzer.update_config(config)
     return config
 
@@ -42,7 +51,7 @@ async def update_audio_config(
 @router.get("/status")
 async def get_audio_status(request: Request):
     """Get current audio analysis status."""
-    if not hasattr(request.app.state, 'audio_analyzer'):
+    if _analyzer(request) is None:
         return {"status": "not_initialized"}
 
     analyzer = request.app.state.audio_analyzer
@@ -57,8 +66,8 @@ async def get_audio_status(request: Request):
 @router.post("/start")
 async def start_audio_analysis(request: Request):
     """Start real-time audio analysis."""
-    if not hasattr(request.app.state, 'audio_analyzer'):
-        raise HTTPException(status_code=500, detail="Audio analyzer not initialized")
+    if _analyzer(request) is None:
+        raise HTTPException(status_code=503, detail="Audio analyzer not initialized")
 
     await request.app.state.audio_analyzer.start()
     return {"status": "started"}
@@ -67,8 +76,8 @@ async def start_audio_analysis(request: Request):
 @router.post("/stop")
 async def stop_audio_analysis(request: Request):
     """Stop real-time audio analysis."""
-    if not hasattr(request.app.state, 'audio_analyzer'):
-        raise HTTPException(status_code=500, detail="Audio analyzer not initialized")
+    if _analyzer(request) is None:
+        raise HTTPException(status_code=503, detail="Audio analyzer not initialized")
 
     await request.app.state.audio_analyzer.stop()
     return {"status": "stopped"}
@@ -77,8 +86,8 @@ async def stop_audio_analysis(request: Request):
 @router.get("/current", response_model=AudioAnalysisResponse)
 async def get_current_analysis(request: Request):
     """Get the most recent audio analysis result."""
-    if not hasattr(request.app.state, 'audio_analyzer'):
-        raise HTTPException(status_code=500, detail="Audio analyzer not initialized")
+    if _analyzer(request) is None:
+        raise HTTPException(status_code=503, detail="Audio analyzer not initialized")
 
     analysis = request.app.state.audio_analyzer.get_current_analysis()
     if not analysis:
@@ -90,8 +99,8 @@ async def get_current_analysis(request: Request):
 @router.get("/beat", response_model=BeatResponse)
 async def get_current_beat(request: Request):
     """Get the current beat detection result."""
-    if not hasattr(request.app.state, 'audio_analyzer'):
-        raise HTTPException(status_code=500, detail="Audio analyzer not initialized")
+    if _analyzer(request) is None:
+        raise HTTPException(status_code=503, detail="Audio analyzer not initialized")
 
     return request.app.state.audio_analyzer.get_beat_info()
 
@@ -99,8 +108,8 @@ async def get_current_beat(request: Request):
 @router.get("/mood", response_model=MoodResponse)
 async def get_current_mood(request: Request):
     """Get the current mood classification result."""
-    if not hasattr(request.app.state, 'audio_analyzer'):
-        raise HTTPException(status_code=500, detail="Audio analyzer not initialized")
+    if _analyzer(request) is None:
+        raise HTTPException(status_code=503, detail="Audio analyzer not initialized")
 
     return request.app.state.audio_analyzer.get_mood_info()
 
@@ -108,8 +117,8 @@ async def get_current_mood(request: Request):
 @router.get("/frequency", response_model=FrequencyResponse)
 async def get_current_frequency(request: Request):
     """Get the current frequency analysis result."""
-    if not hasattr(request.app.state, 'audio_analyzer'):
-        raise HTTPException(status_code=500, detail="Audio analyzer not initialized")
+    if _analyzer(request) is None:
+        raise HTTPException(status_code=503, detail="Audio analyzer not initialized")
 
     return request.app.state.audio_analyzer.get_frequency_info()
 
@@ -188,8 +197,8 @@ async def match_fingerprint(
     db: AsyncSession = Depends(get_db),
 ):
     """Attempt to match current audio against stored fingerprints."""
-    if not hasattr(request.app.state, 'audio_analyzer'):
-        raise HTTPException(status_code=500, detail="Audio analyzer not initialized")
+    if _analyzer(request) is None:
+        raise HTTPException(status_code=503, detail="Audio analyzer not initialized")
 
     # Get current audio fingerprint
     current_fingerprint = request.app.state.audio_analyzer.get_current_fingerprint()
@@ -260,8 +269,8 @@ async def enable_reactive_mode(
 
     Use WebSocket /ws/audio to stream audio data for analysis.
     """
-    if not hasattr(request.app.state, 'audio_analyzer'):
-        raise HTTPException(status_code=500, detail="Audio analyzer not initialized")
+    if _analyzer(request) is None:
+        raise HTTPException(status_code=503, detail="Audio analyzer not initialized")
 
     # Store reactive state
     request.app.state.reactive_mode = True

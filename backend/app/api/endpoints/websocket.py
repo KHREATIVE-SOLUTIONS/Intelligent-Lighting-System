@@ -53,19 +53,47 @@ def convert_numpy_types(obj):
         return {k: convert_numpy_types(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return [convert_numpy_types(item) for item in obj]
     elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, (np.float32, np.float64)):
-        return float(obj)
-    elif isinstance(obj, (np.int32, np.int64)):
-        return int(obj)
-    elif isinstance(obj, np.bool_):
-        return bool(obj)
+        return convert_numpy_types(obj.tolist())
+    elif isinstance(obj, np.generic):
+        # Every numpy scalar, not just float32/64 and int32/64: one float16 left
+        # in a payload used to fail the send and drop every client.
+        return convert_numpy_types(obj.item())
+    elif isinstance(obj, float) and not math.isfinite(obj):
+        # JSON has no NaN; browsers reject the whole message over one.
+        return None
     return obj
+
+
+# Matches the binary limit: about two seconds of 48 kHz stereo.
+MAX_JSON_AUDIO_SAMPLES = 48000 * 2
+
+
+async def _report_bad_message(websocket: WebSocket, error: Exception) -> None:
+    """Tell the client its message was refused and keep the connection open."""
+    print(f"[WS] Ignored bad message: {error!r}")
+    await websocket.send_json({"type": "error", "message": f"bad message: {str(error)[:200]}"})
+
+
+async def _receive_or_disconnect(websocket: WebSocket) -> dict:
+    """The next message, or WebSocketDisconnect - decoding is the caller's job.
+
+    receive_json() decoded before the handler's error guard could see it, so
+    one malformed message closed the connection.
+    """
+    message = await websocket.receive()
+    if message.get("type") == "websocket.disconnect":
+        raise WebSocketDisconnect(message.get("code", 1000))
+    return message
 
 
 class ConnectionManager:
     """Manages WebSocket connections."""
+
+    # A client that cannot take a frame this quickly is dropped, not waited on.
+    SEND_TIMEOUT = 0.25
 
     def __init__(self):
         self.active_connections: Dict[str, Set[WebSocket]] = {
@@ -97,18 +125,39 @@ class ConnectionManager:
         if random.random() < 0.02:
             print(f"Broadcasting to {num_connections} clients on {channel}")
 
-        disconnected = set()
-        # BUG-036 fix: iterate over a snapshot to avoid set mutation during iteration
-        for connection in list(self.active_connections[channel]):
-            try:
-                await connection.send_json(message)
-            except Exception as e:
-                print(f"Broadcast error: {e}")
-                disconnected.add(connection)
+        # Encoded once, up front: a payload that cannot be encoded is this
+        # message's problem, not a reason to drop every client.
+        try:
+            text = json.dumps(convert_numpy_types(message))
+        except (TypeError, ValueError) as e:
+            print(f"Broadcast skipped, payload not serialisable: {e}")
+            return
 
-        # Clean up disconnected clients
-        for conn in disconnected:
+        async def send(connection: WebSocket):
+            try:
+                await asyncio.wait_for(connection.send_text(text), self.SEND_TIMEOUT)
+                return None
+            except Exception as e:
+                print(f"Broadcast error: {e!r}")
+                return connection
+
+        # Sent concurrently with a deadline. Sent one after another with none, a
+        # single tablet that stopped reading froze every viewer and - because
+        # the audio handler awaits this - the audio feed driving the show.
+        # BUG-036 fix: iterate over a snapshot to avoid set mutation during iteration
+        results = await asyncio.gather(
+            *(send(conn) for conn in list(self.active_connections[channel]))
+        )
+
+        # Drop and close the clients that failed, so they reconnect.
+        for conn in results:
+            if conn is None:
+                continue
             self.active_connections[channel].discard(conn)
+            try:
+                await asyncio.wait_for(conn.close(code=1011), self.SEND_TIMEOUT)
+            except Exception:
+                pass
 
 
 manager = ConnectionManager()
@@ -521,7 +570,12 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                     timeout=300.0  # 5 minute timeout for audio streaming
                 )
 
-                if "bytes" in data:
+                # receive() hands back the disconnect as a message rather than
+                # raising; calling it again raised RuntimeError on every close.
+                if data.get("type") == "websocket.disconnect":
+                    break
+
+                if data.get("bytes") is not None:
                     # Binary audio data
                     audio_bytes = data["bytes"]
 
@@ -572,9 +626,11 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                         # Broadcast to all audio websocket clients (including visualizer)
                         await manager.broadcast("audio", response)
 
-                elif "text" in data:
+                elif data.get("text") is not None:
                     # JSON control message
                     message = json.loads(data["text"])
+                    if not isinstance(message, dict):
+                        raise ValueError("expected a JSON object")
                     msg_type = message.get("type", "")
 
                     if msg_type == "ping":
@@ -582,11 +638,19 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
 
                     elif msg_type == "audio_chunk":
                         # JSON audio data from capture script
-                        audio_data = message.get("data", [])
+                        audio_data = message.get("data")
                         sample_rate = message.get("sample_rate", 44100)
 
-                        if audio_analyzer and len(audio_data) > 0:
-                            audio_float = np.array(audio_data, dtype=np.float32)
+                        if not isinstance(audio_data, list) or not audio_data:
+                            continue
+                        if len(audio_data) > MAX_JSON_AUDIO_SAMPLES:
+                            raise ValueError(
+                                f"audio chunk too large ({len(audio_data)} samples, "
+                                f"max {MAX_JSON_AUDIO_SAMPLES})"
+                            )
+
+                        if audio_analyzer:
+                            audio_float = np.asarray(audio_data, dtype=np.float32).reshape(-1)
 
                             # Process audio
                             analysis = await audio_analyzer.process_chunk(audio_float)
@@ -707,6 +771,12 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
             except asyncio.TimeoutError:
                 # Send heartbeat
                 await websocket.send_json({"type": "heartbeat"})
+            except WebSocketDisconnect:
+                raise
+            except Exception as e:
+                # One malformed message used to end this connection - and this
+                # connection is usually the audio feed the whole show follows.
+                await _report_bad_message(websocket, e)
 
     except WebSocketDisconnect:
         pass
@@ -971,7 +1041,9 @@ async def dmx_websocket(websocket: WebSocket, request: Request = None):
         dmx_controller = getattr(app.state, 'dmx_controller', None)
 
         # Subscribe to DMX updates
-        update_queue = asyncio.Queue()
+        # Bounded: a client that stops reading must not grow memory all night.
+        # The controller drops updates for a full queue.
+        update_queue = asyncio.Queue(maxsize=256)
 
         if dmx_controller:
             dmx_controller.subscribe(update_queue)
@@ -996,29 +1068,42 @@ async def dmx_websocket(websocket: WebSocket, request: Request = None):
 
         try:
             while True:
-                data = await websocket.receive_json()
-                msg_type = data.get("type", "")
+                raw = await _receive_or_disconnect(websocket)
+                try:
+                    data = json.loads(raw.get("text") or raw.get("bytes") or "")
+                    if not isinstance(data, dict):
+                        raise ValueError("expected a JSON object")
+                    msg_type = data.get("type", "")
 
-                if msg_type == "ping":
-                    await websocket.send_json({"type": "pong"})
+                    if msg_type == "ping":
+                        await websocket.send_json({"type": "pong"})
 
-                elif msg_type == "set_channel":
-                    if dmx_controller:
-                        await dmx_controller.set_channel(
-                            data.get("universe", 0),
-                            data.get("channel", 1),
-                            data.get("value", 0)
-                        )
+                    elif msg_type == "set_channel":
+                        if dmx_controller:
+                            from app.schemas.dmx import DMXChannel
+                            # Validated here: "abc", NaN or 1e400 used to close
+                            # the socket from inside the controller.
+                            command = DMXChannel(
+                                channel=data.get("channel", 1),
+                                value=data.get("value", 0),
+                            )
+                            await dmx_controller.set_channel(
+                                data.get("universe", 0), command.channel, command.value
+                            )
 
-                elif msg_type == "set_frame":
-                    if dmx_controller:
-                        from app.schemas.dmx import DMXFrame
-                        frame = DMXFrame(**data.get("frame", {}))
-                        await dmx_controller.set_frame(data.get("universe", 0), frame)
+                    elif msg_type == "set_frame":
+                        if dmx_controller:
+                            from app.schemas.dmx import DMXFrame
+                            frame = DMXFrame(**data.get("frame", {}))
+                            await dmx_controller.set_frame(data.get("universe", 0), frame)
 
-                elif msg_type == "blackout":
-                    if dmx_controller:
-                        await dmx_controller.blackout()
+                    elif msg_type == "blackout":
+                        if dmx_controller:
+                            await dmx_controller.blackout()
+                except WebSocketDisconnect:
+                    raise
+                except Exception as e:
+                    await _report_bad_message(websocket, e)
 
         finally:
             update_task.cancel()
@@ -1048,10 +1133,17 @@ async def show_websocket(websocket: WebSocket, request: Request = None):
     try:
         while True:
             try:
-                data = await asyncio.wait_for(
-                    websocket.receive_json(),
+                raw = await asyncio.wait_for(
+                    _receive_or_disconnect(websocket),
                     timeout=30.0
                 )
+                try:
+                    data = json.loads(raw.get("text") or raw.get("bytes") or "")
+                    if not isinstance(data, dict):
+                        raise ValueError("expected a JSON object")
+                except ValueError as e:
+                    await _report_bad_message(websocket, e)
+                    continue
 
                 msg_type = data.get("type", "")
 

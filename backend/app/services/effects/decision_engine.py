@@ -276,6 +276,8 @@ class CooldownTimer:
 
     def set_cooldown(self, effect_name: str, duration_bars: int, bpm: float = 128):
         """Set cooldown for an effect."""
+        if not (isinstance(bpm, (int, float)) and math.isfinite(bpm) and bpm > 0):
+            bpm = 128.0
         duration_seconds = (duration_bars * 4 * 60) / bpm
         self.timers[effect_name] = time.time() + duration_seconds
 

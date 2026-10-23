@@ -3,7 +3,9 @@ Effects Engine API Endpoints
 Controls the intelligent lighting effects system.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Request
+import copy
+
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from enum import Enum
@@ -333,7 +335,7 @@ async def set_movement_preset(preset_name: str):
     if preset_name not in MOVEMENT_PRESETS:
         raise HTTPException(400, f"Invalid preset: {preset_name}")
 
-    engine.movement.params = MOVEMENT_PRESETS[preset_name]
+    engine.movement.params = copy.deepcopy(MOVEMENT_PRESETS[preset_name])
     return {"status": "ok", "preset": preset_name}
 
 
@@ -397,7 +399,7 @@ async def set_dimmer_preset(preset_name: str):
     if preset_name not in DIMMER_PRESETS:
         raise HTTPException(400, f"Invalid preset: {preset_name}")
 
-    engine.dimmer.params = DIMMER_PRESETS[preset_name]
+    engine.dimmer.params = copy.deepcopy(DIMMER_PRESETS[preset_name])
     return {"status": "ok", "preset": preset_name}
 
 
@@ -443,7 +445,11 @@ async def set_strobe(request: StrobeRequest):
 
 
 @router.post("/strobe/burst")
-async def trigger_strobe_burst(duration: float = 2.0, frequency: float = 12.0):
+async def trigger_strobe_burst(
+    # Bounded: NaN was stored before the 500 and left the strobe stuck in BURST.
+    duration: float = Query(2.0, gt=0, le=4),
+    frequency: float = Query(12.0, gt=0, le=15),
+):
     """Trigger a strobe burst."""
     engine = get_effects_engine()
     engine.trigger_strobe_burst(duration, frequency)
@@ -519,7 +525,7 @@ async def trigger_drop():
 
 
 @router.post("/trigger/buildup")
-async def trigger_buildup(duration: float = 4.0):
+async def trigger_buildup(duration: float = Query(4.0, ge=0.5, le=64)):
     """Trigger a build-up sequence."""
     engine = get_effects_engine()
     engine.trigger_buildup(duration)
@@ -845,7 +851,7 @@ class ProStrobeRequest(BaseModel):
 
 class ProBuildRequest(BaseModel):
     """Request to trigger a build-up effect."""
-    duration_beats: float = Field(16.0, description="Build-up duration in beats")
+    duration_beats: float = Field(16.0, gt=0, le=256, description="Build-up duration in beats")
     curve: str = Field("quadratic", description="Ramp curve: linear, quadratic, exponential")
 
 
@@ -964,15 +970,15 @@ async def set_pro_movement_preset(preset_name: str):
     engine = get_effects_engine()
     if preset_name not in PRO_MOVEMENT_PRESETS:
         raise HTTPException(400, f"Invalid preset: {preset_name}")
-    engine.pro_movement.params = PRO_MOVEMENT_PRESETS[preset_name]
+    engine.pro_movement.params = copy.deepcopy(PRO_MOVEMENT_PRESETS[preset_name])
     return {"status": "ok", "preset": preset_name}
 
 
 @router.post("/pro/movement/speed-ramp")
 async def start_movement_speed_ramp(
-    duration: float = 8.0,
-    start_mult: float = 0.25,
-    end_mult: float = 2.0,
+    duration: float = Query(8.0, gt=0, le=120),
+    start_mult: float = Query(0.25, ge=0, le=8),
+    end_mult: float = Query(2.0, ge=0, le=8),
 ):
     """Start a movement speed ramp (buildup acceleration)."""
     engine = get_effects_engine()
@@ -1025,7 +1031,7 @@ async def trigger_pro_build(request: ProBuildRequest):
 
 
 @router.post("/pro/flash")
-async def trigger_pro_flash(duration: float = 0.1):
+async def trigger_pro_flash(duration: float = Query(0.1, gt=0, le=2)):
     """Trigger a blinder flash."""
     engine = get_effects_engine()
     engine.pro_effects.flash(duration)

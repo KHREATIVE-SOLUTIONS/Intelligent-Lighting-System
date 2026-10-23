@@ -156,8 +156,10 @@ class MovementEngine:
     def _get_effective_speed(self) -> Tuple[float, float]:
         """Get pan/tilt speed, using BPM if set."""
         if self.params.bpm > 0:
-            # Convert BPM to Hz: (bpm/60) / beat_divisor
-            base_speed = (self.params.bpm / 60.0) / self.params.beat_divisor
+            # Cycles per beat times beats per second, as the presets mean it
+            # ("2.0 = two circles per beat", "0.25 = one sweep per bar"). Dividing
+            # ran a one-per-bar sweep at 16x speed.
+            base_speed = (self.params.bpm / 60.0) * max(0.0, self.params.beat_divisor)
             return (base_speed, base_speed)
         return (self.params.pan_speed, self.params.tilt_speed)
 
