@@ -24,6 +24,7 @@ import ProLightingPanel from './ProLightingPanel';
 import SectionTimeline from './SectionTimeline';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
 import SetupChecklist from './SetupChecklist';
+import GenreCheckPanel from './GenreCheckPanel';
 
 export default function Dashboard() {
   const {
@@ -288,6 +289,18 @@ export default function Dashboard() {
                 <Typography variant="h6">Section Timeline</Typography>
               </Box>
               <SectionTimeline />
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Genre model night check */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Genre Model Night Check
+              </Typography>
+              <GenreCheckPanel />
             </CardContent>
           </Card>
         </Grid>

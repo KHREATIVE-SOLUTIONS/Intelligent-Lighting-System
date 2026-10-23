@@ -127,6 +127,9 @@ class ClubGenreModel:
     def __init__(self, weights_path, device: str = "cpu"):
         self.weights_path = Path(weights_path)
         self.device = device
+        # False while it only listens (a night check before it is trusted):
+        # its answers are labelled "shadow" and the show ignores them.
+        self.steers = True
         self.loaded = False
         self._model = None
         self._frontend = None
@@ -134,6 +137,8 @@ class ClubGenreModel:
         self._buffer_rate = 0
         self._smoothed: Optional[np.ndarray] = None
         self.last_mood: Optional[Dict[str, float]] = None
+        # The audio behind the latest answer, for a night check's clips.
+        self.last_window: Optional[Tuple[np.ndarray, int]] = None
         self.last_inference_ms = 0.0
 
     async def load(self):
@@ -189,6 +194,7 @@ class ClubGenreModel:
             window, rate = np.asarray(audio_buffer, dtype=np.float32).copy(), int(sample_rate)
         else:
             return None
+        self.last_window = (window, rate)
         return await asyncio.to_thread(self._classify_sync, window, rate)
 
     def _probs(self, window: np.ndarray, rate: int) -> np.ndarray:

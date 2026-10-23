@@ -1036,6 +1036,59 @@ export const effectsApi = {
   },
 };
 
+// Genre night check: log the genre model's guesses at a gig and mark what is
+// really playing, to score it before it is allowed to steer a show.
+export interface GenreGuess {
+  t: number;
+  style: string;
+  confidence: number;
+  mood?: { label: string; valence: number; arousal: number } | null;
+}
+
+export interface GenreCheckReport {
+  night?: string;
+  guesses: number;
+  judged: number;
+  accuracy: number | null;
+  confident_accuracy: number | null;
+  show_accuracy: number | null;
+  by_style: Record<string, { marked: number; right: number; accuracy: number | null }>;
+  mistakes: Record<string, number>;
+}
+
+export interface GenreCheckStatus {
+  active: boolean;
+  night: string | null;
+  steering: boolean;
+  guesses: number;
+  marks: number;
+  last_guess: GenreGuess | null;
+  current_mark: { t: number; style: string } | null;
+  styles: string[];
+  model_running: boolean;
+  weights_present: boolean;
+  report?: GenreCheckReport | null;
+}
+
+export const genreCheckApi = {
+  status: async (): Promise<GenreCheckStatus> => {
+    const response = await api.get('/genre-check/status');
+    return response.data;
+  },
+  start: async (): Promise<GenreCheckStatus> => {
+    const response = await api.post('/genre-check/start');
+    return response.data;
+  },
+  stop: async (): Promise<GenreCheckStatus> => {
+    const response = await api.post('/genre-check/stop');
+    return response.data;
+  },
+  mark: async (style: string, sinceS = 0): Promise<GenreCheckStatus> => {
+    const response = await api.post('/genre-check/mark', { style, since_s: sinceS });
+    return response.data;
+  },
+};
+
 // Professional Lighting API (effects/pro/*)
 export interface MasterState {
   grand_master: number;
