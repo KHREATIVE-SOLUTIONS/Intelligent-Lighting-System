@@ -113,6 +113,11 @@ class DMXController:
         # that hand them back once their blackout frame has gone out.
         self._borrowed_universes: Set[int] = set()
         self._release_tasks: Dict[int, asyncio.Task] = {}
+        # Universes the show stopped driving, and how many blackout frames each
+        # still has to send before it leaves the wire. The output thread counts
+        # them down, so the zeros are known to have gone out before it stops.
+        self._releasing: Dict[int, int] = {}
+        self._release_lock = threading.Lock()
         self.pre_blackout_state: Dict[int, List[int]] = {}
 
         # Output state
@@ -284,6 +289,8 @@ class DMXController:
                         logger.warning("ArtNet output error (suppressing repeats): %s", e)
                         self._send_error_logged = True
 
+            self._count_down_releases()
+
             # A universe that is no longer driven cannot keep the status unhealthy.
             for stale in [u for u in self._universe_errors if u not in self.universes]:
                 self._universe_errors.pop(stale, None)
@@ -312,6 +319,50 @@ class DMXController:
             self._send_final_blackout(sock)
 
     FINAL_BLACKOUT_REPEATS = 3
+    RELEASE_FRAMES = 3
+
+    def release_universe(self, universe: int) -> None:
+        """Black out a universe the show no longer drives, then stop sending it.
+
+        Writing one zero frame was not enough: the output loop transmits every
+        universe it holds, so a universe dropped by a rig swap went on sending
+        zeros forever, fighting any other console or node on that universe. Its
+        zeros go out a few times (ArtNet is UDP), then it leaves the wire.
+        """
+        with self._release_lock:
+            entry = self.universes.get(universe)
+            if entry is None:
+                return
+            entry.data = [0] * 512
+            thread = self.output_thread
+            if not self.is_connected or thread is None or not thread.is_alive():
+                # Nothing is transmitting, so nothing has to go out first.
+                self.universes.pop(universe, None)
+                self._releasing.pop(universe, None)
+                return
+            self._releasing[universe] = self.RELEASE_FRAMES
+
+    def write_universe(self, universe: int, data: List[int]) -> None:
+        """Put a rendered frame on a universe, calling off any pending release."""
+        with self._release_lock:
+            self._releasing.pop(universe, None)
+            entry = self.universes.get(universe)
+            if entry is None:
+                entry = self.universes[universe] = DMXUniverse(universe=universe)
+            entry.data = data
+
+    def _count_down_releases(self) -> None:
+        """After each frame, retire the released universes whose zeros have gone out."""
+        if not self._releasing:
+            return
+        with self._release_lock:
+            for universe in list(self._releasing):
+                remaining = self._releasing[universe] - 1
+                if remaining > 0:
+                    self._releasing[universe] = remaining
+                    continue
+                del self._releasing[universe]
+                self.universes.pop(universe, None)
 
     def _send_final_blackout(self, sock: Optional[socket.socket]) -> None:
         """Put zeros on every universe this box was driving, a few times over.
@@ -701,6 +752,11 @@ class DMXController:
         pending_release = self._release_tasks.pop(universe, None)
         if pending_release is not None:
             pending_release.cancel()
+        # Likewise a universe a rig swap is retiring: borrow it instead, so it is
+        # handed back once the pattern ends rather than popped mid-pattern.
+        with self._release_lock:
+            if self._releasing.pop(universe, None) is not None:
+                self._borrowed_universes.add(universe)
 
         if universe not in self.universes:
             self.universes[universe] = DMXUniverse(universe=universe)

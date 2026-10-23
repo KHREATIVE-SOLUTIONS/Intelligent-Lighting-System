@@ -414,6 +414,20 @@ async def test_health_gives_the_operator_the_detail(client):
     )
 
 
+async def test_api_health_gives_the_operator_screen_the_detail(client):
+    """The browser reaches the report under /api, since nginx answers /health itself."""
+    response = await client.get("/api/health")
+    assert response.status_code in (200, 503)
+    body = response.json()
+    assert "services" in body and "dmx_detail" in body, body
+    assert "database" in body["services"] and "audio_input" in body["services"], body
+
+
+async def test_api_health_needs_the_token(unauthenticated_client):
+    response = await unauthenticated_client.get("/api/health")
+    assert response.status_code == 401
+
+
 @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/"])
 async def test_the_documented_open_paths_stay_open(unauthenticated_client, path):
     """Contract §3 exempts the docs and static assets, so an installer can look."""

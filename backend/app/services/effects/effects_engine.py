@@ -391,6 +391,7 @@ class EffectsEngine:
         # DMX output callback
         self._dmx_callback: Optional[Callable[[int, List[int]], None]] = None
         self._emitted_universes: Set[int] = set()
+        self._release_callback: Optional[Callable[[int], None]] = None
         # Operator intensity controls. Both are applied at the render step, after
         # every effect layer has written its levels, so nothing the show does
         # can outvote them: a latched blackout stays black until it is released.
@@ -2039,6 +2040,15 @@ class EffectsEngine:
         """
         self._dmx_callback = callback
 
+    def set_dmx_release_callback(self, callback: Optional[Callable[[int], None]]):
+        """
+        Set callback that retires a universe the rig no longer drives.
+
+        Without one, a dropped universe gets a single zero frame through the DMX
+        callback; with one, the output side blacks it out and stops sending it.
+        """
+        self._release_callback = callback
+
     def _emit_dmx(self):
         """Send one DMX frame per universe that currently holds fixtures."""
         callback = self._dmx_callback
@@ -2069,17 +2079,23 @@ class EffectsEngine:
 
         Universes the outgoing rig occupied but the incoming rig does not are
         blacked out first; without that they would never receive another frame
-        and their fixtures would stay latched at their last values.
+        and their fixtures would stay latched at their last values. With a
+        release callback they are also taken off the wire, so the box stops
+        claiming a universe that another console or node may now be driving.
         """
         outgoing = self._manager_universes(self.fixtures)
         incoming = set(self._manager_universes(manager))
 
-        if self._dmx_callback is not None:
-            for universe in outgoing:
-                if universe in incoming or universe not in self._emitted_universes:
-                    continue
+        for universe in outgoing:
+            if universe in incoming or universe not in self._emitted_universes:
+                continue
+            if self._release_callback is not None:
+                self._release_callback(universe)
+            elif self._dmx_callback is not None:
                 self._dmx_callback(universe, [0] * 512)
-                self._emitted_universes.discard(universe)
+            else:
+                continue
+            self._emitted_universes.discard(universe)
 
         self.fixtures = manager
 

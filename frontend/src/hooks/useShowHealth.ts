@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { audioApi, dmxApi, effectsApi } from '../services/api';
+import { audioApi, dmxApi, effectsApi, healthApi } from '../services/api';
 import { audioWebSocket } from '../services/websocket';
 import { useHealthStore } from '../stores/healthStore';
 import { useAudioStore } from '../stores/audioStore';
@@ -10,10 +10,11 @@ export const HEALTH_POLL_MS = 2000;
 // One round of status reads. Exported so a control can refresh right after
 // the operator acts instead of waiting for the next tick.
 export async function pollShowHealth(): Promise<void> {
-  const [dmx, capture, effects] = await Promise.allSettled([
+  const [dmx, capture, effects, box] = await Promise.allSettled([
     dmxApi.getStatus(),
     audioApi.getCaptureStatus(),
     effectsApi.getStatus(),
+    healthApi.get(),
   ]);
   // Every read failing means the box itself is gone, not one subsystem.
   const reachable = [dmx, capture, effects].some((r) => r.status === 'fulfilled');
@@ -25,6 +26,7 @@ export async function pollShowHealth(): Promise<void> {
     dmx: dmxValue,
     capture: captureValue,
     effects: effectsValue,
+    box: box.status === 'fulfilled' ? box.value : null,
   });
 
   // Older panels read these flags; keep them honest too.
