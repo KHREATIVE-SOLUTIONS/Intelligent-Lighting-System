@@ -554,6 +554,11 @@ async def lifespan(app: FastAPI):
         print(f"Warning: Could not initialize audio capture: {e}")
         app.state.audio_capture = None
 
+    if not settings.AUTH_ENABLED:
+        logging.getLogger(__name__).warning(
+            "AUTH_ENABLED=false: every API route and websocket is open. Anyone on "
+            "this network can drive the lights. Development use only."
+        )
     print("Startup complete!")
 
     yield

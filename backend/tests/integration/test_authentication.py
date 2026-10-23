@@ -427,7 +427,9 @@ async def test_auth_status_is_public_and_hides_the_setup_code(unauthenticated_cl
     response = await unauthenticated_client.get(AUTH_STATUS_URL)
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"configured", "authenticated"}, body
+    # "enabled" reports the AUTH_ENABLED switch; nothing else may be exposed.
+    assert set(body) == {"configured", "authenticated", "enabled"}, body
+    assert body["enabled"] is True
     assert body["configured"] is True
     assert body["authenticated"] is False
 
