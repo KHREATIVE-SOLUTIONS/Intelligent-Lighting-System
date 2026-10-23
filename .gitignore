@@ -94,3 +94,6 @@ secret_key
 *.pem
 *.key
 !package-lock.json
+
+# Local compose overrides (see docker-compose.override.example.yml)
+docker-compose.override.yml

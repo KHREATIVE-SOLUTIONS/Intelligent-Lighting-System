@@ -37,6 +37,18 @@ app = FastAPI(title="ILS Visualizer", lifespan=lifespan)
 
 # ILS Backend URL
 ILS_BACKEND_URL = os.getenv("ILS_BACKEND_URL", "http://127.0.0.1:8014")
+# Operator token for a backend with login on. Without it every poll got 401 and
+# the audio WebSocket was closed, so the visualizer showed nothing.
+ILS_TOKEN = os.getenv("ILS_TOKEN", "").strip()
+
+
+def _backend_ws_url(path: str) -> str:
+    base = ILS_BACKEND_URL.replace("http://", "ws://").replace("https://", "wss://")
+    url = f"{base}{path}"
+    if ILS_TOKEN:
+        from urllib.parse import quote
+        url += f"?token={quote(ILS_TOKEN)}"
+    return url
 
 # Connected WebSocket clients
 clients: Set[WebSocket] = set()
@@ -149,7 +161,8 @@ async def _get_http_session():
     global _http_session
     if _http_session is None or _http_session.closed:
         _http_session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=1)
+            timeout=aiohttp.ClientTimeout(total=1),
+            headers={"Authorization": f"Bearer {ILS_TOKEN}"} if ILS_TOKEN else None,
         )
     return _http_session
 
@@ -286,12 +299,11 @@ async def backend_ws_relay():
     import websockets as ws_lib
 
     # Convert http URL to ws URL
-    ws_base = ILS_BACKEND_URL.replace("http://", "ws://").replace("https://", "wss://")
-    ws_url = f"{ws_base}/ws/audio"
+    ws_url = _backend_ws_url("/ws/audio")
 
     while True:
         try:
-            print(f"Connecting to backend WebSocket at {ws_url}...")
+            print(f"Connecting to backend WebSocket at {ws_url.split('?')[0]}...")
             async with ws_lib.connect(ws_url, ping_interval=20, ping_timeout=10) as backend_ws:
                 print(f"Connected to backend WebSocket!")
 
@@ -334,13 +346,12 @@ async def _get_backend_audio_ws():
                 return _backend_audio_ws
             except Exception:
                 _backend_audio_ws = None
-        ws_base = ILS_BACKEND_URL.replace("http://", "ws://").replace("https://", "wss://")
-        ws_url = f"{ws_base}/ws/audio"
+        ws_url = _backend_ws_url("/ws/audio")
         try:
             _backend_audio_ws = await ws_lib.connect(ws_url, ping_interval=20, ping_timeout=10)
             # Enable reactive mode
             await _backend_audio_ws.send(json.dumps({"type": "reactive_on", "rig_id": 5}))
-            print(f"Audio proxy: connected to backend at {ws_url}")
+            print(f"Audio proxy: connected to backend at {ws_url.split('?')[0]}")
             return _backend_audio_ws
         except Exception as e:
             print(f"Audio proxy: failed to connect to backend: {e}")

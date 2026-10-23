@@ -70,9 +70,16 @@ cd Intelligent-Lighting-System
 # Run
 docker-compose up -d
 
-# Frontend: http://localhost
-# Backend API: http://localhost:8000
+# Frontend: http://localhost  (also http://<this-machine's-ip> from a tablet)
+# Backend API: http://localhost:8000  (this machine only)
 # API Docs: http://localhost:8000/docs
+```
+
+The operator login is on by default; the first visit asks you to set a password.
+For local development (login off, hot reload, database on 127.0.0.1:5432):
+
+```bash
+cp docker-compose.override.example.yml docker-compose.override.yml
 ```
 
 ## Development

@@ -10,6 +10,7 @@ like a professional operator would.
 """
 
 import json
+import re
 import time
 import numpy as np
 from datetime import datetime
@@ -94,13 +95,26 @@ class TrainingRecorder:
         self._record_queue = queue.Queue()
         self._record_thread: Optional[threading.Thread] = None
 
+    @staticmethod
+    def _safe_name(name: str) -> str:
+        """A bare file name with no directory part or traversal.
+
+        Both names arrive from the API. "../../x" or an absolute path used to
+        write wherever it pointed - including over the app's own source.
+        """
+        base = Path(str(name)).name
+        base = re.sub(r"[^A-Za-z0-9._-]", "_", base).lstrip(".")
+        return base[:120] or "session"
+
     def start_recording(self, session_name: str = None):
         """Start a new recording session."""
         if self.recording:
             print("Already recording!")
             return
 
-        self.session_name = session_name or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.session_name = self._safe_name(
+            session_name or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
         self.start_time = time.time()
         self.frames = []
         self.frame_count = 0
@@ -219,7 +233,9 @@ class TrainingRecorder:
             print("[Recorder] No frames to export!")
             return ""
 
-        filename = filename or f"{self.session_name}.jsonl"
+        filename = self._safe_name(filename or f"{self.session_name}.jsonl")
+        if not filename.endswith(".jsonl"):
+            filename += ".jsonl"
         filepath = self.output_dir / filename
 
         with open(filepath, 'w') as f:

@@ -1,0 +1,17 @@
+# Local development overrides.
+#
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#
+# Compose merges docker-compose.override.yml automatically. It is gitignored, so
+# these settings never reach a venue install: login off, hot reload, debug, and
+# the database published on this machine only.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  backend:
+    environment:
+      - DEBUG=true
+      - AUTH_ENABLED=false
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

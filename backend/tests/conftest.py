@@ -23,6 +23,10 @@ atexit.register(shutil.rmtree, _TEST_DB_DIR, True)
 # real fixture on the operator's network for the duration of the run.
 os.environ["ARTNET_IP"] = "127.0.0.1"
 
+# The auth suite exercises login. A developer's AUTH_ENABLED=false (shell or
+# backend/.env) turned every one of those tests into an error.
+os.environ["AUTH_ENABLED"] = "true"
+
 import pytest  # noqa: E402
 from typing import AsyncGenerator, Optional  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402

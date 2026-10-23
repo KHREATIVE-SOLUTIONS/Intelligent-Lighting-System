@@ -3,12 +3,15 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: lighting-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: lighting_db
-    ports:
-      - "5432:5432"
+    # Not published: the backend reaches it on the compose network. Publishing it
+    # put a database with a known password on the venue network, and anyone who
+    # can write the credential table can sign in as the operator. The dev
+    # override example publishes it on 127.0.0.1 only.
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -21,8 +24,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: lighting-redis
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
+    # Not published (no password). Reachable by the other containers only.
     volumes:
       - redis_data:/data
     healthcheck:
@@ -37,14 +40,19 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: lighting-backend
+    restart: unless-stopped
+    # Operators reach the API through the frontend on port 80 (nginx proxies /api
+    # and /ws), so the backend itself only listens on this machine.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/lighting_db
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/lighting_db
       - REDIS_URL=redis://redis:6379
-      - DEBUG=true
-      # Dev only: skip the operator login. Set true (or remove) before shipping.
-      - AUTH_ENABLED=false
+      - DEBUG=${DEBUG:-false}
+      # Operator login is on. For local development copy
+      # docker-compose.override.example.yml to docker-compose.override.yml, or
+      # run with AUTH_ENABLED=false in the shell.
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
       - CORS_ORIGINS=["http://localhost:3000","http://localhost:5173","http://localhost:80","http://localhost"]
     depends_on:
       postgres:
@@ -56,9 +64,10 @@ services:
       - ./ml_models:/app/ml_models
       - ./data:/data
       - ./visualizer:/app/visualizer:ro
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # The image has no curl, so a curl check left the backend unhealthy for ever.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health', timeout=5).raise_for_status()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -67,13 +76,18 @@ services:
   visualizer:
     image: python:3.11-slim
     container_name: lighting-visualizer
+    restart: unless-stopped
     working_dir: /visualizer
+    # The visualizer relays to the backend with its own token and has no login of
+    # its own, so it stays on this machine.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./visualizer:/visualizer
     environment:
       - ILS_BACKEND_URL=http://backend:8000
+      # With login on, paste an operator token here (from POST /api/auth/login).
+      - ILS_TOKEN=${ILS_TOKEN:-}
     command: >
       bash -c "pip install --quiet fastapi uvicorn aiohttp websockets &&
                python server.py"
@@ -86,6 +100,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: lighting-frontend
+    restart: unless-stopped
     ports:
       - "80:80"
     depends_on:
