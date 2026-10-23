@@ -23,6 +23,8 @@ import FrequencyBands from './FrequencyBands';
 import ProLightingPanel from './ProLightingPanel';
 import SectionTimeline from './SectionTimeline';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
+import SetupChecklist from './SetupChecklist';
+import GenreCheckPanel from './GenreCheckPanel';
 
 export default function Dashboard() {
   const {
@@ -117,14 +119,19 @@ export default function Dashboard() {
   }, [handleAnalysisUpdate]);
 
   return (
-    <Box>
+    <Box component="div">
       <Typography variant="h4" gutterBottom>
         Real-Time Audio Analysis
       </Typography>
 
+      <SetupChecklist />
+
       {/* Audio Capture Control */}
       <Card sx={{ mb: 3 }}>
         <CardContent>
+          <Typography variant="h6" gutterBottom>
+            Audio input
+          </Typography>
           <AudioDeviceChooser />
         </CardContent>
       </Card>
@@ -134,7 +141,7 @@ export default function Dashboard() {
         <Grid item xs={12} md={4}>
           <Card sx={{ height: '100%' }}>
             <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+              <Box component="div" sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
                 <MusicIcon sx={{ mr: 1 }} color="primary" />
                 <Typography variant="h6">Beat Detection</Typography>
               </Box>
@@ -146,7 +153,7 @@ export default function Dashboard() {
                 BPM
               </Typography>
 
-              <Box sx={{ mt: 2 }}>
+              <Box component="div" sx={{ mt: 2 }}>
                 <Typography variant="body2" color="text.secondary">
                   Confidence
                 </Typography>
@@ -158,6 +165,7 @@ export default function Dashboard() {
               </Box>
 
               <Box
+                component="div"
                 sx={{
                   mt: 2,
                   display: 'flex',
@@ -167,6 +175,7 @@ export default function Dashboard() {
               >
                 {[1, 2, 3, 4].map((pos) => (
                   <Box
+                    component="div"
                     key={pos}
                     sx={{
                       width: 24,
@@ -191,7 +200,7 @@ export default function Dashboard() {
         <Grid item xs={12} md={4}>
           <Card sx={{ height: '100%' }}>
             <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+              <Box component="div" sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
                 <MoodIcon sx={{ mr: 1 }} color="secondary" />
                 <Typography variant="h6">Mood Classification</Typography>
               </Box>
@@ -205,7 +214,7 @@ export default function Dashboard() {
         <Grid item xs={12} md={4}>
           <Card sx={{ height: '100%' }}>
             <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+              <Box component="div" sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
                 <EqualizerIcon sx={{ mr: 1 }} color="info" />
                 <Typography variant="h6">Audio Energy</Typography>
               </Box>
@@ -217,7 +226,7 @@ export default function Dashboard() {
                 RMS Energy
               </Typography>
 
-              <Box sx={{ mt: 2 }}>
+              <Box component="div" sx={{ mt: 2 }}>
                 <Typography variant="body2" color="text.secondary">
                   Peak Amplitude
                 </Typography>
@@ -239,7 +248,7 @@ export default function Dashboard() {
               <Typography variant="h6" gutterBottom>
                 Audio Waveform
               </Typography>
-              <Box sx={{ height: 200 }}>
+              <Box component="div" sx={{ height: 200 }}>
                 <AudioVisualizer />
               </Box>
             </CardContent>
@@ -262,7 +271,7 @@ export default function Dashboard() {
         <Grid item xs={12} md={6}>
           <Card sx={{ height: '100%' }}>
             <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+              <Box component="div" sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
                 <LightingIcon sx={{ mr: 1 }} color="warning" />
                 <Typography variant="h6">Professional Lighting</Typography>
               </Box>
@@ -275,11 +284,23 @@ export default function Dashboard() {
         <Grid item xs={12} md={6}>
           <Card sx={{ height: '100%' }}>
             <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+              <Box component="div" sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
                 <TimelineIcon sx={{ mr: 1 }} color="info" />
                 <Typography variant="h6">Section Timeline</Typography>
               </Box>
               <SectionTimeline />
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Genre model night check */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Genre Model Night Check
+              </Typography>
+              <GenreCheckPanel />
             </CardContent>
           </Card>
         </Grid>

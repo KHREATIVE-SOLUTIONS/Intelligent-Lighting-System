@@ -8,7 +8,8 @@ Models: BeatNet, MERT (replaces HuBERT), YOLOv9, Genre, Structure.
 BeatNet (CC-BY-4.0, pulls the non-commercial madmom models) and ultralytics/YOLO
 (AGPL-3.0) are optional extras that are not bundled with this product. Their
 imports must stay function-local and guarded, and every caller must degrade when
-they are absent.
+they are absent. The MERT-v1-95M weights are CC BY-NC 4.0 (non-commercial) too.
+The club genre model (EfficientAT, MIT) is cleared for commercial use.
 """
 
 import asyncio
@@ -34,6 +35,7 @@ class ModelManager:
             'hubert': settings.HUBERT_MODEL_PATH,
             'yolo': settings.YOLO_MODEL_PATH,
             'mert': settings.MERT_MODEL_PATH,
+            'genre': settings.GENRE_MODEL_PATH,
         }
         self.loaded = False
 
@@ -109,7 +111,24 @@ class ModelManager:
         logger.info("Music structure analyzer loaded")
 
     async def _load_genre_classifier(self):
-        """Load genre classifier."""
+        """Load the trained club genre model when enabled, else the heuristic.
+
+        The heuristic is shown on the dashboard but never steers the show.
+        """
+        if settings.GENRE_MODEL_ENABLED:
+            from app.services.ml.club_genre import ClubGenreModel
+
+            model = ClubGenreModel(settings.GENRE_MODEL_PATH, device=settings.GENRE_MODEL_DEVICE)
+            try:
+                await model.load()
+            except Exception as e:
+                logger.warning("Club genre model not loaded (%s); falling back to the heuristic", e)
+            else:
+                self.genre_classifier = model
+                self.models['genre'] = model
+                logger.info("Club genre model loaded")
+                return
+
         from app.services.ml.genre_classifier import GenreClassifier
 
         self.genre_classifier = GenreClassifier()
@@ -161,8 +180,13 @@ class ModelManager:
             # Load the emotion recognition model
             print(f"Loading emotion model from {model_dir}...")
 
-            self.processors['hubert'] = AutoFeatureExtractor.from_pretrained(str(model_dir))
-            self.models['hubert'] = AutoModelForAudioClassification.from_pretrained(str(model_dir))
+            # Loading takes seconds; keep it off the event loop.
+            self.processors['hubert'] = await asyncio.to_thread(
+                AutoFeatureExtractor.from_pretrained, str(model_dir)
+            )
+            self.models['hubert'] = await asyncio.to_thread(
+                AutoModelForAudioClassification.from_pretrained, str(model_dir)
+            )
 
             # Move to GPU if available
             if torch.cuda.is_available():
@@ -334,6 +358,11 @@ class ModelManager:
         if 'hubert' not in self.models or 'hubert' not in self.processors:
             return self._fallback_mood_classification(audio_data)
 
+        # A forward pass takes far longer than an audio block; on the event
+        # loop it would stall the show, so it runs on a worker thread.
+        return await asyncio.to_thread(self._classify_hubert_sync, audio_data, sample_rate)
+
+    def _classify_hubert_sync(self, audio_data: np.ndarray, sample_rate: int) -> Dict[str, Any]:
         try:
             import torch
             import librosa

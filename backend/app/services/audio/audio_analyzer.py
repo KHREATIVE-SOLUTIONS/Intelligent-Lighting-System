@@ -17,6 +17,8 @@ from collections import deque
 import scipy.signal as signal
 
 from app.core.config import settings
+from app.services.audio.tempo_tracker import TempoTracker
+from app.services.audio.track_change import TrackChangeDetector
 from app.schemas.audio import (
     AudioStreamConfig, AudioAnalysisResponse,
     BeatResponse, MoodResponse, FrequencyResponse, FrequencyBand
@@ -97,6 +99,12 @@ class AudioAnalyzer:
         self.bass_history = deque(maxlen=64)
         self.current_bpm = 120.0
         self.beat_confidence = 0.0
+        # The tempo a lighting operator would count, from the drums themselves.
+        # Supersedes the beat-interval estimate below whenever it is confident.
+        self._tempo = TempoTracker(self.sample_rate, hop=self.hop_length)
+        # Which record is playing, so a DJ mix is not one six-hour song.
+        self._track = TrackChangeDetector(self.sample_rate)
+        self.tempo_confidence = 0.0
         self.last_beat_time = 0.0
         self.beat_phase = 0.0
         self.beat_position = 1
@@ -154,6 +162,42 @@ class AudioAnalyzer:
         self._last_emotion_vector = None
         self._last_emotion_mapping = None
         self._last_genre_result = None
+        self._genre_seq = 0
+        # A running genre night check (see genre_night_check.py), if any.
+        self.night_check = None
+        self._genre_task: Optional[asyncio.Task] = None
+        # Models load in the background after startup; see `_pull_ml_models`.
+        self._ml_models_pulled = False
+        # MERT and HuBERT run as background tasks, never awaited by the audio
+        # path; the latest finished result is what the show reads.
+        self._mert_task: Optional[asyncio.Task] = None
+        self._mood_task: Optional[asyncio.Task] = None
+        self._last_mood_time = 0.0
+
+    def _pull_ml_models(self) -> None:
+        """Pick up the ML models once the manager has finished loading them.
+
+        The manager loads in the background, so at startup every model was
+        still None when it was handed over, and nothing handed them over again:
+        the genre classifier never ran and the show stayed on its default genre
+        all night. The analyser now takes them itself, once, as soon as loading
+        is complete. A MERT that failed to load is left out.
+        """
+        manager = self.model_manager
+        if self._ml_models_pulled or manager is None or not getattr(manager, "loaded", False):
+            return
+        self._ml_models_pulled = True
+        mert = getattr(manager, "mert_model", None)
+        genre = self._genre_classifier
+        if genre is None or getattr(genre, "HEURISTIC_ONLY", False):
+            # A trained model already in place (a night check started before
+            # loading finished) is not swapped back for the heuristic.
+            genre = getattr(manager, "genre_classifier", None) or genre
+        self.set_ml_models(
+            mert_model=mert if getattr(mert, "loaded", False) else self._mert_model,
+            structure_analyzer=getattr(manager, "structure_analyzer", None) or self._structure_analyzer,
+            genre_classifier=genre,
+        )
 
     def set_ml_models(self, mert_model=None, structure_analyzer=None, genre_classifier=None):
         """Set ML model references from model_manager.
@@ -202,7 +246,25 @@ class AudioAnalyzer:
         self.buffer_index = 0
         self.previous_beat_spectrum = None
         self.previous_flux_spectrum = None
+        self._tempo.set_sample_rate(rate)
+        self._track.set_sample_rate(rate)
         logger.info("Audio analyzer sample rate set to %d Hz", rate)
+
+    def _sanitize_chunk(self, audio_data) -> np.ndarray:
+        """A chunk every analysis stage can take.
+
+        Live input is not trusted: a dropout can deliver an empty buffer, a bad
+        driver or client can deliver NaN/inf, and an int16 stream can arrive
+        unscaled. Any of those used to raise inside the FFT or the result schema
+        (taking the audio connection down) or poison the median-based beat
+        history for seconds. Empty becomes one chunk of silence.
+        """
+        data = np.asarray(audio_data, dtype=np.float32).reshape(-1)
+        if data.size == 0:
+            return np.zeros(max(1, int(self.chunk_size)), dtype=np.float32)
+        if not np.all(np.isfinite(data)):
+            data = np.nan_to_num(data, nan=0.0, posinf=1.0, neginf=-1.0)
+        return np.clip(data, -1.0, 1.0)
 
     async def process_chunk(self, audio_data: np.ndarray) -> Dict[str, Any]:
         """
@@ -216,8 +278,12 @@ class AudioAnalyzer:
         """
         start_time = datetime.utcnow()
 
+        audio_data = self._sanitize_chunk(audio_data)
+        self._pull_ml_models()
+
         # Update buffer
         self._update_buffer(audio_data)
+        self._tempo.push(audio_data)
 
         # Normalise loudness before anything reads a level-based threshold
         self._update_loudness(audio_data)
@@ -231,6 +297,7 @@ class AudioAnalyzer:
             "beat": beat_result,
             "mood": mood_result,
             "frequency": frequency_result,
+            "track": self._analyze_track(audio_data),
         }
 
         # Run ML pipeline models (MERT, structure, genre)
@@ -244,6 +311,28 @@ class AudioAnalyzer:
         result["latency_ms"] = self.latency_ms
 
         return result
+
+    def _analyze_track(self, audio_data: np.ndarray) -> Dict[str, Any]:
+        """Which record is playing: see `TrackChangeDetector`.
+
+        Never raises. A fault here costs the set its track boundaries, which is
+        how it behaved before this existed, and must not cost it the analysis.
+        """
+        detector = self._track
+        try:
+            trusted = self._tempo_is_trusted()
+            detector.push(
+                audio_data,
+                bpm=self._tempo.bpm if trusted else None,
+                tempo_confidence=self._tempo.confidence if trusted else 0.0,
+            )
+        except Exception:
+            detector.changed = False
+        return {
+            "id": int(detector.track_id),
+            "changed": bool(detector.changed),
+            "transition": round(float(detector.transition), 3),
+        }
 
     def _update_loudness(self, audio_data: np.ndarray) -> float:
         """Track programme loudness and derive a playback-level-invariant energy.
@@ -324,17 +413,21 @@ class AudioAnalyzer:
         current_time = time.time()
         ml_output: Dict[str, Any] = {}
 
-        # --- MERT emotion recognition (2Hz) ---
+        # --- MERT emotion recognition (2Hz, in the background) ---
         if self._mert_model is not None:
             self._mert_model.feed_audio(audio_data, self.sample_rate)
-            if current_time - self._last_mert_time >= self._mert_interval:
-                self._last_mert_time = current_time
+            task = self._mert_task
+            if task is not None and task.done():
+                self._mert_task = None
                 try:
-                    emotion = await self._mert_model.get_emotion()
+                    emotion = task.result()
                     self._last_emotion_vector = emotion
                     self._last_emotion_mapping = self._mert_model.map_to_lighting(emotion)
                 except Exception as e:
                     logger.warning("MERT inference error: %s", e)
+            if self._mert_task is None and current_time - self._last_mert_time >= self._mert_interval:
+                self._last_mert_time = current_time
+                self._mert_task = asyncio.ensure_future(self._mert_model.get_emotion())
 
         if self._last_emotion_vector is not None:
             ev = self._last_emotion_vector
@@ -413,17 +506,35 @@ class AudioAnalyzer:
                 "beat_in_bar": sa.beat_in_bar,
             }
 
-        # --- Genre classifier (every 10 seconds) ---
-        if self._genre_classifier is not None:
-            if current_time - self._last_genre_time >= self._genre_interval:
-                self._last_genre_time = current_time
-                try:
-                    genre_result = await self._genre_classifier.classify(
-                        self.audio_buffer, self.sample_rate
+        # --- Genre classifier ---
+        classifier = self._genre_classifier
+        if classifier is not None:
+            interval = float(getattr(classifier, "interval_s", self._genre_interval))
+            if not hasattr(classifier, "feed_audio"):
+                if current_time - self._last_genre_time >= interval:
+                    self._last_genre_time = current_time
+                    try:
+                        self._set_genre_result(
+                            await classifier.classify(self.audio_buffer, self.sample_rate)
+                        )
+                    except Exception as e:
+                        logger.warning("Genre classification error: %s", e)
+            else:
+                # A trained model keeps its own longer window and runs on a
+                # worker thread in the background, like MERT: never awaited here.
+                classifier.feed_audio(audio_data, self.sample_rate)
+                task = self._genre_task
+                if task is not None and task.done():
+                    self._genre_task = None
+                    try:
+                        self._set_genre_result(task.result())
+                    except Exception as e:
+                        logger.warning("Genre classification error: %s", e)
+                if self._genre_task is None and current_time - self._last_genre_time >= interval:
+                    self._last_genre_time = current_time
+                    self._genre_task = asyncio.ensure_future(
+                        classifier.classify(self.audio_buffer, self.sample_rate)
                     )
-                    self._last_genre_result = genre_result
-                except Exception as e:
-                    logger.warning("Genre classification error: %s", e)
 
         if self._last_genre_result is not None:
             gr = self._last_genre_result
@@ -433,9 +544,39 @@ class AudioAnalyzer:
                 "genre_confidence": gr.genre_confidence,
                 "subgenre": gr.subgenre,
                 "genre_scores": gr.genre_scores,
+                "source": self._genre_source(classifier),
+                # Counts fresh results, so a consumer can tell a new answer from
+                # the same one repeated on every block.
+                "seq": self._genre_seq,
+                "mood": getattr(classifier, "last_mood", None),
             }
 
         return ml_output if ml_output else None
+
+    @staticmethod
+    def _genre_source(classifier) -> str:
+        """heuristic: shown, never obeyed. shadow: a trained model only being
+        checked. model: a trained model allowed to lean the show."""
+        if getattr(classifier, "HEURISTIC_ONLY", False):
+            return "heuristic"
+        return "model" if getattr(classifier, "steers", True) else "shadow"
+
+    def _set_genre_result(self, result) -> None:
+        """Keep a fresh genre answer. None (no full window yet) keeps the last."""
+        if result is None:
+            return
+        self._last_genre_result = result
+        self._genre_seq += 1
+        check = self.night_check
+        if check is not None and check.active and not getattr(self._genre_classifier, "HEURISTIC_ONLY", False):
+            window, rate = getattr(self._genre_classifier, "last_window", None) or (None, None)
+            mood = getattr(self._genre_classifier, "last_mood", None)
+            # A clip write is a file write: keep it off the event loop.
+            try:
+                asyncio.get_running_loop()
+                asyncio.ensure_future(asyncio.to_thread(check.record, result, mood, window, rate))
+            except RuntimeError:
+                check.record(result, mood, window, rate)
 
     def _update_buffer(self, audio_data: np.ndarray):
         """Update the circular audio buffer."""
@@ -559,6 +700,8 @@ class AudioAnalyzer:
                 self.current_bpm = 60.0 / avg_interval
                 self.beat_confidence = max(self.beat_confidence, min(1.0, len(valid_intervals) / 10))
 
+        self.tempo_confidence = float(self._tempo.confidence) if self._tempo_is_trusted() else 0.0
+
         # Fallback beat clock: keep beat-reactive systems alive when onset misses.
         if (
             not is_beat
@@ -594,8 +737,9 @@ class AudioAnalyzer:
         self.bar_phase = ((max(self.beat_position - 1, 0) + self.beat_phase) / 4.0) % 1.0
 
         return {
-            "bpm": round(self.current_bpm, 1),
+            "bpm": round(self.tempo_bpm, 1),
             "beat_confidence": round(self.beat_confidence, 2),
+            "tempo_confidence": round(self.tempo_confidence, 2),
             "is_beat": self.current_is_beat,
             "is_downbeat": self.current_is_downbeat,
             "beat_position": self.beat_position,
@@ -611,19 +755,61 @@ class AudioAnalyzer:
             "phase": round(self.beat_phase, 3),
         }
 
+    @property
+    def tempo_bpm(self) -> float:
+        """The tempo this analyser publishes.
+
+        The gaps between detected beats (`current_bpm`) cannot tell 87 from
+        174, or 174 from its 3/4; the drum-aware tracker can, so it is
+        published whenever it is sure. `current_bpm` itself is left alone: it
+        paces this detector's own fallback beats, whose count the engine reads
+        the bar line from, and that count is its own contract.
+        """
+        if self._tempo_is_trusted():
+            return float(self._tempo.bpm)
+        return float(self.current_bpm)
+
+    def _tempo_is_trusted(self) -> bool:
+        tracker = self._tempo
+        return tracker.bpm is not None and tracker.confidence >= tracker.MIN_CONFIDENCE
+
+    def _mood_in_background(self, audio_data: np.ndarray) -> None:
+        """Collect the last finished mood result and start the next, at 2 Hz."""
+        task = self._mood_task
+        if task is not None and task.done():
+            self._mood_task = None
+            try:
+                result = task.result()
+                self.current_valence = result['valence']
+                self.current_arousal = result['arousal']
+            except Exception as e:
+                logger.warning("Mood classification error: %s", e)
+        now = time.time()
+        if self._mood_task is None and now - self._last_mood_time >= self._mert_interval:
+            self._last_mood_time = now
+            self._mood_task = asyncio.ensure_future(
+                self.model_manager.classify_mood(np.array(audio_data, copy=True), self.sample_rate)
+            )
+
     async def _analyze_mood(self, audio_data: np.ndarray) -> Dict[str, Any]:
         """
         Classify mood using valence-arousal model.
 
         Uses spectral features to estimate emotional content.
         """
-        # Use ML model if available (prefer MERT over HuBERT)
-        if self.model_manager and (
+        # Use ML model if available (prefer MERT over HuBERT). Neither is
+        # awaited here: MERT runs in the ML pipeline's background task, HuBERT
+        # in its own, and the mood is the latest result either has finished.
+        mert = self._mert_model
+        if mert is not None and getattr(mert, "loaded", False):
+            emotion = self._last_emotion_vector
+            if emotion is not None:
+                self.current_valence = float(emotion.valence)
+                self.current_arousal = float(emotion.arousal)
+        elif self.model_manager and (
             self.model_manager.has_model('mert') or self.model_manager.has_model('hubert')
         ):
-            result = await self.model_manager.classify_mood(audio_data)
-            self.current_valence = result['valence']
-            self.current_arousal = result['arousal']
+            self._mood_in_background(audio_data)
         else:
             # Fallback: Estimate from spectral features
             spectrum = np.abs(np.fft.rfft(audio_data))
@@ -784,7 +970,7 @@ class AudioAnalyzer:
         return AudioAnalysisResponse(
             timestamp=datetime.utcnow(),
             beat=BeatResponse(
-                bpm=self.current_bpm,
+                bpm=self.tempo_bpm,
                 beat_confidence=self.beat_confidence,
                 is_beat=self.current_is_beat,
                 is_downbeat=self.current_is_downbeat,
@@ -831,7 +1017,7 @@ class AudioAnalyzer:
     def get_beat_info(self) -> BeatResponse:
         """Get current beat information."""
         return BeatResponse(
-            bpm=self.current_bpm,
+            bpm=self.tempo_bpm,
             beat_confidence=self.beat_confidence,
             is_beat=self.current_is_beat,
             is_downbeat=self.current_is_downbeat,

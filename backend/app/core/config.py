@@ -118,11 +118,24 @@ class Settings(BaseSettings):
     MERT_MODEL_PATH: str = "data/models/mert_v1_95m"
     EMOTION_HEAD_PATH: str = "data/models/mert_v1_95m/emotion_head.onnx"
 
+    # Trained club genre/mood tagger (EfficientAT mn10_as, MIT). Off until it
+    # has been checked against real nights; fetch the weights with
+    # scripts/download_genre_model.py. It only leans palette and movement.
+    GENRE_MODEL_ENABLED: bool = False
+    GENRE_MODEL_PATH: str = "data/models/efficientat/mn10_as_mAP_471.pt"
+    # "cpu" is enough (about 60 ms per 10 s window); "cuda" if the box has one.
+    GENRE_MODEL_DEVICE: str = "cpu"
+
     # DMX/ArtNet
     ARTNET_IP: str = "255.255.255.255"
     ARTNET_PORT: int = 6454
     DMX_UNIVERSE: int = 0
     DMX_FPS: int = 40
+    # What the nodes are left showing when output stops cleanly (shutdown,
+    # disconnect, reconfigure). False holds the last look, per the roadmap's
+    # "never black the room as a side effect". True sends zeros to every
+    # universe so nothing - a running strobe included - stays latched on.
+    DMX_BLACKOUT_ON_STOP: bool = False
 
     # WebSocket
     WS_HEARTBEAT_INTERVAL: int = 30

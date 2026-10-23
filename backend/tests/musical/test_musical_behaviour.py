@@ -29,6 +29,7 @@ import pytest
 
 from . import metrics as M
 from . import synthetic_audio as SA
+from app.services.effects.effects_engine import _PHRASE_BARS as M_PHRASE_BARS
 
 # Runs are the expensive part (real analyser plus real 60 fps render), so each
 # distinct (track, engine configuration) pair is played exactly once.
@@ -680,6 +681,93 @@ async def test_beat_phase_holds_through_the_tempo_change_itself():
     error = M.beat_phase_error(result, track)
     assert error.count > 5
     assert error.worst_ms <= 60.0, error.as_dict()
+
+
+@pytest.mark.parametrize("style", ["dnb", "trap_halftime", "hiphop", "house"])
+async def test_the_show_counts_the_tempo_an_operator_would(style):
+    """Drum and bass, half-time and hip-hop used to run at the wrong level.
+
+    Before the multi-band tempo tracker the engine counted drum and bass and
+    half-time trap at 3/4 speed and hip-hop at double time, so every
+    beat-locked chase ran at the wrong rate for the whole song. House is the
+    control: four-on-the-floor was always right and must stay right.
+    """
+    track = SA.drum_pattern_track(style)
+    result = await run_cached(track)
+    late = result.frame_times > result.duration_s * 0.5
+    engine_bpm = float(np.median(result.engine_bpm[late]))
+    assert engine_bpm == pytest.approx(track.bpm, rel=0.03), (style, engine_bpm)
+
+
+# ---------------------------------------------------------------------------
+# A DJ set and the phrase grid
+# ---------------------------------------------------------------------------
+
+
+async def _run_watching_looks(track):
+    """Run `track` and record each song change and each movement-look change.
+
+    Returns (song change times, [(time, bars on the clock, section, pattern)]).
+    """
+    engine = M.build_engine()
+    songs, looks = [], []
+    on_song_change = engine._on_song_change
+    render = engine._update_fixtures_rebuild
+
+    def song_changed():
+        songs.append(engine.time)
+        on_song_change()
+
+    def rendered(delta_time):
+        before = engine._rebuild_active_pattern
+        render(delta_time)
+        if engine._rebuild_active_pattern != before:
+            looks.append((engine.time, engine._beat_clock_bars(), engine._rebuild_section,
+                           engine._rebuild_active_pattern, engine._clock_locked))
+
+    engine._on_song_change = song_changed
+    engine._update_fixtures_rebuild = rendered
+    await M.run_track(track, engine=engine)
+    return songs, looks
+
+
+async def test_a_dj_mix_with_no_silence_is_two_songs():
+    """A blend into the next record re-colours the show without any silence.
+
+    Before, only 1.5 s of silence started a new song, and a DJ never leaves
+    any, so a whole set ran on one palette and one drop history.
+    """
+    track = SA.dj_mix_track()
+    songs, _ = await _run_watching_looks(track)
+    blend_end = SA.LEAD_IN_S + 56 * 4 * 60.0 / track.bpm
+    assert len(songs) == 1, songs
+    assert track.tempo_change_sample / track.sample_rate < songs[0] <= blend_end + 4.0
+
+
+async def test_one_record_with_a_breakdown_stays_one_song():
+    track = SA.song_track(bars=96, breakdown=(40, 56), chorus_bars=(64, 80))
+    songs, _ = await _run_watching_looks(track)
+    assert songs == []
+
+
+async def test_movement_looks_change_on_phrase_lines_not_every_two_bars():
+    """With a locked clock, a look lasts a phrase unless the section changes.
+
+    The renderer used to rotate the movement every two bars on a bar-count
+    modulo, so a sixteen-bar groove ran through eight looks. Now a steady
+    groove keeps a look for a whole phrase.
+    """
+    track = SA.song_track(bars=64)
+    _, looks = await _run_watching_looks(track)
+    locked = [(t, bars, section) for t, bars, section, _, is_locked in looks if is_locked]
+    assert locked, "the clock never locked"
+    steady = [
+        (b - a)
+        for (ta, a, sa), (tb, b, sb) in zip(locked, locked[1:])
+        if sa == sb
+    ]
+    assert steady, locked
+    assert min(steady) >= M_PHRASE_BARS - 0.5, locked
 
 
 # ---------------------------------------------------------------------------

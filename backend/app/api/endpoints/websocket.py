@@ -337,6 +337,20 @@ async def resolve_reactive_fixtures(app, rig_id=None):
     return resolve_live_fixtures(app)
 
 
+def _follow_sender_rate(audio_analyzer, sample_rate) -> None:
+    """Point the analyser at the rate a client says its chunks are in.
+
+    Anything that is not a plausible audio rate is ignored, so a bad field
+    never retunes the analyser for everyone else.
+    """
+    try:
+        rate = int(sample_rate)
+    except (TypeError, ValueError):
+        return
+    if 8000 <= rate <= 192000:
+        audio_analyzer.set_sample_rate(rate)
+
+
 def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
     """
     Process audio and update effects engine state.
@@ -392,6 +406,9 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         arousal=arousal,
         spectral_flux=spectral_flux,
         bpm=bpm,
+        tempo_confidence=beat.get('tempo_confidence'),
+        track_id=(analysis.get('track') or {}).get('id'),
+        track_transition=(analysis.get('track') or {}).get('transition'),
         ml_data=ml_data,
     )
 
@@ -534,6 +551,12 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                         })
                         continue
 
+                    # 16-bit PCM: a trailing odd byte is a torn sample, not audio.
+                    if len(audio_bytes) % 2:
+                        audio_bytes = audio_bytes[:-1]
+                    if not audio_bytes:
+                        continue
+
                     if audio_analyzer:
                         # Convert bytes to numpy array (assuming 16-bit PCM)
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -581,6 +604,9 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
 
                         if audio_analyzer and len(audio_data) > 0:
                             audio_float = np.array(audio_data, dtype=np.float32)
+                            # Analyse at the sender's rate: a 128 BPM click sent
+                            # at 48 kHz used to read as 118 BPM here.
+                            _follow_sender_rate(audio_analyzer, sample_rate)
 
                             # Process audio
                             analysis = await audio_analyzer.process_chunk(audio_float)
@@ -696,6 +722,9 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                     elif msg_type == "stop":
                         if audio_analyzer:
                             await audio_analyzer.stop()
+                        # Stopped on purpose: not a lost cable, so no ambient hold.
+                        if effects_engine is not None:
+                            effects_engine.audio_input_stopped()
                         await websocket.send_json({"type": "stopped"})
 
             except asyncio.TimeoutError:

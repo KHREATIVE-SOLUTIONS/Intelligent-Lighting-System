@@ -70,6 +70,13 @@ class EffectsStatus(BaseModel):
     strobe_enabled: bool
     color_enabled: bool
 
+    # The rig the engine is actually driving. It is read once at boot, so it
+    # can differ from the rig marked active until the box restarts.
+    live_rig_id: Optional[int] = None
+    live_rig_name: Optional[str] = None
+    live_rig_demo: bool = False
+    live_rig_fixtures: int = 0
+
 
 class MovementRequest(BaseModel):
     """Request to set movement pattern."""
@@ -169,6 +176,7 @@ async def get_fixture_states(request: Request):
 async def get_status(request: Request):
     """Get current effects engine status."""
     engine = getattr(request.app.state, "effects_engine", None) or get_effects_engine()
+    live_rig = getattr(request.app.state, "live_rig", None) or {}
 
     return EffectsStatus(
         running=engine.running,
@@ -185,7 +193,11 @@ async def get_status(request: Request):
         movement_enabled=engine.config.movement_enabled,
         dimmer_enabled=engine.config.dimmer_enabled,
         strobe_enabled=engine.config.strobe_enabled,
-        color_enabled=engine.config.color_enabled
+        color_enabled=engine.config.color_enabled,
+        live_rig_id=live_rig.get("id"),
+        live_rig_name=live_rig.get("name"),
+        live_rig_demo=bool(live_rig.get("demo", False)),
+        live_rig_fixtures=int(live_rig.get("fixtures") or 0),
     )
 
 
@@ -528,18 +540,44 @@ async def trigger_buildup(duration: float = 4.0):
 
 @router.post("/trigger/blackout")
 async def trigger_blackout():
-    """Blackout all fixtures."""
+    """Latch a blackout. Intensity stays at zero until /trigger/restore."""
     engine = get_effects_engine()
     engine.blackout()
-    return {"status": "ok", "trigger": "blackout"}
+    return {"status": "ok", "trigger": "blackout", "blackout": engine.blackout_active}
 
 
 @router.post("/trigger/restore")
 async def trigger_restore():
-    """Restore from blackout."""
+    """Release a latched blackout."""
     engine = get_effects_engine()
     engine.restore()
-    return {"status": "ok", "trigger": "restore"}
+    return {"status": "ok", "trigger": "restore", "blackout": engine.blackout_active}
+
+
+class GrandMasterRequest(BaseModel):
+    level: float = Field(..., ge=0.0, le=1.0, description="Grand master, 0 (black) to 1 (full)")
+
+
+def _master_state(engine) -> Dict[str, Any]:
+    return {
+        "grand_master": engine.grand_master,
+        "blackout": engine.blackout_active,
+        "output_master": engine.output_master,
+    }
+
+
+@router.get("/master")
+async def get_grand_master():
+    """Current grand master, blackout latch, and the intensity scale on the wire."""
+    return _master_state(get_effects_engine())
+
+
+@router.post("/master")
+async def set_grand_master(request: GrandMasterRequest):
+    """Set the grand master. It scales intensity only; heads never move."""
+    engine = get_effects_engine()
+    engine.set_grand_master(request.level)
+    return _master_state(engine)
 
 
 @router.post("/trigger/clean-stage")

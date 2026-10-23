@@ -165,6 +165,11 @@ async def blackout(
         universes=command.universes,
         fade_time=command.fade_time
     )
+    # The effects engine rewrites every universe each frame, so a blackout made
+    # only here would last one frame. A full blackout latches the engine too.
+    engine = getattr(request.app.state, "effects_engine", None)
+    if not command.universes and engine is not None:
+        engine.blackout()
     return {"status": "blackout", "universes": command.universes or "all"}
 
 
@@ -178,6 +183,9 @@ async def restore_from_blackout(
         raise HTTPException(status_code=500, detail="DMX controller not initialized")
 
     await request.app.state.dmx_controller.restore(fade_time=fade_time)
+    engine = getattr(request.app.state, "effects_engine", None)
+    if engine is not None:
+        engine.restore()
     return {"status": "restored"}
 
 
@@ -187,7 +195,11 @@ async def get_current_scene(request: Request):
     if not hasattr(request.app.state, 'dmx_controller'):
         raise HTTPException(status_code=500, detail="DMX controller not initialized")
 
-    return request.app.state.dmx_controller.get_scene_state()
+    state = request.app.state.dmx_controller.get_scene_state()
+    engine = getattr(request.app.state, "effects_engine", None)
+    if engine is not None:
+        state.master_intensity = engine.output_master
+    return state
 
 
 @router.post("/cue")

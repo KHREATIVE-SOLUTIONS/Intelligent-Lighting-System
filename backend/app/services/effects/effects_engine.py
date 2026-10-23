@@ -11,6 +11,7 @@ Outputs DMX values combining all layers.
 
 import asyncio
 import copy
+import logging
 import math
 import time
 from typing import Dict, List, Optional, Callable, Set, Tuple
@@ -40,6 +41,8 @@ from .lfo_engine import LFOEngine
 from ..lighting.section_templates import get_section_template
 from ..lighting.fixture_capabilities import get_capability_profile_for_fixture
 from ..lighting.movement_patterns import PRO_MOVEMENT_PRESETS
+
+logger = logging.getLogger(__name__)
 
 # Professional lighting modules - imported lazily in __init__ to avoid circular imports
 # (lighting modules import from effects submodules, which triggers effects/__init__.py,
@@ -172,6 +175,23 @@ _CLOCK_CHALLENGE_RATIO = 1.10
 _CLOCK_CHALLENGE_S = 0.20
 _CLOCK_HARMONIC = 0.50
 _CLOCK_REPORTED_WEIGHT = 0.12
+# When the analyser publishes a confidence with its tempo it has heard the drums
+# (`TempoTracker`) and is saying which metrical level the music is at, which a
+# loudness comb cannot tell: two-step drum and bass reads at 3/4 of its tempo
+# here and hip-hop at double. It then picks the level; see `_beat_clock_observe`.
+_CLOCK_TEMPO_WIDTH = 0.03    # natural-log units, about 3%
+# Metrical relatives of the comb's own tempo the analyser may move it to, and
+# how close (natural log) one must be to the analyser's tempo to count.
+_CLOCK_LEVEL_RATIOS = (1.0, 2.0, 0.5, 4.0 / 3.0, 0.75, 1.5, 2.0 / 3.0)
+_CLOCK_LEVEL_MATCH = 0.06
+# The comb must hear at least this share of its strongest pulse at the level the
+# analyser names before the clock takes its phase from there.
+_CLOCK_LEVEL_MIN_SHARE = 0.25
+
+
+def _clock_relative(a: float, b: float) -> bool:
+    """Whether two tempi are metrical levels of one another."""
+    return any(abs(math.log(a / (b * r))) < _CLOCK_TEMPO_WIDTH for r in _CLOCK_LEVEL_RATIOS)
 _CLOCK_LOG_GAIN = 40.0
 # Section detection is deliberately level-invariant, so a ballad has the same relative
 # dynamics as a club track and would earn the same accents. Absolute level is what
@@ -278,6 +298,62 @@ _DROP_SUSTAIN_CEILING = 0.80
 # than the reactive path already does at its own section boundary.
 _DROP_BED_RISE_PER_S = 8.0
 
+# Looks change on phrase lines rather than on a bar-count modulo. A phrase is
+# counted from the last section change, because the section detector commits
+# on bar lines and dance music changes section on phrase lines; without a
+# locked clock there is no grid and the old two-bar rotation stands.
+_PHRASE_BARS = 8
+_PHRASE_BAR_LEAD = 0.1
+
+# Audio loss. Music that was playing and then stops arriving at all (device
+# unplugged, capture thread dead, analyser stalled) is not the end of the night,
+# so the room crosses to a dim ambient look instead of freezing on stale
+# analysis or going black. Digital silence that keeps arriving is different: it
+# is the music stopping, and the zero floor still takes the rig dark.
+_AUDIO_LOSS_AFTER_S = 2.0
+_AMBIENT_HOLD_LEVEL = 0.30
+_AMBIENT_FADE_IN_S = 3.0
+_AMBIENT_FADE_OUT_S = 1.0
+_AMBIENT_DRIFT_HZ = 0.05      # one slow sweep every twenty seconds
+_AMBIENT_PAN_DEG = 10.0
+_AMBIENT_TILT_DEG = 6.0
+
+# Club style, from the trained genre model. Energy and sections still decide how
+# big, how bright and how fast the show is; a style only leans the colours and
+# the character of the movement, the way an operator plays a techno room colder
+# and tighter than a house room. `speed` and `amp` scale the section's own
+# movement speed and size, `patterns` narrows the section's pattern pool (when
+# at least two survive), `palettes` are the song palettes cycled through.
+_CLUB_STYLE_LOOKS = {
+    "house": {"palettes": (ColorPalette.HOUSE, ColorPalette.POP), "speed": 1.0, "amp": 1.0,
+              "patterns": ("circle", "figure8", "pan_wave", "tilt_circle")},
+    "techno": {"palettes": (ColorPalette.TECHNO, ColorPalette.EDM), "speed": 1.15, "amp": 0.85,
+               "patterns": ("tilt_cross", "odd_even", "tilt_circle", "circle")},
+    "dnb": {"palettes": (ColorPalette.DUBSTEP, ColorPalette.TECHNO), "speed": 1.25, "amp": 1.1,
+            "patterns": ("odd_even", "tilt_cross", "figure8", "tilt_circle")},
+    "trance": {"palettes": (ColorPalette.EDM, ColorPalette.AMBIENT), "speed": 0.9, "amp": 1.15,
+               "patterns": ("circle", "tilt_circle", "pan_wave", "figure8")},
+    "edm": {"palettes": (ColorPalette.EDM, ColorPalette.DUBSTEP), "speed": 1.0, "amp": 1.0,
+            "patterns": None},
+    "hip_hop": {"palettes": (ColorPalette.HIP_HOP, ColorPalette.ROCK), "speed": 0.8, "amp": 0.85,
+                "patterns": ("tilt_cross", "odd_even", "pan_wave")},
+    "latin": {"palettes": (ColorPalette.HOUSE, ColorPalette.POP), "speed": 0.9, "amp": 1.05,
+              "patterns": ("figure8", "pan_wave", "circle")},
+    "afro": {"palettes": (ColorPalette.HOUSE, ColorPalette.HIP_HOP), "speed": 0.9, "amp": 1.0,
+             "patterns": ("pan_wave", "figure8", "circle")},
+    "open_format": {"palettes": (ColorPalette.POP, ColorPalette.HOUSE), "speed": 1.0, "amp": 1.0,
+                    "patterns": None},
+    "rock": {"palettes": (ColorPalette.ROCK, ColorPalette.POP), "speed": 1.05, "amp": 1.0,
+             "patterns": ("tilt_cross", "odd_even", "pan_wave", "circle")},
+    "lounge": {"palettes": (ColorPalette.AMBIENT, ColorPalette.HOUSE), "speed": 0.7, "amp": 0.7,
+               "patterns": ("pan_wave", "circle", "tilt_circle")},
+}
+# A style is adopted after this many fresh, agreeing answers at or above this
+# confidence (the model answers every 5 s, so about 15 s of agreement). A
+# DJ blend or one odd window does not recolour the room.
+_CLUB_STYLE_MIN_CONFIDENCE = 0.55
+_CLUB_STYLE_VOTES = 3
+
 
 class EffectsEngine:
     """
@@ -310,6 +386,11 @@ class EffectsEngine:
         # DMX output callback
         self._dmx_callback: Optional[Callable[[int, List[int]], None]] = None
         self._emitted_universes: Set[int] = set()
+        # Operator intensity controls. Both are applied at the render step, after
+        # every effect layer has written its levels, so nothing the show does
+        # can outvote them: a latched blackout stays black until it is released.
+        self._grand_master: float = 1.0
+        self._blackout_latched: bool = False
 
         # Beat tracking
         self.beat_count = 0
@@ -337,6 +418,7 @@ class EffectsEngine:
         self._clock_zp_norm = 1e-9
         self._clock_bar_offset = 0
         self._clock_bar_votes = [0.0, 0.0, 0.0, 0.0]
+        self._reported_tempo_confidence: Optional[float] = None
         self._clock_bar_moved_at = -1.0e9
         self._clock_last_beat_number: Optional[int] = None
 
@@ -450,6 +532,22 @@ class EffectsEngine:
         # Bar zero is a real bar on the locked clock, so the hold has to start
         # before any bar the clock can report.
         self._rebuild_pattern_hold_until_bar: int = -(10 ** 9)
+        # Phrase grid for look changes; see `_phrase_index`.
+        self._phrase_origin_bar: Optional[int] = None
+        self._rebuild_pattern_key: Optional[Tuple[str, int]] = None
+        self._rebuild_pattern_index: int = 0
+        self._rebuild_color_key: Optional[Tuple[str, int]] = None
+
+        # Which record is playing, as the analyser reports it.
+        self._reported_track_id: Optional[int] = None
+        self._track_id: Optional[int] = None
+        self._track_transition: float = 0.0
+
+        # Audio loss: see `_audio_loss_check`.
+        self._last_audio_t: Optional[float] = None
+        self._music_heard: bool = False
+        self._audio_lost: bool = False
+        self._ambient_mix: float = 0.0
 
         # Drop anticipation: speculative dip, confirmed hit.
         self._drop_dip: float = 0.0
@@ -468,15 +566,28 @@ class EffectsEngine:
         # ML emotion mapping state (set by _apply_ml_data)
         self._ml_emotion_mapping = None
 
-        # Confidence gates for ML-driven target switching
+        # Confidence gates for ML-driven target switching. The starting genre is
+        # a default, not a detection, so it carries no confidence: seeded at
+        # 1.0 it could never be beaten and detection never changed the genre.
         self._ml_genre_gate = _TargetGateState(
             current=self.genre_manager.current_genre.value,
-            current_confidence=1.0,
+            current_confidence=0.0,
         )
         self._ml_section_gate = _TargetGateState(
             current=self.section_manager.current_section.value,
             current_confidence=1.0,
         )
+        # Club style from the trained genre model (see _CLUB_STYLE_LOOKS).
+        self._genre_operator_pinned = False
+        self._club_style: Optional[str] = None
+        self._club_style_candidate: Optional[str] = None
+        self._club_style_votes = 0
+        self._club_style_seq: Optional[int] = None
+        # The style's movement character in force, taken on a pattern change
+        # only: speed scales a beat-locked phase, so changing it mid-pattern
+        # would jump the heads.
+        self._rebuild_style_speed = 1.0
+        self._rebuild_style_amp = 1.0
 
         # Fixture phase choreography controls
         self._leader_follower_enabled: bool = True
@@ -654,6 +765,10 @@ class EffectsEngine:
         if section_name != self._rebuild_section:
             self._rebuild_section = section_name
             self._rebuild_section_changed_at = self.time
+            # Read a little early: the detector commits on the bar line give or
+            # take an analysis block, and a commit read as the tail of the
+            # previous bar would start every phrase a bar late.
+            self._phrase_origin_bar = self._phrase_bar(_PHRASE_BAR_LEAD)
         if (
             self._pro_lighting_enabled
             and self.section_manager.current_section.value != section_name
@@ -668,6 +783,31 @@ class EffectsEngine:
             }
             s = section_map.get(section_name, SongSection.VERSE)
             self.section_manager.trigger_section(s, immediate=True)
+
+    def _phrase_bar(self, lead: float = 0.0) -> Optional[int]:
+        """The bar the locked clock is in, or None without a lock."""
+        if not self._clock_locked:
+            return None
+        bars = self._beat_clock_bars()
+        if not (-1.0e9 < bars < 1.0e9):
+            return None
+        return int(math.floor(bars + lead))
+
+    def _phrase_index(self) -> Optional[int]:
+        """Which phrase the clock is in, counted from the last section change.
+
+        None without a locked clock, which means no phrase grid: callers fall
+        back to their time-based behaviour. The origin is the bar the section
+        changed on; with no section change yet heard on this clock, it is the
+        first bar asked about.
+        """
+        bar = self._phrase_bar()
+        if bar is None:
+            return None
+        if self._phrase_origin_bar is None:
+            self._phrase_origin_bar = bar
+        # A commit read early sits just before its own origin; it is phrase 0.
+        return max(0, (bar - self._phrase_origin_bar) // _PHRASE_BARS)
 
     def _rebuild_downbeat_event(self) -> bool:
         """Is the beat the analyser is reporting right now a usable bar line?
@@ -1001,12 +1141,36 @@ class EffectsEngine:
             "drop": ["tilt_circle", "circle", "odd_even", "figure8"],
         }
         pattern_pool = section_pattern_pool.get(section, ["tilt_cross", "circle", "pan_wave", "figure8", "odd_even"])
-        target_pattern = pattern_pool[bar_clock % len(pattern_pool)]
-        if bar_clock >= self._rebuild_pattern_hold_until_bar:
-            if target_pattern != self._rebuild_active_pattern:
-                self._rebuild_active_pattern = target_pattern
-            hold_bars = max(1, int(getattr(self.config, "major_change_min_bars", 2) or 2))
-            self._rebuild_pattern_hold_until_bar = bar_clock + hold_bars
+        style_look = _CLUB_STYLE_LOOKS.get(self._club_style or "")
+        if style_look and style_look["patterns"]:
+            narrowed = [p for p in pattern_pool if p in style_look["patterns"]]
+            if len(narrowed) >= 2:
+                pattern_pool = narrowed
+        style_speed = float(style_look["speed"]) if style_look else 1.0
+        style_amp = float(style_look["amp"]) if style_look else 1.0
+        phrase = self._phrase_index()
+        if phrase is None:
+            # No phrase grid without a locked clock: rotate every few bars.
+            target_pattern = pattern_pool[bar_clock % len(pattern_pool)]
+            if bar_clock >= self._rebuild_pattern_hold_until_bar:
+                if target_pattern != self._rebuild_active_pattern:
+                    self._rebuild_active_pattern = target_pattern
+                    self._rebuild_style_speed = style_speed
+                    self._rebuild_style_amp = style_amp
+                hold_bars = max(1, int(getattr(self.config, "major_change_min_bars", 2) or 2))
+                self._rebuild_pattern_hold_until_bar = bar_clock + hold_bars
+        elif (section, phrase) != self._rebuild_pattern_key:
+            # A new section or a new phrase: the next movement in this section's
+            # pool, never the one already running.
+            self._rebuild_pattern_key = (section, phrase)
+            for _ in range(len(pattern_pool)):
+                self._rebuild_pattern_index += 1
+                candidate = pattern_pool[self._rebuild_pattern_index % len(pattern_pool)]
+                if candidate != self._rebuild_active_pattern or len(pattern_pool) == 1:
+                    break
+            self._rebuild_active_pattern = candidate
+            self._rebuild_style_speed = style_speed
+            self._rebuild_style_amp = style_amp
         pattern = self._rebuild_active_pattern
 
         pan_amp = 22.0
@@ -1059,6 +1223,11 @@ class EffectsEngine:
             tilt_amp = 25.0
             move_speed = 0.85
             base_floor = 1.0
+
+        # The club style's movement character, on top of the section's.
+        pan_amp *= self._rebuild_style_amp
+        tilt_amp *= self._rebuild_style_amp
+        move_speed *= self._rebuild_style_speed
 
         # The drop look, whether the detector named it or the anticipation path
         # committed to it a beat earlier. It is one sustained level across the
@@ -1158,8 +1327,17 @@ class EffectsEngine:
         strobe_on = drop_strobe_on or snare_strobe_on
         strobe_flash = drop_strobe_flash or snare_strobe_flash
 
-        # Hold base color for musical phrases so mood color is stable.
-        if self.time >= self._rebuild_color_hold_until:
+        # Hold base color for musical phrases so mood color is stable: a new
+        # colour on a section change or a phrase line, and none at all while a
+        # DJ is blending into the next record (that gets one when it lands).
+        if phrase is None:
+            recolour = self.time >= self._rebuild_color_hold_until
+        else:
+            recolour = (section, phrase) != self._rebuild_color_key
+        if self._track_transition > 0.0 and self._rebuild_color_key is not None:
+            recolour = False
+        if recolour:
+            self._rebuild_color_key = (section, phrase) if phrase is not None else None
             palette_color = self.color.get_color(self.audio_features, 0, 0.0)
             emotional_color = self._rebuild_get_emotional_color(section)
             section_emotion_mix = {
@@ -1329,6 +1507,144 @@ class EffectsEngine:
                 'b': fixture.blue,
             })
         self._fixture_state_snapshot = snapshot
+
+    # Audio older than this is treated as lost.
+    AUDIO_STALE_S = _AUDIO_LOSS_AFTER_S
+    # Where the analysed levels settle while the feed is gone, for renderers
+    # that read them directly: a calm, lit room rather than a dark one (the
+    # cable may be the only thing that stopped) and rather than the last beat
+    # replayed for ever. The rebuild renderer shows the ambient hold instead.
+    AUDIO_IDLE_LEVEL = 0.25
+    AUDIO_IDLE_SETTLE_S = 3.0
+
+    @property
+    def audio_age(self) -> Optional[float]:
+        """Seconds since the last audio update, or None before any arrived."""
+        if self._last_audio_t is None:
+            return None
+        return max(0.0, self.time - self._last_audio_t)
+
+    def _settle_if_audio_lost(self, delta_time: float) -> None:
+        """Stop following music that is no longer arriving, on every renderer.
+
+        Nothing refreshed the audio state when the feed died (capture thread
+        gone, cable out, sender crashed), so the show kept dancing to the last
+        chunk all night: energy frozen, and is_beat stuck on, which also counted
+        a new bar every frame and broke every bar-based hold.
+        """
+        age = self.audio_age
+        if age is None or age < self.AUDIO_STALE_S:
+            return
+        self.audio_features.is_beat = False
+        self.audio_features.beat_intensity = 0.0
+        self.audio_state.is_beat = False
+        # A room that never heard music before the feed went has nothing to
+        # hold, and stays dark, the same rule as the ambient hold.
+        idle = self.AUDIO_IDLE_LEVEL if self._music_heard else 0.0
+        pull = min(1.0, max(0.0, float(delta_time or 0.0)) / self.AUDIO_IDLE_SETTLE_S)
+        for target in (self.audio_features, self.audio_state):
+            for band in ("energy", "bass", "mid", "high"):
+                value = float(getattr(target, band, 0.0) or 0.0)
+                setattr(target, band, value + (idle - value) * pull)
+        if hasattr(self.audio_state, "spectral_flux"):
+            self.audio_state.spectral_flux = 0.0
+
+    def _audio_loss_check(self) -> None:
+        """Notice audio that was playing and has stopped arriving at all.
+
+        Only after music has been heard: a rig with no audio source yet, or one
+        the operator stopped, has nothing to hold. Only when nothing arrives:
+        silence that keeps arriving is music that stopped, and stays dark.
+        """
+        if self._audio_lost or not self._music_heard or self._last_audio_t is None:
+            return
+        if (self.time - self._last_audio_t) < _AUDIO_LOSS_AFTER_S:
+            return
+        self._audio_lost = True
+        logger.warning(
+            "No audio for %.1f s after music was playing; holding an ambient look",
+            self.time - self._last_audio_t,
+        )
+        # The last analysis frame is stale. Nothing may fire from it: no beat,
+        # no accent window, no drop dip left half applied.
+        self.audio_features.is_beat = False
+        self.audio_state.is_beat = False
+        self._rebuild_drop_until = -999.0
+        self._rebuild_snare_strobe_until = -999.0
+        self._drop_hit_until = -999.0
+        self._drop_dip = 0.0
+        self._drop_armed = False
+
+    def _apply_ambient_hold(self, delta_time: float) -> None:
+        """Cross the rendered frame to the ambient look while audio is lost.
+
+        The look is the song's current colour at a fixed low level, with movers
+        drifting slowly around home: what an operator would leave up while the
+        DJ fixes a cable. It fades in over `_AMBIENT_FADE_IN_S` and back out over
+        `_AMBIENT_FADE_OUT_S` once audio returns. Blackout and the grand master
+        still apply on top, at the render step.
+        """
+        dt = float(delta_time) if delta_time else 0.0
+        if not (0.0 < dt <= 0.25):
+            dt = 1.0 / 60.0
+        if self._audio_lost:
+            self._ambient_mix = min(1.0, self._ambient_mix + dt / _AMBIENT_FADE_IN_S)
+        else:
+            self._ambient_mix = max(0.0, self._ambient_mix - dt / _AMBIENT_FADE_OUT_S)
+        mix = self._ambient_mix
+        if mix <= 0.0:
+            return
+
+        fixtures = self.fixtures.get_fixtures_in_group("all")
+        base = self._rebuild_base_color
+        audience_cap = max(0.0, min(1.0, float(self.config.audience_intensity_cap)))
+        level = min(_AMBIENT_HOLD_LEVEL, audience_cap)
+        drift = 2.0 * math.pi * _AMBIENT_DRIFT_HZ * self.time
+        count = max(1, len(fixtures))
+        by_id = {}
+        for i, fixture in enumerate(fixtures):
+            offset = 2.0 * math.pi * i / count
+            fixture.dimmer = max(0.0, min(1.0, fixture.dimmer + (level - fixture.dimmer) * mix))
+            fixture.red = fixture.red + (base.r - fixture.red) * mix
+            fixture.green = fixture.green + (base.g - fixture.green) * mix
+            fixture.blue = fixture.blue + (base.b - fixture.blue) * mix
+            if "pan" in (getattr(fixture, "channels", {}) or {}):
+                pan = _AMBIENT_PAN_DEG * math.sin(drift + offset)
+                tilt = _AMBIENT_TILT_DEG * math.sin(0.5 * drift + offset)
+                fixture.pan = fixture.pan + (pan - fixture.pan) * mix
+                fixture.tilt = fixture.tilt + (tilt - fixture.tilt) * mix
+            by_id[fixture.id] = fixture
+        for entry in self._fixture_state_snapshot or []:
+            fixture = by_id.get(entry.get("id"))
+            if fixture is None:
+                continue
+            entry.update(
+                pan=fixture.pan, tilt=fixture.tilt, dimmer=fixture.dimmer,
+                r=fixture.red, g=fixture.green, b=fixture.blue,
+            )
+
+    @property
+    def audio_input_lost(self) -> bool:
+        """True while music has stopped arriving and the ambient look holds."""
+        return bool(self._audio_lost)
+
+    def audio_input_stopped(self) -> None:
+        """The operator stopped the audio input on purpose: hold nothing.
+
+        Without this, stopping capture from the UI would read as a lost cable
+        and light the room two seconds later. The last analysis frame is
+        replaced with silence too, so the rig does not keep rendering it.
+        """
+        try:
+            self.update_audio()
+        except Exception:
+            pass
+        self._music_heard = False
+        self._last_audio_t = None
+        self._audio_lost = False
+        self._ambient_mix = 0.0
+        # Whatever plays next may come from another input at another level.
+        self.decision.reset_dynamics()
 
     def _rebuild_get_emotional_color(self, section: str) -> RGB:
         """Return mood color from valence/arousal with section-aware warmth/coolth shaping."""
@@ -1530,7 +1846,8 @@ class EffectsEngine:
         score = score / self._clock_comb_norm
         weight = _CLOCK_PRIOR
         reported = float(bpm)
-        if 40.0 <= reported <= 260.0:
+        tempo_confidence = self._reported_tempo_confidence
+        if 40.0 <= reported <= 260.0 and not tempo_confidence:
             log_reported = math.log(reported)
             bump = np.zeros_like(weight)
             for octave in (1.0, 0.5, 2.0):
@@ -1541,17 +1858,47 @@ class EffectsEngine:
         total = score * weight
         best = int(np.argmax(total))
 
+        # The comb owns the tempo; a confident analyser only says which metrical
+        # level of it the music is at. It is consulted at the two moments the
+        # clock takes a tempo (acquiring, and a challenge that succeeds) and to
+        # refuse a challenger that is only another level of the tempo already
+        # held. It never pulls the clock anywhere the comb does not hear a
+        # pulse, so while a DJ changes tempo and the analyser lags behind, the
+        # new tempo is not a relative of the old, and the comb follows it alone.
+        levels = bool(tempo_confidence) and 40.0 <= reported <= 260.0
+        if levels:
+            best = self._beat_clock_level(best, score, reported)
+
         if not self._clock_locked:
             if self._clock_evidence >= _CLOCK_EVIDENCE_S and score[best] >= _CLOCK_ACQUIRE_FLOOR:
                 self._beat_clock_adopt(best, t, snap=True)
             return
 
-        here = int(np.argmin(np.abs(_CLOCK_LOG_CAND - math.log(60.0 / self._clock_period))))
-        if total[best] > total[here] * _CLOCK_CHALLENGE_RATIO:
+        held_bpm = 60.0 / self._clock_period
+        here = int(np.argmin(np.abs(_CLOCK_LOG_CAND - math.log(held_bpm))))
+        same_tempo_other_level = (
+            levels
+            and abs(math.log(held_bpm / reported)) < _CLOCK_LEVEL_MATCH
+            and _clock_relative(float(_CLOCK_CAND_BPM[best]), held_bpm)
+        )
+        # And the other way round: the clock locked before the analyser was
+        # sure (it needs a few bars) and holds a relative of the right tempo.
+        corrected = here
+        if (levels
+                and abs(math.log(held_bpm / reported)) >= _CLOCK_LEVEL_MATCH
+                and _clock_relative(reported, held_bpm)):
+            corrected = self._beat_clock_level(here, score, reported)
+        if corrected != here:
+            challenger = corrected
+        elif not same_tempo_other_level and total[best] > total[here] * _CLOCK_CHALLENGE_RATIO:
+            challenger = best
+        else:
+            challenger = None
+        if challenger is not None:
             self._clock_challenge += hop
             if self._clock_challenge >= _CLOCK_CHALLENGE_S:
                 self._clock_challenge = 0.0
-                self._beat_clock_adopt(best, t, snap=False)
+                self._beat_clock_adopt(challenger, t, snap=False)
                 return
         else:
             self._clock_challenge = max(0.0, self._clock_challenge - hop)
@@ -1567,6 +1914,30 @@ class EffectsEngine:
         self._clock_pending -= error * _CLOCK_KP * loop
         period = self._clock_period * (1.0 + _CLOCK_KI * error * loop)
         self._clock_period = min(60.0 / _CLOCK_MIN_BPM, max(60.0 / _CLOCK_MAX_BPM, period))
+
+    def _beat_clock_level(self, index: int, score: np.ndarray, reported: float) -> int:
+        """The comb peak at the relative of `index` the analyser counts, if any.
+
+        Returns `index` unchanged when no relative of its tempo is the
+        analyser's, or when the comb hears too little at that relative to take
+        a phase from it.
+        """
+        bpm = float(_CLOCK_CAND_BPM[index])
+        for ratio in _CLOCK_LEVEL_RATIOS:
+            target = bpm * ratio
+            if not (_CLOCK_MIN_BPM <= target <= _CLOCK_MAX_BPM):
+                continue
+            if abs(math.log(target / reported)) >= _CLOCK_LEVEL_MATCH:
+                continue
+            window = np.abs(_CLOCK_LOG_CAND - math.log(target)) < _CLOCK_TEMPO_WIDTH
+            if not np.any(window):
+                return index
+            candidates = np.flatnonzero(window)
+            peak = int(candidates[np.argmax(score[candidates])])
+            if score[peak] < _CLOCK_LEVEL_MIN_SHARE * score[index]:
+                return index
+            return peak
+        return index
 
     def _beat_clock_adopt(self, index: int, t: float, snap: bool):
         """Take tempo and phase from the comb's best hypothesis."""
@@ -1637,12 +2008,13 @@ class EffectsEngine:
         if callback is None:
             return
 
+        master = self.output_master
         get_frames = getattr(self.fixtures, "get_dmx_frames", None)
         if get_frames is None:
-            callback(0, self.fixtures.get_dmx_frame(universe=0))
+            callback(0, self.fixtures.get_dmx_frame(universe=0, master=master))
             return
 
-        for universe, frame in get_frames().items():
+        for universe, frame in get_frames(master=master).items():
             self._emitted_universes.add(universe)
             callback(universe, frame)
 
@@ -1714,9 +2086,21 @@ class EffectsEngine:
         """Enable professional lighting integration."""
         self._pro_lighting_enabled = enabled
 
-    def set_genre(self, genre, crossfade: bool = True):
-        """Set the active genre profile."""
+    def set_genre(self, genre, crossfade: bool = True, pin: Optional[bool] = True):
+        """Set the active genre profile.
+
+        `pin` says how firmly genre detection may move it afterwards. True (an
+        operator's choice) holds it against detection; False (a startup
+        default) lets the first confident detection replace it; None leaves the
+        detection gate as it is, for detection's own switches.
+        """
         from ..lighting.movement_patterns import apply_genre_defaults
+        if pin is not None:
+            self._genre_operator_pinned = bool(pin)
+            self._ml_genre_gate.current = genre.value
+            self._ml_genre_gate.current_confidence = 1.0 if pin else 0.0
+            self._ml_genre_gate.pending = None
+            self._ml_genre_gate.pending_count = 0
         self.genre_manager.set_genre(genre, crossfade)
         self.key_lighting.set_genre(genre.value)
         # Apply genre speed defaults to pro movement
@@ -1745,6 +2129,9 @@ class EffectsEngine:
         bpm: float = 128.0,
         ml_data: dict = None,
         programme_level: Optional[float] = None,
+        tempo_confidence: Optional[float] = None,
+        track_id: Optional[int] = None,
+        track_transition: Optional[float] = None,
     ):
         """
         Update audio state from audio analyzer.
@@ -1766,7 +2153,45 @@ class EffectsEngine:
             spectral_flux: Rate of spectral change
             bpm: Detected BPM
             ml_data: ML pipeline output (emotion_vector, emotion_mapping, structure, genre)
+            tempo_confidence: The analyser's 0-1 confidence that `bpm` is the
+                tempo an operator would count, or None when the source has no
+                drum-aware tempo. When given, it decides the clock's metrical
+                level; see `_beat_clock_level`.
+            track_id: Which record is playing, from the analyser's track-change
+                detector, or None when the source has none. A change starts a
+                new song (palette, drop history) on the next bar line, with no
+                silence needed; see `_detect_song_change`.
+            track_transition: 0..1, how far a DJ blend into a new record has
+                got. While it is above zero the colour holds.
         """
+        # Any call at all means audio is arriving; see `_audio_loss_check`.
+        self._last_audio_t = self.time
+        if self._audio_lost:
+            self._audio_lost = False
+            logger.info("Audio input is back; leaving the ambient hold")
+        try:
+            if float(energy) >= float(self.config.silence_threshold):
+                self._music_heard = True
+        except (TypeError, ValueError):
+            pass
+        try:
+            self._reported_track_id = int(track_id) if track_id is not None else None
+        except (TypeError, ValueError):
+            self._reported_track_id = None
+        try:
+            blend = float(track_transition) if track_transition is not None else 0.0
+        except (TypeError, ValueError):
+            blend = 0.0
+        self._track_transition = blend if 0.0 <= blend <= 1.0 else 0.0
+
+        try:
+            conf = float(tempo_confidence) if tempo_confidence is not None else None
+        except (TypeError, ValueError):
+            conf = None
+        if conf is not None and not (0.0 <= conf <= 1.0):
+            conf = None
+        self._reported_tempo_confidence = conf
+
         # Mood values may arrive as either [0..1] or [-1..1] depending on source.
         # Normalize once here so color logic is stable and explicit.
         raw_valence = float(valence)
@@ -1831,6 +2256,7 @@ class EffectsEngine:
             self._beat_clock_observe(energy, bpm, is_beat, beat_number)
         except Exception:
             pass
+        self._sync_section_manager_tempo(bpm)
 
         # Smooth BPM for non-reactive movement clock to avoid jitter from detector noise.
         target_bpm = max(60.0, min(200.0, float(bpm)))
@@ -1862,6 +2288,17 @@ class EffectsEngine:
         """Detect song changes (silence + ML transition cues) and switch color palette."""
         current_time = self.time
 
+        # --- The analyser's track-change detector: a DJ mix has no silence ---
+        track_id = self._reported_track_id
+        if track_id is not None:
+            if self._track_id is not None and track_id != self._track_id:
+                self._pending_palette_reseed = True
+                self._pending_palette_reseed_at = current_time
+            self._track_id = track_id
+        # The clock's own bar line is the safe place to change looks; the ML
+        # structure data, when there is any, can add its boundaries to it.
+        safe_boundary = self._rebuild_downbeat_event()
+
         # --- ML-aware song transition detection (preferred over silence heuristics) ---
         structure_data = ml_data.get("structure", {}) if isinstance(ml_data, dict) else {}
         if structure_data:
@@ -1891,16 +2328,17 @@ class EffectsEngine:
                 self._pending_palette_reseed_at = current_time + max(0.3, transition_window_s)
 
             phrase_boundary = (self.audio_state.beat_number > 0 and self.audio_state.beat_number % 16 == 0)
-            safe_boundary = is_boundary or phrase_boundary or section in {"intro", "outro", "breakdown"}
-            if self._pending_palette_reseed and (
-                (current_time >= self._pending_palette_reseed_at and safe_boundary)
-                or current_time >= self._pending_palette_reseed_at + 0.75
-            ):
-                if current_time - self._last_palette_reseed_time > 2.0:
-                    self._pending_palette_reseed = False
-                    self._last_palette_reseed_time = current_time
-                    self._on_song_change()
-                    return
+            safe_boundary = safe_boundary or is_boundary or phrase_boundary or section in {"intro", "outro", "breakdown"}
+
+        if self._pending_palette_reseed and (
+            (current_time >= self._pending_palette_reseed_at and safe_boundary)
+            or current_time >= self._pending_palette_reseed_at + 0.75
+        ):
+            if current_time - self._last_palette_reseed_time > 2.0:
+                self._pending_palette_reseed = False
+                self._last_palette_reseed_time = current_time
+                self._on_song_change()
+                return
 
         if energy < self.config.silence_threshold:
             # Audio is silent
@@ -1918,11 +2356,81 @@ class EffectsEngine:
                 self._palette_locked = True
                 print(f"[Effects] Palette locked: {self._current_song_palette.value}")
 
+    def _sync_section_manager_tempo(self, bpm: float) -> None:
+        """Give the section manager the tempo the show is counting.
+
+        It times its crossfades, anticipation and build-up ramps in bars, and
+        it never heard a tempo after construction, so every song ran on the
+        default 128 BPM: a 2-bar build at 87 BPM ended a bar and a half early.
+        The locked clock's tempo is preferred over the raw detector's.
+        """
+        try:
+            if self._clock_locked and self._clock_period > 0:
+                tempo = 60.0 / self._clock_period
+            else:
+                tempo = float(bpm)
+            if math.isfinite(tempo) and tempo > 0:
+                self.section_manager.set_bpm(tempo)
+        except Exception:
+            pass
+
+    def _observe_club_style(self, genre_data: Dict) -> None:
+        """Count the genre model's fresh answers and adopt a style they agree on.
+
+        The analyser repeats its last answer on every block, so only a new
+        `seq` is a vote. Unsure or non-music answers keep the style in force: a
+        breakdown or a talk-over says nothing about what the room is playing.
+        An operator's genre choice wins and the model is not followed.
+        """
+        seq = genre_data.get("seq")
+        if seq is not None and seq == self._club_style_seq:
+            return
+        self._club_style_seq = seq
+        if self._genre_operator_pinned:
+            return
+        style = str(genre_data.get("genre") or "").lower()
+        try:
+            confidence = float(genre_data.get("genre_confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if style not in _CLUB_STYLE_LOOKS or confidence < _CLUB_STYLE_MIN_CONFIDENCE:
+            self._club_style_candidate = None
+            self._club_style_votes = 0
+            return
+        if style == self._club_style:
+            self._club_style_candidate = None
+            self._club_style_votes = 0
+            return
+        if style == self._club_style_candidate:
+            self._club_style_votes += 1
+        else:
+            self._club_style_candidate = style
+            self._club_style_votes = 1
+        if self._club_style_votes >= _CLUB_STYLE_VOTES:
+            self._adopt_club_style(style)
+
+    def _adopt_club_style(self, style: str) -> None:
+        """Take a new club style. Colour follows on the next phrase line and
+        movement on the next pattern change, so nothing jumps."""
+        self._club_style = style
+        self._club_style_candidate = None
+        self._club_style_votes = 0
+        palettes = _CLUB_STYLE_LOOKS[style]["palettes"]
+        if self._current_song_palette not in palettes:
+            self._palette_index = 0
+            self._current_song_palette = palettes[0]
+            self.color.set_palette(self._current_song_palette)
+            self.config.palette = self._current_song_palette
+            self._palette_version += 1
+        logger.info("Club style now %s", style)
+
     def _on_song_change(self):
         """Handle song change - pick new color palette and reset ML state."""
-        # Cycle to next palette
-        self._palette_index = (self._palette_index + 1) % len(self._available_palettes)
-        self._current_song_palette = self._available_palettes[self._palette_index]
+        # Cycle to next palette, within the club style's palettes once one is known
+        look = _CLUB_STYLE_LOOKS.get(self._club_style or "")
+        palettes = list(look["palettes"]) if look else self._available_palettes
+        self._palette_index = (self._palette_index + 1) % len(palettes)
+        self._current_song_palette = palettes[self._palette_index]
         self._palette_locked = False  # Will lock on next audio
         self._palette_version += 1
         self._pending_palette_reseed = False
@@ -1941,11 +2449,21 @@ class EffectsEngine:
 
         self._reset_drop_anticipation()
 
+        # A new record has its own loudness: the last one's reference would
+        # squash a quieter intro or clip a hotter master.
+        self.decision.reset_dynamics()
+
         # Reset section-template "home" state and MIB transitions for next song
         self._song_home_section = None
         self._song_home_template = None
         self._current_section_template_key = None
         self._mib_states.clear()
+
+        # A new record is a new phrase grid and a fresh look.
+        self._phrase_origin_bar = None
+        self._rebuild_pattern_key = None
+        self._rebuild_color_key = None
+        self._rebuild_color_hold_until = 0.0
 
         print(f"[Effects] Song changed! New palette: {self._current_song_palette.value}")
 
@@ -2091,7 +2609,15 @@ class EffectsEngine:
 
         # --- Genre auto-switching ---
         genre_data = ml_data.get("genre")
-        if genre_data:
+        # A heuristic guess is shown, never obeyed: it would retune the whole
+        # show to the wrong genre (it reads club music as ambient). A "shadow"
+        # answer is the trained model being checked on a real night: logged,
+        # never obeyed. The trained
+        # model's answer is a club style, which leans palette and movement only
+        # and leaves strobe budget, dynamics and sections alone.
+        if genre_data and genre_data.get("source") == "model":
+            self._observe_club_style(genre_data)
+        elif genre_data and genre_data.get("source") not in ("heuristic", "shadow"):
             detected_genre = genre_data.get("genre", "").lower()
             confidence = genre_data.get("genre_confidence", 0.0)
             gate_passed = (
@@ -2121,7 +2647,7 @@ class EffectsEngine:
                 }
                 genre_enum = genre_map.get(detected_genre)
                 if genre_enum and genre_enum != self.genre_manager.current_genre:
-                    self.set_genre(genre_enum)
+                    self.set_genre(genre_enum, pin=None)
                     # Reset strobe budget for genre change
                     self.pro_effects.strobe.set_genre(detected_genre)
                     self.pro_effects.strobe.reset_song_budget()
@@ -2259,6 +2785,10 @@ class EffectsEngine:
         self.last_update = current_time
         self.time += delta_time
         self._beat_clock_advance(delta_time)
+        # Every renderer, not only the rebuild path, has to stop following a
+        # feed that is no longer arriving.
+        self._audio_loss_check()
+        self._settle_if_audio_lost(delta_time)
 
         # Update decision engine - genre-aware mode when pro lighting is active
         if self.config.auto_mode and self._pro_lighting_enabled:
@@ -2292,8 +2822,12 @@ class EffectsEngine:
         # Clean-slate runtime path: one renderer only, avoids conflicting overlays.
         # Respect auto/manual mode so manual controls still work when auto is disabled.
         if self.config.auto_mode and self._rebuild_busker_enabled:
-            self._rebuild_update_intent(delta_time)
+            if not self._audio_lost:
+                # With no audio arriving the section would be decided on stale
+                # analysis; it holds where it was instead.
+                self._rebuild_update_intent(delta_time)
             self._update_fixtures_rebuild(delta_time)
+            self._apply_ambient_hold(delta_time)
             self._emit_dmx()
             return
 
@@ -3109,6 +3643,7 @@ class EffectsEngine:
         state = {
             "enabled": True,
             "genre": self.genre_manager.current_genre.value,
+            "club_style": self._club_style,
             "section": self.section_manager.current_section.value,
             "palette_version": self._palette_version,
             "palette_locked": self._palette_locked,
@@ -3331,15 +3866,48 @@ class EffectsEngine:
         self.config.palette = palette
 
     def blackout(self):
-        """Blackout all fixtures."""
+        """Latch an operator blackout.
+
+        Intensity goes to zero on every fixture and stays there, whatever the
+        show is doing, until restore() releases it. Heads keep their position,
+        so nothing swings while the room is dark.
+        """
+        self._blackout_latched = True
+        self._zero_dimmers()
+        self._emit_dmx()
+
+    def restore(self):
+        """Release an operator blackout; the show comes back on the next frame."""
+        self._blackout_latched = False
+
+    @property
+    def blackout_active(self) -> bool:
+        return self._blackout_latched
+
+    def set_grand_master(self, level: float) -> float:
+        """Set the grand master (0-1). Scales intensity only, never position."""
+        try:
+            value = float(level)
+        except (TypeError, ValueError):
+            raise ValueError("grand master must be a number between 0 and 1")
+        if value != value:  # NaN
+            raise ValueError("grand master must be a number between 0 and 1")
+        self._grand_master = max(0.0, min(1.0, value))
+        return self._grand_master
+
+    @property
+    def grand_master(self) -> float:
+        return self._grand_master
+
+    @property
+    def output_master(self) -> float:
+        """The intensity scale actually applied to the next frame."""
+        return 0.0 if self._blackout_latched else self._grand_master
+
+    def _zero_dimmers(self):
         for fixture in self.fixtures.fixtures.values():
             fixture.dimmer = 0
         self.strobe.stop()
-
-    def restore(self):
-        """Restore from blackout."""
-        # Will naturally restore on next update
-        pass
 
     # === State Control ===
 
@@ -3361,19 +3929,35 @@ class EffectsEngine:
         """Run the effects engine loop."""
         self.running = True
         interval = 1.0 / self.config.fps
+        loop = asyncio.get_running_loop()
+        next_frame = loop.time()
+        error_logged = False
 
         while self.running:
             try:
                 self.update()
-            except Exception as e:
+                error_logged = False
+            except Exception:
                 # Keep loop alive in live use; one bad frame should not kill output.
-                print(f"[EffectsEngine] update error: {e}")
-            await asyncio.sleep(interval)
+                # Logged once per failure streak, not 60 times a second.
+                if not error_logged:
+                    logger.exception("EffectsEngine update error (suppressing repeats)")
+                    error_logged = True
+            # Pace against a deadline: sleeping a whole interval after update()
+            # added the frame's own cost to every frame and ran below rate.
+            next_frame += interval
+            delay = next_frame - loop.time()
+            if delay < -interval:
+                next_frame = loop.time()
+            # Always yield a little: an overloaded frame must not starve the API.
+            await asyncio.sleep(max(0.002, delay))
 
     def stop(self):
         """Stop the effects engine."""
         self.running = False
-        self.blackout()
+        # Not the operator blackout: stopping must not leave a latch behind
+        # that keeps the room dark when the engine is started again.
+        self._zero_dimmers()
 
     # === Presets ===
 

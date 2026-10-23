@@ -72,6 +72,9 @@ ml_models/beatnet/*.pt
 ml_models/hubert/*.bin
 ml_models/hubert/*.safetensors
 ml_models/yolov9/*.pt
+backend/data/models/efficientat/
+# Genre night checks: logs and audio clips from real gigs stay on the box.
+genre_check/
 
 # Temporary files
 *.tmp

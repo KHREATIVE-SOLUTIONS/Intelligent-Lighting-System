@@ -48,7 +48,7 @@ class DMXUniverse(BaseModel):
     def set_channel(self, channel: int, value: int) -> None:
         """Set value of a specific channel (1-indexed)."""
         if 1 <= channel <= 512:
-            self.data[channel - 1] = min(255, max(0, value))
+            self.data[channel - 1] = min(255, max(0, int(round(value))))
 
 
 class ArtNetConfig(BaseModel):

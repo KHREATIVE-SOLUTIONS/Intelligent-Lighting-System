@@ -315,6 +315,9 @@ def analysis_to_engine_kwargs(analysis: dict) -> dict:
         "arousal": float(mood.get("arousal", 0.0)),
         "spectral_flux": min(1.0, float(freq.get("spectral_flux", 0.0)) * 10.0),
         "bpm": float(beat.get("bpm", 128.0)),
+        "tempo_confidence": beat.get("tempo_confidence"),
+        "track_id": (analysis.get("track") or {}).get("id"),
+        "track_transition": (analysis.get("track") or {}).get("transition"),
         "ml_data": ml_data,
     }
 

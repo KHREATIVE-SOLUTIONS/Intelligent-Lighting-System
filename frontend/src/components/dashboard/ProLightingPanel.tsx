@@ -72,10 +72,10 @@ export default function ProLightingPanel() {
   const sectionLabel = SECTION_LABELS[proLighting.section] || 'Unknown';
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+    <Box component="div" sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       {/* Genre Selector */}
-      <Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+      <Box component="div">
+        <Box component="div" sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
           <GenreIcon sx={{ mr: 1, fontSize: 18 }} color="primary" />
           <Typography variant="subtitle2">Genre</Typography>
         </Box>
@@ -95,12 +95,12 @@ export default function ProLightingPanel() {
       </Box>
 
       {/* Current Section */}
-      <Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+      <Box component="div">
+        <Box component="div" sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
           <LightIcon sx={{ mr: 1, fontSize: 18 }} color="secondary" />
           <Typography variant="subtitle2">Current Section</Typography>
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        <Box component="div" sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
           <Chip
             label={sectionLabel}
             sx={{
@@ -110,7 +110,7 @@ export default function ProLightingPanel() {
               fontSize: '0.9rem',
             }}
           />
-          <Box sx={{ flex: 1 }}>
+          <Box component="div" sx={{ flex: 1 }}>
             <Typography variant="caption" color="text.secondary">
               Intensity
             </Typography>
@@ -132,9 +132,9 @@ export default function ProLightingPanel() {
       </Box>
 
       {/* Active Effects */}
-      <Box>
+      <Box component="div">
         <Typography variant="subtitle2" sx={{ mb: 1 }}>Active Effects</Typography>
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+        <Box component="div" sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
           {proLighting.activeEffects.strobeMode !== 'off' && (
             <Chip
               icon={<StrobeIcon />}
@@ -174,12 +174,12 @@ export default function ProLightingPanel() {
 
       {/* Key Lighting Zones */}
       {proLighting.keyLightingZones.length > 0 && (
-        <Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+        <Box component="div">
+          <Box component="div" sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
             <PerformerIcon sx={{ mr: 1, fontSize: 18 }} />
             <Typography variant="subtitle2">Key Lighting</Typography>
           </Box>
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+          <Box component="div" sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
             {proLighting.keyLightingZones
               .filter((z) => z.active)
               .map((zone) => (
@@ -200,9 +200,9 @@ export default function ProLightingPanel() {
 
       {/* Emotion Vector (if available) */}
       {proLighting.emotionVector && (
-        <Box>
+        <Box component="div">
           <Typography variant="subtitle2" sx={{ mb: 1 }}>Emotion</Typography>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+          <Box component="div" sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
             {[
               { label: 'Valence', value: proLighting.emotionVector.valence, range: [-1, 1] },
               { label: 'Arousal', value: proLighting.emotionVector.arousal, range: [-1, 1] },
@@ -214,7 +214,7 @@ export default function ProLightingPanel() {
                 ? ((dim.value + 1) / 2) * 100
                 : dim.value * 100;
               return (
-                <Box key={dim.label} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Box component="div" key={dim.label} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <Typography variant="caption" sx={{ width: 60, flexShrink: 0 }}>
                     {dim.label}
                   </Typography>
@@ -243,9 +243,10 @@ export default function ProLightingPanel() {
         <Typography variant="caption" color="text.secondary">
           Phrase Position
         </Typography>
-        <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5 }}>
+        <Box component="div" sx={{ display: 'flex', gap: 0.5, mt: 0.5 }}>
           {Array.from({ length: proLighting.beatsPerPhrase }, (_, i) => (
             <Box
+              component="div"
               key={i}
               sx={{
                 flex: 1,

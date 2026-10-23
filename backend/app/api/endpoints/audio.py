@@ -18,6 +18,7 @@ from app.schemas.audio import (
 )
 from app.services.lighting.section_manager import SongSection
 from app.services.lighting.pro_effects import ACCENT_OFF_POLICIES
+from app.services.audio import capture_settings
 
 router = APIRouter()
 
@@ -314,6 +315,29 @@ async def get_capture_status(request: Request):
     return status
 
 
+def arm_show_for_live_audio(effects_engine) -> None:
+    """Put the engine in AI busker mode with its reactive layers on.
+
+    Shared by the dashboard's start button and the boot-time restart, so a
+    rebooted install comes back in the same mode the operator left it in.
+    """
+    if effects_engine is None:
+        return
+    effects_engine.config.auto_mode = True
+    effects_engine.config.movement_enabled = True
+    effects_engine.config.dimmer_enabled = True
+    # Accents follow the accessibility posture the venue is running, so
+    # starting capture never re-arms a rig the operator switched to
+    # "no_strobe" and never silences one they left on.
+    policy = str(getattr(effects_engine.config, "accessibility_mode", "") or "").strip().lower()
+    effects_engine.set_strobe_layer_enabled(policy not in ACCENT_OFF_POLICIES)
+    effects_engine.enable_pro_lighting(True)
+    try:
+        effects_engine.set_section(SongSection.VERSE, immediate=True)
+    except Exception:
+        pass
+
+
 @router.post("/capture/start")
 async def start_capture(
     request: Request,
@@ -345,7 +369,10 @@ async def start_capture(
         import sys
         if sys.platform == "win32" and not selected.get("is_loopback", False):
             raise HTTPException(400, "Selected device is not a loopback output-capture device")
-        if not selected.get("is_loopback", False) and not selected.get("is_input", False):
+        # The device list reports input channels, not an is_input flag; without
+        # this a USB interface fed from the desk could never be picked.
+        has_inputs = selected.get("is_input", False) or (selected.get("max_input_channels") or 0) > 0
+        if not selected.get("is_loopback", False) and not has_inputs:
             raise HTTPException(400, "Selected device has no input channels")
     except HTTPException:
         raise
@@ -362,22 +389,11 @@ async def start_capture(
     if not success:
         raise HTTPException(500, "Failed to start audio capture. Check device availability.")
 
-    # Enable AI busker mode and keep reactive layers active.
-    if hasattr(request.app.state, 'effects_engine') and request.app.state.effects_engine:
-        effects_engine = request.app.state.effects_engine
-        effects_engine.config.auto_mode = True
-        effects_engine.config.movement_enabled = True
-        effects_engine.config.dimmer_enabled = True
-        # Accents follow the accessibility posture the venue is running, so
-        # starting capture never re-arms a rig the operator switched to
-        # "no_strobe" and never silences one they left on.
-        policy = str(getattr(effects_engine.config, "accessibility_mode", "") or "").strip().lower()
-        effects_engine.set_strobe_layer_enabled(policy not in ACCENT_OFF_POLICIES)
-        effects_engine.enable_pro_lighting(True)
-        try:
-            effects_engine.set_section(SongSection.VERSE, immediate=True)
-        except Exception:
-            pass
+    # Remember the device by name, so a reboot or power cut brings capture
+    # back on the same input without anyone at the dashboard.
+    capture_settings.save(selected.get("name") or capture.device_name, running=True)
+
+    arm_show_for_live_audio(getattr(request.app.state, 'effects_engine', None))
 
     return {"status": "started", "device": capture.device_name}
 
@@ -389,6 +405,12 @@ async def stop_capture(request: Request):
         raise HTTPException(500, "Audio capture not available")
 
     request.app.state.audio_capture.stop()
+    # Stopped on purpose, so it stays stopped after a reboot too.
+    capture_settings.set_running(False)
+    # Stopped on purpose, so the engine must not read it as a lost cable.
+    engine = getattr(request.app.state, 'effects_engine', None)
+    if engine is not None:
+        engine.audio_input_stopped()
     return {"status": "stopped"}
 
 
