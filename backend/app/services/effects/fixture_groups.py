@@ -184,8 +184,15 @@ def canonical_channel_name(name: str) -> str:
     return base if base and suffix.isdigit() else text
 
 
-def _render_fixture(fixture: Fixture) -> Dict[str, int]:
-    """Map a fixture's state onto the channel types its profile declares."""
+def _render_fixture(fixture: Fixture, master: float = 1.0) -> Dict[str, int]:
+    """Map a fixture's state onto the channel types its profile declares.
+
+    ``master`` is the operator's grand master. It scales intensity only, the
+    way a console's grand master does: the dimmer channel, or the colour
+    values on a fixture whose intensity lives in its colour mix. Position,
+    beam and wheel channels are untouched, so pulling the master down never
+    moves a head.
+    """
     values: Dict[str, int] = {}
     homes = fixture.channel_defaults or {}
 
@@ -200,7 +207,8 @@ def _render_fixture(fixture: Fixture) -> Dict[str, int]:
         except (TypeError, ValueError):
             return 0
 
-    dimmer = max(0.0, min(1.0, _level(fixture.dimmer)))
+    master = max(0.0, min(1.0, _level(master, 1.0)))
+    dimmer = max(0.0, min(1.0, _level(fixture.dimmer))) * master
 
     has_dimmer = fixture.has_channel('dimmer')
     if has_dimmer:
@@ -473,18 +481,28 @@ class FixtureGroupManager:
             if 0 <= fixture.dmx_address - 1 < 512
         })
 
-    def get_dmx_frames(self) -> Dict[int, List[int]]:
+    def get_dmx_frames(self, master: float = 1.0) -> Dict[int, List[int]]:
         """
         Generate a DMX frame for every universe that holds fixtures.
+
+        Args:
+            master: Grand master, 0-1, applied to intensity only
 
         Returns:
             Mapping of universe number to 512-element list of DMX values
         """
-        return {universe: self.get_dmx_frame(universe) for universe in self.get_universes()}
+        return {
+            universe: self.get_dmx_frame(universe, master=master)
+            for universe in self.get_universes()
+        }
 
-    def get_dmx_frame(self, universe: int = 0) -> List[int]:
+    def get_dmx_frame(self, universe: int = 0, master: float = 1.0) -> List[int]:
         """
         Generate DMX frame from current fixture states.
+
+        Args:
+            universe: Universe to render
+            master: Grand master, 0-1, applied to intensity only
 
         Returns:
             512-element list of DMX values
@@ -499,7 +517,7 @@ class FixtureGroupManager:
             if base < 0 or base >= 512:
                 continue
 
-            channel_values = _render_fixture(fixture)
+            channel_values = _render_fixture(fixture, master)
 
             for channel_name, offset in fixture.channels.items():
                 if channel_name not in channel_values:

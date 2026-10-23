@@ -21,6 +21,7 @@ import AudioVisualizer from './AudioVisualizer';
 import MoodDisplay from './MoodDisplay';
 import FrequencyBands from './FrequencyBands';
 import ProLightingPanel from './ProLightingPanel';
+import MasterControl from './MasterControl';
 import SectionTimeline from './SectionTimeline';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
 
@@ -121,6 +122,13 @@ export default function Dashboard() {
       <Typography variant="h4" gutterBottom>
         Real-Time Audio Analysis
       </Typography>
+
+      {/* Operator master: grand master and a blackout that holds */}
+      <Card sx={{ mb: 3 }}>
+        <CardContent>
+          <MasterControl />
+        </CardContent>
+      </Card>
 
       {/* Audio Capture Control */}
       <Card sx={{ mb: 3 }}>

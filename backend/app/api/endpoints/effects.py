@@ -528,18 +528,44 @@ async def trigger_buildup(duration: float = 4.0):
 
 @router.post("/trigger/blackout")
 async def trigger_blackout():
-    """Blackout all fixtures."""
+    """Latch a blackout. Intensity stays at zero until /trigger/restore."""
     engine = get_effects_engine()
     engine.blackout()
-    return {"status": "ok", "trigger": "blackout"}
+    return {"status": "ok", "trigger": "blackout", "blackout": engine.blackout_active}
 
 
 @router.post("/trigger/restore")
 async def trigger_restore():
-    """Restore from blackout."""
+    """Release a latched blackout."""
     engine = get_effects_engine()
     engine.restore()
-    return {"status": "ok", "trigger": "restore"}
+    return {"status": "ok", "trigger": "restore", "blackout": engine.blackout_active}
+
+
+class GrandMasterRequest(BaseModel):
+    level: float = Field(..., ge=0.0, le=1.0, description="Grand master, 0 (black) to 1 (full)")
+
+
+def _master_state(engine) -> Dict[str, Any]:
+    return {
+        "grand_master": engine.grand_master,
+        "blackout": engine.blackout_active,
+        "output_master": engine.output_master,
+    }
+
+
+@router.get("/master")
+async def get_grand_master():
+    """Current grand master, blackout latch, and the intensity scale on the wire."""
+    return _master_state(get_effects_engine())
+
+
+@router.post("/master")
+async def set_grand_master(request: GrandMasterRequest):
+    """Set the grand master. It scales intensity only; heads never move."""
+    engine = get_effects_engine()
+    engine.set_grand_master(request.level)
+    return _master_state(engine)
 
 
 @router.post("/trigger/clean-stage")

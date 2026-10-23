@@ -925,6 +925,32 @@ export const effectsApi = {
 };
 
 // Professional Lighting API (effects/pro/*)
+export interface MasterState {
+  grand_master: number;
+  blackout: boolean;
+  output_master: number;
+}
+
+export const masterApi = {
+  get: async (): Promise<MasterState> => {
+    const response = await api.get('/effects/master');
+    return response.data;
+  },
+
+  setGrandMaster: async (level: number): Promise<MasterState> => {
+    const response = await api.post('/effects/master', { level });
+    return response.data;
+  },
+
+  blackout: async (): Promise<void> => {
+    await api.post('/effects/trigger/blackout');
+  },
+
+  restore: async (): Promise<void> => {
+    await api.post('/effects/trigger/restore');
+  },
+};
+
 export const proLightingApi = {
   enable: async (enabled = true) => {
     const response = await api.post('/effects/pro/enable', null, { params: { enabled } });

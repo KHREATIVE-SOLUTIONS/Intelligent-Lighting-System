@@ -11,6 +11,7 @@ Outputs DMX values combining all layers.
 
 import asyncio
 import copy
+import logging
 import math
 import time
 from typing import Dict, List, Optional, Callable, Set, Tuple
@@ -40,6 +41,8 @@ from .lfo_engine import LFOEngine
 from ..lighting.section_templates import get_section_template
 from ..lighting.fixture_capabilities import get_capability_profile_for_fixture
 from ..lighting.movement_patterns import PRO_MOVEMENT_PRESETS
+
+logger = logging.getLogger(__name__)
 
 # Professional lighting modules - imported lazily in __init__ to avoid circular imports
 # (lighting modules import from effects submodules, which triggers effects/__init__.py,
@@ -310,6 +313,11 @@ class EffectsEngine:
         # DMX output callback
         self._dmx_callback: Optional[Callable[[int, List[int]], None]] = None
         self._emitted_universes: Set[int] = set()
+        # Operator intensity controls. Both are applied at the render step, after
+        # every effect layer has written its levels, so nothing the show does
+        # can outvote them: a latched blackout stays black until it is released.
+        self._grand_master: float = 1.0
+        self._blackout_latched: bool = False
 
         # Beat tracking
         self.beat_count = 0
@@ -1637,12 +1645,13 @@ class EffectsEngine:
         if callback is None:
             return
 
+        master = self.output_master
         get_frames = getattr(self.fixtures, "get_dmx_frames", None)
         if get_frames is None:
-            callback(0, self.fixtures.get_dmx_frame(universe=0))
+            callback(0, self.fixtures.get_dmx_frame(universe=0, master=master))
             return
 
-        for universe, frame in get_frames().items():
+        for universe, frame in get_frames(master=master).items():
             self._emitted_universes.add(universe)
             callback(universe, frame)
 
@@ -3331,15 +3340,48 @@ class EffectsEngine:
         self.config.palette = palette
 
     def blackout(self):
-        """Blackout all fixtures."""
+        """Latch an operator blackout.
+
+        Intensity goes to zero on every fixture and stays there, whatever the
+        show is doing, until restore() releases it. Heads keep their position,
+        so nothing swings while the room is dark.
+        """
+        self._blackout_latched = True
+        self._zero_dimmers()
+        self._emit_dmx()
+
+    def restore(self):
+        """Release an operator blackout; the show comes back on the next frame."""
+        self._blackout_latched = False
+
+    @property
+    def blackout_active(self) -> bool:
+        return self._blackout_latched
+
+    def set_grand_master(self, level: float) -> float:
+        """Set the grand master (0-1). Scales intensity only, never position."""
+        try:
+            value = float(level)
+        except (TypeError, ValueError):
+            raise ValueError("grand master must be a number between 0 and 1")
+        if value != value:  # NaN
+            raise ValueError("grand master must be a number between 0 and 1")
+        self._grand_master = max(0.0, min(1.0, value))
+        return self._grand_master
+
+    @property
+    def grand_master(self) -> float:
+        return self._grand_master
+
+    @property
+    def output_master(self) -> float:
+        """The intensity scale actually applied to the next frame."""
+        return 0.0 if self._blackout_latched else self._grand_master
+
+    def _zero_dimmers(self):
         for fixture in self.fixtures.fixtures.values():
             fixture.dimmer = 0
         self.strobe.stop()
-
-    def restore(self):
-        """Restore from blackout."""
-        # Will naturally restore on next update
-        pass
 
     # === State Control ===
 
@@ -3361,19 +3403,35 @@ class EffectsEngine:
         """Run the effects engine loop."""
         self.running = True
         interval = 1.0 / self.config.fps
+        loop = asyncio.get_running_loop()
+        next_frame = loop.time()
+        error_logged = False
 
         while self.running:
             try:
                 self.update()
-            except Exception as e:
+                error_logged = False
+            except Exception:
                 # Keep loop alive in live use; one bad frame should not kill output.
-                print(f"[EffectsEngine] update error: {e}")
-            await asyncio.sleep(interval)
+                # Logged once per failure streak, not 60 times a second.
+                if not error_logged:
+                    logger.exception("EffectsEngine update error (suppressing repeats)")
+                    error_logged = True
+            # Pace against a deadline: sleeping a whole interval after update()
+            # added the frame's own cost to every frame and ran below rate.
+            next_frame += interval
+            delay = next_frame - loop.time()
+            if delay < -interval:
+                next_frame = loop.time()
+            # Always yield a little: an overloaded frame must not starve the API.
+            await asyncio.sleep(max(0.002, delay))
 
     def stop(self):
         """Stop the effects engine."""
         self.running = False
-        self.blackout()
+        # Not the operator blackout: stopping must not leave a latch behind
+        # that keeps the room dark when the engine is started again.
+        self._zero_dimmers()
 
     # === Presets ===
 
