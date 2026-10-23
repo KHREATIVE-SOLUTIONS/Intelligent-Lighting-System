@@ -94,11 +94,14 @@ def _send_engine_frame(app: FastAPI, universe: int, frame: list):
         return
     controller = getattr(app.state, "dmx_controller", None)
     if controller:
-        # Directly update universe data (frame is a 512-element list)
-        if universe not in controller.universes:
-            from app.schemas.dmx import DMXUniverse
-            controller.universes[universe] = DMXUniverse(universe=universe)
-        controller.universes[universe].data = frame
+        controller.write_universe(universe, frame)
+
+
+def _release_engine_universe(app: FastAPI, universe: int):
+    """Black out a universe the show stopped driving and take it off the wire."""
+    controller = getattr(app.state, "dmx_controller", None)
+    if controller:
+        controller.release_universe(universe)
 
 
 def _install_demo_rig(app: FastAPI):
@@ -273,6 +276,9 @@ async def lifespan(app: FastAPI):
                 _send_engine_frame(app, universe, frame)
 
             app.state.effects_engine.set_dmx_callback(dmx_callback)
+            app.state.effects_engine.set_dmx_release_callback(
+                lambda universe: _release_engine_universe(app, universe)
+            )
 
         # Register with API
         set_effects_engine(app.state.effects_engine)
