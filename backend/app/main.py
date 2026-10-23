@@ -70,8 +70,14 @@ async def _load_active_rig_manager():
     return manager, rig
 
 
-def _install_fixture_manager(app: FastAPI, manager):
-    """Point the running show at a fixture manager."""
+def _install_fixture_manager(app: FastAPI, manager, *, demo: bool = False):
+    """Point the running show at a fixture manager.
+
+    A demo rig is rendered (the visualizer and previews still work) but held
+    off the wire unless DEMO_RIG_DMX_OUTPUT says otherwise; a patched rig
+    releases the hold.
+    """
+    app.state.dmx_output_held = demo and not settings.DEMO_RIG_DMX_OUTPUT
     engine = getattr(app.state, 'effects_engine', None)
     if engine is not None:
         setter = getattr(engine, 'set_fixture_manager', None)
@@ -80,6 +86,19 @@ def _install_fixture_manager(app: FastAPI, manager):
         else:
             engine.fixtures = manager
     app.state.fixture_manager = manager
+
+
+def _send_engine_frame(app: FastAPI, universe: int, frame: list):
+    """Hand one rendered universe to the DMX controller, unless output is held."""
+    if getattr(app.state, "dmx_output_held", False):
+        return
+    controller = getattr(app.state, "dmx_controller", None)
+    if controller:
+        # Directly update universe data (frame is a 512-element list)
+        if universe not in controller.universes:
+            from app.schemas.dmx import DMXUniverse
+            controller.universes[universe] = DMXUniverse(universe=universe)
+        controller.universes[universe].data = frame
 
 
 def _install_demo_rig(app: FastAPI):
@@ -93,7 +112,7 @@ def _install_demo_rig(app: FastAPI):
         print(f"Warning: no rig installed (demo preset '{DEMO_VENUE_PRESET}' unavailable)")
         return
 
-    _install_fixture_manager(app, manager)
+    _install_fixture_manager(app, manager, demo=True)
     # Read by /api/effects/status so the dashboard can say the demo is running.
     app.state.live_rig = {"id": None, "name": DEMO_VENUE_PRESET, "demo": True, "fixtures": len(preset.fixtures)}
     for zone_spec in preset.key_zones:
@@ -115,6 +134,11 @@ def _install_demo_rig(app: FastAPI):
         f"Running DEMO rig '{DEMO_VENUE_PRESET}' ({len(preset.fixtures)} fixtures) - "
         "no rig configured in the database"
     )
+    if app.state.dmx_output_held:
+        print(
+            "DMX output held until a rig is patched and activated "
+            "(set DEMO_RIG_DMX_OUTPUT=true to send the demo to the network)"
+        )
 
 
 async def _boot_rig(app: FastAPI):
@@ -163,7 +187,9 @@ async def lifespan(app: FastAPI):
     try:
         # Schema + fixture library must be ready before anything touches the DB
         print(" Initializing database...")
+        app.state.database_ready = False
         db_summary = await init_database()
+        app.state.database_ready = True
         logger.info("Database initialized: %s", db_summary)
         print(
             f" Database ready (schema={db_summary['schema']}, "
@@ -244,12 +270,7 @@ async def lifespan(app: FastAPI):
         # Connect effects engine to DMX controller
         if app.state.dmx_controller:
             def dmx_callback(universe: int, frame: list):
-                if app.state.dmx_controller:
-                    # Directly update universe data (frame is a 512-element list)
-                    if universe not in app.state.dmx_controller.universes:
-                        from app.schemas.dmx import DMXUniverse
-                        app.state.dmx_controller.universes[universe] = DMXUniverse(universe=universe)
-                    app.state.dmx_controller.universes[universe].data = frame
+                _send_engine_frame(app, universe, frame)
 
             app.state.effects_engine.set_dmx_callback(dmx_callback)
 
@@ -751,6 +772,28 @@ async def root():
     }
 
 
+def _ml_models_state() -> str:
+    """'loading' while the background load runs, then 'loaded'.
+
+    The manager exists before its models do, so reading its presence as
+    "loaded" said the genre and mood models were live while the show was
+    still on the fallbacks.
+    """
+    manager = getattr(app.state, 'model_manager', None)
+    if manager is None:
+        return "unavailable"
+    return "loaded" if getattr(manager, 'loaded', False) else "loading"
+
+
+def _audio_input_state() -> str:
+    """'live', 'lost' (it was arriving and stopped) or 'waiting' (never arrived)."""
+    engine = getattr(app.state, 'effects_engine', None)
+    age = getattr(engine, 'audio_age', None) if engine is not None else None
+    if age is None:
+        return "waiting"
+    return "live" if age < engine.AUDIO_STALE_S else "lost"
+
+
 def _dmx_health():
     """Report DMX state from actual transmit results, not just socket state."""
     controller = getattr(app.state, 'dmx_controller', None)
@@ -766,9 +809,10 @@ def _dmx_health():
         )
 
     try:
-        detail = status_fn()
+        detail = dict(status_fn())
     except Exception as e:
         return "unknown", {"error": str(e)}
+    detail["output_held_until_rig_patched"] = bool(getattr(app.state, "dmx_output_held", False))
 
     if not detail.get("connected"):
         state = "disconnected"
@@ -793,13 +837,17 @@ async def health_check(request: Request):
 
     services = {
         "api": "running",
+        # Without a database the venue cannot patch or load its rig, so a box
+        # that booted without one is not healthy even though the demo show runs.
+        "database": "connected" if getattr(app.state, 'database_ready', False) else "unavailable",
         "audio_analyzer": "running" if getattr(app.state, 'audio_analyzer', None) else "unavailable",
-        "ml_models": "loaded" if getattr(app.state, 'model_manager', None) else "unavailable",
+        "ml_models": _ml_models_state(),
         "dmx": dmx_state,
         "effects_engine": "running" if (
             getattr(app.state, 'effects_engine', None) and app.state.effects_engine.running
         ) else "stopped",
         "lfo_engine": "ready" if getattr(app.state, 'lfo_engine', None) else "unavailable",
+        "audio_input": _audio_input_state(),
         "pro_lighting": "enabled" if (
             getattr(app.state, 'effects_engine', None) and
             app.state.effects_engine._pro_lighting_enabled
@@ -807,7 +855,7 @@ async def health_check(request: Request):
     }
 
     # Determine overall health
-    critical_services = ["audio_analyzer", "effects_engine"]
+    critical_services = ["database", "audio_analyzer", "effects_engine"]
     is_healthy = all(
         services.get(s) in ("running", "loaded", "connected", "ready")
         for s in critical_services

@@ -15,6 +15,13 @@ from pydantic import Field, model_validator
 
 SECRET_KEY_FILENAME = "secret_key"
 
+# Used when nothing sets DATABASE_URL. A venue box started with start.py has no
+# Postgres server, so the old Postgres default booted with no database: the
+# rig could not be patched and the operator login could not be set. A file
+# beside the backend works on any machine; Docker Compose sets Postgres.
+DEFAULT_DATABASE_PATH = Path(__file__).resolve().parents[2] / "data" / "lighting.db"
+DEFAULT_DATABASE_URL = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
+
 INSECURE_SECRET_KEYS = {
     "",
     "your-secret-key-change-in-production",
@@ -91,9 +98,7 @@ class Settings(BaseSettings):
     AUTH_ENABLED: bool = True
 
     # Database
-    DATABASE_URL: str = Field(
-        default="postgresql://postgres:postgres@localhost:5432/lighting_db"
-    )
+    DATABASE_URL: str = Field(default=DEFAULT_DATABASE_URL)
 
     # Redis (for caching and pub/sub)
     REDIS_URL: str = Field(default="redis://localhost:6379")
@@ -136,6 +141,11 @@ class Settings(BaseSettings):
     # "never black the room as a side effect". True sends zeros to every
     # universe so nothing - a running strobe included - stays latched on.
     DMX_BLACKOUT_ON_STOP: bool = False
+    # Whether the built-in demo rig (used when nothing is patched yet) is sent
+    # to the network. Off: on a fresh install the venue's own fixtures, hazers
+    # and effects included, would receive a show written for a different patch.
+    # Turn on to watch the demo in previs software.
+    DEMO_RIG_DMX_OUTPUT: bool = False
 
     # WebSocket
     WS_HEARTBEAT_INTERVAL: int = 30

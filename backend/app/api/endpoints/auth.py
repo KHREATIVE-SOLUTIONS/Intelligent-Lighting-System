@@ -184,10 +184,16 @@ def client_address(request: Request) -> str:
     """
     client = request.client
     peer = client.host if client is not None and client.host else "unknown"
-    if peer in trusted_proxies():
-        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        if forwarded:
-            return forwarded
+    proxies = trusted_proxies()
+    if peer in proxies:
+        # Read from the right. A proxy appends the address it saw, so only the
+        # entries our own proxies added can be believed; anything further left
+        # was written by the client. Taking the leftmost let an attacker pick a
+        # fresh rate-limit bucket on every request.
+        hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",")]
+        for hop in reversed([h for h in hops if h]):
+            if hop not in proxies:
+                return hop
     return peer
 
 

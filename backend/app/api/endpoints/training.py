@@ -7,7 +7,8 @@ Provides endpoints for:
 - Exporting training data for Skip-BART model training
 """
 
-from fastapi import APIRouter, HTTPException, Request
+import asyncio
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
@@ -136,7 +137,9 @@ async def export_training_data(filename: Optional[str] = None):
     if not recorder.frames:
         raise HTTPException(400, "No recorded frames to export.")
 
-    filepath = recorder.export_training_data(filename)
+    # Off the event loop: a long session took over a minute to write, and the
+    # engine, every WebSocket and the blackout endpoint froze meanwhile.
+    filepath = await asyncio.to_thread(recorder.export_training_data, filename)
 
     return {
         "status": "exported",
@@ -249,7 +252,7 @@ async def set_manual_movement(pattern: str):
 
 
 @router.post("/manual/strobe")
-async def trigger_manual_strobe(duration: float = 0.5):
+async def trigger_manual_strobe(duration: float = Query(0.5, gt=0, le=4)):
     """Trigger a strobe burst."""
     controller = get_manual_controller()
     controller.trigger_strobe(duration)
