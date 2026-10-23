@@ -23,6 +23,7 @@ import type {
   Genre,
   ProLightingState,
 } from '../types';
+import type { DmxStatusPayload } from '../utils/showHealth';
 
 const API_BASE_URL = '/api';
 
@@ -690,11 +691,9 @@ export const audioApi = {
 
 // DMX API
 export const dmxApi = {
-  getStatus: async (): Promise<{
-    status: string;
-    universes: number[];
-    fps: number;
-    packets_sent: number;
+  getStatus: async (): Promise<DmxStatusPayload & {
+    universes?: number[];
+    packets_sent?: number;
   }> => {
     const response = await api.get('/dmx/status');
     return response.data;
@@ -723,7 +722,8 @@ export const dmxApi = {
   },
 
   runTestPattern: async (universe: number, pattern: string): Promise<void> => {
-    await api.get('/dmx/test/pattern', { params: { universe, pattern } });
+    // The backend only accepts POST here; a GET came back 405.
+    await api.post('/dmx/test/pattern', null, { params: { universe, pattern } });
   },
 
   stopTestPattern: async (): Promise<void> => {
@@ -800,9 +800,32 @@ export const templatesApi = {
 };
 
 // Effects Engine API
+export interface EffectsStatus {
+  running: boolean;
+  auto_mode: boolean;
+  current_state: string;
+  bpm: number;
+  palette: string;
+  strobe_enabled: boolean;
+  movement_enabled: boolean;
+  dimmer_enabled: boolean;
+  color_enabled: boolean;
+  // The rig the engine is driving right now (read once when the box boots).
+  live_rig_id?: number | null;
+  live_rig_name?: string | null;
+  live_rig_demo?: boolean;
+  live_rig_fixtures?: number;
+}
+
 export const effectsApi = {
-  getStatus: async () => {
+  getStatus: async (): Promise<EffectsStatus> => {
     const response = await api.get('/effects/status');
+    return response.data;
+  },
+
+  // Stop strobes and FX and drop back to a plain readable look.
+  cleanStage: async () => {
+    const response = await api.post('/effects/trigger/clean-stage');
     return response.data;
   },
 
