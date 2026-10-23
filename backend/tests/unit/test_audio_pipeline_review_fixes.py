@@ -194,7 +194,10 @@ async def test_the_analyser_labels_the_spectral_genre_guess_as_heuristic():
 
 
 def _detect(engine, genre, seconds=2.0):
-    guess = {"genre": genre, "genre_confidence": 0.9, "source": "model"}
+    # A detector that names a genre profile outright. The trained club model
+    # names a style instead, which leans palette and movement only; see
+    # test_club_genre.py.
+    guess = {"genre": genre, "genre_confidence": 0.9}
     for _ in range(int(seconds * 60)):
         engine._apply_ml_data({"genre": guess})
         engine.update(1.0 / 60)

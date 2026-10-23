@@ -162,6 +162,8 @@ class AudioAnalyzer:
         self._last_emotion_vector = None
         self._last_emotion_mapping = None
         self._last_genre_result = None
+        self._genre_seq = 0
+        self._genre_task: Optional[asyncio.Task] = None
         # Models load in the background after startup; see `_pull_ml_models`.
         self._ml_models_pulled = False
         # MERT and HuBERT run as background tasks, never awaited by the audio
@@ -497,17 +499,35 @@ class AudioAnalyzer:
                 "beat_in_bar": sa.beat_in_bar,
             }
 
-        # --- Genre classifier (every 10 seconds) ---
-        if self._genre_classifier is not None:
-            if current_time - self._last_genre_time >= self._genre_interval:
-                self._last_genre_time = current_time
-                try:
-                    genre_result = await self._genre_classifier.classify(
-                        self.audio_buffer, self.sample_rate
+        # --- Genre classifier ---
+        classifier = self._genre_classifier
+        if classifier is not None:
+            interval = float(getattr(classifier, "interval_s", self._genre_interval))
+            if not hasattr(classifier, "feed_audio"):
+                if current_time - self._last_genre_time >= interval:
+                    self._last_genre_time = current_time
+                    try:
+                        self._set_genre_result(
+                            await classifier.classify(self.audio_buffer, self.sample_rate)
+                        )
+                    except Exception as e:
+                        logger.warning("Genre classification error: %s", e)
+            else:
+                # A trained model keeps its own longer window and runs on a
+                # worker thread in the background, like MERT: never awaited here.
+                classifier.feed_audio(audio_data, self.sample_rate)
+                task = self._genre_task
+                if task is not None and task.done():
+                    self._genre_task = None
+                    try:
+                        self._set_genre_result(task.result())
+                    except Exception as e:
+                        logger.warning("Genre classification error: %s", e)
+                if self._genre_task is None and current_time - self._last_genre_time >= interval:
+                    self._last_genre_time = current_time
+                    self._genre_task = asyncio.ensure_future(
+                        classifier.classify(self.audio_buffer, self.sample_rate)
                     )
-                    self._last_genre_result = genre_result
-                except Exception as e:
-                    logger.warning("Genre classification error: %s", e)
 
         if self._last_genre_result is not None:
             gr = self._last_genre_result
@@ -519,12 +539,23 @@ class AudioAnalyzer:
                 "genre_scores": gr.genre_scores,
                 "source": (
                     "heuristic"
-                    if getattr(self._genre_classifier, "HEURISTIC_ONLY", False)
+                    if getattr(classifier, "HEURISTIC_ONLY", False)
                     else "model"
                 ),
+                # Counts fresh results, so a consumer can tell a new answer from
+                # the same one repeated on every block.
+                "seq": self._genre_seq,
+                "mood": getattr(classifier, "last_mood", None),
             }
 
         return ml_output if ml_output else None
+
+    def _set_genre_result(self, result) -> None:
+        """Keep a fresh genre answer. None (no full window yet) keeps the last."""
+        if result is None:
+            return
+        self._last_genre_result = result
+        self._genre_seq += 1
 
     def _update_buffer(self, audio_data: np.ndarray):
         """Update the circular audio buffer."""

@@ -318,6 +318,42 @@ _AMBIENT_DRIFT_HZ = 0.05      # one slow sweep every twenty seconds
 _AMBIENT_PAN_DEG = 10.0
 _AMBIENT_TILT_DEG = 6.0
 
+# Club style, from the trained genre model. Energy and sections still decide how
+# big, how bright and how fast the show is; a style only leans the colours and
+# the character of the movement, the way an operator plays a techno room colder
+# and tighter than a house room. `speed` and `amp` scale the section's own
+# movement speed and size, `patterns` narrows the section's pattern pool (when
+# at least two survive), `palettes` are the song palettes cycled through.
+_CLUB_STYLE_LOOKS = {
+    "house": {"palettes": (ColorPalette.HOUSE, ColorPalette.POP), "speed": 1.0, "amp": 1.0,
+              "patterns": ("circle", "figure8", "pan_wave", "tilt_circle")},
+    "techno": {"palettes": (ColorPalette.TECHNO, ColorPalette.EDM), "speed": 1.15, "amp": 0.85,
+               "patterns": ("tilt_cross", "odd_even", "tilt_circle", "circle")},
+    "dnb": {"palettes": (ColorPalette.DUBSTEP, ColorPalette.TECHNO), "speed": 1.25, "amp": 1.1,
+            "patterns": ("odd_even", "tilt_cross", "figure8", "tilt_circle")},
+    "trance": {"palettes": (ColorPalette.EDM, ColorPalette.AMBIENT), "speed": 0.9, "amp": 1.15,
+               "patterns": ("circle", "tilt_circle", "pan_wave", "figure8")},
+    "edm": {"palettes": (ColorPalette.EDM, ColorPalette.DUBSTEP), "speed": 1.0, "amp": 1.0,
+            "patterns": None},
+    "hip_hop": {"palettes": (ColorPalette.HIP_HOP, ColorPalette.ROCK), "speed": 0.8, "amp": 0.85,
+                "patterns": ("tilt_cross", "odd_even", "pan_wave")},
+    "latin": {"palettes": (ColorPalette.HOUSE, ColorPalette.POP), "speed": 0.9, "amp": 1.05,
+              "patterns": ("figure8", "pan_wave", "circle")},
+    "afro": {"palettes": (ColorPalette.HOUSE, ColorPalette.HIP_HOP), "speed": 0.9, "amp": 1.0,
+             "patterns": ("pan_wave", "figure8", "circle")},
+    "open_format": {"palettes": (ColorPalette.POP, ColorPalette.HOUSE), "speed": 1.0, "amp": 1.0,
+                    "patterns": None},
+    "rock": {"palettes": (ColorPalette.ROCK, ColorPalette.POP), "speed": 1.05, "amp": 1.0,
+             "patterns": ("tilt_cross", "odd_even", "pan_wave", "circle")},
+    "lounge": {"palettes": (ColorPalette.AMBIENT, ColorPalette.HOUSE), "speed": 0.7, "amp": 0.7,
+               "patterns": ("pan_wave", "circle", "tilt_circle")},
+}
+# A style is adopted after this many fresh, agreeing answers at or above this
+# confidence (the model answers every 5 s, so about 15 s of agreement). A
+# DJ blend or one odd window does not recolour the room.
+_CLUB_STYLE_MIN_CONFIDENCE = 0.55
+_CLUB_STYLE_VOTES = 3
+
 
 class EffectsEngine:
     """
@@ -541,6 +577,17 @@ class EffectsEngine:
             current=self.section_manager.current_section.value,
             current_confidence=1.0,
         )
+        # Club style from the trained genre model (see _CLUB_STYLE_LOOKS).
+        self._genre_operator_pinned = False
+        self._club_style: Optional[str] = None
+        self._club_style_candidate: Optional[str] = None
+        self._club_style_votes = 0
+        self._club_style_seq: Optional[int] = None
+        # The style's movement character in force, taken on a pattern change
+        # only: speed scales a beat-locked phase, so changing it mid-pattern
+        # would jump the heads.
+        self._rebuild_style_speed = 1.0
+        self._rebuild_style_amp = 1.0
 
         # Fixture phase choreography controls
         self._leader_follower_enabled: bool = True
@@ -1094,6 +1141,13 @@ class EffectsEngine:
             "drop": ["tilt_circle", "circle", "odd_even", "figure8"],
         }
         pattern_pool = section_pattern_pool.get(section, ["tilt_cross", "circle", "pan_wave", "figure8", "odd_even"])
+        style_look = _CLUB_STYLE_LOOKS.get(self._club_style or "")
+        if style_look and style_look["patterns"]:
+            narrowed = [p for p in pattern_pool if p in style_look["patterns"]]
+            if len(narrowed) >= 2:
+                pattern_pool = narrowed
+        style_speed = float(style_look["speed"]) if style_look else 1.0
+        style_amp = float(style_look["amp"]) if style_look else 1.0
         phrase = self._phrase_index()
         if phrase is None:
             # No phrase grid without a locked clock: rotate every few bars.
@@ -1101,6 +1155,8 @@ class EffectsEngine:
             if bar_clock >= self._rebuild_pattern_hold_until_bar:
                 if target_pattern != self._rebuild_active_pattern:
                     self._rebuild_active_pattern = target_pattern
+                    self._rebuild_style_speed = style_speed
+                    self._rebuild_style_amp = style_amp
                 hold_bars = max(1, int(getattr(self.config, "major_change_min_bars", 2) or 2))
                 self._rebuild_pattern_hold_until_bar = bar_clock + hold_bars
         elif (section, phrase) != self._rebuild_pattern_key:
@@ -1113,6 +1169,8 @@ class EffectsEngine:
                 if candidate != self._rebuild_active_pattern or len(pattern_pool) == 1:
                     break
             self._rebuild_active_pattern = candidate
+            self._rebuild_style_speed = style_speed
+            self._rebuild_style_amp = style_amp
         pattern = self._rebuild_active_pattern
 
         pan_amp = 22.0
@@ -1165,6 +1223,11 @@ class EffectsEngine:
             tilt_amp = 25.0
             move_speed = 0.85
             base_floor = 1.0
+
+        # The club style's movement character, on top of the section's.
+        pan_amp *= self._rebuild_style_amp
+        tilt_amp *= self._rebuild_style_amp
+        move_speed *= self._rebuild_style_speed
 
         # The drop look, whether the detector named it or the anticipation path
         # committed to it a beat earlier. It is one sustained level across the
@@ -2033,6 +2096,7 @@ class EffectsEngine:
         """
         from ..lighting.movement_patterns import apply_genre_defaults
         if pin is not None:
+            self._genre_operator_pinned = bool(pin)
             self._ml_genre_gate.current = genre.value
             self._ml_genre_gate.current_confidence = 1.0 if pin else 0.0
             self._ml_genre_gate.pending = None
@@ -2310,11 +2374,63 @@ class EffectsEngine:
         except Exception:
             pass
 
+    def _observe_club_style(self, genre_data: Dict) -> None:
+        """Count the genre model's fresh answers and adopt a style they agree on.
+
+        The analyser repeats its last answer on every block, so only a new
+        `seq` is a vote. Unsure or non-music answers keep the style in force: a
+        breakdown or a talk-over says nothing about what the room is playing.
+        An operator's genre choice wins and the model is not followed.
+        """
+        seq = genre_data.get("seq")
+        if seq is not None and seq == self._club_style_seq:
+            return
+        self._club_style_seq = seq
+        if self._genre_operator_pinned:
+            return
+        style = str(genre_data.get("genre") or "").lower()
+        try:
+            confidence = float(genre_data.get("genre_confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if style not in _CLUB_STYLE_LOOKS or confidence < _CLUB_STYLE_MIN_CONFIDENCE:
+            self._club_style_candidate = None
+            self._club_style_votes = 0
+            return
+        if style == self._club_style:
+            self._club_style_candidate = None
+            self._club_style_votes = 0
+            return
+        if style == self._club_style_candidate:
+            self._club_style_votes += 1
+        else:
+            self._club_style_candidate = style
+            self._club_style_votes = 1
+        if self._club_style_votes >= _CLUB_STYLE_VOTES:
+            self._adopt_club_style(style)
+
+    def _adopt_club_style(self, style: str) -> None:
+        """Take a new club style. Colour follows on the next phrase line and
+        movement on the next pattern change, so nothing jumps."""
+        self._club_style = style
+        self._club_style_candidate = None
+        self._club_style_votes = 0
+        palettes = _CLUB_STYLE_LOOKS[style]["palettes"]
+        if self._current_song_palette not in palettes:
+            self._palette_index = 0
+            self._current_song_palette = palettes[0]
+            self.color.set_palette(self._current_song_palette)
+            self.config.palette = self._current_song_palette
+            self._palette_version += 1
+        logger.info("Club style now %s", style)
+
     def _on_song_change(self):
         """Handle song change - pick new color palette and reset ML state."""
-        # Cycle to next palette
-        self._palette_index = (self._palette_index + 1) % len(self._available_palettes)
-        self._current_song_palette = self._available_palettes[self._palette_index]
+        # Cycle to next palette, within the club style's palettes once one is known
+        look = _CLUB_STYLE_LOOKS.get(self._club_style or "")
+        palettes = list(look["palettes"]) if look else self._available_palettes
+        self._palette_index = (self._palette_index + 1) % len(palettes)
+        self._current_song_palette = palettes[self._palette_index]
         self._palette_locked = False  # Will lock on next audio
         self._palette_version += 1
         self._pending_palette_reseed = False
@@ -2494,8 +2610,12 @@ class EffectsEngine:
         # --- Genre auto-switching ---
         genre_data = ml_data.get("genre")
         # A heuristic guess is shown, never obeyed: it would retune the whole
-        # show to the wrong genre (it reads club music as ambient).
-        if genre_data and genre_data.get("source") != "heuristic":
+        # show to the wrong genre (it reads club music as ambient). The trained
+        # model's answer is a club style, which leans palette and movement only
+        # and leaves strobe budget, dynamics and sections alone.
+        if genre_data and genre_data.get("source") == "model":
+            self._observe_club_style(genre_data)
+        elif genre_data and genre_data.get("source") != "heuristic":
             detected_genre = genre_data.get("genre", "").lower()
             confidence = genre_data.get("genre_confidence", 0.0)
             gate_passed = (
@@ -3521,6 +3641,7 @@ class EffectsEngine:
         state = {
             "enabled": True,
             "genre": self.genre_manager.current_genre.value,
+            "club_style": self._club_style,
             "section": self.section_manager.current_section.value,
             "palette_version": self._palette_version,
             "palette_locked": self._palette_locked,

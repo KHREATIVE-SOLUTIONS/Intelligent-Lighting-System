@@ -72,6 +72,7 @@ ml_models/beatnet/*.pt
 ml_models/hubert/*.bin
 ml_models/hubert/*.safetensors
 ml_models/yolov9/*.pt
+backend/data/models/efficientat/
 
 # Temporary files
 *.tmp

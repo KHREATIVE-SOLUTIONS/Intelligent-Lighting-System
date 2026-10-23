@@ -118,6 +118,14 @@ class Settings(BaseSettings):
     MERT_MODEL_PATH: str = "data/models/mert_v1_95m"
     EMOTION_HEAD_PATH: str = "data/models/mert_v1_95m/emotion_head.onnx"
 
+    # Trained club genre/mood tagger (EfficientAT mn10_as, MIT). Off until it
+    # has been checked against real nights; fetch the weights with
+    # scripts/download_genre_model.py. It only leans palette and movement.
+    GENRE_MODEL_ENABLED: bool = False
+    GENRE_MODEL_PATH: str = "data/models/efficientat/mn10_as_mAP_471.pt"
+    # "cpu" is enough (about 60 ms per 10 s window); "cuda" if the box has one.
+    GENRE_MODEL_DEVICE: str = "cpu"
+
     # DMX/ArtNet
     ARTNET_IP: str = "255.255.255.255"
     ARTNET_PORT: int = 6454
