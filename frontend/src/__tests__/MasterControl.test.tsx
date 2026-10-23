@@ -90,4 +90,18 @@ describe('MasterControl', () => {
       vi.useRealTimers();
     }
   });
+
+  it('keeps blackout and its key when folded, without the fader', async () => {
+    api.get.mockResolvedValue({ grand_master: 0.8, blackout: false, output_master: 0.8 });
+    render(<MasterControl compact trailing={<button>fold</button>} />);
+    await flush();
+
+    expect(screen.queryByRole('slider')).toBeNull();
+    expect(screen.getByTestId('grand-master-level').textContent).toBe('80%');
+    expect(screen.getByRole('button', { name: 'fold' })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: 'B' });
+    await flush();
+    expect(api.blackout).toHaveBeenCalledTimes(1);
+  });
 });

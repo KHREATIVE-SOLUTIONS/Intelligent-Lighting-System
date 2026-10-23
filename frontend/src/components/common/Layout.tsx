@@ -28,6 +28,8 @@ import {
   Lightbulb as LightbulbIcon,
   Visibility as VisualizerIcon,
   Logout as LogoutIcon,
+  UnfoldLess as FoldIcon,
+  UnfoldMore as UnfoldIcon,
 } from '@mui/icons-material';
 import { useAuthStore } from '../../stores/authStore';
 import { disconnectAllWebSockets } from '../../services/websocket';
@@ -37,6 +39,12 @@ import MasterControl from '../dashboard/MasterControl';
 import AutopilotControl from '../dashboard/AutopilotControl';
 
 const DRAWER_WIDTH = 240;
+
+// The visualizer needs the screen height, so the pinned controls start folded
+// there; everywhere else they start open. Blackout shows either way.
+type FoldKind = 'visualizer' | 'default';
+export const foldKindFor = (pathname: string): FoldKind =>
+  pathname.includes('visualizer') ? 'visualizer' : 'default';
 
 const menuItems = [
   { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
@@ -49,9 +57,13 @@ const menuItems = [
 export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [confirmLogout, setConfirmLogout] = useState(false);
+  const [folded, setFolded] = useState<Record<FoldKind, boolean>>({ visualizer: true, default: false });
   const navigate = useNavigate();
   const location = useLocation();
   const clearSession = useAuthStore((state) => state.clearSession);
+  const foldKind = foldKindFor(location.pathname);
+  const controlsFolded = folded[foldKind];
+  const toggleFold = () => setFolded((prev) => ({ ...prev, [foldKind]: !prev[foldKind] }));
 
   useShowHealth();
 
@@ -188,14 +200,28 @@ export default function Layout() {
             mx: -3,
             px: 3,
             pt: 1,
-            pb: 2,
+            pb: controlsFolded ? 1 : 2,
             mb: 1,
             bgcolor: 'background.default',
           }}
         >
           <Box component="div" sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <MasterControl />
-            <AutopilotControl />
+            <MasterControl
+              compact={controlsFolded}
+              trailing={
+                <IconButton
+                  onClick={toggleFold}
+                  aria-label={controlsFolded ? 'Show all show controls' : 'Fold show controls'}
+                  aria-expanded={!controlsFolded}
+                  title={controlsFolded ? 'Show all controls' : 'Fold controls'}
+                  size="large"
+                  sx={{ ml: 'auto' }}
+                >
+                  {controlsFolded ? <UnfoldIcon /> : <FoldIcon />}
+                </IconButton>
+              }
+            />
+            {!controlsFolded && <AutopilotControl />}
           </Box>
         </Box>
         <Outlet />

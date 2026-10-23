@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Button, CircularProgress, Slider, Typography } from '@mui/material';
 import { PowerSettingsNew as BlackoutIcon } from '@mui/icons-material';
 import { masterApi, MasterState } from '../../services/api';
@@ -19,7 +19,15 @@ const isTypingTarget = (target: EventTarget | null) => {
 // stay where they are. The server owns the state; this panel mirrors it and
 // keeps polling, so a blackout from another screen or a box restart shows up.
 // Blackout is never disabled: in a panic it must always be pressable.
-export default function MasterControl() {
+interface MasterControlProps {
+  // Folded strip: blackout and the master level only, no fader. Blackout and
+  // its B key stay live either way.
+  compact?: boolean;
+  // Slot at the end of the row, used by Layout for the fold toggle.
+  trailing?: ReactNode;
+}
+
+export default function MasterControl({ compact = false, trailing }: MasterControlProps) {
   const [state, setState] = useState<MasterState | null>(null);
   const [level, setLevel] = useState(100);
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +109,7 @@ export default function MasterControl() {
         alignItems: 'center',
         gap: { xs: 2, sm: 3 },
         flexWrap: 'wrap',
-        p: 1.5,
+        p: compact ? 1 : 1.5,
         borderRadius: 2,
         border: 2,
         borderColor: blackedOut ? 'error.main' : 'divider',
@@ -118,8 +126,8 @@ export default function MasterControl() {
         aria-keyshortcuts="B"
         title="Blackout (B)"
         sx={{
-          minWidth: 200,
-          minHeight: 64,
+          minWidth: compact ? 160 : 200,
+          minHeight: compact ? 48 : 64,
           fontSize: '1.1rem',
           fontWeight: 700,
           borderWidth: 2,
@@ -128,12 +136,12 @@ export default function MasterControl() {
       >
         {blackedOut ? 'Release blackout' : 'Blackout'}
       </Button>
-      <Box component="div" sx={{ flex: 1, minWidth: 220 }}>
-        <Box component="div" sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
+      {compact ? (
+        <Box component="div" sx={{ flex: 1, display: 'flex', alignItems: 'baseline', gap: 1 }}>
           <Typography variant="subtitle2" color="text.secondary">
-            Grand master
+            Master
           </Typography>
-          <Typography variant="h5" fontWeight={700} data-testid="grand-master-level">
+          <Typography variant="h6" fontWeight={700} data-testid="grand-master-level">
             {level}%
           </Typography>
           {blackedOut && (
@@ -142,23 +150,40 @@ export default function MasterControl() {
             </Typography>
           )}
         </Box>
-        <Slider
-          value={level}
-          onChange={handleLevel}
-          min={0}
-          max={100}
-          aria-label="Grand master"
-          sx={{
-            height: 10,
-            '& .MuiSlider-thumb': { width: 32, height: 32 },
-          }}
-        />
-      </Box>
+      ) : (
+        <Box component="div" sx={{ flex: 1, minWidth: 220 }}>
+          <Box component="div" sx={{ display: 'flex', alignItems: 'baseline', gap: 1 }}>
+            <Typography variant="subtitle2" color="text.secondary">
+              Grand master
+            </Typography>
+            <Typography variant="h5" fontWeight={700} data-testid="grand-master-level">
+              {level}%
+            </Typography>
+            {blackedOut && (
+              <Typography variant="subtitle2" color="error.main" fontWeight={700}>
+                BLACKOUT ON
+              </Typography>
+            )}
+          </Box>
+          <Slider
+            value={level}
+            onChange={handleLevel}
+            min={0}
+            max={100}
+            aria-label="Grand master"
+            sx={{
+              height: 10,
+              '& .MuiSlider-thumb': { width: 32, height: 32 },
+            }}
+          />
+        </Box>
+      )}
       {error && (
         <Typography role="alert" variant="body2" color="error.main" fontWeight={700}>
           {error}
         </Typography>
       )}
+      {trailing}
     </Box>
   );
 }
