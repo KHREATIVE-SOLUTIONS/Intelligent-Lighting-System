@@ -135,6 +135,16 @@ def test_health_says_whether_audio_is_arriving(health, age, state):
     assert health(database_ready=True, audio_age=age).json()["services"]["audio_input"] == state
 
 
+@pytest.mark.parametrize("manager,state", [
+    (None, "unavailable"),
+    (SimpleNamespace(loaded=False), "loading"),
+    (SimpleNamespace(loaded=True), "loaded"),
+])
+def test_health_does_not_call_models_loaded_while_they_load(health, monkeypatch, manager, state):
+    monkeypatch.setattr(main.app.state, "model_manager", manager, raising=False)
+    assert health(database_ready=True).json()["services"]["ml_models"] == state
+
+
 def test_a_forgotten_recording_stops_growing(tmp_path):
     recorder = TrainingRecorder(output_dir=str(tmp_path))
     recorder.MAX_FRAMES = 5

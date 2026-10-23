@@ -161,8 +161,13 @@ class ModelManager:
             # Load the emotion recognition model
             print(f"Loading emotion model from {model_dir}...")
 
-            self.processors['hubert'] = AutoFeatureExtractor.from_pretrained(str(model_dir))
-            self.models['hubert'] = AutoModelForAudioClassification.from_pretrained(str(model_dir))
+            # Loading takes seconds; keep it off the event loop.
+            self.processors['hubert'] = await asyncio.to_thread(
+                AutoFeatureExtractor.from_pretrained, str(model_dir)
+            )
+            self.models['hubert'] = await asyncio.to_thread(
+                AutoModelForAudioClassification.from_pretrained, str(model_dir)
+            )
 
             # Move to GPU if available
             if torch.cuda.is_available():
@@ -334,6 +339,11 @@ class ModelManager:
         if 'hubert' not in self.models or 'hubert' not in self.processors:
             return self._fallback_mood_classification(audio_data)
 
+        # A forward pass takes far longer than an audio block; on the event
+        # loop it would stall the show, so it runs on a worker thread.
+        return await asyncio.to_thread(self._classify_hubert_sync, audio_data, sample_rate)
+
+    def _classify_hubert_sync(self, audio_data: np.ndarray, sample_rate: int) -> Dict[str, Any]:
         try:
             import torch
             import librosa

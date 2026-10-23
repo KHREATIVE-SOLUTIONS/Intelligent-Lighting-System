@@ -386,6 +386,20 @@ async def resolve_reactive_fixtures(app, rig_id=None):
     return resolve_live_fixtures(app)
 
 
+def _follow_sender_rate(audio_analyzer, sample_rate) -> None:
+    """Point the analyser at the rate a client says its chunks are in.
+
+    Anything that is not a plausible audio rate is ignored, so a bad field
+    never retunes the analyser for everyone else.
+    """
+    try:
+        rate = int(sample_rate)
+    except (TypeError, ValueError):
+        return
+    if 8000 <= rate <= 192000:
+        audio_analyzer.set_sample_rate(rate)
+
+
 def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
     """
     Process audio and update effects engine state.
@@ -654,6 +668,9 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
 
                         if audio_analyzer:
                             audio_float = np.asarray(audio_data, dtype=np.float32).reshape(-1)
+                            # Analyse at the sender's rate: a 128 BPM click sent
+                            # at 48 kHz used to read as 118 BPM here.
+                            _follow_sender_rate(audio_analyzer, sample_rate)
 
                             # Process audio
                             analysis = await audio_analyzer.process_chunk(audio_float)

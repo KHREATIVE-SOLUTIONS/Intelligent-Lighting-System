@@ -101,6 +101,12 @@ class GenreClassifier:
     significant changes trigger re-classification.
     """
 
+    # Every result is a spectral heuristic: the Essentia branch is still a
+    # placeholder that calls the same heuristic. On real club material it
+    # labels nearly everything "ambient" at high confidence, so its results are
+    # published for display but must not drive the show's genre.
+    HEURISTIC_ONLY = True
+
     WINDOW_SIZE_SEC = 10.0
     VOTE_WINDOW = 6  # Number of classifications to vote over (30 sec)
     RECLASSIFY_THRESHOLD = 0.7  # Confidence needed to change established genre

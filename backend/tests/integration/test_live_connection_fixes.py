@@ -28,6 +28,10 @@ class StubAnalyzer:
 
     def __init__(self):
         self.chunks = []
+        self.sample_rate = 44100
+
+    def set_sample_rate(self, rate):
+        self.sample_rate = rate
 
     async def process_chunk(self, chunk):
         self.chunks.append(chunk)

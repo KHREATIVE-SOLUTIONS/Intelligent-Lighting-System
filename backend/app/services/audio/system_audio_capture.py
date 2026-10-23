@@ -148,6 +148,9 @@ class SystemAudioCapture:
         # Reconnect watchdog: see `_watchdog_loop`.
         self._wanted = False
         self._selection: Optional[int] = None
+        # A device picked by name (a remembered choice) is found again by name
+        # on every attempt, since its index can differ from one boot to the next.
+        self._selection_name: Optional[str] = None
         self._watchdog: Optional[threading.Thread] = None
         self._watchdog_stop = threading.Event()
         self._last_chunk_t: Optional[float] = None
@@ -478,30 +481,53 @@ class SystemAudioCapture:
     # ------------------------------------------------------------------
     # Start / stop
     # ------------------------------------------------------------------
-    def start(self, device_index: Optional[int] = None, loop: Optional[asyncio.AbstractEventLoop] = None):
+    def start(
+        self,
+        device_index: Optional[int] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        device_name: Optional[str] = None,
+        keep_trying: bool = False,
+    ):
         """Start capture with explicit device index or platform-aware auto-fallback.
 
         Once started, a watchdog keeps it running: if the device disappears or
         stops delivering audio, capture is torn down and restarted on the same
         selection until `stop()` is called.
+
+        `device_name` picks a device by name instead of index, which is how a
+        remembered choice is found after a reboot. With `keep_trying`, a first
+        attempt that fails (the interface is not up yet at boot) is not the end:
+        the watchdog keeps retrying with backoff and this returns False for now.
         """
         if self._running:
             logger.warning("Audio capture already running")
             return True
 
         self._loop = loop
-        if not self._start_backend(device_index):
+        self._selection = device_index
+        self._selection_name = device_name or None
+        try:
+            target = device_index if self._selection_name is None else self._reconnect_target()
+            started = self._start_backend(target)
+        except Exception as e:
+            logger.error(f"Audio capture start failed: {e}")
+            started = False
+        if not started and not keep_trying:
             return False
         self._wanted = True
-        self._selection = device_index
-        self._last_chunk_t = time.monotonic()
-        self._reconnecting = False
-        self._reconnect_attempts = 0
+        self._last_chunk_t = time.monotonic() if started else None
+        self._reconnecting = not started
+        self._reconnect_attempts = 0 if started else 1
+        if not started:
+            logger.warning(
+                "Audio capture could not start yet (%s); retrying in the background",
+                device_name or device_index or "auto",
+            )
         if self._watchdog is None or not self._watchdog.is_alive():
             self._watchdog_stop.clear()
             self._watchdog = threading.Thread(target=self._watchdog_loop, daemon=True)
             self._watchdog.start()
-        return True
+        return started
 
     # Seconds without a single block (silence still delivers blocks) before the
     # device counts as gone, how often the watchdog looks, and the longest wait
@@ -515,61 +541,88 @@ class SystemAudioCapture:
 
         A venue install runs unattended: an unplugged interface, a driver reset
         or a sleeping USB hub used to end audio for the night, because the
-        capture thread exits on the first error and nothing restarts it.
+        capture thread exits on the first error and nothing restarts it. A
+        sounddevice stream can also stop calling back without raising anything,
+        so silence from the device itself (not quiet audio, which still arrives
+        as blocks) counts as lost too. Nothing in here may end the watchdog
+        except `stop()`.
         """
-        while not self._watchdog_stop.wait(self.WATCH_S):
-            if not self._wanted:
-                return
-            last = self._last_chunk_t
-            stalled = (not self._running) or last is None or (time.monotonic() - last) > self.STALL_S
-            if not stalled:
-                continue
-            if not self._reconnecting:
-                logger.warning("Audio capture lost (%s); reconnecting", self._device_name)
-            self._reconnecting = True
-            self._teardown()
+        wait = self.WATCH_S
+        while not self._watchdog_stop.wait(wait):
+            wait = self.WATCH_S
             if not self._wanted:
                 return
             try:
-                ok = self._start_backend(self._reconnect_target())
+                wait = self._watchdog_step()
             except Exception as e:
-                logger.debug(f"Audio reconnect attempt failed: {e}")
-                ok = False
-            if ok:
-                logger.info("Audio capture reconnected: %s", self._device_name)
-                self._last_chunk_t = time.monotonic()
-                self._reconnecting = False
-                self._reconnect_attempts = 0
-                continue
-            self._reconnect_attempts += 1
-            wait = min(self.MAX_BACKOFF_S, 2.0 ** min(self._reconnect_attempts, 5))
-            if self._watchdog_stop.wait(wait):
+                logger.warning(f"Audio watchdog error: {e!r}")
+                wait = self.MAX_BACKOFF_S
+            if not self._wanted:
                 return
 
-    def _reconnect_target(self) -> Optional[int]:
-        """The device to reconnect to: the same one, even if its index moved.
+    def _watchdog_step(self) -> float:
+        """One look at the capture; returns how long to wait before the next."""
+        last = self._last_chunk_t
+        stalled = (not self._running) or last is None or (time.monotonic() - last) > self.STALL_S
+        if not stalled:
+            return self.WATCH_S
+        if not self._reconnecting:
+            logger.warning("Audio capture lost (%s); reconnecting", self._device_name)
+        self._reconnecting = True
+        self._teardown()
+        if not self._wanted:
+            return self.WATCH_S
+        try:
+            ok = self._start_backend(self._reconnect_target())
+        except Exception as e:
+            logger.debug(f"Audio reconnect attempt failed: {e}")
+            ok = False
+        if ok:
+            logger.info("Audio capture reconnected: %s", self._device_name)
+            self._last_chunk_t = time.monotonic()
+            self._reconnecting = False
+            self._reconnect_attempts = 0
+            return self.WATCH_S
+        self._reconnect_attempts += 1
+        return min(self.MAX_BACKOFF_S, 2.0 ** min(self._reconnect_attempts, 5))
 
-        Indices shift when a USB device is replugged, so an explicit selection
-        is found again by name. Auto mode reconnects through the auto chain.
+    def _reconnect_target(self) -> Optional[int]:
+        """The device to (re)connect to: the same one, even if its index moved.
+
+        Indices shift when a USB device is replugged or the machine reboots, so
+        an explicit selection is found again by name. A selection made by name
+        that is not present yet returns -1, which opens nothing: falling back to
+        some other input would light the room to the wrong audio. Auto mode
+        reconnects through the auto chain.
         """
-        if self._selection is None:
+        if self._selection is None and not self._selection_name:
             return None
         try:
             devices = self.list_devices()
         except Exception:
-            return self._selection
-        name = self._device_name.replace("[Loopback] ", "")
-        if any(d.get("index") == self._selection and name in str(d.get("name", "")) for d in devices):
-            return self._selection
+            return self._selection if self._selection is not None else -1
+        if self._selection_name:
+            name = self._selection_name
+        else:
+            name = self._device_name.replace("[Loopback] ", "")
+            if any(d.get("index") == self._selection and name in str(d.get("name", "")) for d in devices):
+                return self._selection
+        for d in devices:
+            if name and str(d.get("name", "")) == name:
+                return d.get("index")
         for d in devices:
             if name and name in str(d.get("name", "")):
                 return d.get("index")
+        if self._selection_name:
+            return -1
         return self._selection
 
     def _start_backend(self, device_index: Optional[int] = None) -> bool:
         """Open one capture backend; no watchdog."""
 
         # --- Explicit device selection ---
+        if device_index is not None and device_index < 0:
+            return False  # a remembered device that is not plugged in yet
         if device_index is not None:
             devices = self.list_devices()
             selected = next((d for d in devices if d["index"] == device_index), None)
@@ -696,6 +749,7 @@ class SystemAudioCapture:
             "chunk_count": self._chunk_count,
             "reconnecting": self._reconnecting,
             "reconnect_attempts": self._reconnect_attempts,
+            "selected_device": self._selection_name,
             "last_rms": self._last_rms,
             "last_peak": self._last_peak,
         }

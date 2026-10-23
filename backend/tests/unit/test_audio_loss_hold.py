@@ -116,3 +116,58 @@ def test_blackout_still_wins_over_the_hold():
 
     assert frames
     assert engine.output_master == 0.0
+
+
+# One behaviour for every renderer: the analysed levels stop replaying the last
+# block (the calm wash the overnight review asked for), and /health can read how
+# long the feed has been gone.
+
+def test_audio_age_is_unknown_until_audio_arrives():
+    engine = _engine()
+    engine.update(DT)
+    assert engine.audio_age is None
+
+
+def test_lost_audio_settles_instead_of_replaying_the_last_beat():
+    engine = _engine()
+    _play(engine, 1.0, energy=0.9)
+    engine.update_audio(energy=1.0, bass=1.0, is_beat=True, bpm=120.0)
+    for _ in range(int(14 * FPS)):
+        engine.update(DT)
+
+    assert engine.audio_age > engine.AUDIO_STALE_S
+    assert engine.audio_features.is_beat is False
+    assert engine.audio_state.is_beat is False
+    assert engine.audio_state.energy == pytest.approx(engine.AUDIO_IDLE_LEVEL, abs=0.1)
+
+
+def test_the_show_follows_again_when_audio_returns():
+    engine = _engine()
+    _play(engine, 1.0, energy=0.9)
+    _play(engine, 4.0, audio=False)
+    _play(engine, 1.0, energy=0.9)
+
+    assert engine.audio_age < engine.AUDIO_STALE_S
+    assert engine.audio_state.energy > 0.8
+    assert not engine.audio_input_lost
+
+
+def test_the_layered_renderer_stops_following_a_lost_feed_too():
+    engine = _engine()
+    engine._rebuild_busker_enabled = False
+    _play(engine, 2.0, energy=0.9)
+    engine.update_audio(energy=1.0, bass=1.0, is_beat=True, bpm=120.0)
+    for _ in range(int(14 * FPS)):
+        engine.update(DT)
+
+    assert engine.audio_input_lost
+    assert engine.audio_state.is_beat is False
+    assert engine.audio_state.energy == pytest.approx(engine.AUDIO_IDLE_LEVEL, abs=0.1)
+
+
+def test_a_feed_that_only_ever_carried_silence_settles_dark():
+    engine = _engine()
+    _play(engine, 2.0, energy=0.0)
+    _play(engine, 6.0, audio=False)
+
+    assert engine.audio_state.energy == pytest.approx(0.0, abs=0.02)
