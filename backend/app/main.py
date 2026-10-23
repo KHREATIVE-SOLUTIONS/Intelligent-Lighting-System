@@ -93,6 +93,8 @@ def _install_demo_rig(app: FastAPI):
         return
 
     _install_fixture_manager(app, manager)
+    # Read by /api/effects/status so the dashboard can say the demo is running.
+    app.state.live_rig = {"id": None, "name": DEMO_VENUE_PRESET, "demo": True, "fixtures": len(preset.fixtures)}
     for zone_spec in preset.key_zones:
         try:
             zone = PerformerZone(zone_spec.zone)
@@ -137,6 +139,9 @@ async def _boot_rig(app: FastAPI):
     _install_fixture_manager(app, manager)
     universes = fixture_universes(manager)
     rig_name = getattr(rig, 'name', None) or 'active rig'
+    app.state.live_rig = {
+        "id": getattr(rig, 'id', None), "name": rig_name, "demo": False, "fixtures": len(manager.fixtures),
+    }
     logger.info(
         "Rig '%s' installed: %d fixtures across universes %s",
         rig_name, len(manager.fixtures), universes,

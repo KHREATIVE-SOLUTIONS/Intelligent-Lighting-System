@@ -1,8 +1,7 @@
 import { Routes, Route } from 'react-router-dom';
-import { Box, Button } from '@mui/material';
+import { Box } from '@mui/material';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { CircularProgress } from '@mui/material';
-import { Logout as LogoutIcon } from '@mui/icons-material';
 import Layout from './components/common/Layout';
 import Dashboard from './components/dashboard/Dashboard';
 import ShowEditor from './components/show/ShowEditor';
@@ -12,7 +11,6 @@ import RigList from './components/rig/RigList';
 import RigVisualizer from './components/rig/RigVisualizer';
 import LoginScreen from './components/auth/LoginScreen';
 import { authApi } from './services/api';
-import { disconnectAllWebSockets } from './services/websocket';
 import { useAuthStore } from './stores/authStore';
 
 // Lazy-loaded new components
@@ -64,11 +62,6 @@ function App() {
     };
   }, [setConfigured, setSession, clearSession]);
 
-  const handleLogout = () => {
-    disconnectAllWebSockets();
-    clearSession();
-  };
-
   if (!checkedSession) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100%' }}>
@@ -83,19 +76,6 @@ function App() {
 
   return (
     <Box sx={{ display: 'flex', height: '100vh' }}>
-      <Button
-        color="inherit"
-        startIcon={<LogoutIcon />}
-        onClick={handleLogout}
-        sx={{
-          position: 'fixed',
-          top: 12,
-          right: 16,
-          zIndex: (theme) => theme.zIndex.appBar + 1,
-        }}
-      >
-        Log out
-      </Button>
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />

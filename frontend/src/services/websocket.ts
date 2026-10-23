@@ -1,7 +1,14 @@
 import { authApi } from './api';
 import { useAuthStore } from '../stores/authStore';
+import type { LinkState } from '../utils/showHealth';
 
 type MessageHandler = (data: unknown) => void;
+type StateListener = (state: LinkState) => void;
+
+// Past the quick retries the socket keeps trying at this pace. A box that
+// reboots mid-show must come back on its own; giving up leaves the operator
+// staring at a frozen dashboard with no idea it is stale.
+const MAX_RECONNECT_DELAY_MS = 10000;
 
 // The server closes an unauthenticated socket with the policy-violation code,
 // but it does so before the HTTP upgrade completes: a browser reports that as
@@ -18,9 +25,29 @@ class WebSocketService {
   private reconnectDelay = 1000;
   private isConnecting = false;
   private closedByClient = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private state: LinkState = 'idle';
+  private stateListeners: Set<StateListener> = new Set();
 
   constructor(path: string) {
     this.path = path;
+  }
+
+  private setState(next: LinkState): void {
+    if (this.state === next) return;
+    this.state = next;
+    this.stateListeners.forEach((listener) => listener(next));
+  }
+
+  get linkState(): LinkState {
+    return this.state;
+  }
+
+  onStateChange(listener: StateListener): () => void {
+    this.stateListeners.add(listener);
+    return () => {
+      this.stateListeners.delete(listener);
+    };
   }
 
   private buildUrl(token: string): string {
@@ -48,6 +75,9 @@ class WebSocketService {
 
       this.isConnecting = true;
       this.closedByClient = false;
+      if (this.state !== 'reconnecting' && this.state !== 'lost') {
+        this.setState('connecting');
+      }
 
       try {
         let everOpened = false;
@@ -58,6 +88,7 @@ class WebSocketService {
           everOpened = true;
           this.isConnecting = false;
           this.reconnectAttempts = 0;
+          this.setState('connected');
           resolve();
         };
 
@@ -113,6 +144,10 @@ class WebSocketService {
 
   disconnect(): void {
     this.closedByClient = true;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.reconnectAttempts = 0;
+    this.setState('idle');
     if (this.socket) {
       this.socket.close();
       this.socket = null;
@@ -139,19 +174,32 @@ class WebSocketService {
   }
 
   private attemptReconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('Max reconnection attempts reached');
-      return;
-    }
+    if (this.closedByClient) return;
 
     this.reconnectAttempts++;
-    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+    // A few quick tries read as a blip; after that say so plainly, but keep going.
+    this.setState(this.reconnectAttempts > this.maxReconnectAttempts ? 'lost' : 'reconnecting');
+    const delay = Math.min(
+      this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1),
+      MAX_RECONNECT_DELAY_MS
+    );
 
     console.log(`Attempting to reconnect in ${delay}ms...`);
 
-    setTimeout(() => {
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (this.closedByClient) return;
       this.connect().catch(console.error);
     }, delay);
+  }
+
+  // Operator tapped "retry": skip the backoff and try right away.
+  retryNow(): void {
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.reconnectAttempts = 0;
+    this.connect().catch(console.error);
   }
 
   on(event: string, handler: MessageHandler): void {

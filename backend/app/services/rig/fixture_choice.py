@@ -59,3 +59,91 @@ def choose_mode(modes: Sequence[Any]) -> Optional[Any]:
 def undrivable_modes(modes: Sequence[Any]) -> List[Any]:
     """Modes in this profile that no renderer could turn on."""
     return [m for m in modes if not mode_makes_light(getattr(m, "channels", []) or [])]
+
+
+# What a mode lets the show do, by channel type. A mode is worth more the more of
+# these it reaches; repeating one (a pixel mode's eight RGB cells) adds nothing,
+# because the renderer mirrors one value onto every cell anyway.
+MODE_FEATURES = {
+    "dimmer": "dimmer",
+    "red": "red", "green": "green", "blue": "blue", "white": "white",
+    "amber": "amber", "uv": "UV", "lime": "lime", "indigo": "indigo",
+    "cyan": "cyan", "magenta": "magenta", "yellow": "yellow",
+    "cto": "CTO", "ctb": "CTB",
+    "color_wheel": "colour wheel",
+    "pan": "pan", "tilt": "tilt",
+    "pan_fine": "fine pan", "tilt_fine": "fine tilt",
+    "strobe": "strobe", "shutter": "strobe",
+    "gobo": "gobo", "gobo_rotation": "gobo rotation",
+    "gobo2": "second gobo",
+    "prism": "prism", "zoom": "zoom", "focus": "focus",
+    "frost": "frost", "iris": "iris",
+}
+
+
+def _channels_of(mode: Any) -> List[Any]:
+    if isinstance(mode, dict):
+        return list(mode.get("channels") or [])
+    return list(getattr(mode, "channels", None) or [])
+
+
+def _type_of(channel: Any) -> str:
+    if isinstance(channel, dict):
+        value = channel.get("channel_type", "other")
+        return str(getattr(value, "value", value)).strip().lower()
+    return channel_type_name(channel)
+
+
+def _channel_count(mode: Any) -> int:
+    raw = mode.get("channel_count") if isinstance(mode, dict) else getattr(mode, "channel_count", None)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return len(_channels_of(mode))
+
+
+def mode_features(mode: Any) -> List[str]:
+    """Plain names of what this mode can do, in a stable order, without repeats."""
+    seen: List[str] = []
+    for channel in _channels_of(mode):
+        feature = MODE_FEATURES.get(_type_of(channel))
+        if feature and feature not in seen:
+            seen.append(feature)
+    return seen
+
+
+def recommend_mode(modes: Sequence[Any]) -> Optional[Any]:
+    """The mode a programmer would patch for an automatic show.
+
+    The one reaching the most features wins, and among equals the one using the
+    fewest DMX channels: a moving head's 16-bit mode beats its 8-bit one because
+    fine pan and tilt make movement smooth, but an LED bar's 4-channel RGBW+dimmer
+    mode beats its 40-channel pixel mode because the show drives every cell the
+    same. Modes that cannot make light are only chosen when nothing else can.
+    """
+    candidates = [m for m in modes if mode_makes_light_any(m)] or list(modes)
+    if not candidates:
+        return None
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (-_feature_score(item[1]), _channel_count(item[1]), item[0]),
+    )
+    return ranked[0][1]
+
+
+# On a fixture that mixes colour from LEDs, a "colour wheel" channel is a macro
+# table: the show mixes its own colours, and a macro left at a non-zero value
+# overrides them. It earns that mode nothing.
+_MIXING_FEATURES = frozenset({"red", "green", "blue", "cyan", "magenta", "yellow"})
+
+
+def _feature_score(mode: Any) -> int:
+    features = set(mode_features(mode))
+    if features & _MIXING_FEATURES:
+        features.discard("colour wheel")
+    return len(features)
+
+
+def mode_makes_light_any(mode: Any) -> bool:
+    """mode_makes_light for an ORM mode or a converted mode dict."""
+    return any(_type_of(c) in LIGHT_CHANNEL_TYPES for c in _channels_of(mode))

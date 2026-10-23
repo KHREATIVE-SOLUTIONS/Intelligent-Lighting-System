@@ -23,6 +23,7 @@ import type {
   Genre,
   ProLightingState,
 } from '../types';
+import type { DmxStatusPayload } from '../utils/showHealth';
 
 const API_BASE_URL = '/api';
 
@@ -309,7 +310,85 @@ export const rigsApi = {
     const response = await api.post(`/rigs/${rigId}/fixtures/duplicate/${fixtureId}`);
     return response.data;
   },
+
+  /** Patch one or more fixtures by make and model, importing the profile if needed. */
+  patchFromLibrary: async (rigId: number, request: LibraryPatchRequest): Promise<LibraryPatchResult> => {
+    const response = await api.post(`/rigs/${rigId}/patch-from-library`, request);
+    return response.data;
+  },
 };
+
+// Fixture library catalog (offline Open Fixture Library + the local library)
+export interface CatalogMode {
+  id?: number;
+  name: string;
+  channel_count: number;
+  features: string[];
+  recommended: boolean;
+}
+
+export interface CatalogFixture {
+  key: string;
+  manufacturer_key: string | null;
+  fixture_key: string | null;
+  manufacturer: string;
+  name: string;
+  fixture_type: string;
+  categories: string[];
+  modes: CatalogMode[];
+  recommended_mode: string | null;
+  source: string;
+  fixture_id: number | null;
+  in_library: boolean;
+}
+
+export interface OfflineLibraryInfo {
+  available: boolean;
+  fixture_count: number;
+  manufacturer_count: number;
+  commit?: string | null;
+  generated?: string | null;
+}
+
+export interface CatalogSearchResult {
+  results: CatalogFixture[];
+  offline_library: OfflineLibraryInfo;
+}
+
+export interface LibraryPatchRequest {
+  library_key?: string;
+  fixture_id?: number;
+  mode_name?: string;
+  quantity: number;
+  universe: number;
+  start_address?: number;
+  group_name?: string;
+  mounting_position?: string;
+}
+
+export interface LibraryPatchResult {
+  rig_id: number;
+  fixture: {
+    id: number;
+    manufacturer: string;
+    model: string;
+    fixture_type: string;
+    imported: boolean;
+  };
+  mode: { id: number; name: string; channel_count: number; features: string[]; chosen_by: string };
+  group_name: string | null;
+  mounting_position: string;
+  patched: Array<{
+    id: number;
+    name: string;
+    fixture_number: number;
+    universe: number;
+    dmx_address: number;
+    last_address: number;
+  }>;
+  applied_live: boolean;
+  notes: string[];
+}
 
 // Flash-to-identify walkthrough API
 export interface IdentifyStep {
@@ -567,6 +646,17 @@ export const fixturesApi = {
     };
   },
 
+  searchCatalog: async (
+    query: string,
+    fixtureType?: string,
+    limit = 30
+  ): Promise<CatalogSearchResult> => {
+    const params = new URLSearchParams({ q: query, limit: String(limit) });
+    if (fixtureType) params.append('fixture_type', fixtureType);
+    const response = await api.get(`/fixtures/library/catalog?${params}`);
+    return response.data;
+  },
+
   importFromLibrary: async (manufacturerKey: string, fixtureKey: string) => {
     const response = await api.post('/fixtures/library/import', null, {
       params: { manufacturer_key: manufacturerKey, fixture_key: fixtureKey },
@@ -690,11 +780,9 @@ export const audioApi = {
 
 // DMX API
 export const dmxApi = {
-  getStatus: async (): Promise<{
-    status: string;
-    universes: number[];
-    fps: number;
-    packets_sent: number;
+  getStatus: async (): Promise<DmxStatusPayload & {
+    universes?: number[];
+    packets_sent?: number;
   }> => {
     const response = await api.get('/dmx/status');
     return response.data;
@@ -723,7 +811,8 @@ export const dmxApi = {
   },
 
   runTestPattern: async (universe: number, pattern: string): Promise<void> => {
-    await api.get('/dmx/test/pattern', { params: { universe, pattern } });
+    // The backend only accepts POST here; a GET came back 405.
+    await api.post('/dmx/test/pattern', null, { params: { universe, pattern } });
   },
 
   stopTestPattern: async (): Promise<void> => {
@@ -800,9 +889,32 @@ export const templatesApi = {
 };
 
 // Effects Engine API
+export interface EffectsStatus {
+  running: boolean;
+  auto_mode: boolean;
+  current_state: string;
+  bpm: number;
+  palette: string;
+  strobe_enabled: boolean;
+  movement_enabled: boolean;
+  dimmer_enabled: boolean;
+  color_enabled: boolean;
+  // The rig the engine is driving right now (read once when the box boots).
+  live_rig_id?: number | null;
+  live_rig_name?: string | null;
+  live_rig_demo?: boolean;
+  live_rig_fixtures?: number;
+}
+
 export const effectsApi = {
-  getStatus: async () => {
+  getStatus: async (): Promise<EffectsStatus> => {
     const response = await api.get('/effects/status');
+    return response.data;
+  },
+
+  // Stop strobes and FX and drop back to a plain readable look.
+  cleanStage: async () => {
+    const response = await api.post('/effects/trigger/clean-stage');
     return response.data;
   },
 

@@ -164,8 +164,8 @@ export default function SectionTimeline() {
   const activeSections = new Set(sectionHistory.map((e) => e.section));
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-      <Box sx={{ height: 120, bgcolor: '#121212', borderRadius: 1, overflow: 'hidden' }}>
+    <Box component="div" sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      <Box component="div" sx={{ height: 120, bgcolor: '#121212', borderRadius: 1, overflow: 'hidden' }}>
         <canvas
           ref={canvasRef}
           style={{ display: 'block', width: '100%', height: '100%' }}
@@ -173,9 +173,10 @@ export default function SectionTimeline() {
       </Box>
 
       {/* Legend */}
-      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+      <Box component="div" sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
         {Array.from(activeSections).map((section) => (
           <Box
+            component="div"
             key={section}
             sx={{
               display: 'flex',
@@ -184,6 +185,7 @@ export default function SectionTimeline() {
             }}
           >
             <Box
+              component="div"
               sx={{
                 width: 10,
                 height: 10,

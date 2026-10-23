@@ -345,7 +345,10 @@ async def start_capture(
         import sys
         if sys.platform == "win32" and not selected.get("is_loopback", False):
             raise HTTPException(400, "Selected device is not a loopback output-capture device")
-        if not selected.get("is_loopback", False) and not selected.get("is_input", False):
+        # The device list reports input channels, not an is_input flag; without
+        # this a USB interface fed from the desk could never be picked.
+        has_inputs = selected.get("is_input", False) or (selected.get("max_input_channels") or 0) > 0
+        if not selected.get("is_loopback", False) and not has_inputs:
             raise HTTPException(400, "Selected device has no input channels")
     except HTTPException:
         raise
