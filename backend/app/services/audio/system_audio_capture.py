@@ -49,7 +49,10 @@ def _get_soundcard():
         try:
             import soundcard as sc
             _sc = sc
-        except ImportError:
+        except Exception as e:
+            # Not only ImportError: these bind native audio libraries at import
+            # time, and soundcard asserts when no PulseAudio server is running.
+            logger.debug(f"soundcard unavailable: {e!r}")
             _sc = False
     return _sc if _sc is not False else None
 
@@ -60,7 +63,10 @@ def _get_sounddevice():
         try:
             import sounddevice as sd
             _sd = sd
-        except ImportError:
+        except Exception as e:
+            # Not only ImportError: these bind native audio libraries at import
+            # time, and soundcard asserts when no PulseAudio server is running.
+            logger.debug(f"sounddevice unavailable: {e!r}")
             _sd = False
     return _sd if _sd is not False else None
 
@@ -74,7 +80,10 @@ def _get_pyaudio():
         try:
             import pyaudiowpatch as pyaudio
             _pa = pyaudio
-        except ImportError:
+        except Exception as e:
+            # Not only ImportError: these bind native audio libraries at import
+            # time, and soundcard asserts when no PulseAudio server is running.
+            logger.debug(f"pyaudiowpatch unavailable: {e!r}")
             _pa = False
     return _pa if _pa is not False else None
 

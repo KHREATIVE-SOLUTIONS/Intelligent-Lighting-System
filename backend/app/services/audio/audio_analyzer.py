@@ -204,6 +204,22 @@ class AudioAnalyzer:
         self.previous_flux_spectrum = None
         logger.info("Audio analyzer sample rate set to %d Hz", rate)
 
+    def _sanitize_chunk(self, audio_data) -> np.ndarray:
+        """A chunk every analysis stage can take.
+
+        Live input is not trusted: a dropout can deliver an empty buffer, a bad
+        driver or client can deliver NaN/inf, and an int16 stream can arrive
+        unscaled. Any of those used to raise inside the FFT or the result schema
+        (taking the audio connection down) or poison the median-based beat
+        history for seconds. Empty becomes one chunk of silence.
+        """
+        data = np.asarray(audio_data, dtype=np.float32).reshape(-1)
+        if data.size == 0:
+            return np.zeros(max(1, int(self.chunk_size)), dtype=np.float32)
+        if not np.all(np.isfinite(data)):
+            data = np.nan_to_num(data, nan=0.0, posinf=1.0, neginf=-1.0)
+        return np.clip(data, -1.0, 1.0)
+
     async def process_chunk(self, audio_data: np.ndarray) -> Dict[str, Any]:
         """
         Process an audio chunk and return analysis results.
@@ -215,6 +231,8 @@ class AudioAnalyzer:
             Dictionary containing beat, mood, frequency, and ML pipeline analysis
         """
         start_time = datetime.utcnow()
+
+        audio_data = self._sanitize_chunk(audio_data)
 
         # Update buffer
         self._update_buffer(audio_data)

@@ -534,6 +534,12 @@ async def audio_websocket(websocket: WebSocket, request: Request = None):
                         })
                         continue
 
+                    # 16-bit PCM: a trailing odd byte is a torn sample, not audio.
+                    if len(audio_bytes) % 2:
+                        audio_bytes = audio_bytes[:-1]
+                    if not audio_bytes:
+                        continue
+
                     if audio_analyzer:
                         # Convert bytes to numpy array (assuming 16-bit PCM)
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
