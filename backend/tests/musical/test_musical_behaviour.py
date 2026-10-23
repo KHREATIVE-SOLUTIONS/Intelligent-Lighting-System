@@ -682,6 +682,22 @@ async def test_beat_phase_holds_through_the_tempo_change_itself():
     assert error.worst_ms <= 60.0, error.as_dict()
 
 
+@pytest.mark.parametrize("style", ["dnb", "trap_halftime", "hiphop", "house"])
+async def test_the_show_counts_the_tempo_an_operator_would(style):
+    """Drum and bass, half-time and hip-hop used to run at the wrong level.
+
+    Before the multi-band tempo tracker the engine counted drum and bass and
+    half-time trap at 3/4 speed and hip-hop at double time, so every
+    beat-locked chase ran at the wrong rate for the whole song. House is the
+    control: four-on-the-floor was always right and must stay right.
+    """
+    track = SA.drum_pattern_track(style)
+    result = await run_cached(track)
+    late = result.frame_times > result.duration_s * 0.5
+    engine_bpm = float(np.median(result.engine_bpm[late]))
+    assert engine_bpm == pytest.approx(track.bpm, rel=0.03), (style, engine_bpm)
+
+
 # ---------------------------------------------------------------------------
 # Contract section 3: one section detector
 # ---------------------------------------------------------------------------
