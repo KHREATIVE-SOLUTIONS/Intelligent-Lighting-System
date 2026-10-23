@@ -17,40 +17,114 @@ from xml.etree import ElementTree
 logger = logging.getLogger(__name__)
 
 
+def _local_name(tag: str) -> str:
+    """An element's tag without its XML namespace."""
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def _child(element, name: str):
+    """First direct child with the given local name, ignoring namespaces."""
+    for child in element:
+        if _local_name(child.tag) == name:
+            return child
+    return None
+
+
+def _descendant(element, name: str):
+    """First descendant with the given local name, ignoring namespaces."""
+    for child in element.iter():
+        if child is not element and _local_name(child.tag) == name:
+            return child
+    return None
+
+
+def _attr(element, *names: str) -> str:
+    for name in names:
+        value = element.get(name)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _grandma_patch(fixture_el) -> Optional[tuple]:
+    """(universe, address) from a grandMA fixture, 0-based universe, 1-based address.
+
+    grandMA numbers universes from 1. Accepted forms:
+      <Patch Universe="3" Address="101"/>   attributes, MA-style 1-based universe
+      <Patch><Address>1125</Address></Patch> grandMA2 export: absolute address,
+                                              (universe - 1) * 512 + address
+      <Address>3.101</Address>               universe.address text
+    """
+    patch = _descendant(fixture_el, "Patch")
+    if patch is None:
+        patch = _descendant(fixture_el, "DMX")
+    if patch is None:
+        return None
+
+    try:
+        universe_attr = _attr(patch, "Universe", "universe")
+        address_attr = _attr(patch, "Address", "address")
+        if address_attr:
+            address = int(address_attr)
+            universe = int(universe_attr) if universe_attr else 1
+            return max(0, universe - 1), max(1, min(512, address))
+
+        address_el = patch if _local_name(patch.tag) == "Address" else _descendant(patch, "Address")
+        text = (address_el.text or "").strip() if address_el is not None else ""
+        if not text:
+            return None
+        if "." in text:
+            universe_text, address_text = text.split(".", 1)
+            return max(0, int(universe_text) - 1), max(1, min(512, int(address_text)))
+        absolute = int(text)
+        if absolute < 1:
+            return None
+        return (absolute - 1) // 512, (absolute - 1) % 512 + 1
+    except (ValueError, TypeError):
+        return None
+
+
 def parse_grandma_xml(content: str) -> List[Dict[str, Any]]:
-    """Parse grandMA2/3 XML patch export."""
+    """Parse grandMA2/3 XML patch export.
+
+    Real grandMA2 exports put every element in the MA namespace, name the fixture
+    type in a child element, and store the patch as an absolute address; all of
+    that is handled alongside the simpler attribute form. Universes come back
+    0-based, matching the Hog and Eos parsers.
+    """
     fixtures = []
     try:
         root = ElementTree.fromstring(content)
-        for fixture_el in root.findall(".//Fixture"):
-            name = fixture_el.get("Name", "")
-            fixture_type = fixture_el.get("FixtureType", "")
-
-            # Extract DMX address
-            patch = fixture_el.find("Patch") or fixture_el.find("DMX")
-            universe = 0
-            address = 1
-            if patch is not None:
-                try:
-                    universe = int(patch.get("Universe", "0"))
-                    address = int(patch.get("Address", "1"))
-                except (ValueError, TypeError):
-                    pass
-
-            # Extract manufacturer/model
-            parts = fixture_type.split(" ", 1)
-            manufacturer = parts[0] if parts else "Unknown"
-            model = parts[1] if len(parts) > 1 else fixture_type
-
-            fixtures.append({
-                "name": name,
-                "manufacturer": manufacturer,
-                "model": model,
-                "universe": universe,
-                "dmx_address": address,
-            })
     except ElementTree.ParseError as e:
         logger.error(f"Failed to parse grandMA XML: {e}")
+        return fixtures
+
+    for fixture_el in root.iter():
+        if _local_name(fixture_el.tag) != "Fixture":
+            continue
+
+        name = _attr(fixture_el, "Name", "name")
+        fixture_type = _attr(fixture_el, "FixtureType", "fixture_type")
+        if not fixture_type:
+            type_el = _child(fixture_el, "FixtureType")
+            if type_el is not None:
+                fixture_type = _attr(type_el, "name", "Name") or (type_el.text or "").strip()
+
+        patched = _grandma_patch(fixture_el)
+        universe, address = patched if patched is not None else (0, 1)
+
+        # Extract manufacturer/model
+        parts = fixture_type.split(" ", 1)
+        manufacturer = parts[0] if parts and parts[0] else "Unknown"
+        model = parts[1] if len(parts) > 1 else fixture_type
+
+        fixtures.append({
+            "name": name,
+            "manufacturer": manufacturer,
+            "model": model,
+            "universe": universe,
+            "dmx_address": address,
+        })
 
     return fixtures
 
