@@ -115,7 +115,11 @@ class DMXController:
         self.pre_blackout_state: Dict[int, List[int]] = {}
 
         # Output state
-        self.sequence = 0
+        # ArtDmx sequence runs 1-255 per Port-Address; 0 means "sequencing off",
+        # so a shared counter wrapping through 0 made nodes drop reordering checks.
+        self._sequences: Dict[int, int] = {}
+        self._universe_errors: Dict[int, str] = {}
+        self.blackout_on_stop = settings.DMX_BLACKOUT_ON_STOP
         self.target_fps = settings.DMX_FPS
         self.current_fps = 0.0
         self.frames_sent = 0
@@ -187,9 +191,13 @@ class DMXController:
             # not own, which fights any other console already merging on it.
             self.is_connected = True
 
-            self._output_stop.clear()
+            # A fresh stop event per transmitter. Re-arming a shared one would wake
+            # a previous thread that never finished stopping (a stalled sendto
+            # outlives the join timeout) and leave two transmitters on the wire.
+            self._output_stop = threading.Event()
             self.output_thread = threading.Thread(
-                target=self._output_loop, name="artnet-tx", daemon=True
+                target=self._output_loop, args=(self._output_stop,),
+                name="artnet-tx", daemon=True,
             )
             self.output_thread.start()
 
@@ -220,7 +228,7 @@ class DMXController:
             self.socket.close()
             self.socket = None
 
-    def _output_loop(self):
+    def _output_loop(self, stop: Optional[threading.Event] = None):
         """Send every live universe at the target frame rate, on our own thread.
 
         Paced against a running deadline rather than by sleeping a frame each time:
@@ -229,25 +237,35 @@ class DMXController:
         frame at 40fps. Missed frames are dropped rather than queued - a stale
         lighting frame is worth nothing once the next one exists.
         """
+        if stop is None:
+            stop = self._output_stop
+        sock = self.socket
         frame_time = 1.0 / self.target_fps
         fps_counter = 0
         fps_start = time.perf_counter()
         next_frame = time.perf_counter()
 
-        while not self._output_stop.is_set() and self.is_connected:
+        while not stop.is_set() and self.is_connected:
             for universe_num, universe in list(self.universes.items()):
-                if self._output_stop.is_set():
+                if stop.is_set():
                     break
                 try:
-                    self._send_universe(universe_num, bytes(universe.data))
+                    self._send_universe(universe_num, self._frame_bytes(universe.data))
                 except Exception as e:
                     # This thread is the only thing keeping the rig lit; it does not
                     # get to die on one bad frame.
                     self.send_error_count += 1
                     self.last_send_error = str(e)
+                    self._universe_errors[universe_num] = str(e)
                     if not self._send_error_logged:
                         logger.warning("ArtNet output error (suppressing repeats): %s", e)
                         self._send_error_logged = True
+
+            # A universe that is no longer driven cannot keep the status unhealthy.
+            for stale in [u for u in self._universe_errors if u not in self.universes]:
+                self._universe_errors.pop(stale, None)
+            if not self._universe_errors:
+                self.last_send_error = None
 
             fps_counter += 1
             elapsed = time.perf_counter() - fps_start
@@ -264,9 +282,63 @@ class DMXController:
                 next_frame = time.perf_counter() + frame_time
                 delay = frame_time
             if delay > 0:
-                self._output_stop.wait(delay)
+                stop.wait(delay)
 
         self.current_fps = 0.0
+        if self.blackout_on_stop:
+            self._send_final_blackout(sock)
+
+    FINAL_BLACKOUT_REPEATS = 3
+
+    def _send_final_blackout(self, sock: Optional[socket.socket]) -> None:
+        """Put zeros on every universe this box was driving, a few times over.
+
+        Nodes hold the last frame they received, so stopping without this leaves
+        the rig on - a strobe keeps strobing after the server has gone. Repeated
+        because ArtNet is UDP and one lost packet would leave a universe lit.
+        """
+        if sock is None:
+            return
+        target = (self.target_ip, self.config.port)
+        zeros = bytes(512)
+        for attempt in range(self.FINAL_BLACKOUT_REPEATS):
+            for universe_num in list(self.universes):
+                packet = ArtNetProtocol.create_dmx_packet(
+                    universe_num, zeros, self._next_sequence(universe_num),
+                    net=self.config.net, subnet=self.config.subnet,
+                )
+                try:
+                    sock.sendto(packet, target)
+                except OSError as e:
+                    logger.warning("ArtNet blackout-on-stop failed for universe %s: %s",
+                                   universe_num, e)
+                    return
+            if attempt + 1 < self.FINAL_BLACKOUT_REPEATS:
+                time.sleep(1.0 / max(1, self.target_fps))
+
+    @staticmethod
+    def _frame_bytes(data) -> bytes:
+        """A universe's values as wire bytes, whatever wrote them.
+
+        The engine hands over clamped ints, but a manual or API write can leave a
+        float (127.5) or a stray out-of-range value behind. bytes() raises on
+        either, which silently took the whole universe off the wire.
+        """
+        try:
+            return bytes(data)
+        except (TypeError, ValueError):
+            out = bytearray(len(data))
+            for i, value in enumerate(data):
+                try:
+                    out[i] = max(0, min(255, int(round(float(value)))))
+                except (TypeError, ValueError, OverflowError):
+                    out[i] = 0
+            return bytes(out)
+
+    def _next_sequence(self, universe: int) -> int:
+        seq = self._sequences.get(universe, 0) % 255 + 1
+        self._sequences[universe] = seq
+        return seq
 
     def _send_universe(self, universe: int, data: bytes):
         """Send a single universe of DMX data."""
@@ -274,11 +346,10 @@ class DMXController:
             return
 
         # Create packet
-        self.sequence = (self.sequence + 1) % 256
         packet = ArtNetProtocol.create_dmx_packet(
             universe,
             data,
-            self.sequence,
+            self._next_sequence(universe),
             net=self.config.net,
             subnet=self.config.subnet,
         )
@@ -289,12 +360,17 @@ class DMXController:
             self.socket.sendto(packet, target)
             self.frames_sent += 1
             self.last_send_time = time.time()
-            self.last_send_error = None
-            self._send_error_logged = False
+            # Healthy only once every universe is: one good universe must not
+            # hide another that is failing every frame.
+            self._universe_errors.pop(universe, None)
+            if not self._universe_errors:
+                self.last_send_error = None
+                self._send_error_logged = False
         except OSError as e:
             # BUG-017 fix: log send errors instead of silencing them
             self.send_error_count += 1
             self.last_send_error = str(e)
+            self._universe_errors[universe] = str(e)
             if not self._send_error_logged:
                 logger.warning(
                     f"ArtNet send error to {target[0]}:{target[1]} (suppressing repeats): {e}"
@@ -323,6 +399,7 @@ class DMXController:
             "frames_sent": self.frames_sent,
             "send_error_count": self.send_error_count,
             "last_send_error": self.last_send_error,
+            "failing_universes": sorted(self._universe_errors),
             "last_send_time": last_send_time,
         }
 
