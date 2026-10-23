@@ -163,6 +163,8 @@ class AudioAnalyzer:
         self._last_emotion_mapping = None
         self._last_genre_result = None
         self._genre_seq = 0
+        # A running genre night check (see genre_night_check.py), if any.
+        self.night_check = None
         self._genre_task: Optional[asyncio.Task] = None
         # Models load in the background after startup; see `_pull_ml_models`.
         self._ml_models_pulled = False
@@ -186,10 +188,15 @@ class AudioAnalyzer:
             return
         self._ml_models_pulled = True
         mert = getattr(manager, "mert_model", None)
+        genre = self._genre_classifier
+        if genre is None or getattr(genre, "HEURISTIC_ONLY", False):
+            # A trained model already in place (a night check started before
+            # loading finished) is not swapped back for the heuristic.
+            genre = getattr(manager, "genre_classifier", None) or genre
         self.set_ml_models(
             mert_model=mert if getattr(mert, "loaded", False) else self._mert_model,
             structure_analyzer=getattr(manager, "structure_analyzer", None) or self._structure_analyzer,
-            genre_classifier=getattr(manager, "genre_classifier", None) or self._genre_classifier,
+            genre_classifier=genre,
         )
 
     def set_ml_models(self, mert_model=None, structure_analyzer=None, genre_classifier=None):
@@ -537,11 +544,7 @@ class AudioAnalyzer:
                 "genre_confidence": gr.genre_confidence,
                 "subgenre": gr.subgenre,
                 "genre_scores": gr.genre_scores,
-                "source": (
-                    "heuristic"
-                    if getattr(classifier, "HEURISTIC_ONLY", False)
-                    else "model"
-                ),
+                "source": self._genre_source(classifier),
                 # Counts fresh results, so a consumer can tell a new answer from
                 # the same one repeated on every block.
                 "seq": self._genre_seq,
@@ -550,12 +553,30 @@ class AudioAnalyzer:
 
         return ml_output if ml_output else None
 
+    @staticmethod
+    def _genre_source(classifier) -> str:
+        """heuristic: shown, never obeyed. shadow: a trained model only being
+        checked. model: a trained model allowed to lean the show."""
+        if getattr(classifier, "HEURISTIC_ONLY", False):
+            return "heuristic"
+        return "model" if getattr(classifier, "steers", True) else "shadow"
+
     def _set_genre_result(self, result) -> None:
         """Keep a fresh genre answer. None (no full window yet) keeps the last."""
         if result is None:
             return
         self._last_genre_result = result
         self._genre_seq += 1
+        check = self.night_check
+        if check is not None and check.active and not getattr(self._genre_classifier, "HEURISTIC_ONLY", False):
+            window, rate = getattr(self._genre_classifier, "last_window", None) or (None, None)
+            mood = getattr(self._genre_classifier, "last_mood", None)
+            # A clip write is a file write: keep it off the event loop.
+            try:
+                asyncio.get_running_loop()
+                asyncio.ensure_future(asyncio.to_thread(check.record, result, mood, window, rate))
+            except RuntimeError:
+                check.record(result, mood, window, rate)
 
     def _update_buffer(self, audio_data: np.ndarray):
         """Update the circular audio buffer."""

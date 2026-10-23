@@ -2610,12 +2610,14 @@ class EffectsEngine:
         # --- Genre auto-switching ---
         genre_data = ml_data.get("genre")
         # A heuristic guess is shown, never obeyed: it would retune the whole
-        # show to the wrong genre (it reads club music as ambient). The trained
+        # show to the wrong genre (it reads club music as ambient). A "shadow"
+        # answer is the trained model being checked on a real night: logged,
+        # never obeyed. The trained
         # model's answer is a club style, which leans palette and movement only
         # and leaves strobe budget, dynamics and sections alone.
         if genre_data and genre_data.get("source") == "model":
             self._observe_club_style(genre_data)
-        elif genre_data and genre_data.get("source") != "heuristic":
+        elif genre_data and genre_data.get("source") not in ("heuristic", "shadow"):
             detected_genre = genre_data.get("genre", "").lower()
             confidence = genre_data.get("genre_confidence", 0.0)
             gate_passed = (

@@ -18,7 +18,7 @@ from starlette.routing import get_route_path
 from app.api.endpoints import (
     shows, rigs, fixtures, audio, dmx, websocket, effects, training, lfo,
     fixture_library, rig_patching, fixture_test, wizard, templates,
-    rig_import_export, discovery, qr_scanning, demo, auth, rig_identify,
+    rig_import_export, discovery, qr_scanning, demo, auth, rig_identify, genre_check,
 )
 from app.core.config import settings
 from app.core.logging_config import configure_logging
@@ -737,6 +737,7 @@ app.include_router(rig_import_export.router, prefix="/api", tags=["Import/Export
 app.include_router(discovery.router, prefix="/api", tags=["Discovery"])
 app.include_router(qr_scanning.router, prefix="/api", tags=["QR Scanning"])
 app.include_router(demo.router, prefix="/api", tags=["Demo & Venues"])
+app.include_router(genre_check.router, prefix="/api", tags=["Genre Night Check"])
 
 
 @app.get("/")
