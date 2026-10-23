@@ -10,6 +10,7 @@ describe('StatusBar', () => {
       dmx: null,
       capture: null,
       effects: null,
+      box: null,
       link: 'connected',
       lastAnalysisAt: Date.now(),
     });
@@ -46,5 +47,36 @@ describe('StatusBar', () => {
 
     expect(screen.getByTestId('status-link').textContent).toContain('Box offline');
     expect(screen.getByTestId('status-dmx').getAttribute('data-level')).toBe('unknown');
+  });
+});
+
+describe('StatusBar with the box health report', () => {
+  afterEach(cleanup);
+
+  it('shows waiting for a rig and a missing database', () => {
+    useHealthStore.setState({
+      reachable: true,
+      dmx: { status: 'connected', connected: true, transmitting: false },
+      capture: { available: true, running: true, last_rms: 0.25 },
+      box: {
+        status: 'degraded',
+        services: { database: 'unavailable', audio_input: 'live' },
+        dmx_detail: { output_held_until_rig_patched: true },
+      },
+      link: 'connected',
+      lastAnalysisAt: Date.now(),
+    });
+    render(<StatusBar />);
+
+    const dmx = screen.getByTestId('status-dmx');
+    expect(dmx.textContent).toContain('Waiting for rig');
+    expect(dmx.getAttribute('aria-label')).toContain('Waiting for a rig to be patched');
+    expect(screen.getByTestId('status-database').getAttribute('data-level')).toBe('down');
+  });
+
+  it('shows no database pill while the database is fine', () => {
+    useHealthStore.setState({ box: { services: { database: 'connected' } } });
+    render(<StatusBar />);
+    expect(screen.queryByTestId('status-database')).toBeNull();
   });
 });

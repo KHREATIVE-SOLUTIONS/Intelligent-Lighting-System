@@ -27,7 +27,7 @@ const STATE_ICON: Record<StepState, JSX.Element> = {
 // are good so it stays out of the way during a show.
 export default function SetupChecklist() {
   const navigate = useNavigate();
-  const { effects, dmx, capture, reachable, lastAnalysisAt } = useHealthStore();
+  const { effects, dmx, capture, box, reachable, lastAnalysisAt } = useHealthStore();
   const [activeRig, setActiveRig] = useState<ActiveRigSummary | null>(null);
   const [expanded, setExpanded] = useState(false);
 
@@ -51,8 +51,9 @@ export default function SetupChecklist() {
   const steps = buildSetupSteps({
     effects,
     activeRig,
-    dmx: readDmxHealth(dmx, reachable),
-    audio: readAudioHealth(capture, reachable, lastAnalysisAt, Date.now()),
+    dmx: readDmxHealth(dmx, reachable, box),
+    audio: readAudioHealth(capture, reachable, lastAnalysisAt, Date.now(), box),
+    database: reachable ? box?.services?.database ?? null : null,
   });
   const ready = isReadyForShow(steps);
   const open = !ready || expanded;

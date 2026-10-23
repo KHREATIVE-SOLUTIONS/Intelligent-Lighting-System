@@ -872,3 +872,9 @@ async def health_check(request: Request):
         content["services"] = services
         content["dmx_detail"] = dmx_detail
     return JSONResponse(status_code=status_code, content=content)
+
+
+# The same report under /api, for the operator's screen: nginx and the dev
+# server only forward /api and /ws to the backend (nginx answers /health
+# itself), so the browser cannot reach /health. Under /api it needs the token.
+app.add_api_route("/api/health", health_check, methods=["GET"], include_in_schema=False)
