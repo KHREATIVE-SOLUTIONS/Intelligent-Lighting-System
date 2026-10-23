@@ -17,6 +17,7 @@ from collections import deque
 import scipy.signal as signal
 
 from app.core.config import settings
+from app.services.audio.tempo_tracker import TempoTracker
 from app.schemas.audio import (
     AudioStreamConfig, AudioAnalysisResponse,
     BeatResponse, MoodResponse, FrequencyResponse, FrequencyBand
@@ -97,6 +98,10 @@ class AudioAnalyzer:
         self.bass_history = deque(maxlen=64)
         self.current_bpm = 120.0
         self.beat_confidence = 0.0
+        # The tempo a lighting operator would count, from the drums themselves.
+        # Supersedes the beat-interval estimate below whenever it is confident.
+        self._tempo = TempoTracker(self.sample_rate, hop=self.hop_length)
+        self.tempo_confidence = 0.0
         self.last_beat_time = 0.0
         self.beat_phase = 0.0
         self.beat_position = 1
@@ -202,6 +207,7 @@ class AudioAnalyzer:
         self.buffer_index = 0
         self.previous_beat_spectrum = None
         self.previous_flux_spectrum = None
+        self._tempo.set_sample_rate(rate)
         logger.info("Audio analyzer sample rate set to %d Hz", rate)
 
     def _sanitize_chunk(self, audio_data) -> np.ndarray:
@@ -236,6 +242,7 @@ class AudioAnalyzer:
 
         # Update buffer
         self._update_buffer(audio_data)
+        self._tempo.push(audio_data)
 
         # Normalise loudness before anything reads a level-based threshold
         self._update_loudness(audio_data)
@@ -577,6 +584,8 @@ class AudioAnalyzer:
                 self.current_bpm = 60.0 / avg_interval
                 self.beat_confidence = max(self.beat_confidence, min(1.0, len(valid_intervals) / 10))
 
+        self.tempo_confidence = float(self._tempo.confidence) if self._tempo_is_trusted() else 0.0
+
         # Fallback beat clock: keep beat-reactive systems alive when onset misses.
         if (
             not is_beat
@@ -612,8 +621,9 @@ class AudioAnalyzer:
         self.bar_phase = ((max(self.beat_position - 1, 0) + self.beat_phase) / 4.0) % 1.0
 
         return {
-            "bpm": round(self.current_bpm, 1),
+            "bpm": round(self.tempo_bpm, 1),
             "beat_confidence": round(self.beat_confidence, 2),
+            "tempo_confidence": round(self.tempo_confidence, 2),
             "is_beat": self.current_is_beat,
             "is_downbeat": self.current_is_downbeat,
             "beat_position": self.beat_position,
@@ -628,6 +638,24 @@ class AudioAnalyzer:
             "time_signature": "4/4",
             "phase": round(self.beat_phase, 3),
         }
+
+    @property
+    def tempo_bpm(self) -> float:
+        """The tempo this analyser publishes.
+
+        The gaps between detected beats (`current_bpm`) cannot tell 87 from
+        174, or 174 from its 3/4; the drum-aware tracker can, so it is
+        published whenever it is sure. `current_bpm` itself is left alone: it
+        paces this detector's own fallback beats, whose count the engine reads
+        the bar line from, and that count is its own contract.
+        """
+        if self._tempo_is_trusted():
+            return float(self._tempo.bpm)
+        return float(self.current_bpm)
+
+    def _tempo_is_trusted(self) -> bool:
+        tracker = self._tempo
+        return tracker.bpm is not None and tracker.confidence >= tracker.MIN_CONFIDENCE
 
     async def _analyze_mood(self, audio_data: np.ndarray) -> Dict[str, Any]:
         """
@@ -802,7 +830,7 @@ class AudioAnalyzer:
         return AudioAnalysisResponse(
             timestamp=datetime.utcnow(),
             beat=BeatResponse(
-                bpm=self.current_bpm,
+                bpm=self.tempo_bpm,
                 beat_confidence=self.beat_confidence,
                 is_beat=self.current_is_beat,
                 is_downbeat=self.current_is_downbeat,
@@ -849,7 +877,7 @@ class AudioAnalyzer:
     def get_beat_info(self) -> BeatResponse:
         """Get current beat information."""
         return BeatResponse(
-            bpm=self.current_bpm,
+            bpm=self.tempo_bpm,
             beat_confidence=self.beat_confidence,
             is_beat=self.current_is_beat,
             is_downbeat=self.current_is_downbeat,

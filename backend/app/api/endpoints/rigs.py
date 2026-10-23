@@ -17,7 +17,7 @@ import numpy as np
 
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
-from app.models.fixture import Fixture, FixtureType
+from app.models.fixture import Fixture, FixtureMode, FixtureType
 from app.schemas.rig import (
     RigCreate, RigUpdate, RigResponse, RigListResponse,
     RigFixtureCreate, RigFixtureUpdate, RigFixtureResponse,
@@ -47,6 +47,26 @@ def _validated_zone(value: Any) -> Optional[str]:
             detail=f"unknown zone '{value}'; expected one of: {', '.join(ZONE_VALUES)}",
         )
     return zone.value
+
+
+def _rig_fixture_footprint(rf: RigFixture) -> int:
+    """Channels a patched fixture occupies, using the mode the rig loader would."""
+    mode = rf.mode
+    if mode is None and rf.fixture is not None and rf.fixture.modes:
+        mode = sorted(rf.fixture.modes, key=lambda m: m.id or 0)[0]
+    return max(1, int(getattr(mode, "channel_count", None) or 1))
+
+
+async def _patch_footprint(db: AsyncSession, fixture_id: int, mode_id: Optional[int]) -> int:
+    if mode_id is not None:
+        mode = (await db.execute(select(FixtureMode).where(FixtureMode.id == mode_id))).scalar_one_or_none()
+        if mode is not None:
+            return max(1, int(mode.channel_count or 1))
+    result = await db.execute(
+        select(FixtureMode).where(FixtureMode.fixture_id == fixture_id).order_by(FixtureMode.id).limit(1)
+    )
+    mode = result.scalar_one_or_none()
+    return max(1, int(mode.channel_count or 1)) if mode is not None else 1
 
 
 async def _load_rig(db: AsyncSession, rig_id: int) -> Rig:
@@ -194,13 +214,17 @@ async def _put_active_rig_on_stage(app, db: AsyncSession) -> bool:
     from app.services.rig.rig_loader import load_active_rig
 
     try:
-        manager, _ = await load_active_rig(db)
+        manager, rig = await load_active_rig(db)
     except Exception as e:
         logger.error("Could not load the newly active rig: %s", e, exc_info=True)
         return False
     if manager is None or not manager.fixtures:
         return False
     _install_fixture_manager(app, manager)
+    app.state.live_rig = {
+        "id": getattr(rig, "id", None), "name": getattr(rig, "name", None) or "active rig",
+        "demo": False, "fixtures": len(manager.fixtures),
+    }
     return True
 
 
@@ -269,18 +293,31 @@ async def add_fixture_to_rig(
     if not rig_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Rig not found")
 
-    # Check for address conflict
-    conflict_query = select(RigFixture).where(
-        RigFixture.rig_id == rig_id,
-        RigFixture.universe == fixture_data.universe,
-        RigFixture.dmx_address == fixture_data.dmx_address
-    )
-    conflict_result = await db.execute(conflict_query)
-    if conflict_result.scalar_one_or_none():
+    # Check for address conflict across the whole footprint: a 16-channel mover
+    # at 1 and another at 10 share nine channels even though no start address
+    # repeats.
+    footprint = await _patch_footprint(db, fixture_data.fixture_id, fixture_data.mode_id)
+    start = fixture_data.dmx_address
+    end = start + footprint - 1
+    if end > 512:
         raise HTTPException(
             status_code=400,
-            detail=f"DMX address {fixture_data.dmx_address} already in use on universe {fixture_data.universe}"
+            detail=f"a {footprint}-channel fixture at {start} runs past channel 512 of universe {fixture_data.universe}",
         )
+    existing_query = select(RigFixture).where(
+        RigFixture.rig_id == rig_id,
+        RigFixture.universe == fixture_data.universe,
+    ).options(selectinload(RigFixture.mode), selectinload(RigFixture.fixture).selectinload(Fixture.modes))
+    for other in (await db.execute(existing_query)).scalars():
+        other_end = other.dmx_address + _rig_fixture_footprint(other) - 1
+        if start <= other_end and other.dmx_address <= end:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"channels {start}-{end} on universe {fixture_data.universe} overlap "
+                    f"{other.name or 'fixture ' + str(other.id)} at {other.dmx_address}-{other_end}"
+                ),
+            )
 
     rig_fixture = RigFixture(rig_id=rig_id, **fixture_data.model_dump())
     db.add(rig_fixture)

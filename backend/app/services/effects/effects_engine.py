@@ -175,6 +175,23 @@ _CLOCK_CHALLENGE_RATIO = 1.10
 _CLOCK_CHALLENGE_S = 0.20
 _CLOCK_HARMONIC = 0.50
 _CLOCK_REPORTED_WEIGHT = 0.12
+# When the analyser publishes a confidence with its tempo it has heard the drums
+# (`TempoTracker`) and is saying which metrical level the music is at, which a
+# loudness comb cannot tell: two-step drum and bass reads at 3/4 of its tempo
+# here and hip-hop at double. It then picks the level; see `_beat_clock_observe`.
+_CLOCK_TEMPO_WIDTH = 0.03    # natural-log units, about 3%
+# Metrical relatives of the comb's own tempo the analyser may move it to, and
+# how close (natural log) one must be to the analyser's tempo to count.
+_CLOCK_LEVEL_RATIOS = (1.0, 2.0, 0.5, 4.0 / 3.0, 0.75, 1.5, 2.0 / 3.0)
+_CLOCK_LEVEL_MATCH = 0.06
+# The comb must hear at least this share of its strongest pulse at the level the
+# analyser names before the clock takes its phase from there.
+_CLOCK_LEVEL_MIN_SHARE = 0.25
+
+
+def _clock_relative(a: float, b: float) -> bool:
+    """Whether two tempi are metrical levels of one another."""
+    return any(abs(math.log(a / (b * r))) < _CLOCK_TEMPO_WIDTH for r in _CLOCK_LEVEL_RATIOS)
 _CLOCK_LOG_GAIN = 40.0
 # Section detection is deliberately level-invariant, so a ballad has the same relative
 # dynamics as a club track and would earn the same accents. Absolute level is what
@@ -354,6 +371,7 @@ class EffectsEngine:
         self._clock_zp_norm = 1e-9
         self._clock_bar_offset = 0
         self._clock_bar_votes = [0.0, 0.0, 0.0, 0.0]
+        self._reported_tempo_confidence: Optional[float] = None
         self._clock_bar_moved_at = -1.0e9
         self._clock_last_beat_number: Optional[int] = None
 
@@ -1614,7 +1632,8 @@ class EffectsEngine:
         score = score / self._clock_comb_norm
         weight = _CLOCK_PRIOR
         reported = float(bpm)
-        if 40.0 <= reported <= 260.0:
+        tempo_confidence = self._reported_tempo_confidence
+        if 40.0 <= reported <= 260.0 and not tempo_confidence:
             log_reported = math.log(reported)
             bump = np.zeros_like(weight)
             for octave in (1.0, 0.5, 2.0):
@@ -1625,17 +1644,47 @@ class EffectsEngine:
         total = score * weight
         best = int(np.argmax(total))
 
+        # The comb owns the tempo; a confident analyser only says which metrical
+        # level of it the music is at. It is consulted at the two moments the
+        # clock takes a tempo (acquiring, and a challenge that succeeds) and to
+        # refuse a challenger that is only another level of the tempo already
+        # held. It never pulls the clock anywhere the comb does not hear a
+        # pulse, so while a DJ changes tempo and the analyser lags behind, the
+        # new tempo is not a relative of the old, and the comb follows it alone.
+        levels = bool(tempo_confidence) and 40.0 <= reported <= 260.0
+        if levels:
+            best = self._beat_clock_level(best, score, reported)
+
         if not self._clock_locked:
             if self._clock_evidence >= _CLOCK_EVIDENCE_S and score[best] >= _CLOCK_ACQUIRE_FLOOR:
                 self._beat_clock_adopt(best, t, snap=True)
             return
 
-        here = int(np.argmin(np.abs(_CLOCK_LOG_CAND - math.log(60.0 / self._clock_period))))
-        if total[best] > total[here] * _CLOCK_CHALLENGE_RATIO:
+        held_bpm = 60.0 / self._clock_period
+        here = int(np.argmin(np.abs(_CLOCK_LOG_CAND - math.log(held_bpm))))
+        same_tempo_other_level = (
+            levels
+            and abs(math.log(held_bpm / reported)) < _CLOCK_LEVEL_MATCH
+            and _clock_relative(float(_CLOCK_CAND_BPM[best]), held_bpm)
+        )
+        # And the other way round: the clock locked before the analyser was
+        # sure (it needs a few bars) and holds a relative of the right tempo.
+        corrected = here
+        if (levels
+                and abs(math.log(held_bpm / reported)) >= _CLOCK_LEVEL_MATCH
+                and _clock_relative(reported, held_bpm)):
+            corrected = self._beat_clock_level(here, score, reported)
+        if corrected != here:
+            challenger = corrected
+        elif not same_tempo_other_level and total[best] > total[here] * _CLOCK_CHALLENGE_RATIO:
+            challenger = best
+        else:
+            challenger = None
+        if challenger is not None:
             self._clock_challenge += hop
             if self._clock_challenge >= _CLOCK_CHALLENGE_S:
                 self._clock_challenge = 0.0
-                self._beat_clock_adopt(best, t, snap=False)
+                self._beat_clock_adopt(challenger, t, snap=False)
                 return
         else:
             self._clock_challenge = max(0.0, self._clock_challenge - hop)
@@ -1651,6 +1700,30 @@ class EffectsEngine:
         self._clock_pending -= error * _CLOCK_KP * loop
         period = self._clock_period * (1.0 + _CLOCK_KI * error * loop)
         self._clock_period = min(60.0 / _CLOCK_MIN_BPM, max(60.0 / _CLOCK_MAX_BPM, period))
+
+    def _beat_clock_level(self, index: int, score: np.ndarray, reported: float) -> int:
+        """The comb peak at the relative of `index` the analyser counts, if any.
+
+        Returns `index` unchanged when no relative of its tempo is the
+        analyser's, or when the comb hears too little at that relative to take
+        a phase from it.
+        """
+        bpm = float(_CLOCK_CAND_BPM[index])
+        for ratio in _CLOCK_LEVEL_RATIOS:
+            target = bpm * ratio
+            if not (_CLOCK_MIN_BPM <= target <= _CLOCK_MAX_BPM):
+                continue
+            if abs(math.log(target / reported)) >= _CLOCK_LEVEL_MATCH:
+                continue
+            window = np.abs(_CLOCK_LOG_CAND - math.log(target)) < _CLOCK_TEMPO_WIDTH
+            if not np.any(window):
+                return index
+            candidates = np.flatnonzero(window)
+            peak = int(candidates[np.argmax(score[candidates])])
+            if score[peak] < _CLOCK_LEVEL_MIN_SHARE * score[index]:
+                return index
+            return peak
+        return index
 
     def _beat_clock_adopt(self, index: int, t: float, snap: bool):
         """Take tempo and phase from the comb's best hypothesis."""
@@ -1830,6 +1903,7 @@ class EffectsEngine:
         bpm: float = 128.0,
         ml_data: dict = None,
         programme_level: Optional[float] = None,
+        tempo_confidence: Optional[float] = None,
     ):
         """
         Update audio state from audio analyzer.
@@ -1851,6 +1925,10 @@ class EffectsEngine:
             spectral_flux: Rate of spectral change
             bpm: Detected BPM
             ml_data: ML pipeline output (emotion_vector, emotion_mapping, structure, genre)
+            tempo_confidence: The analyser's 0-1 confidence that `bpm` is the
+                tempo an operator would count, or None when the source has no
+                drum-aware tempo. When given, it decides the clock's metrical
+                level; see `_beat_clock_level`.
         """
         # A tempo of 0, negative or NaN (silence, a detector that has not locked)
         # divided by zero in the decision engine's cooldowns and dropped frames.
@@ -1864,6 +1942,14 @@ class EffectsEngine:
             bpm = last if isinstance(last, (int, float)) and math.isfinite(last) and last > 0 else 128.0
 
         self._last_audio_at = self.time
+
+        try:
+            conf = float(tempo_confidence) if tempo_confidence is not None else None
+        except (TypeError, ValueError):
+            conf = None
+        if conf is not None and not (0.0 <= conf <= 1.0):
+            conf = None
+        self._reported_tempo_confidence = conf
 
         # Mood values may arrive as either [0..1] or [-1..1] depending on source.
         # Normalize once here so color logic is stable and explicit.

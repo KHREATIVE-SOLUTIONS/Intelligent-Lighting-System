@@ -72,6 +72,13 @@ class EffectsStatus(BaseModel):
     strobe_enabled: bool
     color_enabled: bool
 
+    # The rig the engine is actually driving. It is read once at boot, so it
+    # can differ from the rig marked active until the box restarts.
+    live_rig_id: Optional[int] = None
+    live_rig_name: Optional[str] = None
+    live_rig_demo: bool = False
+    live_rig_fixtures: int = 0
+
 
 class MovementRequest(BaseModel):
     """Request to set movement pattern."""
@@ -171,6 +178,7 @@ async def get_fixture_states(request: Request):
 async def get_status(request: Request):
     """Get current effects engine status."""
     engine = getattr(request.app.state, "effects_engine", None) or get_effects_engine()
+    live_rig = getattr(request.app.state, "live_rig", None) or {}
 
     return EffectsStatus(
         running=engine.running,
@@ -187,7 +195,11 @@ async def get_status(request: Request):
         movement_enabled=engine.config.movement_enabled,
         dimmer_enabled=engine.config.dimmer_enabled,
         strobe_enabled=engine.config.strobe_enabled,
-        color_enabled=engine.config.color_enabled
+        color_enabled=engine.config.color_enabled,
+        live_rig_id=live_rig.get("id"),
+        live_rig_name=live_rig.get("name"),
+        live_rig_demo=bool(live_rig.get("demo", False)),
+        live_rig_fixtures=int(live_rig.get("fixtures") or 0),
     )
 
 

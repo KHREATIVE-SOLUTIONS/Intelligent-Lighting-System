@@ -441,6 +441,7 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         arousal=arousal,
         spectral_flux=spectral_flux,
         bpm=bpm,
+        tempo_confidence=beat.get('tempo_confidence'),
         ml_data=ml_data,
     )
 

@@ -190,3 +190,82 @@ class PatchingService:
     ) -> Optional[int]:
         """Public wrapper for finding the next available address."""
         return PatchingService._find_next_available(occupied, channel_count)
+
+
+class PatchPlanError(ValueError):
+    """A requested patch does not fit; the message says why in operator terms."""
+
+
+def _overlaps(start: int, end: int, ranges: List[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
+    for a, b in ranges:
+        if start <= b and a <= end:
+            return (a, b)
+    return None
+
+
+def plan_addresses(
+    occupied: Dict[int, List[Tuple[int, int]]],
+    footprint: int,
+    quantity: int,
+    universe: int = 0,
+    start_address: Optional[int] = None,
+    max_universes: int = MAX_UNIVERSES,
+) -> List[Tuple[int, int]]:
+    """Addresses for `quantity` new fixtures of `footprint` channels each.
+
+    `occupied` maps universe -> [(first, last)] slots already in use. A fixture
+    never straddles a universe boundary and never overlaps another.
+
+    With a start address the operator has said where the run goes, as on a
+    console ("8 at 1.001"): the units go back to back from there and a clash is
+    refused rather than quietly moved. Without one, each unit takes the first
+    gap that fits, starting in `universe` and moving to the next universe once
+    that one is full.
+    """
+    if footprint < 1 or footprint > MAX_DMX_CHANNELS:
+        raise PatchPlanError(f"a {footprint}-channel mode cannot be patched")
+    if quantity < 1:
+        raise PatchPlanError("quantity must be at least 1")
+    if not 0 <= universe < max_universes:
+        raise PatchPlanError(f"universe must be between 0 and {max_universes - 1}")
+
+    taken: Dict[int, List[Tuple[int, int]]] = {u: list(r) for u, r in occupied.items()}
+    plan: List[Tuple[int, int]] = []
+
+    if start_address is not None:
+        address = start_address
+        for n in range(quantity):
+            end = address + footprint - 1
+            if address < 1 or end > MAX_DMX_CHANNELS:
+                raise PatchPlanError(
+                    f"unit {n + 1} would run from {address} to {end}, past the end of "
+                    f"universe {universe}; patch fewer units or start lower"
+                )
+            clash = _overlaps(address, end, taken.get(universe, []))
+            if clash:
+                raise PatchPlanError(
+                    f"unit {n + 1} at {universe}.{address:03d} overlaps channels "
+                    f"{clash[0]}-{clash[1]} already patched in universe {universe}"
+                )
+            plan.append((universe, address))
+            taken.setdefault(universe, []).append((address, end))
+            address = end + 1
+        return plan
+
+    current = universe
+    for _ in range(quantity):
+        while True:
+            if current >= max_universes:
+                raise PatchPlanError(
+                    f"no room for {quantity} units of {footprint} channels from "
+                    f"universe {universe} up"
+                )
+            address = PatchingService._find_next_available(
+                sorted(taken.get(current, [])), footprint
+            )
+            if address is not None:
+                break
+            current += 1
+        plan.append((current, address))
+        taken.setdefault(current, []).append((address, address + footprint - 1))
+    return plan

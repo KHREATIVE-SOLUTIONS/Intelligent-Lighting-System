@@ -522,6 +522,70 @@ def dense_loud_track(
     )
 
 
+# Genre-shaped drum grids for tempo tests. Positions are in beats within a
+# four-beat bar; ``hats`` is hats per beat. These are the patterns that used to
+# fool the tempo estimate: drum & bass and half-time read at 3/4 or 4/3, and
+# hip-hop read at double time, because the kick alone does not mark the beat.
+DRUM_PATTERNS = {
+    "four_floor": dict(bpm=128.0, kicks=(0, 1, 2, 3), snares=(1, 3), hats=2),
+    "house": dict(bpm=124.0, kicks=(0, 1, 2, 3), snares=(1, 3), hats=4),
+    "techno": dict(bpm=132.0, kicks=(0, 1, 2, 3), snares=(), hats=4),
+    "dnb": dict(bpm=174.0, kicks=(0, 2.5), snares=(1, 3), hats=2),
+    "dnb_sparse": dict(bpm=172.0, kicks=(0, 2.75), snares=(1, 3), hats=4),
+    "halftime": dict(bpm=140.0, kicks=(0,), snares=(2,), hats=4),
+    "trap_halftime": dict(bpm=150.0, kicks=(0, 1.75), snares=(2,), hats=4),
+    "hiphop": dict(bpm=92.0, kicks=(0, 1.5, 2.5), snares=(1, 3), hats=2),
+}
+
+
+def drum_pattern_track(
+    style: str,
+    bars: int = 24,
+    sample_rate: int = SAMPLE_RATE,
+    lead_in_s: float = LEAD_IN_S,
+    seed_offset: int = 7,
+) -> SyntheticTrack:
+    """One of the DRUM_PATTERNS over a quiet pad, with beat and bar truth.
+
+    ``bpm`` is the tempo an operator would count, which for half-time styles
+    is the hat and kick grid, not the snare.
+    """
+    spec = DRUM_PATTERNS[style]
+    bpm = float(spec["bpm"])
+    rng = _rng(seed_offset)
+    period = 60.0 / bpm
+    lead = int(round(lead_in_s * sample_rate))
+    n = lead + int(bars * 4 * period * sample_rate) + sample_rate
+    buf = _pad(n, sample_rate, rng) * 0.10
+    kick = _kick(sample_rate, rng)
+    snare = _snare(sample_rate, rng)
+    hat = _hat(sample_rate, rng)
+
+    beats = []
+    downbeats = []
+    for bar in range(bars):
+        bar_start = lead + bar * 4 * period * sample_rate
+        downbeats.append(int(round(bar_start)))
+        for i in range(4):
+            beats.append(int(round(bar_start + i * period * sample_rate)))
+        for p in spec["kicks"]:
+            _place(buf, int(round(bar_start + p * period * sample_rate)), kick, 1.0)
+        for p in spec["snares"]:
+            _place(buf, int(round(bar_start + p * period * sample_rate)), snare, 0.7)
+        per_beat = spec["hats"]
+        for j in range(4 * per_beat):
+            _place(buf, int(round(bar_start + j / per_beat * period * sample_rate)), hat, 0.15)
+
+    return SyntheticTrack(
+        name=f"drums_{style}",
+        samples=_master(buf),
+        sample_rate=sample_rate,
+        bpm=bpm,
+        beat_samples=tuple(beats),
+        downbeat_samples=tuple(downbeats),
+    )
+
+
 def silence_track(duration_s: float = 4.0, sample_rate: int = SAMPLE_RATE) -> SyntheticTrack:
     """No input at all. The rig must go dark and stay dark."""
     return SyntheticTrack(

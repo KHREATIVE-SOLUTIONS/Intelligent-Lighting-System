@@ -112,6 +112,8 @@ def _install_demo_rig(app: FastAPI):
         return
 
     _install_fixture_manager(app, manager, demo=True)
+    # Read by /api/effects/status so the dashboard can say the demo is running.
+    app.state.live_rig = {"id": None, "name": DEMO_VENUE_PRESET, "demo": True, "fixtures": len(preset.fixtures)}
     for zone_spec in preset.key_zones:
         try:
             zone = PerformerZone(zone_spec.zone)
@@ -161,6 +163,9 @@ async def _boot_rig(app: FastAPI):
     _install_fixture_manager(app, manager)
     universes = fixture_universes(manager)
     rig_name = getattr(rig, 'name', None) or 'active rig'
+    app.state.live_rig = {
+        "id": getattr(rig, 'id', None), "name": rig_name, "demo": False, "fixtures": len(manager.fixtures),
+    }
     logger.info(
         "Rig '%s' installed: %d fixtures across universes %s",
         rig_name, len(manager.fixtures), universes,
@@ -528,6 +533,7 @@ async def lifespan(app: FastAPI):
                                     arousal=float(mood.get("arousal", 0.0)),
                                     spectral_flux=min(1.0, float(freq.get("spectral_flux", 0.0)) * 10.0),
                                     bpm=float(beat.get("bpm", 128.0)),
+                                    tempo_confidence=beat.get("tempo_confidence"),
                                     ml_data=ml_data,
                                 )
                         except Exception as e:
