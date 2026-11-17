@@ -15,6 +15,7 @@ import type { DemoPresetSummary } from '../../services/api';
 import type { Rig, RigFixture } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
 import { audioWebSocket } from '../../services/websocket';
+import { createDemoRigFollower, onLinkRestored, settleRig } from '../../utils/demoRigSync';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
 import { createBeatClock, ingestAnalysis } from './previs/beatClock';
 import type { BeatClock } from './previs/beatClock';
@@ -1369,14 +1370,44 @@ export default function RigVisualizer() {
     demoApi.listPresets().then(setDemoPresets).catch(() => setDemoPresets([]));
   };
 
-  // Put a different demo rig on the engine, then draw it. The order matters:
-  // drawing a rig the engine is not running would animate it with another
-  // rig's state.
+  // The demo rig drawn here follows the engine: this view is sent state for
+  // whatever rig the engine runs. A restarted backend boots on its default
+  // demo rig, whatever was picked before, so when the link comes back the
+  // view asks which rig is running and draws that. It never puts its old pick
+  // back on the engine; changing what the engine drives is the operator's call.
+  // `loading` stays out of it: that flag swaps the whole page for a line of
+  // text, which would throw the canvas away on every blip in the link.
+  // This one component serves the patched-rig route as well, so an answer
+  // still on its way when the operator opens a patched rig is not drawn.
+  const showingDemo = useRef(isDemo);
+  showingDemo.current = isDemo;
+  const demoRigFollower = useMemo(
+    () =>
+      createDemoRigFollower<Rig>({
+        source: demoApi,
+        draw: (next) => {
+          if (!showingDemo.current) return;
+          setRig((drawn) => settleRig(drawn, next));
+          setLoadError(null);
+        },
+      }),
+    []
+  );
+
+  useEffect(() => {
+    if (!isDemo) return;
+    return onLinkRestored(audioWebSocket, () => {
+      void demoRigFollower.follow();
+      // A page opened while the box was down has no list for the chooser.
+      demoApi.listPresets().then(setDemoPresets).catch(() => {});
+    });
+  }, [isDemo, demoRigFollower]);
+
+  // Put a different demo rig on the engine, then draw it.
   const changeDemoPreset = async (name: string) => {
     setDemoPresetError(null);
     try {
-      await demoApi.applyPreset(name);
-      setRig(await demoApi.getRig(name));
+      await demoRigFollower.pick(name);
     } catch (error) {
       const detail = (error as any)?.response?.data?.detail;
       setDemoPresetError(typeof detail === 'string' ? detail : 'Could not switch the demo rig.');
