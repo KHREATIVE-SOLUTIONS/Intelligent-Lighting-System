@@ -3,7 +3,7 @@ Demo Simulation and Venue Preset API Endpoints
 Controls the demo mode for showcasing the lighting system without live audio.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
 
@@ -13,6 +13,38 @@ from ...services.demo.venue_presets import VENUE_PRESETS, VenuePreset, create_ve
 from ...services.effects.fixture_groups import canonical_channel_name
 
 router = APIRouter()
+
+DEFAULT_DEMO_PRESET = "pro_beam_room"
+
+
+def _live_rig(http_request: Optional[Request]) -> Optional[dict]:
+    if http_request is None:
+        return None
+    return getattr(http_request.app.state, "live_rig", None)
+
+
+def _refuse_over_a_patched_rig(http_request: Optional[Request]) -> None:
+    """A demo rig must never replace a rig the venue patched.
+
+    The demo's fixtures sit at the demo's addresses. Installed over a live rig
+    they are sent to the venue's own fixtures, on universes that rig may not
+    even own. The wire audit of 2026-11 measured exactly that: 256 foreign
+    channels on universe 0 and 200 on universe 1 from one call.
+    """
+    live = _live_rig(http_request)
+    if live is not None and not live.get("demo", True):
+        raise HTTPException(
+            409,
+            f"The rig '{live.get('name') or 'patched rig'}' is live. A demo rig cannot be "
+            "applied over it: it would send the demo's patch to the venue's fixtures.",
+        )
+
+
+def _record_demo_rig(http_request: Optional[Request], preset_name: str, fixture_count: int) -> None:
+    if http_request is not None:
+        http_request.app.state.live_rig = {
+            "id": None, "name": preset_name, "demo": True, "fixtures": fixture_count,
+        }
 
 # Global demo simulation instance
 _demo: Optional[DemoSimulation] = None
@@ -49,7 +81,7 @@ class DemoSpeedRequest(BaseModel):
 # === Demo Simulation Endpoints ===
 
 @router.post("/demo/start")
-async def start_demo(request: DemoStartRequest):
+async def start_demo(request: DemoStartRequest, http_request: Request = None):
     """Start the demo simulation.
 
     Generates synthetic audio data to drive the lighting system through a
@@ -59,6 +91,7 @@ async def start_demo(request: DemoStartRequest):
 
     # Apply venue preset if requested
     if request.venue_preset:
+        _refuse_over_a_patched_rig(http_request)
         if request.venue_preset not in VENUE_PRESETS:
             raise HTTPException(400, f"Unknown venue preset: {request.venue_preset}. "
                                 f"Available: {list(VENUE_PRESETS.keys())}")
@@ -265,12 +298,18 @@ async def get_venue_preset(preset_name: str):
 
 
 @router.get("/demo/rig")
-async def get_demo_rig(preset: str = "pro_beam_room"):
+async def get_demo_rig(preset: Optional[str] = None, request: Request = None):
     """Get a demo rig as a Rig-compatible JSON for the 3D visualizer.
 
     This returns fixture data shaped like the frontend's Rig type so the
     visualizer can render without needing a database rig.
     """
+    if not preset:
+        # No name asked for: the demo rig the engine is running right now, so
+        # the visualizer draws the rig whose state it is being sent.
+        live = _live_rig(request)
+        preset = live.get("name") if (live and live.get("demo") and live.get("name") in VENUE_PRESETS) \
+            else DEFAULT_DEMO_PRESET
     venue = VENUE_PRESETS.get(preset)
     if venue is None:
         raise HTTPException(404, f"Unknown preset: {preset}. Available: {list(VENUE_PRESETS.keys())}")
@@ -282,6 +321,7 @@ async def get_demo_rig(preset: str = "pro_beam_room"):
         "bar": "led_bar",
         "strobe": "strobe",
         "spot": "spot",
+        "par": "led_par",
     }
 
     # Channel maps per fixture type (key → 1-indexed channel_number)
@@ -382,10 +422,11 @@ async def get_demo_rig(preset: str = "pro_beam_room"):
 
 
 @router.post("/venues/presets/{preset_name}/apply")
-async def apply_venue_preset(preset_name: str):
+async def apply_venue_preset(preset_name: str, request: Request = None):
     """Apply a venue preset - creates the rig and configures the system."""
     if _effects_engine is None:
         raise HTTPException(503, "Effects engine not initialized")
+    _refuse_over_a_patched_rig(request)
 
     manager, preset = create_venue_rig(preset_name)
     if manager is None:
@@ -419,6 +460,7 @@ async def apply_venue_preset(preset_name: str):
         pass
 
     _effects_engine.config.bpm = preset.default_bpm
+    _record_demo_rig(request, preset_name, len(preset.fixtures))
 
     return {
         "status": "ok",

@@ -1,0 +1,329 @@
+{
+ "rig": "Club Night",
+ "fixtures": 34,
+ "tracks": [
+  {
+   "track": "intro_build_drop",
+   "starts_s": 0.0,
+   "seconds": 54.3,
+   "sections": [
+    [
+     0.0,
+     "verse"
+    ],
+    [
+     19.0,
+     "buildup"
+    ],
+    [
+     31.0,
+     "drop"
+    ],
+    [
+     39.3,
+     "chorus"
+    ]
+   ],
+   "level": {
+    "rig_mean": 0.127,
+    "rig_p5": 0.007,
+    "rig_p95": 0.525,
+    "fixture_peak": 1.0,
+    "pct_time_dark": 24.8
+   },
+   "level_by_section": {
+    "buildup": 0.128,
+    "chorus": 0.107,
+    "drop": 0.423,
+    "verse": 0.013
+   },
+   "group_mean_level": {
+    "bar_booth": 0.125,
+    "bar_wall": 0.125,
+    "beam_b": 0.121,
+    "mover_m": 0.121,
+    "par": 0.125,
+    "strobe_m": 0.158,
+    "strobe_w": 0.158,
+    "wash_f": 0.121
+   },
+   "group_level_correlation_mean": 0.993,
+   "within_group_spread": {
+    "bar_booth": 0.0,
+    "bar_wall": 0.0,
+    "beam_b": 0.042,
+    "mover_m": 0.041,
+    "par": 0.0,
+    "strobe_m": 0.0,
+    "strobe_w": 0.0,
+    "wash_f": 0.034
+   },
+   "colour": {
+    "saturation_mean": 0.326,
+    "mean_hue_deg": 313,
+    "hue_variety": 0.361
+   },
+   "movement": {
+    "movers": 16,
+    "pan_sweep_deg_median": 60.0,
+    "tilt_sweep_deg_median": 53.3,
+    "biggest_step_deg_in_one_frame": 51.3,
+    "biggest_step_deg_while_lit": 51.3,
+    "frames_stepping_over_8deg_while_lit": 2,
+    "mirror_symmetry_pan": -0.11,
+    "mirror_symmetry_tilt": 0.02
+   },
+   "flash": {
+    "luminance_peaks": 44,
+    "worst_luminance_peaks_in_1s": 7,
+    "full_white_flashes": 4,
+    "worst_white_flashes_in_1s": 3
+   },
+   "drop": {
+    "true_s": 30.3,
+    "labelled_drop_at_s": 31.0,
+    "caught": true,
+    "level_8s_before": 0.128,
+    "level_8s_after": 0.427
+   }
+  },
+  {
+   "track": "dense_loud",
+   "starts_s": 54.3,
+   "seconds": 30.0,
+   "sections": [
+    [
+     0.0,
+     "chorus"
+    ]
+   ],
+   "level": {
+    "rig_mean": 0.128,
+    "rig_p5": 0.059,
+    "rig_p95": 0.205,
+    "fixture_peak": 0.313,
+    "pct_time_dark": 0.0
+   },
+   "level_by_section": {
+    "chorus": 0.128
+   },
+   "group_mean_level": {
+    "bar_booth": 0.127,
+    "bar_wall": 0.127,
+    "beam_b": 0.117,
+    "mover_m": 0.116,
+    "par": 0.127,
+    "strobe_m": 0.181,
+    "strobe_w": 0.181,
+    "wash_f": 0.116
+   },
+   "group_level_correlation_mean": 0.972,
+   "within_group_spread": {
+    "bar_booth": 0.0,
+    "bar_wall": 0.0,
+    "beam_b": 0.086,
+    "mover_m": 0.087,
+    "par": 0.0,
+    "strobe_m": 0.0,
+    "strobe_w": 0.0,
+    "wash_f": 0.073
+   },
+   "colour": {
+    "saturation_mean": 0.19,
+    "mean_hue_deg": 307,
+    "hue_variety": 0.114
+   },
+   "movement": {
+    "movers": 16,
+    "pan_sweep_deg_median": 52.0,
+    "tilt_sweep_deg_median": 40.4,
+    "biggest_step_deg_in_one_frame": 11.3,
+    "biggest_step_deg_while_lit": 10.3,
+    "frames_stepping_over_8deg_while_lit": 2,
+    "mirror_symmetry_pan": -0.33,
+    "mirror_symmetry_tilt": 0.36
+   },
+   "flash": {
+    "luminance_peaks": 0,
+    "worst_luminance_peaks_in_1s": 0,
+    "full_white_flashes": 0,
+    "worst_white_flashes_in_1s": 0
+   }
+  },
+  {
+   "track": "intro_build_drop",
+   "starts_s": 84.2,
+   "seconds": 54.3,
+   "sections": [
+    [
+     0.0,
+     "chorus"
+    ],
+    [
+     2.2,
+     "verse"
+    ],
+    [
+     5.9,
+     "breakdown"
+    ],
+    [
+     20.9,
+     "verse"
+    ],
+    [
+     28.2,
+     "buildup"
+    ],
+    [
+     30.4,
+     "drop"
+    ],
+    [
+     40.4,
+     "chorus"
+    ]
+   ],
+   "level": {
+    "rig_mean": 0.129,
+    "rig_p5": 0.006,
+    "rig_p95": 0.565,
+    "fixture_peak": 1.0,
+    "pct_time_dark": 24.9
+   },
+   "level_by_section": {
+    "breakdown": 0.012,
+    "buildup": 0.166,
+    "chorus": 0.094,
+    "drop": 0.422,
+    "verse": 0.064
+   },
+   "group_mean_level": {
+    "bar_booth": 0.127,
+    "bar_wall": 0.127,
+    "beam_b": 0.122,
+    "mover_m": 0.122,
+    "par": 0.127,
+    "strobe_m": 0.161,
+    "strobe_w": 0.161,
+    "wash_f": 0.121
+   },
+   "group_level_correlation_mean": 0.994,
+   "within_group_spread": {
+    "bar_booth": 0.0,
+    "bar_wall": 0.0,
+    "beam_b": 0.041,
+    "mover_m": 0.041,
+    "par": 0.0,
+    "strobe_m": 0.0,
+    "strobe_w": 0.0,
+    "wash_f": 0.033
+   },
+   "colour": {
+    "saturation_mean": 0.327,
+    "mean_hue_deg": 324,
+    "hue_variety": 0.299
+   },
+   "movement": {
+    "movers": 16,
+    "pan_sweep_deg_median": 68.0,
+    "tilt_sweep_deg_median": 50.0,
+    "biggest_step_deg_in_one_frame": 54.7,
+    "biggest_step_deg_while_lit": 53.2,
+    "frames_stepping_over_8deg_while_lit": 2,
+    "mirror_symmetry_pan": -0.07,
+    "mirror_symmetry_tilt": 0.04
+   },
+   "flash": {
+    "luminance_peaks": 49,
+    "worst_luminance_peaks_in_1s": 9,
+    "full_white_flashes": 5,
+    "worst_white_flashes_in_1s": 3
+   },
+   "drop": {
+    "true_s": 30.3,
+    "labelled_drop_at_s": 30.4,
+    "caught": true,
+    "level_8s_before": 0.116,
+    "level_8s_after": 0.43
+   }
+  },
+  {
+   "track": "dj_mix_a_minor_to_e_flat",
+   "starts_s": 138.5,
+   "seconds": 77.5,
+   "sections": [
+    [
+     0.0,
+     "chorus"
+    ],
+    [
+     0.3,
+     "verse"
+    ],
+    [
+     4.1,
+     "chorus"
+    ],
+    [
+     13.7,
+     "verse"
+    ]
+   ],
+   "level": {
+    "rig_mean": 0.097,
+    "rig_p5": 0.028,
+    "rig_p95": 0.189,
+    "fixture_peak": 0.388,
+    "pct_time_dark": 2.2
+   },
+   "level_by_section": {
+    "chorus": 0.112,
+    "verse": 0.094
+   },
+   "group_mean_level": {
+    "bar_booth": 0.101,
+    "bar_wall": 0.101,
+    "beam_b": 0.08,
+    "mover_m": 0.079,
+    "par": 0.101,
+    "strobe_m": 0.15,
+    "strobe_w": 0.15,
+    "wash_f": 0.08
+   },
+   "group_level_correlation_mean": 0.911,
+   "within_group_spread": {
+    "bar_booth": 0.0,
+    "bar_wall": 0.0,
+    "beam_b": 0.12,
+    "mover_m": 0.119,
+    "par": 0.0,
+    "strobe_m": 0.0,
+    "strobe_w": 0.0,
+    "wash_f": 0.086
+   },
+   "colour": {
+    "saturation_mean": 0.241,
+    "mean_hue_deg": 309,
+    "hue_variety": 0.174
+   },
+   "movement": {
+    "movers": 16,
+    "pan_sweep_deg_median": 46.0,
+    "tilt_sweep_deg_median": 40.4,
+    "biggest_step_deg_in_one_frame": 39.4,
+    "biggest_step_deg_while_lit": 36.7,
+    "frames_stepping_over_8deg_while_lit": 6,
+    "mirror_symmetry_pan": -0.34,
+    "mirror_symmetry_tilt": 0.27
+   },
+   "flash": {
+    "luminance_peaks": 0,
+    "worst_luminance_peaks_in_1s": 0,
+    "full_white_flashes": 0,
+    "worst_white_flashes_in_1s": 0
+   }
+  }
+ ],
+ "label": "2026-11-17_before"
+}

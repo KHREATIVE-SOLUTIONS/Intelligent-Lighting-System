@@ -1,0 +1,4 @@
+CONTROL (venue_sim6.py): fresh boot, 14 s of dense music, no safety-profile call, then the drop track.
+sections=[(0.0, 'verse'), (4.4, 'breakdown'), (25.2, 'verse'), (32.3, 'buildup'), (36.4, 'verse')]
+8s before drop mean=0.099 | 12s after: mean=0.108 max=0.28 peaks>=20%=0 worst_in_1s=0
+Result: the drop is lost with no profile call, so the profile call is not the cause.

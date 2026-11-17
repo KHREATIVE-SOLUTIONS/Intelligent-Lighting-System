@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import type { MutableRefObject } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Box, IconButton, Typography, Card, CardContent, ButtonGroup, Button,
+  Box, IconButton, Typography, Card, CardContent, ButtonGroup, Button, MenuItem, TextField,
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
@@ -11,6 +11,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, PerspectiveCamera, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { demoApi, rigsApi } from '../../services/api';
+import type { DemoPresetSummary } from '../../services/api';
 import type { Rig, RigFixture } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
 import { audioWebSocket } from '../../services/websocket';
@@ -574,6 +575,11 @@ function Fixture3D({
 
       if (headRef.current) {
         const alpha = Math.min(1, controlAccumulator.current / FIXED_CONTROL_DT);
+        // A moving head pans its yoke about the vertical and tilts the head
+        // inside the yoke, so tilt has to be applied first and pan second:
+        // 'YXZ'. With three's default 'XYZ' the pan turned the head about its
+        // own beam, and no amount of pan moved a beam in this view.
+        headRef.current.rotation.order = 'YXZ';
         headRef.current.rotation.y = THREE.MathUtils.lerp(o.previousPanRad, o.currentPanRad, alpha);
         headRef.current.rotation.x = THREE.MathUtils.lerp(o.previousTiltRad, o.currentTiltRad, alpha);
       }
@@ -1157,7 +1163,14 @@ function Scene({
 
       {/* Haze particles for atmospheric effect */}
       <AtmosphereLayers width={rig.stage_width} depth={rig.stage_depth} height={rig.stage_height} />
-      <HazeParticles count={quality.hazeCount} spread={[rig.stage_width, rig.stage_height, rig.stage_depth]} />
+      {/* Keyed on the count: three cannot resize a buffer attribute in place, so
+          switching quality with the same geometry threw on every frame and froze
+          the view until the original quality was selected again. */}
+      <HazeParticles
+        key={`haze-${quality.hazeCount}`}
+        count={quality.hazeCount}
+        spread={[rig.stage_width, rig.stage_height, rig.stage_depth]}
+      />
 
       {/* Fixtures */}
       {rig.fixtures?.map((fixture, index) => (
@@ -1206,6 +1219,8 @@ export default function RigVisualizer() {
   const [cameraMode, setCameraMode] = useState<CameraMode>('iso');
   const [qualityMode, setQualityMode] = useState<QualityMode>('balanced');
   const isDemo = !id; // No rig ID = demo mode
+  const [demoPresets, setDemoPresets] = useState<DemoPresetSummary[]>([]);
+  const [demoPresetError, setDemoPresetError] = useState<string | null>(null);
 
   const {
     setUniverse,
@@ -1291,12 +1306,29 @@ export default function RigVisualizer() {
     try {
       // Through the shared axios instance, which is what attaches the operator
       // token; a bare fetch() here 401s on a box that has a password set.
-      setRig(await demoApi.getRig('pro_beam_room'));
+      // No preset is named: the backend answers with the demo rig its engine
+      // is running, so this view draws the rig whose state it receives.
+      setRig(await demoApi.getRig());
     } catch (error) {
       console.error('Failed to fetch demo rig:', error);
       setLoadError(`Failed to load demo rig: ${(error as any)?.message || 'unknown error'}`);
     } finally {
       setLoading(false);
+    }
+    demoApi.listPresets().then(setDemoPresets).catch(() => setDemoPresets([]));
+  };
+
+  // Put a different demo rig on the engine, then draw it. The order matters:
+  // drawing a rig the engine is not running would animate it with another
+  // rig's state.
+  const changeDemoPreset = async (name: string) => {
+    setDemoPresetError(null);
+    try {
+      await demoApi.applyPreset(name);
+      setRig(await demoApi.getRig(name));
+    } catch (error) {
+      const detail = (error as any)?.response?.data?.detail;
+      setDemoPresetError(typeof detail === 'string' ? detail : 'Could not switch the demo rig.');
     }
   };
 
@@ -1322,6 +1354,25 @@ export default function RigVisualizer() {
           <BackIcon />
         </IconButton>
         <Typography variant="h5">{rig.name}</Typography>
+        {isDemo && demoPresets.length > 0 && (
+          <TextField
+            select
+            size="small"
+            label="Demo rig"
+            value={demoPresets.some((d) => d.name === rig.venue) ? rig.venue : ''}
+            onChange={(event) => changeDemoPreset(event.target.value)}
+            sx={{ minWidth: 190 }}
+          >
+            {demoPresets.map((preset) => (
+              <MenuItem key={preset.name} value={preset.name}>
+                {preset.display_name} ({preset.total_fixtures})
+              </MenuItem>
+            ))}
+          </TextField>
+        )}
+        {demoPresetError && (
+          <Typography variant="body2" color="error.main">{demoPresetError}</Typography>
+        )}
         <ButtonGroup size="small" variant="outlined" sx={{ ml: 1 }}>
           <Button variant={cameraMode === 'iso' ? 'contained' : 'outlined'} onClick={() => setCameraMode('iso')}>Iso</Button>
           <Button variant={cameraMode === 'top' ? 'contained' : 'outlined'} onClick={() => setCameraMode('top')}>Top</Button>
