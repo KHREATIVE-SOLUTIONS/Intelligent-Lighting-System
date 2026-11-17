@@ -3,9 +3,16 @@ import type { LinkState } from './showHealth';
 // Keeps the 3D view on the demo rig the engine is running.
 //
 // The view is sent state for whatever rig the engine runs, so it has to draw
-// that rig and no other. The engine's rig can change without the view asking:
-// a restarted backend boots on its default demo rig, whatever was picked
-// before. An open view that carried on drawing the old pick showed one rig
+// that rig and no other. The engine's rig can change without the view asking,
+// in two ways:
+//
+// - A restarted backend boots on its default demo rig, whatever was picked
+//   before. The live socket drops and comes back: see onLinkRestored.
+// - Another tab, or a script, puts a different demo rig on the engine. Nothing
+//   drops; the status poll's next reading names the new rig: see
+//   onEngineOnAnotherRig.
+//
+// Either way an open view that carried on drawing its old pick showed one rig
 // while being sent another's state, and re-picking it did nothing, because
 // the chooser already said that name.
 //
@@ -40,6 +47,57 @@ export function onLinkRestored(link: LinkSource, callback: () => void): () => vo
       dropped = false;
       callback();
     }
+  });
+}
+
+/** What a status reading says about the rig the engine is running. */
+export interface EngineRigReport {
+  live_rig_name?: string | null;
+  live_rig_demo?: boolean;
+}
+
+/**
+ * True when the engine reports a demo rig other than the one drawn.
+ *
+ * False while a patched rig is live: the demo view cannot draw that one, and
+ * asking for "the engine's demo rig" would only fetch the default. False
+ * while nothing is drawn: loading the first rig is the page's own job.
+ */
+export function engineLeftDrawnRig(report: EngineRigReport | null, drawnVenue: string | null): boolean {
+  if (!report || !report.live_rig_demo || !report.live_rig_name) return false;
+  if (!drawnVenue) return false;
+  return report.live_rig_name !== drawnVenue;
+}
+
+/** The part of the health store this needs: the latest engine status reading. */
+export interface EngineReportStore {
+  subscribe(
+    listener: (state: { effects: EngineRigReport | null }, previous: { effects: EngineRigReport | null }) => void
+  ): () => void;
+}
+
+/**
+ * Calls back each time a new status reading shows the engine on a demo rig
+ * other than the one drawn: the rig was switched from another tab or by a
+ * script, with no drop in the link.
+ *
+ * It calls back on every such reading, not only the first, so an ask that
+ * failed is made again at the next poll. The name in the reading is only the
+ * reason to ask; what gets drawn is the answer to the ask.
+ *
+ * Returns the function that stops listening.
+ */
+export function onEngineOnAnotherRig(
+  store: EngineReportStore,
+  drawnVenue: () => string | null,
+  callback: () => void
+): () => void {
+  return store.subscribe((state, previous) => {
+    // The store changes many times a second for other reasons (every analysis
+    // message stamps it). Only a new status reading is of interest, and each
+    // poll that reaches the box stores a new one.
+    if (state.effects === previous.effects) return;
+    if (engineLeftDrawnRig(state.effects, drawnVenue())) callback();
   });
 }
 

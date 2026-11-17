@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createDemoRigFollower, onLinkRestored, settleRig } from '../utils/demoRigSync';
-import type { DemoRigSource, LinkSource } from '../utils/demoRigSync';
+import {
+  createDemoRigFollower,
+  engineLeftDrawnRig,
+  onEngineOnAnotherRig,
+  onLinkRestored,
+  settleRig,
+} from '../utils/demoRigSync';
+import type { DemoRigSource, EngineRigReport, LinkSource } from '../utils/demoRigSync';
 import type { LinkState } from '../utils/showHealth';
 
 // A stand-in for the live socket: holds a state and tells its listeners.
@@ -22,6 +28,38 @@ function fakeLink(initial: LinkState = 'idle') {
   };
   return link;
 }
+
+// A stand-in for the health store: holds the latest engine status reading,
+// and changes for other reasons too, as the real one does.
+function fakeHealthStore(initial: EngineRigReport | null = null) {
+  type State = { effects: EngineRigReport | null; lastAnalysisAt: number };
+  let state: State = { effects: initial, lastAnalysisAt: 0 };
+  const listeners = new Set<(state: State, previous: State) => void>();
+  const set = (next: State) => {
+    const previous = state;
+    state = next;
+    listeners.forEach((listener) => listener(state, previous));
+  };
+  return {
+    subscribe(listener: (state: State, previous: State) => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    // A status poll that reached the box: a new reading each time.
+    poll(report: EngineRigReport | null) {
+      set({ ...state, effects: report ? { ...report } : null });
+    },
+    // An analysis message arrived: the store changes, the reading does not.
+    analysis() {
+      set({ ...state, lastAnalysisAt: state.lastAnalysisAt + 1 });
+    },
+    listening: () => listeners.size,
+  };
+}
+
+const demoReading = (name: string): EngineRigReport => ({ live_rig_name: name, live_rig_demo: true });
 
 type DemoRig = { venue: string; fixtures: number[] };
 const rigOf = (venue: string, count = 2): DemoRig => ({
@@ -123,6 +161,98 @@ describe('onLinkRestored', () => {
   });
 });
 
+describe('engineLeftDrawnRig', () => {
+  it('is true when the engine reports another demo rig', () => {
+    expect(engineLeftDrawnRig(demoReading('small_nightclub'), 'club_night')).toBe(true);
+  });
+
+  it('is false when the engine reports the rig that is drawn', () => {
+    expect(engineLeftDrawnRig(demoReading('club_night'), 'club_night')).toBe(false);
+  });
+
+  it('is false while a patched rig is live', () => {
+    expect(engineLeftDrawnRig({ live_rig_name: 'Main room', live_rig_demo: false }, 'club_night')).toBe(false);
+  });
+
+  it('is false with no reading, no name, or nothing drawn', () => {
+    expect(engineLeftDrawnRig(null, 'club_night')).toBe(false);
+    expect(engineLeftDrawnRig({ live_rig_demo: true, live_rig_name: null }, 'club_night')).toBe(false);
+    expect(engineLeftDrawnRig(demoReading('club_night'), null)).toBe(false);
+  });
+});
+
+describe('onEngineOnAnotherRig', () => {
+  it('fires when a new reading names a demo rig other than the one drawn', () => {
+    const store = fakeHealthStore(demoReading('club_night'));
+    const changed = vi.fn();
+    onEngineOnAnotherRig(store, () => 'club_night', changed);
+
+    store.poll(demoReading('club_night'));
+    expect(changed).not.toHaveBeenCalled();
+
+    store.poll(demoReading('small_nightclub'));
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores store changes that are not a new reading', () => {
+    // The reading already disagrees with what is drawn, so only the "is this
+    // a new reading" check keeps the 45 messages a second from asking.
+    const store = fakeHealthStore(demoReading('small_nightclub'));
+    const changed = vi.fn();
+    onEngineOnAnotherRig(store, () => 'club_night', changed);
+
+    for (let i = 0; i < 45; i += 1) store.analysis();
+
+    expect(changed).not.toHaveBeenCalled();
+  });
+
+  it('fires on every reading while the view is still behind', () => {
+    const store = fakeHealthStore();
+    const changed = vi.fn();
+    onEngineOnAnotherRig(store, () => 'club_night', changed);
+
+    store.poll(demoReading('small_nightclub'));
+    store.poll(demoReading('small_nightclub'));
+
+    expect(changed).toHaveBeenCalledTimes(2);
+  });
+
+  it('compares with what is drawn at the time of the reading', () => {
+    const store = fakeHealthStore();
+    const changed = vi.fn();
+    let drawn = 'club_night';
+    onEngineOnAnotherRig(store, () => drawn, changed);
+
+    drawn = 'small_nightclub';
+    store.poll(demoReading('small_nightclub'));
+
+    expect(changed).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet while a patched rig is live', () => {
+    const store = fakeHealthStore();
+    const changed = vi.fn();
+    onEngineOnAnotherRig(store, () => 'club_night', changed);
+
+    store.poll({ live_rig_name: 'Main room', live_rig_demo: false });
+
+    expect(changed).not.toHaveBeenCalled();
+  });
+
+  it('stops listening when asked to', () => {
+    const store = fakeHealthStore();
+    const changed = vi.fn();
+    const stop = onEngineOnAnotherRig(store, () => 'club_night', changed);
+    expect(store.listening()).toBe(1);
+
+    stop();
+    store.poll(demoReading('small_nightclub'));
+
+    expect(store.listening()).toBe(0);
+    expect(changed).not.toHaveBeenCalled();
+  });
+});
+
 describe('settleRig', () => {
   it('keeps the rig already drawn when the answer is the same rig', () => {
     const drawn = rigOf('club_night', 34);
@@ -173,6 +303,68 @@ describe('the demo rig follows the engine', () => {
     await follower.pick('club_night');
     expect(engine.running).toBe('club_night');
     expect(drawn).toEqual(rigOf('club_night'));
+  });
+
+  it('draws a rig put on the engine from another tab, with no drop in the link', async () => {
+    const { engine, source } = fakeBackend('pro_beam_room');
+    const store = fakeHealthStore(demoReading('pro_beam_room'));
+    let drawn: DemoRig | null = null;
+    const follower = createDemoRigFollower<DemoRig>({ source, draw: (rig) => { drawn = settleRig(drawn, rig); } });
+    onEngineOnAnotherRig(store, () => (drawn ? drawn.venue : null), () => void follower.follow());
+    await follower.pick('club_night');
+    store.poll(demoReading('club_night'));
+    await settle();
+    expect(drawn).toEqual(rigOf('club_night'));
+    const asksSoFar = vi.mocked(source.getRig).mock.calls.length;
+
+    // Another tab switches the engine. The next status poll says so.
+    engine.running = 'small_nightclub';
+    store.poll(demoReading('small_nightclub'));
+    await settle();
+
+    expect(source.getRig).toHaveBeenLastCalledWith();
+    expect(drawn).toEqual(rigOf('small_nightclub'));
+    // This view applied nothing: the only apply is its own earlier pick.
+    expect(source.applyPreset).toHaveBeenCalledTimes(1);
+    expect(engine.running).toBe('small_nightclub');
+
+    // Once the view has caught up, later readings ask nothing.
+    store.poll(demoReading('small_nightclub'));
+    await settle();
+    expect(vi.mocked(source.getRig).mock.calls.length).toBe(asksSoFar + 1);
+
+    // And the rig that showed before can be picked again.
+    await follower.pick('club_night');
+    expect(engine.running).toBe('club_night');
+    expect(drawn).toEqual(rigOf('club_night'));
+  });
+
+  it('draws once when a restart is seen by the socket and the poll together', async () => {
+    const { engine, source } = fakeBackend('pro_beam_room');
+    const link = fakeLink('connected');
+    const store = fakeHealthStore(demoReading('pro_beam_room'));
+    const draws: DemoRig[] = [];
+    let drawn: DemoRig | null = null;
+    const follower = createDemoRigFollower<DemoRig>({
+      source,
+      draw: (rig) => {
+        drawn = settleRig(drawn, rig);
+        draws.push(rig);
+      },
+    });
+    onLinkRestored(link, () => void follower.follow());
+    onEngineOnAnotherRig(store, () => (drawn ? drawn.venue : null), () => void follower.follow());
+    await follower.pick('club_night');
+    draws.length = 0;
+
+    link.go('reconnecting');
+    engine.running = 'pro_beam_room';
+    link.go('connected');
+    store.poll(demoReading('pro_beam_room'));
+    await settle();
+
+    expect(draws).toEqual([rigOf('pro_beam_room')]);
+    expect(drawn).toEqual(rigOf('pro_beam_room'));
   });
 
   it('leaves the drawn rig alone after a blip with no restart', async () => {

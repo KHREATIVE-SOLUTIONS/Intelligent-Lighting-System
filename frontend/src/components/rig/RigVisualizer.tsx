@@ -14,8 +14,9 @@ import { demoApi, rigsApi } from '../../services/api';
 import type { DemoPresetSummary } from '../../services/api';
 import type { Rig, RigFixture } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
+import { useHealthStore } from '../../stores/healthStore';
 import { audioWebSocket } from '../../services/websocket';
-import { createDemoRigFollower, onLinkRestored, settleRig } from '../../utils/demoRigSync';
+import { createDemoRigFollower, onEngineOnAnotherRig, onLinkRestored, settleRig } from '../../utils/demoRigSync';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
 import { createBeatClock, ingestAnalysis } from './previs/beatClock';
 import type { BeatClock } from './previs/beatClock';
@@ -1371,16 +1372,22 @@ export default function RigVisualizer() {
   };
 
   // The demo rig drawn here follows the engine: this view is sent state for
-  // whatever rig the engine runs. A restarted backend boots on its default
-  // demo rig, whatever was picked before, so when the link comes back the
-  // view asks which rig is running and draws that. It never puts its old pick
-  // back on the engine; changing what the engine drives is the operator's call.
+  // whatever rig the engine runs, and that rig can change without this view
+  // asking. A restarted backend boots on its default demo rig, whatever was
+  // picked before; another tab or a script can put a different one on. So
+  // when the link comes back after dropping, and whenever the status poll
+  // names a demo rig other than the one drawn, the view asks which rig is
+  // running and draws that. It never puts its old pick back on the engine;
+  // changing what the engine drives is the operator's call.
   // `loading` stays out of it: that flag swaps the whole page for a line of
   // text, which would throw the canvas away on every blip in the link.
   // This one component serves the patched-rig route as well, so an answer
   // still on its way when the operator opens a patched rig is not drawn.
   const showingDemo = useRef(isDemo);
   showingDemo.current = isDemo;
+  // Refs, not state: the listeners below outlive any one render.
+  const drawnVenue = useRef<string | null>(null);
+  drawnVenue.current = rig?.venue ?? null;
   const demoRigFollower = useMemo(
     () =>
       createDemoRigFollower<Rig>({
@@ -1396,11 +1403,22 @@ export default function RigVisualizer() {
 
   useEffect(() => {
     if (!isDemo) return;
-    return onLinkRestored(audioWebSocket, () => {
+    const stopLink = onLinkRestored(audioWebSocket, () => {
       void demoRigFollower.follow();
       // A page opened while the box was down has no list for the chooser.
       demoApi.listPresets().then(setDemoPresets).catch(() => {});
     });
+    // Read straight from the store, not through a hook: it changes with every
+    // analysis message and this page must not re-render for that.
+    const stopPoll = onEngineOnAnotherRig(
+      useHealthStore,
+      () => drawnVenue.current,
+      () => void demoRigFollower.follow()
+    );
+    return () => {
+      stopLink();
+      stopPoll();
+    };
   }, [isDemo, demoRigFollower]);
 
   // Put a different demo rig on the engine, then draw it.
