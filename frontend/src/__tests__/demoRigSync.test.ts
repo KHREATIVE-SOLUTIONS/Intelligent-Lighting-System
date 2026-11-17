@@ -249,22 +249,34 @@ describe('the demo rig follows the engine', () => {
     expect(draw).toHaveBeenLastCalledWith(rigOf('club_night'));
   });
 
-  it('draws only the later of two overlapping picks', async () => {
-    const first = deferred<void>();
+  it('ends on the rig the engine took last when two picks overlap', async () => {
+    // Club Night is picked first but its apply is slow, so the engine takes
+    // Festival and then Club Night. The later pick is not the later apply.
+    const slow = deferred<void>();
+    const engine = { running: 'pro_beam_room' };
     const source: DemoRigSource<DemoRig> = {
-      getRig: vi.fn(async (preset?: string) => rigOf(preset ?? 'none')),
-      applyPreset: vi.fn((name: string) => (name === 'club_night' ? first.promise : Promise.resolve())),
+      getRig: vi.fn(async (preset?: string) => rigOf(preset ?? engine.running)),
+      applyPreset: vi.fn(async (name: string) => {
+        if (name === 'club_night') await slow.promise;
+        engine.running = name;
+      }),
     };
     const draw = vi.fn();
     const follower = createDemoRigFollower<DemoRig>({ source, draw });
 
-    const one = follower.pick('club_night');
+    const first = follower.pick('club_night');
     await follower.pick('festival');
-    first.resolve();
-    await one;
+    await settle();
+    // Nothing is drawn while the first pick is still out.
+    expect(draw).not.toHaveBeenCalled();
 
+    slow.resolve();
+    await first;
+    await settle();
+
+    expect(engine.running).toBe('club_night');
     expect(draw).toHaveBeenCalledTimes(1);
-    expect(draw).toHaveBeenLastCalledWith(rigOf('festival'));
+    expect(draw).toHaveBeenLastCalledWith(rigOf('club_night'));
   });
 
   it('asks the engine what it is running when a pick fails', async () => {

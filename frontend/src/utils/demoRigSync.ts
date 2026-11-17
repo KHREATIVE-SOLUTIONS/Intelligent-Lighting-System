@@ -78,7 +78,8 @@ export interface DemoRigFollower {
   follow(): Promise<boolean>;
   /**
    * The operator picked a rig: put it on the engine, then draw it. Rejects if
-   * the switch failed, after asking the engine what it is running instead.
+   * the switch failed. A pick that failed, or that overlapped another pick,
+   * ends by asking the engine what it is running and drawing that instead.
    */
   pick(name: string): Promise<void>;
 }
@@ -123,26 +124,31 @@ export function createDemoRigFollower<R>({
 
   async function pick(name: string): Promise<void> {
     const mine = ++picks;
+    const startedAlone = picksRunning === 0;
     picksRunning += 1;
-    let rig: R;
+    let rig: R | undefined;
+    let failure: { error: unknown } | null = null;
     try {
       // The order matters: drawing a rig the engine is not running would
       // animate it with another rig's state.
       await source.applyPreset(name);
       rig = await source.getRig(name);
     } catch (error) {
-      picksRunning -= 1;
-      // The apply may have landed before the failure, or not at all.
-      if (picksRunning === 0) void follow();
-      throw error;
+      failure = { error };
     }
     picksRunning -= 1;
-    if (mine === picks) {
-      draw(rig);
-    } else if (picksRunning === 0) {
-      // A later pick started and has already ended without drawing.
-      void follow();
+
+    // A pick that ran start to finish with no other pick beside it, and
+    // worked, knows what the engine is on: the rig it applied.
+    if (!failure && startedAlone && mine === picks) {
+      draw(rig as R);
+      return;
     }
+    // Otherwise nobody here knows. A failed pick's apply may have landed or
+    // not, and two picks that overlapped can have reached the engine in
+    // either order. So once the last of them is done, ask the engine.
+    if (picksRunning === 0) void follow();
+    if (failure) throw failure.error;
   }
 
   return { follow, pick };
