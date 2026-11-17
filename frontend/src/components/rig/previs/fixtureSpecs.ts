@@ -50,8 +50,7 @@ export type FixtureSpec = {
   hangHeight: number;
   /** Light source down to the underside of the feet, when standing. */
   standHeight: number;
-  /** Radius of the lit aperture and its distance in front of the pivot. */
-  lensRadius: number;
+  /** How far in front of the light source the lens face is. */
   lensOffset: number;
 };
 
@@ -69,7 +68,6 @@ function moverSpec(kind: FixtureModelKind, dims: MoverDims): FixtureSpec {
     mover: dims,
     hangHeight: yokeTop + dims.baseHeight + CLAMP_HEIGHT,
     standHeight: yokeTop + dims.baseHeight + FOOT_HEIGHT,
-    lensRadius: dims.lensRadius,
     lensOffset: dims.barrelFront,
   };
 }
@@ -101,19 +99,19 @@ export const FIXTURE_SPECS: Record<FixtureModelKind, FixtureSpec> = {
   }),
   // LED par: a short can in a double bracket.
   led_par: {
-    kind: 'led_par', mover: null, hangHeight: 0.27, standHeight: 0.3, lensRadius: 0.094, lensOffset: 0.1,
+    kind: 'led_par', mover: null, hangHeight: 0.27, standHeight: 0.3, lensOffset: 0.1,
   },
   // One-metre LED batten.
   led_bar: {
-    kind: 'led_bar', mover: null, hangHeight: 0.18, standHeight: 0.075, lensRadius: 0.03, lensOffset: 0.048,
+    kind: 'led_bar', mover: null, hangHeight: 0.18, standHeight: 0.075, lensOffset: 0.048,
   },
   // Strobe panel.
   strobe: {
-    kind: 'strobe', mover: null, hangHeight: 0.24, standHeight: 0.2, lensRadius: 0.05, lensOffset: 0.055,
+    kind: 'strobe', mover: null, hangHeight: 0.24, standHeight: 0.2, lensOffset: 0.055,
   },
   // Anything else: a small flood.
   other: {
-    kind: 'other', mover: null, hangHeight: 0.22, standHeight: 0.19, lensRadius: 0.05, lensOffset: 0.07,
+    kind: 'other', mover: null, hangHeight: 0.22, standHeight: 0.19, lensOffset: 0.07,
   },
 };
 

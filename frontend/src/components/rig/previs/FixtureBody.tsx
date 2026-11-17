@@ -22,7 +22,7 @@ const unitPipe = paint(place(cylY(0.022, 0.022, 1, 10), [0, 0.5, 0]), '#8f949c')
 const unitBlock = paint(place(box(1, 1, 1), [0, 0.5, 0]), '#1d1e22');
 const unitArm = paint(place(box(1, 0.03, 0.03), [0.5, 0, 0]), '#8f949c');
 const wallPlate = merge([
-  paint(place(box(0.012, 0.16, 0.1), [-0.006, -0.03, 0]), '#8f949c'),
+  paint(place(box(0.035, 0.16, 0.1), [-0.0175, -0.03, 0]), '#8f949c'),
 ]);
 const poleFoot = merge([
   paint(place(cylY(0.16, 0.2, 0.03, 20), [0, 0.015, 0]), '#1d1e22'),

@@ -22,6 +22,10 @@ export type CrowdPerson = {
   amp: number;
   /** Arms go up once the room's energy passes this. */
   armsAbove: number;
+  /** Which arms go up: both, or just one. */
+  arms: 'both' | 'left' | 'right';
+  /** How high they reach, 0 to 1: from a loose wave to straight up. */
+  armReach: number;
   /** Jumps in a drop rather than just bouncing. */
   jumper: boolean;
   /** Offset for the slow idle sway. */
@@ -45,11 +49,16 @@ const HAIRS = [
   '#b99a5c', '#6e2a1c', '#55585f', '#2a3550', '#7a2f5a', '#c9c2b4',
 ];
 
-/** People per square metre the floor is allowed to hold. */
-const MAX_DENSITY = 2.6;
-/** Elbow room: closer than this to someone already placed is a miss. */
-const SPACING_AT_BOOTH = 0.43;
-const SPACING_AT_BACK = 0.88;
+/** People per square metre the floor is allowed to hold: a packed club. */
+const MAX_DENSITY = 4;
+/**
+ * Elbow room: closer than this to someone already placed is a miss. The front
+ * is always tight. The back opens out, less so the more people are asked for,
+ * so a bigger crowd fills the floor instead of stopping short.
+ */
+const SPACING_AT_BOOTH = 0.42;
+const SPACING_AT_BACK_MAX = 0.95;
+const SPACING_AT_BACK_MIN = 0.45;
 
 /** How many people fit, whatever the quality mode asks for. */
 export function crowdCapacity(layout: ClubLayout): number {
@@ -65,6 +74,11 @@ export function placeCrowd(layout: ClubLayout, requested: number): CrowdPerson[]
   if (target === 0 || width <= 0 || depth <= 0) return [];
 
   const random = seededRandom(0x5eed + Math.round(width * 100) * 31 + Math.round(depth * 100));
+  const density = target / (width * depth);
+  const spacingAtBack = Math.min(
+    SPACING_AT_BACK_MAX,
+    Math.max(SPACING_AT_BACK_MIN, SPACING_AT_BACK_MAX - 0.14 * density),
+  );
   const camera = layout.floorCamera;
   const people: CrowdPerson[] = [];
   const margin = 0.28;
@@ -78,7 +92,7 @@ export function placeCrowd(layout: ClubLayout, requested: number): CrowdPerson[]
 
     if (Math.hypot(x - camera.x, z - camera.z) < camera.clearRadius) continue;
 
-    const spacing = SPACING_AT_BOOTH + (SPACING_AT_BACK - SPACING_AT_BOOTH) * along;
+    const spacing = SPACING_AT_BOOTH + (spacingAtBack - SPACING_AT_BOOTH) * along;
     let clear = true;
     for (const other of people) {
       if (Math.abs(other.x - x) < spacing && Math.abs(other.z - z) < spacing
@@ -102,7 +116,9 @@ export function placeCrowd(layout: ClubLayout, requested: number): CrowdPerson[]
       phase: (random() - 0.5) * 0.14,
       rate: random() < 0.14 ? 0.5 : 1,
       amp: 0.6 + random() * 0.8,
-      armsAbove: 0.66 + random() * 0.5,
+      armsAbove: 0.74 + random() * 0.7,
+      arms: (['both', 'both', 'left', 'right'] as const)[Math.floor(random() * 4)],
+      armReach: random(),
       jumper: random() < 0.45,
       idle: random() * Math.PI * 2,
       build: 0.88 + random() * 0.28,

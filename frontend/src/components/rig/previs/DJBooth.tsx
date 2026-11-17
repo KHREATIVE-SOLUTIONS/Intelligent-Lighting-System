@@ -200,11 +200,11 @@ function buildDJ(leftHand: Vec3, rightHand: Vec3): { body: THREE.BufferGeometry;
   // Head, modelled about the neck so it can nod.
   const skull = new THREE.SphereGeometry(0.102, 14, 10);
   skull.scale(1, 1.14, 1);
-  const hair = new THREE.SphereGeometry(0.108, 14, 6, 0, Math.PI * 2, 0, Math.PI * 0.52);
+  const hair = new THREE.SphereGeometry(0.108, 14, 6, 0, Math.PI * 2, 0, Math.PI * 0.42);
   const band = new THREE.TorusGeometry(0.116, 0.013, 6, 16, Math.PI);
   const head = merge([
     paint(place(skull, [0, 0.125, 0]), SKIN),
-    paint(place(hair, [0, 0.135, -0.006]), '#1c1512'),
+    paint(place(hair, [0, 0.14, -0.012], [-0.55, 0, 0]), '#1c1512'),
     paint(place(band, [0, 0.13, 0]), '#101013'),
     paint(place(cylX(0.045, 0.036, 14), [-0.118, 0.12, 0]), '#101013'),
     paint(place(cylX(0.045, 0.036, 14), [0.118, 0.12, 0]), '#101013'),

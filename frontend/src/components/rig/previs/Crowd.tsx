@@ -69,7 +69,7 @@ function getPersonGeometry(): PersonGeometry {
   ]);
 
   // Modelled hanging from the shoulder, which is the origin.
-  const arm = merge([paint(capsule([0, 0, 0], [0, -0.54, 0], 0.042, 6), '#ffffff')]);
+  const arm = merge([paint(capsule([0, 0, 0], [0, -0.54, 0], 0.036, 6), '#ffffff')]);
 
   personGeometry = { body, head, hair, arm };
   return personGeometry;
@@ -178,11 +178,13 @@ function CrowdInstances({ people, clock }: { people: CrowdPerson[]; clock: Mutab
       const up = armsUp[i];
       for (let a = 0; a < 2; a += 1) {
         const side = a === 0 ? -1 : 1;
+        // Some people only ever put one arm up.
+        const raise = p.arms === 'both' || (p.arms === 'left') === (side === -1) ? up : 0;
         // Down: a small swing in time. Up: overhead and a little forward,
         // pumping on the beat.
         const restX = side * 0.16 * swing * (0.3 + drive);
-        const upX = -2.75 + 0.32 * onBeat;
-        s.armEuler.set(restX + (upX - restX) * up, 0, side * (0.07 + 0.2 * up));
+        const upX = -(2.3 + 0.55 * p.armReach) + 0.32 * onBeat;
+        s.armEuler.set(restX + (upX - restX) * raise, 0, side * (0.07 + 0.2 * raise));
         s.local.makeRotationFromEuler(s.armEuler);
         s.local.setPosition(side * SHOULDER_X, SHOULDER_Y, 0);
         arms.setMatrixAt(i * 2 + a, s.out.multiplyMatrices(s.bodyMatrix, s.local));

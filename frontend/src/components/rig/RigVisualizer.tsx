@@ -185,29 +185,29 @@ function describeFixture(fixture: RigFixture, channelMap: Record<string, number>
   };
 }
 
+// Floor light from a fixture, for a beam level of 0 to 1. Below the threshold
+// the spot light is off, as it was when it was unmounted instead.
+const SPOT_LIGHT_THRESHOLD = 0.08;
+function spotIntensityFor(level: number): number {
+  return level > SPOT_LIGHT_THRESHOLD ? level * 8 : 0;
+}
+
 // ============================================================================
 // VOLUMETRIC BEAM COMPONENT
 // ============================================================================
 
-// `sourceRadius` and `sourceOffset` start the beam at the lens rather than at a
-// point inside the head: the radius of the lit aperture and how far in front of
-// the pivot it sits. Both zero gives the plain cone from the pivot.
 function BeamCone({
   color,
   intensity,
   beamAngle,
   beamLength,
   segments,
-  sourceRadius = 0,
-  sourceOffset = 0,
 }: {
   color: THREE.Color;
   intensity: number;
   beamAngle: number;
   beamLength: number;
   segments: number;
-  sourceRadius?: number;
-  sourceOffset?: number;
 }) {
   const materialRef = useRef<THREE.ShaderMaterial>(null);
 
@@ -231,8 +231,8 @@ function BeamCone({
   if (intensity < 0.015) return null;
 
   return (
-    <mesh position={[0, -sourceOffset - beamLength / 2, 0]}>
-      <cylinderGeometry args={[sourceRadius, sourceRadius + topRadius, beamLength, segments, 1, true]} />
+    <mesh position={[0, -beamLength / 2, 0]}>
+      <coneGeometry args={[topRadius, beamLength, segments, 1, true]} />
       <shaderMaterial
         ref={materialRef}
         vertexShader={BEAM_VERTEX_SHADER}
@@ -510,7 +510,7 @@ function Fixture3D({
       : THREE.MathUtils.clamp(finalSpotAngleDeg, 2.5, 11.5);
     if (spotRef.current) {
       spotRef.current.color.setRGB(s.r, s.g, s.b);
-      spotRef.current.intensity = effectiveIntensity * 8;
+      spotRef.current.intensity = spotIntensityFor(effectiveIntensity);
       spotRef.current.angle = THREE.MathUtils.degToRad(finalSpotAngleDeg); // Narrower to wider with zoom
     }
 
@@ -697,26 +697,30 @@ function Fixture3D({
         {/* Housing and the lit lens; the lens material is driven in useFrame */}
         <FixtureHead kind={modelKind} lensRef={lensRef} lensUp={lensUp} />
 
-        {/* Volumetric beam cone, leaving from the lens */}
+        {/* Volumetric beam cone */}
         <BeamCone
           color={beamColor}
           intensity={beamIntensity}
           beamAngle={defaultBeamAngleDeg}
           beamLength={beamLength}
           segments={beamSegments}
-          sourceRadius={lensUp ? 0 : modelSpec.lensRadius}
-          sourceOffset={lensUp ? 0 : modelSpec.lensOffset}
         />
 
-        {/* SpotLight for floor color projection (cap count for performance) */}
-        {fixtureIndex < spotCap && beamIntensity > 0.08 && (
+        {/* SpotLight for floor color projection (cap count for performance).
+            It stays mounted and is switched with its intensity. Mounting it
+            only while the fixture was lit changed the number of lights in the
+            scene every time a fixture faded or strobed, and three.js builds a
+            new shader for every lit material at each new count: 168 shaders
+            in 100 seconds of music, each a freeze of a second or more the
+            first time a machine meets it. */}
+        {fixtureIndex < spotCap && (
           <>
             <spotLight
               ref={spotRef}
               position={[0, -modelSpec.lensOffset - 0.02, 0]}
               angle={0.3}
               penumbra={0.6}
-              intensity={beamIntensity * 8}
+              intensity={spotIntensityFor(beamIntensity)}
               color={beamColor}
               castShadow={fixtureIndex < 4}
               shadow-mapSize-width={256}
