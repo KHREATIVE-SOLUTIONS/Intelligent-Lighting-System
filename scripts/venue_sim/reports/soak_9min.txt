@@ -1,0 +1,12 @@
+start rss/threads/cpu_s = (350.4, 63, 4.5)
+min  1: rss/threads/cpu_s=(351.6, 58, 15.3) fps=40.0 gap_p99=33.8 gap_max=104.1 rig_mean=0.104 rig_max=0.258 dark%=1.0 rig_flash_worst_1s=0.0 stray=0 send_errors=0 log_kb=8 ws_msgs=2900
+min  2: rss/threads/cpu_s=(351.9, 57, 26.4) fps=40.0 gap_p99=33.8 gap_max=53.4 rig_mean=0.065 rig_max=0.268 dark%=27.1 rig_flash_worst_1s=0.0 stray=0 send_errors=0 log_kb=11 ws_msgs=2903
+min  3: rss/threads/cpu_s=(351.9, 55, 37.5) fps=40.0 gap_p99=33.7 gap_max=54.2 rig_mean=0.098 rig_max=0.26 dark%=3.9 rig_flash_worst_1s=0.0 stray=0 send_errors=0 log_kb=14 ws_msgs=2889
+min  4: rss/threads/cpu_s=(350.9, 55, 49.2) fps=40.0 gap_p99=33.7 gap_max=57.2 rig_mean=0.07 rig_max=0.291 dark%=23.8 rig_flash_worst_1s=0.0 stray=0 send_errors=0 log_kb=18 ws_msgs=2914
+min  5: rss/threads/cpu_s=(351.9, 55, 61.2) fps=40.0 gap_p99=33.7 gap_max=99.8 rig_mean=0.093 rig_max=0.262 dark%=9.5 rig_flash_worst_1s=0.0 stray=0 send_errors=0 log_kb=21 ws_msgs=2884
+min  6: rss/threads/cpu_s=(352.4, 55, 71.8) fps=40.0 gap_p99=33.8 gap_max=87.0 rig_mean=0.121 rig_max=1.0 dark%=18.0 rig_flash_worst_1s=4.0 stray=0 send_errors=0 log_kb=24 ws_msgs=2887
+min  7: rss/threads/cpu_s=(352.3, 52, 82.5) fps=40.0 gap_p99=33.8 gap_max=55.1 rig_mean=0.088 rig_max=0.28 dark%=15.4 rig_flash_worst_1s=0.0 stray=0 send_errors=0 log_kb=28 ws_msgs=2891
+min  8: rss/threads/cpu_s=(352.3, 51, 93.8) fps=40.0 gap_p99=33.7 gap_max=63.9 rig_mean=0.13 rig_max=1.0 dark%=12.1 rig_flash_worst_1s=4.0 stray=0 send_errors=0 log_kb=31 ws_msgs=2901
+min  9: rss/threads/cpu_s=(352.4, 51, 103.6) fps=40.0 gap_p99=33.8 gap_max=69.1 rig_mean=0.083 rig_max=0.248 dark%=21.2 rig_flash_worst_1s=0.0 stray=0 send_errors=0 log_kb=34 ws_msgs=2885
+end rss/threads/cpu_s = (352.3, 51, 110.8); tracks played=10; capture anomalies={}
+exit=0

@@ -1,0 +1,958 @@
+[
+ {
+  "id": 1,
+  "name": "Front Wash 1",
+  "universe": 0,
+  "address": 1,
+  "group": "Front Wash",
+  "zone": "stage_center",
+  "profile": "ADJ Dotz Par",
+  "ftype": "led_par",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 2,
+  "name": "Front Wash 2",
+  "universe": 0,
+  "address": 4,
+  "group": "Front Wash",
+  "zone": "stage_center",
+  "profile": "ADJ Dotz Par",
+  "ftype": "led_par",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 3,
+  "name": "Front Wash 3",
+  "universe": 0,
+  "address": 7,
+  "group": "Front Wash",
+  "zone": "stage_center",
+  "profile": "ADJ Dotz Par",
+  "ftype": "led_par",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 4,
+  "name": "Front Wash 4",
+  "universe": 0,
+  "address": 10,
+  "group": "Front Wash",
+  "zone": "stage_center",
+  "profile": "ADJ Dotz Par",
+  "ftype": "led_par",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 5,
+  "name": "Front Wash 5",
+  "universe": 0,
+  "address": 13,
+  "group": "Front Wash",
+  "zone": "stage_center",
+  "profile": "ADJ Dotz Par",
+  "ftype": "led_par",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 6,
+  "name": "Front Wash 6",
+  "universe": 0,
+  "address": 16,
+  "group": "Front Wash",
+  "zone": "stage_center",
+  "profile": "ADJ Dotz Par",
+  "ftype": "led_par",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 7,
+  "name": "Moving Heads 1",
+  "universe": 0,
+  "address": 19,
+  "group": "Moving Heads",
+  "zone": null,
+  "profile": "Generic Moving Head 200W",
+  "ftype": "moving_head",
+  "mode": "Standard (16ch)",
+  "channel_count": 16,
+  "pan_range": 540.0,
+  "tilt_range": 270.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "pan",
+    "name": "Pan",
+    "default": 128,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "pan_fine",
+    "name": "Pan Fine",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "tilt",
+    "name": "Tilt",
+    "default": 128,
+    "is_fine": false
+   },
+   {
+    "offset": 3,
+    "type": "tilt_fine",
+    "name": "Tilt Fine",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 4,
+    "type": "speed",
+    "name": "Pan/Tilt Speed",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 5,
+    "type": "dimmer",
+    "name": "Dimmer",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 6,
+    "type": "shutter",
+    "name": "Shutter/Strobe",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 7,
+    "type": "red",
+    "name": "Red",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 8,
+    "type": "green",
+    "name": "Green",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 9,
+    "type": "blue",
+    "name": "Blue",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 10,
+    "type": "white",
+    "name": "White",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 11,
+    "type": "color_wheel",
+    "name": "Color Wheel",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 12,
+    "type": "gobo",
+    "name": "Gobo Wheel",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 13,
+    "type": "gobo_rotation",
+    "name": "Gobo Rotation",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 14,
+    "type": "prism",
+    "name": "Prism",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 15,
+    "type": "focus",
+    "name": "Focus",
+    "default": 128,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 8,
+  "name": "Moving Heads 2",
+  "universe": 0,
+  "address": 35,
+  "group": "Moving Heads",
+  "zone": null,
+  "profile": "Generic Moving Head 200W",
+  "ftype": "moving_head",
+  "mode": "Standard (16ch)",
+  "channel_count": 16,
+  "pan_range": 540.0,
+  "tilt_range": 270.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "pan",
+    "name": "Pan",
+    "default": 128,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "pan_fine",
+    "name": "Pan Fine",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "tilt",
+    "name": "Tilt",
+    "default": 128,
+    "is_fine": false
+   },
+   {
+    "offset": 3,
+    "type": "tilt_fine",
+    "name": "Tilt Fine",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 4,
+    "type": "speed",
+    "name": "Pan/Tilt Speed",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 5,
+    "type": "dimmer",
+    "name": "Dimmer",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 6,
+    "type": "shutter",
+    "name": "Shutter/Strobe",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 7,
+    "type": "red",
+    "name": "Red",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 8,
+    "type": "green",
+    "name": "Green",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 9,
+    "type": "blue",
+    "name": "Blue",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 10,
+    "type": "white",
+    "name": "White",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 11,
+    "type": "color_wheel",
+    "name": "Color Wheel",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 12,
+    "type": "gobo",
+    "name": "Gobo Wheel",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 13,
+    "type": "gobo_rotation",
+    "name": "Gobo Rotation",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 14,
+    "type": "prism",
+    "name": "Prism",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 15,
+    "type": "focus",
+    "name": "Focus",
+    "default": 128,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 9,
+  "name": "Moving Heads 3",
+  "universe": 0,
+  "address": 51,
+  "group": "Moving Heads",
+  "zone": null,
+  "profile": "Generic Moving Head 200W",
+  "ftype": "moving_head",
+  "mode": "Standard (16ch)",
+  "channel_count": 16,
+  "pan_range": 540.0,
+  "tilt_range": 270.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "pan",
+    "name": "Pan",
+    "default": 128,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "pan_fine",
+    "name": "Pan Fine",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "tilt",
+    "name": "Tilt",
+    "default": 128,
+    "is_fine": false
+   },
+   {
+    "offset": 3,
+    "type": "tilt_fine",
+    "name": "Tilt Fine",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 4,
+    "type": "speed",
+    "name": "Pan/Tilt Speed",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 5,
+    "type": "dimmer",
+    "name": "Dimmer",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 6,
+    "type": "shutter",
+    "name": "Shutter/Strobe",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 7,
+    "type": "red",
+    "name": "Red",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 8,
+    "type": "green",
+    "name": "Green",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 9,
+    "type": "blue",
+    "name": "Blue",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 10,
+    "type": "white",
+    "name": "White",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 11,
+    "type": "color_wheel",
+    "name": "Color Wheel",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 12,
+    "type": "gobo",
+    "name": "Gobo Wheel",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 13,
+    "type": "gobo_rotation",
+    "name": "Gobo Rotation",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 14,
+    "type": "prism",
+    "name": "Prism",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 15,
+    "type": "focus",
+    "name": "Focus",
+    "default": 128,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 10,
+  "name": "Moving Heads 4",
+  "universe": 0,
+  "address": 67,
+  "group": "Moving Heads",
+  "zone": null,
+  "profile": "Generic Moving Head 200W",
+  "ftype": "moving_head",
+  "mode": "Standard (16ch)",
+  "channel_count": 16,
+  "pan_range": 540.0,
+  "tilt_range": 270.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "pan",
+    "name": "Pan",
+    "default": 128,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "pan_fine",
+    "name": "Pan Fine",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "tilt",
+    "name": "Tilt",
+    "default": 128,
+    "is_fine": false
+   },
+   {
+    "offset": 3,
+    "type": "tilt_fine",
+    "name": "Tilt Fine",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 4,
+    "type": "speed",
+    "name": "Pan/Tilt Speed",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 5,
+    "type": "dimmer",
+    "name": "Dimmer",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 6,
+    "type": "shutter",
+    "name": "Shutter/Strobe",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 7,
+    "type": "red",
+    "name": "Red",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 8,
+    "type": "green",
+    "name": "Green",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 9,
+    "type": "blue",
+    "name": "Blue",
+    "default": 255,
+    "is_fine": false
+   },
+   {
+    "offset": 10,
+    "type": "white",
+    "name": "White",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 11,
+    "type": "color_wheel",
+    "name": "Color Wheel",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 12,
+    "type": "gobo",
+    "name": "Gobo Wheel",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 13,
+    "type": "gobo_rotation",
+    "name": "Gobo Rotation",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 14,
+    "type": "prism",
+    "name": "Prism",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 15,
+    "type": "focus",
+    "name": "Focus",
+    "default": 128,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 11,
+  "name": "Backdrop Bars 1",
+  "universe": 0,
+  "address": 83,
+  "group": "Backdrop Bars",
+  "zone": null,
+  "profile": "ADJ Ultra HEX Bar 12",
+  "ftype": "led_bar",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 12,
+  "name": "Backdrop Bars 2",
+  "universe": 0,
+  "address": 86,
+  "group": "Backdrop Bars",
+  "zone": null,
+  "profile": "ADJ Ultra HEX Bar 12",
+  "ftype": "led_bar",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 13,
+  "name": "Floor Uplights 1",
+  "universe": 0,
+  "address": 89,
+  "group": "Floor Uplights",
+  "zone": null,
+  "profile": "ADJ Dotz Par",
+  "ftype": "led_par",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 14,
+  "name": "Floor Uplights 2",
+  "universe": 0,
+  "address": 92,
+  "group": "Floor Uplights",
+  "zone": null,
+  "profile": "ADJ Dotz Par",
+  "ftype": "led_par",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 15,
+  "name": "Floor Uplights 3",
+  "universe": 0,
+  "address": 95,
+  "group": "Floor Uplights",
+  "zone": null,
+  "profile": "ADJ Dotz Par",
+  "ftype": "led_par",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ },
+ {
+  "id": 16,
+  "name": "Floor Uplights 4",
+  "universe": 0,
+  "address": 98,
+  "group": "Floor Uplights",
+  "zone": null,
+  "profile": "ADJ Dotz Par",
+  "ftype": "led_par",
+  "mode": "3-Channel",
+  "channel_count": 3,
+  "pan_range": 0.0,
+  "tilt_range": 0.0,
+  "channels": [
+   {
+    "offset": 0,
+    "type": "red",
+    "name": "Red",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 1,
+    "type": "green",
+    "name": "Green",
+    "default": 0,
+    "is_fine": false
+   },
+   {
+    "offset": 2,
+    "type": "blue",
+    "name": "Blue",
+    "default": 0,
+    "is_fine": false
+   }
+  ]
+ }
+]

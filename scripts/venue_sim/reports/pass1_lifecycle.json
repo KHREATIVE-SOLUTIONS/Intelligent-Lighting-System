@@ -1,0 +1,2381 @@
+{
+ "phases": {
+  "P0_fresh_install_no_rig": {
+   "packets": 0,
+   "universes_on_wire": []
+  },
+  "P1_rig_live_no_audio_yet": {
+   "duration_s": 6.01,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 241,
+     "fps": 40.1,
+     "gap_ms_p50": 29.1,
+     "gap_ms_p99": 33.0,
+     "gap_ms_max": 33.5,
+     "seq_values_distinct": 241,
+     "seq_skips": 1
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.0,
+    "rig_min": 0.0,
+    "rig_max": 0.0,
+    "fixture_peak_max": 0.0,
+    "fixtures_ever_lit": 0,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 100.0
+   },
+   "dimmer_channel_max": 0,
+   "flash": {
+    "rig_flash_edges": 0,
+    "rig_worst_flashes_in_1s": 0.0,
+    "fixture_worst_flashes_in_1s": 0.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.0
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     964
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 22,
+     "min": 0,
+     "max": 154
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 22,
+     "min": 0,
+     "max": 154
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 12,
+     "min": 122,
+     "max": 133
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 239,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 22,
+     "min": 0,
+     "max": 154
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 19,
+     "min": 120,
+     "max": 138
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 240,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 4.4,
+    "pan_range_used_pct_max": 4.4,
+    "tilt_range_used_pct_median": 7.1,
+    "pan_speed_p99_pct_range_per_s": 22.0
+   }
+  },
+  "P2_music_whole_track": {
+   "duration_s": 54.3,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 2172,
+     "fps": 40.0,
+     "gap_ms_p50": 29.8,
+     "gap_ms_p99": 33.6,
+     "gap_ms_max": 64.3,
+     "seq_values_distinct": 255,
+     "seq_skips": 8
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.146,
+    "rig_min": 0.0,
+    "rig_max": 1.0,
+    "fixture_peak_max": 1.0,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 11.2
+   },
+   "dimmer_channel_max": 255,
+   "flash": {
+    "rig_flash_edges": 27,
+    "rig_worst_flashes_in_1s": 5.0,
+    "fixture_worst_flashes_in_1s": 5.0,
+    "fixtures_flashing_over_3_per_s": 16,
+    "rig_energy_share_3_20hz": 0.096
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     8688
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 201,
+     "min": 0,
+     "max": 255
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 155,
+     "min": 0,
+     "max": 255
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 180,
+     "min": 0,
+     "max": 255
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 40,
+     "min": 108,
+     "max": 147
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 256,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 244,
+     "min": 0,
+     "max": 255
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 54,
+     "min": 104,
+     "max": 157
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 256,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 12.6,
+    "pan_range_used_pct_max": 15.6,
+    "tilt_range_used_pct_median": 20.8,
+    "pan_speed_p99_pct_range_per_s": 174.6
+   },
+   "beat_alignment": {
+    "beats": 112,
+    "beats_with_visible_attack": 85,
+    "attack_offset_ms_median": 77.0,
+    "attack_offset_ms_iqr": 25.0,
+    "xcorr_peak_lag_ms": 75,
+    "xcorr_peak_z": 3.66
+   },
+   "audio": {
+    "analysis_messages": 2616,
+    "top_level_keys": [
+     "audio_fingerprint_match",
+     "beat",
+     "detected_genre",
+     "frequency",
+     "lighting",
+     "look_spec",
+     "mood",
+     "timestamp",
+     "type"
+    ],
+    "bpm_median_second_half": 127.8,
+    "bpm_first_reported": 120.0,
+    "lighting_keys": [
+     "dimmer",
+     "dmx_frame",
+     "dmx_frames",
+     "dmx_universe",
+     "fixtures",
+     "genre",
+     "movement",
+     "pro_effects",
+     "section",
+     "section_intensity",
+     "state"
+    ],
+    "lighting.state_sequence": [
+     "auto"
+    ],
+    "lighting.section_sequence": [
+     "breakdown",
+     "drop",
+     "chorus",
+     "verse",
+     "drop",
+     "chorus",
+     "verse",
+     "drop",
+     "chorus"
+    ],
+    "lighting.genre_sequence": [
+     "edm"
+    ],
+    "lighting.movement_sequence": [
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto",
+     "none",
+     "auto"
+    ]
+   }
+  },
+  "P2a_intro_12s": {
+   "duration_s": 12.0,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 480,
+     "fps": 40.0,
+     "gap_ms_p50": 29.7,
+     "gap_ms_p99": 33.4,
+     "gap_ms_max": 34.1,
+     "seq_values_distinct": 255,
+     "seq_skips": 2
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.023,
+    "rig_min": 0.004,
+    "rig_max": 0.197,
+    "fixture_peak_max": 0.198,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 33.3
+   },
+   "dimmer_channel_max": 70,
+   "flash": {
+    "rig_flash_edges": 0,
+    "rig_worst_flashes_in_1s": 0.0,
+    "fixture_worst_flashes_in_1s": 0.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.205
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     1920
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 69,
+     "min": 1,
+     "max": 201
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 34,
+     "min": 1,
+     "max": 70
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 75,
+     "min": 1,
+     "max": 187
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 34,
+     "min": 111,
+     "max": 144
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 256,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 81,
+     "min": 1,
+     "max": 187
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 48,
+     "min": 104,
+     "max": 151
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 256,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 12.6,
+    "pan_range_used_pct_max": 12.6,
+    "tilt_range_used_pct_median": 18.5,
+    "pan_speed_p99_pct_range_per_s": 184.2
+   },
+   "beat_alignment": {
+    "beats": 28,
+    "beats_with_visible_attack": 6,
+    "attack_offset_ms_median": 64.0,
+    "attack_offset_ms_iqr": 25.0,
+    "xcorr_peak_lag_ms": 75,
+    "xcorr_peak_z": 3.67
+   }
+  },
+  "P2b_last_8s_before_drop": {
+   "duration_s": 8.0,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 320,
+     "fps": 40.0,
+     "gap_ms_p50": 29.7,
+     "gap_ms_p99": 33.9,
+     "gap_ms_max": 64.3,
+     "seq_values_distinct": 255,
+     "seq_skips": 1
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.156,
+    "rig_min": 0.071,
+    "rig_max": 0.553,
+    "fixture_peak_max": 0.553,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 0.0
+   },
+   "dimmer_channel_max": 141,
+   "flash": {
+    "rig_flash_edges": 0,
+    "rig_worst_flashes_in_1s": 0.0,
+    "fixture_worst_flashes_in_1s": 0.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.155
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     1280
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 89,
+     "min": 3,
+     "max": 141
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 66,
+     "min": 18,
+     "max": 141
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 93,
+     "min": 7,
+     "max": 164
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 34,
+     "min": 111,
+     "max": 144
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 240,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 100,
+     "min": 3,
+     "max": 255
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 43,
+     "min": 109,
+     "max": 151
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 235,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 12.5,
+    "pan_range_used_pct_max": 12.6,
+    "tilt_range_used_pct_median": 16.3,
+    "pan_speed_p99_pct_range_per_s": 123.3
+   }
+  },
+  "P2c_first_12s_after_drop": {
+   "duration_s": 12.0,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 480,
+     "fps": 40.0,
+     "gap_ms_p50": 29.8,
+     "gap_ms_p99": 33.4,
+     "gap_ms_max": 34.2,
+     "seq_values_distinct": 255,
+     "seq_skips": 2
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.337,
+    "rig_min": 0.057,
+    "rig_max": 1.0,
+    "fixture_peak_max": 1.0,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 0.0
+   },
+   "dimmer_channel_max": 255,
+   "flash": {
+    "rig_flash_edges": 23,
+    "rig_worst_flashes_in_1s": 5.0,
+    "fixture_worst_flashes_in_1s": 5.0,
+    "fixtures_flashing_over_3_per_s": 16,
+    "rig_energy_share_3_20hz": 0.19
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     1920
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 156,
+     "min": 9,
+     "max": 255
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 117,
+     "min": 19,
+     "max": 255
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 130,
+     "min": 10,
+     "max": 255
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 34,
+     "min": 111,
+     "max": 144
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 253,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 185,
+     "min": 13,
+     "max": 255
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 54,
+     "min": 104,
+     "max": 157
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 252,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 12.6,
+    "pan_range_used_pct_max": 12.6,
+    "tilt_range_used_pct_median": 20.8,
+    "pan_speed_p99_pct_range_per_s": 187.6
+   },
+   "beat_alignment": {
+    "beats": 48,
+    "beats_with_visible_attack": 26,
+    "attack_offset_ms_median": 72.0,
+    "attack_offset_ms_iqr": 42.0,
+    "xcorr_peak_lag_ms": 75,
+    "xcorr_peak_z": 3.21
+   }
+  },
+  "P3_blackout_under_music": {
+   "http_status": 404,
+   "ack_ms": 7.0,
+   "last_lit_frame_s_after_command": 6.003,
+   "level_before": {
+    "rig_mean": 0.13,
+    "rig_min": 0.049,
+    "rig_max": 0.243,
+    "fixture_peak_max": 0.317,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 0.0
+   },
+   "level_while_latched": {
+    "rig_mean": 0.131,
+    "rig_min": 0.05,
+    "rig_max": 0.237,
+    "fixture_peak_max": 0.306,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 0.0
+   },
+   "dimmer_channel_max_while_latched": 106,
+   "movement_while_latched": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 9.6,
+    "pan_range_used_pct_max": 9.6,
+    "tilt_range_used_pct_median": 15.0,
+    "pan_speed_p99_pct_range_per_s": 117.8
+   },
+   "strobe_shutter_while_latched": [
+    [
+     255,
+     804
+    ]
+   ],
+   "transport_while_latched": {
+    "0": {
+     "packets": 201,
+     "fps": 40.1,
+     "gap_ms_p50": 29.8,
+     "gap_ms_p99": 33.3,
+     "gap_ms_max": 34.1,
+     "seq_values_distinct": 201,
+     "seq_skips": 0
+    }
+   }
+  },
+  "P4_grand_master_0.3": {
+   "reply": 404,
+   "level_after_restore_full": {
+    "rig_mean": 0.131,
+    "rig_min": 0.068,
+    "rig_max": 0.232,
+    "fixture_peak_max": 0.299,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 0.0
+   },
+   "dimmer_max_full": 108,
+   "level_at_0.3": {
+    "rig_mean": 0.126,
+    "rig_min": 0.052,
+    "rig_max": 0.238,
+    "fixture_peak_max": 0.31,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 0.0
+   },
+   "dimmer_max_at_0.3": 109,
+   "movement_at_0.3": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 9.6,
+    "pan_range_used_pct_max": 9.6,
+    "tilt_range_used_pct_median": 14.1,
+    "pan_speed_p99_pct_range_per_s": 115.4
+   }
+  },
+  "P3b_dense_music_reference": {
+   "duration_s": 4.99,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 199,
+     "fps": 39.9,
+     "gap_ms_p50": 29.8,
+     "gap_ms_p99": 33.6,
+     "gap_ms_max": 33.9,
+     "seq_values_distinct": 199,
+     "seq_skips": 0
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.131,
+    "rig_min": 0.068,
+    "rig_max": 0.232,
+    "fixture_peak_max": 0.299,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 0.0
+   },
+   "dimmer_channel_max": 108,
+   "flash": {
+    "rig_flash_edges": 0,
+    "rig_worst_flashes_in_1s": 0.0,
+    "fixture_worst_flashes_in_1s": 0.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.274
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     796
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 68,
+     "min": 13,
+     "max": 192
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 65,
+     "min": 22,
+     "max": 108
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 63,
+     "min": 11,
+     "max": 161
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 26,
+     "min": 115,
+     "max": 140
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 197,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 83,
+     "min": 13,
+     "max": 184
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 40,
+     "min": 110,
+     "max": 150
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 212,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 9.6,
+    "pan_range_used_pct_max": 9.6,
+    "tilt_range_used_pct_median": 15.8,
+    "pan_speed_p99_pct_range_per_s": 117.3
+   },
+   "beat_alignment": {
+    "beats": 77,
+    "beats_with_visible_attack": 10,
+    "attack_offset_ms_median": 64.0,
+    "attack_offset_ms_iqr": 23.0,
+    "xcorr_peak_lag_ms": 75,
+    "xcorr_peak_z": 3.56
+   }
+  },
+  "P5a_silence_0_5s": {
+   "duration_s": 5.0,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 201,
+     "fps": 40.2,
+     "gap_ms_p50": 29.9,
+     "gap_ms_p99": 33.3,
+     "gap_ms_max": 34.2,
+     "seq_values_distinct": 201,
+     "seq_skips": 1
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.003,
+    "rig_min": 0.0,
+    "rig_max": 0.205,
+    "fixture_peak_max": 0.259,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 98.0
+   },
+   "dimmer_channel_max": 96,
+   "flash": {
+    "rig_flash_edges": 0,
+    "rig_worst_flashes_in_1s": 0.0,
+    "fixture_worst_flashes_in_1s": 0.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.573
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     804
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 57,
+     "min": 0,
+     "max": 177
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 5,
+     "min": 0,
+     "max": 96
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 40,
+     "min": 0,
+     "max": 145
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 26,
+     "min": 115,
+     "max": 140
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 214,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 90,
+     "min": 0,
+     "max": 228
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 39,
+     "min": 112,
+     "max": 150
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 212,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 9.6,
+    "pan_range_used_pct_max": 9.6,
+    "tilt_range_used_pct_median": 14.9,
+    "pan_speed_p99_pct_range_per_s": 97.2
+   }
+  },
+  "P5b_silence_5_20s": {
+   "duration_s": 15.0,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 599,
+     "fps": 39.9,
+     "gap_ms_p50": 29.8,
+     "gap_ms_p99": 33.5,
+     "gap_ms_max": 34.5,
+     "seq_values_distinct": 255,
+     "seq_skips": 2
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.0,
+    "rig_min": 0.0,
+    "rig_max": 0.0,
+    "fixture_peak_max": 0.0,
+    "fixtures_ever_lit": 0,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 100.0
+   },
+   "dimmer_channel_max": 0,
+   "flash": {
+    "rig_flash_edges": 0,
+    "rig_worst_flashes_in_1s": 0.0,
+    "fixture_worst_flashes_in_1s": 0.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.0
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     2396
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 28,
+     "min": 0,
+     "max": 149
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 28,
+     "min": 0,
+     "max": 149
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 12,
+     "min": 122,
+     "max": 133
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 253,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 28,
+     "min": 0,
+     "max": 149
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 19,
+     "min": 120,
+     "max": 138
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 255,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 4.4,
+    "pan_range_used_pct_max": 4.4,
+    "tilt_range_used_pct_median": 7.1,
+    "pan_speed_p99_pct_range_per_s": 20.6
+   }
+  },
+  "P5c_silence_20_40s": {
+   "duration_s": 20.0,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 800,
+     "fps": 40.0,
+     "gap_ms_p50": 29.7,
+     "gap_ms_p99": 33.2,
+     "gap_ms_max": 111.9,
+     "seq_values_distinct": 255,
+     "seq_skips": 3
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.0,
+    "rig_min": 0.0,
+    "rig_max": 0.0,
+    "fixture_peak_max": 0.0,
+    "fixtures_ever_lit": 0,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 100.0
+   },
+   "dimmer_channel_max": 0,
+   "flash": {
+    "rig_flash_edges": 0,
+    "rig_worst_flashes_in_1s": 0.0,
+    "fixture_worst_flashes_in_1s": 0.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.0
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     3200
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 27,
+     "min": 0,
+     "max": 148
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 27,
+     "min": 0,
+     "max": 148
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 12,
+     "min": 122,
+     "max": 133
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 256,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 27,
+     "min": 0,
+     "max": 148
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 19,
+     "min": 120,
+     "max": 138
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 256,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 4.4,
+    "pan_range_used_pct_max": 4.4,
+    "tilt_range_used_pct_median": 7.1,
+    "pan_speed_p99_pct_range_per_s": 22.2
+   }
+  },
+  "P6a_feed_lost_0_10s": {
+   "duration_s": 10.0,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 400,
+     "fps": 40.0,
+     "gap_ms_p50": 29.5,
+     "gap_ms_p99": 33.4,
+     "gap_ms_max": 33.5,
+     "seq_values_distinct": 255,
+     "seq_skips": 2
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.146,
+    "rig_min": 0.0,
+    "rig_max": 0.243,
+    "fixture_peak_max": 0.244,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 21.2
+   },
+   "dimmer_channel_max": 76,
+   "flash": {
+    "rig_flash_edges": 0,
+    "rig_worst_flashes_in_1s": 0.0,
+    "fixture_worst_flashes_in_1s": 0.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.012
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     1600
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 80,
+     "min": 0,
+     "max": 147
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 71,
+     "min": 0,
+     "max": 76
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 87,
+     "min": 0,
+     "max": 147
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 12,
+     "min": 122,
+     "max": 133
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 253,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 147,
+     "min": 0,
+     "max": 209
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 15,
+     "min": 122,
+     "max": 136
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 256,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 4.4,
+    "pan_range_used_pct_max": 4.4,
+    "tilt_range_used_pct_median": 5.0,
+    "pan_speed_p99_pct_range_per_s": 14.9
+   }
+  },
+  "P6b_feed_lost_10_25s": {
+   "duration_s": 15.0,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 600,
+     "fps": 40.0,
+     "gap_ms_p50": 29.3,
+     "gap_ms_p99": 33.5,
+     "gap_ms_max": 34.3,
+     "seq_values_distinct": 255,
+     "seq_skips": 2
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.221,
+    "rig_min": 0.169,
+    "rig_max": 0.243,
+    "fixture_peak_max": 0.244,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 0.0
+   },
+   "dimmer_channel_max": 76,
+   "flash": {
+    "rig_flash_edges": 0,
+    "rig_worst_flashes_in_1s": 0.0,
+    "fixture_worst_flashes_in_1s": 0.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.068
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     2400
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 8,
+     "min": 32,
+     "max": 113
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 76,
+     "max": 76
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 9,
+     "min": 22,
+     "max": 80
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 10,
+     "min": 123,
+     "max": 132
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 243,
+     "min": 0,
+     "max": 254
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 85,
+     "min": 43,
+     "max": 209
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 12,
+     "min": 122,
+     "max": 133
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 254,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 3.6,
+    "pan_range_used_pct_max": 3.7,
+    "tilt_range_used_pct_median": 3.0,
+    "pan_speed_p99_pct_range_per_s": 1.4
+   }
+  },
+  "P7_music_returns": {
+   "duration_s": 9.98,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 400,
+     "fps": 40.1,
+     "gap_ms_p50": 29.7,
+     "gap_ms_p99": 33.4,
+     "gap_ms_max": 33.9,
+     "seq_values_distinct": 255,
+     "seq_skips": 1
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.278,
+    "rig_min": 0.047,
+    "rig_max": 0.58,
+    "fixture_peak_max": 0.58,
+    "fixtures_ever_lit": 16,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 0.0
+   },
+   "dimmer_channel_max": 204,
+   "flash": {
+    "rig_flash_edges": 4,
+    "rig_worst_flashes_in_1s": 2.0,
+    "fixture_worst_flashes_in_1s": 2.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.045
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     1600
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 165,
+     "min": 11,
+     "max": 186
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 133,
+     "min": 17,
+     "max": 204
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 130,
+     "min": 8,
+     "max": 157
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 34,
+     "min": 111,
+     "max": 144
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 240,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 159,
+     "min": 10,
+     "max": 184
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 38,
+     "min": 114,
+     "max": 151
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 246,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 12.6,
+    "pan_range_used_pct_max": 12.6,
+    "tilt_range_used_pct_median": 14.4,
+    "pan_speed_p99_pct_range_per_s": 186.0
+   }
+  },
+  "P8_graceful_stop": {
+   "exit_code": 0,
+   "seconds_to_exit": 0.7,
+   "packets_after_signal": 5,
+   "final_frame_per_universe": {
+    "0": {
+     "nonzero_channels": 76,
+     "max": 255,
+     "sent_s_after_signal": 0.13
+    }
+   }
+  },
+  "P9_after_reboot_no_audio": {
+   "duration_s": 5.0,
+   "universes_on_wire": [
+    0
+   ],
+   "universes_patched": [
+    0
+   ],
+   "transport": {
+    "0": {
+     "packets": 199,
+     "fps": 39.8,
+     "gap_ms_p50": 29.3,
+     "gap_ms_p99": 33.0,
+     "gap_ms_max": 33.8,
+     "seq_values_distinct": 199,
+     "seq_skips": 1
+    }
+   },
+   "nonzero_channels_outside_patch": 0,
+   "unpatched_universes_transmitted": [],
+   "level": {
+    "rig_mean": 0.0,
+    "rig_min": 0.0,
+    "rig_max": 0.0,
+    "fixture_peak_max": 0.0,
+    "fixtures_ever_lit": 0,
+    "fixtures_total": 16,
+    "pct_time_rig_dark": 100.0
+   },
+   "dimmer_channel_max": 0,
+   "flash": {
+    "rig_flash_edges": 0,
+    "rig_worst_flashes_in_1s": 0.0,
+    "fixture_worst_flashes_in_1s": 0.0,
+    "fixtures_flashing_over_3_per_s": 0,
+    "rig_energy_share_3_20hz": 0.0
+   },
+   "strobe_shutter_values_top": [
+    [
+     255,
+     796
+    ]
+   ],
+   "strobe_shutter_distinct": 1,
+   "channel_types_on_wire": {
+    "blue": {
+     "channels": 16,
+     "distinct_values": 45,
+     "min": 0,
+     "max": 147
+    },
+    "color_wheel": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "dimmer": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "focus": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 127,
+     "max": 127
+    },
+    "gobo": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "gobo_rotation": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "green": {
+     "channels": 16,
+     "distinct_values": 52,
+     "min": 0,
+     "max": 147
+    },
+    "pan": {
+     "channels": 4,
+     "distinct_values": 20,
+     "min": 118,
+     "max": 137
+    },
+    "pan_fine": {
+     "channels": 4,
+     "distinct_values": 225,
+     "min": 0,
+     "max": 255
+    },
+    "prism": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "red": {
+     "channels": 16,
+     "distinct_values": 27,
+     "min": 0,
+     "max": 158
+    },
+    "shutter": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 255,
+     "max": 255
+    },
+    "speed": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    },
+    "tilt": {
+     "channels": 4,
+     "distinct_values": 19,
+     "min": 120,
+     "max": 138
+    },
+    "tilt_fine": {
+     "channels": 4,
+     "distinct_values": 223,
+     "min": 0,
+     "max": 255
+    },
+    "white": {
+     "channels": 4,
+     "distinct_values": 1,
+     "min": 0,
+     "max": 0
+    }
+   },
+   "other_channels_total": 0,
+   "other_channels_off_default": [],
+   "movement": {
+    "movers": 4,
+    "movers_with_16bit_pan": 4,
+    "pan_range_used_pct_median": 7.4,
+    "pan_range_used_pct_max": 7.4,
+    "tilt_range_used_pct_median": 7.1,
+    "pan_speed_p99_pct_range_per_s": 59.6
+   }
+  },
+  "P10_hard_kill": {
+   "packets_after_kill": 0,
+   "last_frame_per_universe": {
+    "0": {
+     "nonzero_channels": 76,
+     "max": 255
+    }
+   }
+  }
+ },
+ "checks": {
+  "boot1_seconds_to_http": 5.0,
+  "unauthenticated": {
+   "GET /health": [
+    200,
+    {
+     "status": "healthy"
+    }
+   ],
+   "GET /api/rigs/": 401,
+   "POST /api/trigger/blackout": 401,
+   "POST /api/dmx/channel": 401,
+   "POST /api/strobe": 401,
+   "GET /api/auth/status": {
+    "configured": false,
+    "authenticated": false,
+    "enabled": true
+   },
+   "WS /ws/audio no token": "rejected (InvalidStatusCode: server rejected WebSocket connection: HTTP 403)"
+  },
+  "health_after_setup": {
+   "status": "healthy",
+   "services": {
+    "api": "running",
+    "database": "connected",
+    "audio_analyzer": "running",
+    "ml_models": "loaded",
+    "dmx": "connected",
+    "effects_engine": "running",
+    "lfo_engine": "ready",
+    "audio_input": "waiting",
+    "pro_lighting": "enabled"
+   },
+   "dmx_detail": {
+    "connected": true,
+    "transmitting": false,
+    "target_ip": "127.0.0.1",
+    "port": 16454,
+    "broadcast": false,
+    "frames_sent": 0,
+    "send_error_count": 0,
+    "last_send_error": null,
+    "failing_universes": [],
+    "last_send_time": null,
+    "output_held_until_rig_patched": true
+   }
+  },
+  "templates": [
+   "Small Bar",
+   "Small Club",
+   "Medium Club",
+   "Nightclub",
+   "Church / Worship",
+   "Band Stage",
+   "Mobile DJ",
+   "Theatre",
+   "Function Room",
+   "Festival Stage"
+  ],
+  "health_feed_lost": {
+   "status": "healthy",
+   "services": {
+    "api": "running",
+    "database": "connected",
+    "audio_analyzer": "running",
+    "ml_models": "loaded",
+    "dmx": "transmitting",
+    "effects_engine": "running",
+    "lfo_engine": "ready",
+    "audio_input": "lost",
+    "pro_lighting": "enabled"
+   },
+   "dmx_detail": {
+    "connected": true,
+    "transmitting": true,
+    "target_ip": "127.0.0.1",
+    "port": 16454,
+    "broadcast": false,
+    "frames_sent": 6513,
+    "send_error_count": 0,
+    "last_send_error": null,
+    "failing_universes": [],
+    "last_send_time": 1794903061.5028508,
+    "output_held_until_rig_patched": false
+   }
+  },
+  "boot2_seconds_to_http": 4.5,
+  "boot2_seconds_to_first_artnet_frame": 4.1,
+  "capture_anomalies": {},
+  "total_packets": 7828
+ },
+ "notes": [
+  "== BOOT 1: fresh install, empty database",
+  "  /health answered 5.0s after process start",
+  "  fresh install, nothing patched: {'packets': 0, 'universes_on_wire': []}",
+  "  unauthenticated probes: {\"GET /health\": [200, {\"status\": \"healthy\"}], \"GET /api/rigs/\": 401, \"POST /api/trigger/blackout\": 401, \"POST /api/dmx/channel\": 401, \"POST /api/strobe\": 401, \"GET /api/auth/status\": {\"configured\": false, \"authenticated\": false, \"enabled\": true}, \"WS /ws/audio no token\": \"rejected (InvalidStatusCode: server rejected WebSocket connection: HTTP 403)\"}",
+  "  setup with console code -> HTTP 200",
+  "  health: {\"status\": \"healthy\", \"services\": {\"api\": \"running\", \"database\": \"connected\", \"audio_analyzer\": \"running\", \"ml_models\": \"loaded\", \"dmx\": \"connected\", \"effects_engine\": \"running\", \"lfo_engine\": \"ready\", \"audio_input\": \"waiting\", \"pro_lighting\": \"enabled\"}, \"dmx_detail\": {\"connected\": true, \"transmitting\": false, \"target_ip\": \"127.0.0.1\", \"port\": 16454, \"broadcast\": false, \"frames_sent\": 0, \"send_error_count\": 0, \"last_send_error\": null, \"failing_universes\": [], \"last_send_time\": null, \"output_held_until_rig_patched\": true}}",
+  "  seeded templates: [(1, 'Small Bar'), (2, 'Small Club'), (3, 'Medium Club'), (4, 'Nightclub'), (5, 'Church / Worship'), (6, 'Band Stage'), (7, 'Mobile DJ'), (8, 'Theatre'), (9, 'Function Room'), (10, 'Festival Stage')]",
+  "  apply template 'Small Club' -> HTTP 200 {\"id\":1,\"name\":\"Sim Venue\",\"fixture_count\":16,\"message\":\"Rig created from template 'Small Club'\"}",
+  "  activate rig -> HTTP 200",
+  "  rig: {\"template\": \"Small Club\", \"fixtures\": 16, \"by_type\": {\"led_par\": 10, \"moving_head\": 4, \"led_bar\": 2}, \"universes\": [0], \"channels_patched\": 100, \"profiles\": [\"ADJ Dotz Par [3-Channel]\", \"ADJ Ultra HEX Bar 12 [3-Channel]\", \"Generic Moving Head 200W [Standard (16ch)]\"], \"channel_types\": {\"red\": 16, \"green\": 16, \"blue\": 16, \"pan\": 4, \"pan_fine\": 4, \"tilt\": 4, \"tilt_fine\": 4, \"speed\": 4, \"dimmer\": 4, \"shutter\": 4, \"white\": 4, \"color_wheel\": 4, \"gobo\": 4, \"gobo_rotation\": 4, \"prism\": 4, \"focus\": 4}}",
+  "  P1 rig live, no audio yet: {\"duration_s\": 6.01, \"universes_on_wire\": [0], \"universes_patched\": [0], \"transport\": {\"0\": {\"packets\": 241, \"fps\": 40.1, \"gap_ms_p50\": 29.1, \"gap_ms_p99\": 33.0, \"gap_ms_max\": 33.5, \"seq_values_distinct\": 241, \"seq_skips\": 1}}, \"nonzero_channels_outside_patch\": 0, \"unpatched_universes_transmitted\": [], \"level\": {\"rig_mean\": 0.0, \"rig_min\": 0.0, \"rig_max\": 0.0, \"fixture_peak_max\": 0.0, \"fixtures_ever_lit\": 0, \"fixtures_total\": 16, \"pct_time_rig_dark\": 100.0}, \"dimmer_channel_max\": 0, \"flash\": {\"rig_flash_edges\": 0, \"rig_worst_flashes_in_1s\": 0.0, \"fixture_worst_flashes_in_1s\": 0.0, \"fixtures_flashing_over_3_per_s\": 0, \"rig_energy_share_3_20hz\": 0.0}, \"strobe_shutter_values_top\": [[255, 964]], \"strobe_shutter_distinct\": 1, \"channel_types_on_wire\": {\"blue\": {\"channels\": 16, \"distinct_values\": 22, \"min\": 0, \"max\": 154}, \"color_wheel\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"dimmer\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"focus\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 127, \"max\": 127}, \"gobo\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"gobo_rotation\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"green\": {\"channels\": 16, \"distinct_values\": 22, \"min\": 0, \"max\": 154}, \"pan\": {\"channels\": 4, \"distinct_values\": 12, \"min\": 122, \"max\": 133}, \"pan_fine\": {\"channels\": 4, \"distinct_values\": 239, \"min\": 0, \"max\": 255}, \"prism\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"red\": {\"channels\": 16, \"distinct_values\": 22, \"min\": 0, \"max\": 154}, \"shutter\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 255, \"max\": 255}, \"speed\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"tilt\": {\"channels\": 4, \"distinct_values\": 19, \"min\": 120, \"max\": 138}, \"tilt_fine\": {\"channels\": 4, \"distinct_values\": 240, \"min\": 0, \"max\": 255}, \"white\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}}, \"other_channels_total\": 0, \"other_channels_off_default\": [], \"movement\": {\"movers\": 4, \"movers_with_16bit_pan\": 4, \"pan_range_used_pct_median\": 4.4, \"pan_range_used_pct_max\": 4.4, \"tilt_range_used_pct_median\": 7.1, \"pan_speed_p99_pct_range_per_s\": 22.0}}",
+  "== P2: intro/build/drop @128 BPM, 54s, drop at 30.3s",
+  "  P2 whole track: {\"duration_s\": 54.3, \"universes_on_wire\": [0], \"universes_patched\": [0], \"transport\": {\"0\": {\"packets\": 2172, \"fps\": 40.0, \"gap_ms_p50\": 29.8, \"gap_ms_p99\": 33.6, \"gap_ms_max\": 64.3, \"seq_values_distinct\": 255, \"seq_skips\": 8}}, \"nonzero_channels_outside_patch\": 0, \"unpatched_universes_transmitted\": [], \"level\": {\"rig_mean\": 0.146, \"rig_min\": 0.0, \"rig_max\": 1.0, \"fixture_peak_max\": 1.0, \"fixtures_ever_lit\": 16, \"fixtures_total\": 16, \"pct_time_rig_dark\": 11.2}, \"dimmer_channel_max\": 255, \"flash\": {\"rig_flash_edges\": 27, \"rig_worst_flashes_in_1s\": 5.0, \"fixture_worst_flashes_in_1s\": 5.0, \"fixtures_flashing_over_3_per_s\": 16, \"rig_energy_share_3_20hz\": 0.096}, \"strobe_shutter_values_top\": [[255, 8688]], \"strobe_shutter_distinct\": 1, \"channel_types_on_wire\": {\"blue\": {\"channels\": 16, \"distinct_values\": 201, \"min\": 0, \"max\": 255}, \"color_wheel\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"dimmer\": {\"channels\": 4, \"distinct_values\": 155, \"min\": 0, \"max\": 255}, \"focus\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 127, \"max\": 127}, \"gobo\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"gobo_rotation\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"green\": {\"channels\": 16, \"distinct_values\": 180, \"min\": 0, \"max\": 255}, \"pan\": {\"channels\": 4, \"distinct_values\": 40, \"min\": 108, \"max\": 147}, \"pan_fine\": {\"channels\": 4, \"distinct_values\": 256, \"min\": 0, \"max\": 255}, \"prism\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"red\": {\"channels\": 16, \"distinct_values\": 244, \"min\": 0, \"max\": 255}, \"shutter\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 255, \"max\": 255}, \"speed\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"tilt\": {\"channels\": 4, \"distinct_values\": 54, \"min\": 104, \"max\": 157}, \"tilt_fine\": {\"channels\": 4, \"distinct_values\": 256, \"min\": 0, \"max\": 255}, \"white\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}}, \"other_channels_total\": 0, \"other_channels_off_default\": [], \"movement\": {\"movers\": 4, \"movers_with_16bit_pan\": 4, \"pan_range_used_pct_median\": 12.6, \"pan_range_used_pct_max\": 15.6, \"tilt_range_used_pct_median\": 20.8, \"pan_speed_p99_pct_range_per_s\": 174.6}, \"beat_alignment\": {\"beats\": 112, \"beats_with_visible_attack\": 85, \"attack_offset_ms_median\": 77.0, \"attack_offset_ms_iqr\": 25.0, \"xcorr_peak_lag_ms\": 75, \"xcorr_peak_z\": 3.66}, \"audio\": {\"analysis_messages\": 2616, \"top_level_keys\": [\"audio_fingerprint_match\", \"beat\", \"detected_genre\", \"frequency\", \"lighting\", \"look_spec\", \"mood\", \"timestamp\", \"type\"], \"bpm_median_second_half\": 127.8, \"bpm_first_reported\": 120.0, \"lighting_keys\": [\"dimmer\", \"dmx_frame\", \"dmx_frames\", \"dmx_universe\", \"fixtures\", \"genre\", \"movement\", \"pro_effects\", \"section\", \"section_intensity\", \"state\"], \"lighting.state_sequence\": [\"auto\"], \"lighting.section_sequence\": [\"breakdown\", \"drop\", \"chorus\", \"verse\", \"drop\", \"chorus\", \"verse\", \"drop\", \"chorus\"], \"lighting.genre_sequence\": [\"edm\"], \"lighting.movement_sequence\": [\"auto\", \"none\", \"auto\", \"none\", \"auto\", \"none\", \"auto\", \"none\", \"auto\", \"none\", \"auto\", \"none\", \"auto\", \"none\", \"auto\", \"none\", \"auto\", \"none\", \"auto\", \"none\", \"auto\", \"none\", \"auto\", \"none\", \"auto\"]}}",
+  "  intro      : level={'rig_mean': 0.023, 'rig_min': 0.004, 'rig_max': 0.197, 'fixture_peak_max': 0.198, 'fixtures_ever_lit': 16, 'fixtures_total': 16, 'pct_time_rig_dark': 33.3} flash={'rig_flash_edges': 0, 'rig_worst_flashes_in_1s': 0.0, 'fixture_worst_flashes_in_1s': 0.0, 'fixtures_flashing_over_3_per_s': 0, 'rig_energy_share_3_20hz': 0.205}",
+  "  pre-drop   : level={'rig_mean': 0.156, 'rig_min': 0.071, 'rig_max': 0.553, 'fixture_peak_max': 0.553, 'fixtures_ever_lit': 16, 'fixtures_total': 16, 'pct_time_rig_dark': 0.0} flash={'rig_flash_edges': 0, 'rig_worst_flashes_in_1s': 0.0, 'fixture_worst_flashes_in_1s': 0.0, 'fixtures_flashing_over_3_per_s': 0, 'rig_energy_share_3_20hz': 0.155}",
+  "  post-drop  : level={'rig_mean': 0.337, 'rig_min': 0.057, 'rig_max': 1.0, 'fixture_peak_max': 1.0, 'fixtures_ever_lit': 16, 'fixtures_total': 16, 'pct_time_rig_dark': 0.0} flash={'rig_flash_edges': 23, 'rig_worst_flashes_in_1s': 5.0, 'fixture_worst_flashes_in_1s': 5.0, 'fixtures_flashing_over_3_per_s': 16, 'rig_energy_share_3_20hz': 0.19} beat={'beats': 48, 'beats_with_visible_attack': 26, 'attack_offset_ms_median': 72.0, 'attack_offset_ms_iqr': 42.0, 'xcorr_peak_lag_ms': 75, 'xcorr_peak_z': 3.21}",
+  "== P3/P4: dense 128 BPM; blackout at +8s for 6s, then grand master 0.3 at +20s for 8s",
+  "  P3 blackout: {\"http_status\": 404, \"ack_ms\": 7.0, \"last_lit_frame_s_after_command\": 6.003, \"level_before\": {\"rig_mean\": 0.13, \"rig_min\": 0.049, \"rig_max\": 0.243, \"fixture_peak_max\": 0.317, \"fixtures_ever_lit\": 16, \"fixtures_total\": 16, \"pct_time_rig_dark\": 0.0}, \"level_while_latched\": {\"rig_mean\": 0.131, \"rig_min\": 0.05, \"rig_max\": 0.237, \"fixture_peak_max\": 0.306, \"fixtures_ever_lit\": 16, \"fixtures_total\": 16, \"pct_time_rig_dark\": 0.0}, \"dimmer_channel_max_while_latched\": 106, \"movement_while_latched\": {\"movers\": 4, \"movers_with_16bit_pan\": 4, \"pan_range_used_pct_median\": 9.6, \"pan_range_used_pct_max\": 9.6, \"tilt_range_used_pct_median\": 15.0, \"pan_speed_p99_pct_range_per_s\": 117.8}, \"strobe_shutter_while_latched\": [[255, 804]], \"transport_while_latched\": {\"0\": {\"packets\": 201, \"fps\": 40.1, \"gap_ms_p50\": 29.8, \"gap_ms_p99\": 33.3, \"gap_ms_max\": 34.1, \"seq_values_distinct\": 201, \"seq_skips\": 0}}}",
+  "  P4 grand master: {\"reply\": 404, \"level_after_restore_full\": {\"rig_mean\": 0.131, \"rig_min\": 0.068, \"rig_max\": 0.232, \"fixture_peak_max\": 0.299, \"fixtures_ever_lit\": 16, \"fixtures_total\": 16, \"pct_time_rig_dark\": 0.0}, \"dimmer_max_full\": 108, \"level_at_0.3\": {\"rig_mean\": 0.126, \"rig_min\": 0.052, \"rig_max\": 0.238, \"fixture_peak_max\": 0.31, \"fixtures_ever_lit\": 16, \"fixtures_total\": 16, \"pct_time_rig_dark\": 0.0}, \"dimmer_max_at_0.3\": 109, \"movement_at_0.3\": {\"movers\": 4, \"movers_with_16bit_pan\": 4, \"pan_range_used_pct_median\": 9.6, \"pan_range_used_pct_max\": 9.6, \"tilt_range_used_pct_median\": 14.1, \"pan_speed_p99_pct_range_per_s\": 115.4}}",
+  "== P5: 40s of silence on a live audio feed",
+  "  P5a_silence_0_5s: level={'rig_mean': 0.003, 'rig_min': 0.0, 'rig_max': 0.205, 'fixture_peak_max': 0.259, 'fixtures_ever_lit': 16, 'fixtures_total': 16, 'pct_time_rig_dark': 98.0} flash={'rig_flash_edges': 0, 'rig_worst_flashes_in_1s': 0.0, 'fixture_worst_flashes_in_1s': 0.0, 'fixtures_flashing_over_3_per_s': 0, 'rig_energy_share_3_20hz': 0.573} move={'movers': 4, 'movers_with_16bit_pan': 4, 'pan_range_used_pct_median': 9.6, 'pan_range_used_pct_max': 9.6, 'tilt_range_used_pct_median': 14.9, 'pan_speed_p99_pct_range_per_s': 97.2}",
+  "  P5b_silence_5_20s: level={'rig_mean': 0.0, 'rig_min': 0.0, 'rig_max': 0.0, 'fixture_peak_max': 0.0, 'fixtures_ever_lit': 0, 'fixtures_total': 16, 'pct_time_rig_dark': 100.0} flash={'rig_flash_edges': 0, 'rig_worst_flashes_in_1s': 0.0, 'fixture_worst_flashes_in_1s': 0.0, 'fixtures_flashing_over_3_per_s': 0, 'rig_energy_share_3_20hz': 0.0} move={'movers': 4, 'movers_with_16bit_pan': 4, 'pan_range_used_pct_median': 4.4, 'pan_range_used_pct_max': 4.4, 'tilt_range_used_pct_median': 7.1, 'pan_speed_p99_pct_range_per_s': 20.6}",
+  "  P5c_silence_20_40s: level={'rig_mean': 0.0, 'rig_min': 0.0, 'rig_max': 0.0, 'fixture_peak_max': 0.0, 'fixtures_ever_lit': 0, 'fixtures_total': 16, 'pct_time_rig_dark': 100.0} flash={'rig_flash_edges': 0, 'rig_worst_flashes_in_1s': 0.0, 'fixture_worst_flashes_in_1s': 0.0, 'fixtures_flashing_over_3_per_s': 0, 'rig_energy_share_3_20hz': 0.0} move={'movers': 4, 'movers_with_16bit_pan': 4, 'pan_range_used_pct_median': 4.4, 'pan_range_used_pct_max': 4.4, 'tilt_range_used_pct_median': 7.1, 'pan_speed_p99_pct_range_per_s': 22.2}",
+  "== P6: audio feed disconnected, 25s",
+  "  P6a_feed_lost_0_10s: level={'rig_mean': 0.146, 'rig_min': 0.0, 'rig_max': 0.243, 'fixture_peak_max': 0.244, 'fixtures_ever_lit': 16, 'fixtures_total': 16, 'pct_time_rig_dark': 21.2} transport={0: {'packets': 400, 'fps': 40.0, 'gap_ms_p50': 29.5, 'gap_ms_p99': 33.4, 'gap_ms_max': 33.5, 'seq_values_distinct': 255, 'seq_skips': 2}}",
+  "  P6b_feed_lost_10_25s: level={'rig_mean': 0.221, 'rig_min': 0.169, 'rig_max': 0.243, 'fixture_peak_max': 0.244, 'fixtures_ever_lit': 16, 'fixtures_total': 16, 'pct_time_rig_dark': 0.0} transport={0: {'packets': 600, 'fps': 40.0, 'gap_ms_p50': 29.3, 'gap_ms_p99': 33.5, 'gap_ms_max': 34.3, 'seq_values_distinct': 255, 'seq_skips': 2}}",
+  "  health with feed lost: {\"status\": \"healthy\", \"services\": {\"api\": \"running\", \"database\": \"connected\", \"audio_analyzer\": \"running\", \"ml_models\": \"loaded\", \"dmx\": \"transmitting\", \"effects_engine\": \"running\", \"lfo_engine\": \"ready\", \"audio_input\": \"lost\", \"pro_lighting\": \"enabled\"}, \"dmx_detail\": {\"connected\": true, \"transmitting\": true, \"target_ip\": \"127.0.0.1\", \"port\": 16454, \"broadcast\": false, \"frames_sent\": 6513, \"send_error_count\": 0, \"last_send_error\": null, \"failing_universes\": [], \"last_send_time\": 1794903061.5028508, \"output_held_until_rig_patched\": false}}",
+  "  P7 music returns: level={'rig_mean': 0.278, 'rig_min': 0.047, 'rig_max': 0.58, 'fixture_peak_max': 0.58, 'fixtures_ever_lit': 16, 'fixtures_total': 16, 'pct_time_rig_dark': 0.0}",
+  "== P8: graceful stop (Ctrl+Break) with the show running",
+  "  P8 graceful stop: {\"exit_code\": 0, \"seconds_to_exit\": 0.7, \"packets_after_signal\": 5, \"final_frame_per_universe\": {\"0\": {\"nonzero_channels\": 76, \"max\": 255, \"sent_s_after_signal\": 0.13}}}",
+  "== BOOT 2: restart with the rig persisted, nobody logged in, no audio",
+  "  http after 4.5s; first Art-Net frame after 4.1s",
+  "  P9 after reboot: {\"duration_s\": 5.0, \"universes_on_wire\": [0], \"universes_patched\": [0], \"transport\": {\"0\": {\"packets\": 199, \"fps\": 39.8, \"gap_ms_p50\": 29.3, \"gap_ms_p99\": 33.0, \"gap_ms_max\": 33.8, \"seq_values_distinct\": 199, \"seq_skips\": 1}}, \"nonzero_channels_outside_patch\": 0, \"unpatched_universes_transmitted\": [], \"level\": {\"rig_mean\": 0.0, \"rig_min\": 0.0, \"rig_max\": 0.0, \"fixture_peak_max\": 0.0, \"fixtures_ever_lit\": 0, \"fixtures_total\": 16, \"pct_time_rig_dark\": 100.0}, \"dimmer_channel_max\": 0, \"flash\": {\"rig_flash_edges\": 0, \"rig_worst_flashes_in_1s\": 0.0, \"fixture_worst_flashes_in_1s\": 0.0, \"fixtures_flashing_over_3_per_s\": 0, \"rig_energy_share_3_20hz\": 0.0}, \"strobe_shutter_values_top\": [[255, 796]], \"strobe_shutter_distinct\": 1, \"channel_types_on_wire\": {\"blue\": {\"channels\": 16, \"distinct_values\": 45, \"min\": 0, \"max\": 147}, \"color_wheel\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"dimmer\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"focus\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 127, \"max\": 127}, \"gobo\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"gobo_rotation\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"green\": {\"channels\": 16, \"distinct_values\": 52, \"min\": 0, \"max\": 147}, \"pan\": {\"channels\": 4, \"distinct_values\": 20, \"min\": 118, \"max\": 137}, \"pan_fine\": {\"channels\": 4, \"distinct_values\": 225, \"min\": 0, \"max\": 255}, \"prism\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"red\": {\"channels\": 16, \"distinct_values\": 27, \"min\": 0, \"max\": 158}, \"shutter\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 255, \"max\": 255}, \"speed\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}, \"tilt\": {\"channels\": 4, \"distinct_values\": 19, \"min\": 120, \"max\": 138}, \"tilt_fine\": {\"channels\": 4, \"distinct_values\": 223, \"min\": 0, \"max\": 255}, \"white\": {\"channels\": 4, \"distinct_values\": 1, \"min\": 0, \"max\": 0}}, \"other_channels_total\": 0, \"other_channels_off_default\": [], \"movement\": {\"movers\": 4, \"movers_with_16bit_pan\": 4, \"pan_range_used_pct_median\": 7.4, \"pan_range_used_pct_max\": 7.4, \"tilt_range_used_pct_median\": 7.1, \"pan_speed_p99_pct_range_per_s\": 59.6}}",
+  "  login after reboot -> HTTP 200",
+  "== P10: hard kill (power loss / crash) mid-show",
+  "  P10 hard kill: {\"packets_after_kill\": 0, \"last_frame_per_universe\": {\"0\": {\"nonzero_channels\": 76, \"max\": 255}}}"
+ ],
+ "rig": {
+  "template": "Small Club",
+  "fixtures": 16,
+  "by_type": {
+   "led_par": 10,
+   "moving_head": 4,
+   "led_bar": 2
+  },
+  "universes": [
+   0
+  ],
+  "channels_patched": 100,
+  "profiles": [
+   "ADJ Dotz Par [3-Channel]",
+   "ADJ Ultra HEX Bar 12 [3-Channel]",
+   "Generic Moving Head 200W [Standard (16ch)]"
+  ],
+  "channel_types": {
+   "red": 16,
+   "green": 16,
+   "blue": 16,
+   "pan": 4,
+   "pan_fine": 4,
+   "tilt": 4,
+   "tilt_fine": 4,
+   "speed": 4,
+   "dimmer": 4,
+   "shutter": 4,
+   "white": 4,
+   "color_wheel": 4,
+   "gobo": 4,
+   "gobo_rotation": 4,
+   "prism": 4,
+   "focus": 4
+  }
+ }
+}

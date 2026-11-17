@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "lighting-backend",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd /d backend && venv\\Scripts\\python.exe -u -m uvicorn app.main:app --host 127.0.0.1 --port 8000"],
+      "port": 8000
+    },
+    {
       "name": "lighting-ui",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "frontend"],

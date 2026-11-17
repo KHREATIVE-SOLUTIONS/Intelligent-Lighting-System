@@ -100,3 +100,12 @@ secret_key
 
 # Local compose overrides (see docker-compose.override.example.yml)
 docker-compose.override.yml
+
+# The audio device the operator last chose; written beside the database
+audio_capture.json
+
+# Runtime logs from local launches
+*.err
+mac_run.log
+audio_cap.log
+visualizer/viz.log

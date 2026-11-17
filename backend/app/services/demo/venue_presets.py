@@ -23,6 +23,7 @@ class VenueSize(Enum):
     LARGE_CONCERT = "large_concert"
     FESTIVAL_MAINSTAGE = "festival_mainstage"
     BIGROOM_EDM = "bigroom_edm"
+    CLUB_NIGHT = "club_night"
 
 
 @dataclass
@@ -562,9 +563,86 @@ def _build_bigroom_edm() -> VenuePreset:
     )
 
 
+def _build_club_night() -> VenuePreset:
+    """Mid-size nightclub, rigged the way a lighting designer would rig one.
+
+    This is the reference rig for tuning the show. Every fixture family the
+    engine drives is here, mounted where a club puts it, and mirrored about the
+    centre line so that a symmetric look has something to be symmetric on.
+    `pro_beam_room` is 52 identical movers: nothing the bars, pars or strobes do
+    can be seen on it, and nothing can be judged for left/right balance.
+
+    Layout, with -Z upstage (the DJ booth) and +Z toward the dance floor:
+
+        back truss   z=-3.5  six beams over the booth
+        mid truss    z= 0.0  six movers over the dance floor, a strobe at each end
+        front truss  z= 3.5  four moving washes
+        booth front  z=-3.8  four LED bars across the booth fascia
+        back wall    z=-4.8  four LED bars high behind the DJ, a strobe each side
+        floor                six pars uplighting the side walls
+    """
+    stage = StageSpec(width=12.0, depth=10.0, height=4.5, truss_lines=3)
+    fixtures = []
+    alloc = _AddressAllocator()
+
+    for i, (x, y, z) in enumerate(_distribute_positions(6, (-5.0, 5.0), 4.2, -3.5)):
+        a, u = alloc.take(MOVER_CH_COUNT)
+        fixtures.append(FixtureSpec("mover", f"beam_b{i+1}", f"Beam Back {i+1}", a, u, x, y, z))
+
+    for i, (x, y, z) in enumerate(_distribute_positions(6, (-5.0, 5.0), 4.3, 0.0)):
+        a, u = alloc.take(MOVER_CH_COUNT)
+        fixtures.append(FixtureSpec("mover", f"mover_m{i+1}", f"Mover Mid {i+1}", a, u, x, y, z))
+
+    for i, (x, y, z) in enumerate(_distribute_positions(4, (-4.5, 4.5), 4.2, 3.5)):
+        a, u = alloc.take(WASH_CH_COUNT)
+        fixtures.append(FixtureSpec("wash", f"wash_f{i+1}", f"Wash Front {i+1}", a, u, x, y, z))
+
+    for i, (x, y, z) in enumerate(_distribute_positions(4, (-2.25, 2.25), 1.0, -3.8)):
+        a, u = alloc.take(BAR_CH_COUNT)
+        fixtures.append(FixtureSpec("bar", f"bar_booth{i+1}", f"Bar Booth {i+1}", a, u, x, y, z))
+
+    for i, (x, y, z) in enumerate(_distribute_positions(4, (-4.5, 4.5), 3.0, -4.8)):
+        a, u = alloc.take(BAR_CH_COUNT)
+        fixtures.append(FixtureSpec("bar", f"bar_wall{i+1}", f"Bar Wall {i+1}", a, u, x, y, z))
+
+    for i, (x, y, z) in enumerate(_distribute_positions(2, (-5.7, 5.7), 4.2, 0.0)):
+        a, u = alloc.take(STROBE_CH_COUNT)
+        fixtures.append(FixtureSpec("strobe", f"strobe_m{i+1}", f"Strobe Mid {i+1}", a, u, x, y, z))
+
+    for i, (x, y, z) in enumerate(_distribute_positions(2, (-2.0, 2.0), 3.6, -4.8)):
+        a, u = alloc.take(STROBE_CH_COUNT)
+        fixtures.append(FixtureSpec("strobe", f"strobe_w{i+1}", f"Strobe Wall {i+1}", a, u, x, y, z))
+
+    # Left wall then right wall, so par N and par N+3 are a mirrored pair.
+    par_index = 0
+    for x in (-5.8, 5.8):
+        for z in (-2.0, 1.0, 4.0):
+            par_index += 1
+            a, u = alloc.take(BAR_CH_COUNT)
+            fixtures.append(FixtureSpec("par", f"par_{par_index}", f"Par {par_index}", a, u, x, 0.3, z))
+
+    key_zones = [
+        KeyZoneSpec("dj_booth", ["wash_f2", "wash_f3"], active=True, min_intensity=0.0),
+    ]
+
+    return VenuePreset(
+        name="club_night",
+        display_name="Club Night",
+        description="Mid-size nightclub: 12 movers on two trusses, 4 moving washes, 8 LED bars, "
+                    "4 strobes and 6 pars. 12x10m floor, 4.5m ceiling, DJ booth upstage.",
+        size=VenueSize.CLUB_NIGHT,
+        stage=stage,
+        fixtures=fixtures,
+        key_zones=key_zones,
+        default_genre="edm",
+        default_bpm=128.0,
+    )
+
+
 # Build all presets
 VENUE_PRESETS: Dict[str, VenuePreset] = {
     "small_nightclub": _build_small_nightclub(),
+    "club_night": _build_club_night(),
     "medium_venue": _build_medium_venue(),
     "pro_beam_room": _build_pro_beam_room(),
     "large_concert": _build_large_concert(),

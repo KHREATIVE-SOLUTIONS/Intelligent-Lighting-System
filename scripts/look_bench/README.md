@@ -1,0 +1,78 @@
+# Look bench
+
+See and score a whole show without a room, a rig or a login.
+
+`look_bench.py` plays one or more tracks back to back through the real analyser and the
+real engine, on a virtual clock, far faster than real time. It uses one engine and one
+analyser for the whole sequence, the way a DJ set runs, so anything that depends on what
+was played before shows up. Every DMX frame is decoded through the rig's own channel
+map. Each run produces one picture and one JSON file of numbers.
+
+## Running
+
+From the repository root, with the backend's Python:
+
+```bash
+backend/venv/Scripts/python scripts/look_bench/look_bench.py --rig club_night --tracks ibd,dense:30,ibd,mix --out bench_out --label my_change
+```
+
+| Option | Meaning |
+|---|---|
+| `--rig` | A demo preset (`club_night`, `small_nightclub`, `pro_beam_room`, ...) or `db:<sqlite file>:<rig id>` for a rig patched in a database. |
+| `--tracks` | Comma separated. Synthetic: `ibd` (intro, build, drop), `dense[:seconds]`, `quiet`, `mix`, `song`, `click`. Append `@<dB>` for gain, e.g. `ibd@-6`. Or a path to a WAV or FLAC file for real music. |
+| `--label` | Names the output files. |
+| `--armed` | Also apply what "Start Capture" applies. Off by default, so results line up with audio fed over the WebSocket. |
+
+`club_night` is the reference rig: 12 movers on two trusses, 4 moving washes, 8 LED bars,
+4 strobes and 6 pars, mirrored about the centre line. Use it for comparisons.
+
+## Reading the picture
+
+Top to bottom:
+
+1. **Section** — what the engine called each moment. Dashed white lines mark where the
+   music really changes, for synthetic tracks that know.
+2. **The show** — one row per fixture, grouped by family, upstage to downstage and left
+   to right. Colour is the fixture's colour times its level, gamma-lifted so low levels
+   can be seen. A chase shows as a diagonal; identical fixtures show as a flat band.
+3. **Level** — rig brightness (white) against the music's energy (grey).
+4. **Pan** and 5. **Tilt** — where each moving head points, in degrees from straight
+   down. Heads left of centre are drawn blue, right of centre red. A mirrored look is a
+   blue line and a red line reflected about zero in pan, and lying on top of each other
+   in tilt.
+
+## The numbers
+
+| Number | What a good one looks like |
+|---|---|
+| `mirror_symmetry_pan`, `mirror_symmetry_tilt` | +1: left and right mirror each other. 0: unrelated. -1: all heads move as one. |
+| `pan_sweep_deg_median`, `tilt_sweep_deg_median` | How far the heads actually travel. |
+| `biggest_step_deg_while_lit` | The largest jump in one frame with the lamp on. A head cannot make a big one. |
+| `group_level_correlation_mean` | Near 1: every fixture family does the same thing. Lower: families play different parts. |
+| `within_group_spread` | 0: every fixture in a family is identical. Higher: there is a chase or a pattern. |
+| `saturation_mean`, `hue_variety` | How coloured the show is, and how much the colour moves over time. |
+| `worst_luminance_peaks_in_1s` | Total rig brightness swings of 20% or more in the worst second. Use it to compare one run with another whenever dimmer or flash behaviour changes. It is not the absolute safety figure: on a virtual clock it reads lower than the wire harness does in real time (3 against 4–6 on the same drop). |
+| `drop.caught`, `level_8s_before` and `_after` | Whether the drop was labelled, and whether it landed. |
+
+## Checked against the wire
+
+On the Small Club rig with the intro/build/drop track, the bench reproduces what was
+measured from captured Art-Net packets on 2026-11-17: build labelled at 19.0 s (wire
+18.9 s), drop at 31.0 s (30.7 s), level before and after the drop 0.14 and 0.41 (0.14
+and 0.40), three white flashes in the worst second (three).
+
+## Baselines
+
+`baseline/` holds dated before-and-after runs on `club_night` with
+`ibd,dense:30,ibd,mix`. Add one whenever the show's behaviour is changed on purpose.
+
+The `peaks/s` figures in `2026-11-17_before` and `2026-11-17_after_moves` (7 and 9)
+were produced by an earlier peak counter that counted a held level two or three
+times. Under the current counter both read 3. Everything else in those files stands.
+
+## Limits
+
+- Synthetic tracks are drums over thin pads. Colour-to-mood and structure on real music
+  need real recordings: pass WAV or FLAC paths to `--tracks`.
+- The bench decodes DMX; it does not draw beams in a room. Use the 3D view for that.
+- Level is dimmer times the brightest colour channel, a linear DMX figure.

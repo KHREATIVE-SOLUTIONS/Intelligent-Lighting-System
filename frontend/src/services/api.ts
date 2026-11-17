@@ -1261,12 +1261,33 @@ export const importExportApi = {
   },
 };
 
+export interface DemoPresetSummary {
+  name: string;
+  display_name: string;
+  description: string;
+  total_fixtures: number;
+}
+
 export const demoApi = {
-  getRig: async (preset: string): Promise<Rig> => {
+  // With no preset named, the backend returns the demo rig its engine is
+  // running, so the view draws the rig whose state it is being sent.
+  getRig: async (preset?: string): Promise<Rig> => {
     const response = await api.get('/demo/rig', {
-      params: { preset, t: Date.now() },
+      params: preset ? { preset, t: Date.now() } : { t: Date.now() },
     });
     return response.data;
+  },
+
+  listPresets: async (): Promise<DemoPresetSummary[]> => {
+    const response = await api.get('/venues/presets');
+    const presets = (response.data?.presets ?? {}) as Record<string, Omit<DemoPresetSummary, 'name'>>;
+    return Object.entries(presets).map(([name, p]) => ({ ...p, name }));
+  },
+
+  // Puts a demo rig on the engine. The backend refuses (409) while a patched
+  // rig is live, because the demo's patch would go to the venue's fixtures.
+  applyPreset: async (name: string): Promise<void> => {
+    await api.post(`/venues/presets/${encodeURIComponent(name)}/apply`);
   },
 };
 

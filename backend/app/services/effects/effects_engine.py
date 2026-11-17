@@ -38,6 +38,8 @@ from .decision_engine import (
     DecisionEngine, LightingState, AudioState, EffectSelection
 )
 from .lfo_engine import LFOEngine
+from . import live_moves
+from . import live_roles
 from ..lighting.section_templates import get_section_template
 from ..lighting.fixture_capabilities import get_capability_profile_for_fixture
 from ..lighting.movement_patterns import PRO_MOVEMENT_PRESETS
@@ -325,28 +327,29 @@ _AMBIENT_TILT_DEG = 6.0
 # movement speed and size, `patterns` narrows the section's pattern pool (when
 # at least two survive), `palettes` are the song palettes cycled through.
 _CLUB_STYLE_LOOKS = {
+    # Pattern names are the live_moves vocabulary.
     "house": {"palettes": (ColorPalette.HOUSE, ColorPalette.POP), "speed": 1.0, "amp": 1.0,
-              "patterns": ("circle", "figure8", "pan_wave", "tilt_circle")},
+              "patterns": ("circle", "figure8", "fan_sweep", "fly_out")},
     "techno": {"palettes": (ColorPalette.TECHNO, ColorPalette.EDM), "speed": 1.15, "amp": 0.85,
-               "patterns": ("tilt_cross", "odd_even", "tilt_circle", "circle")},
+               "patterns": ("sym_tilt", "tilt_ripple", "fly_out", "circle")},
     "dnb": {"palettes": (ColorPalette.DUBSTEP, ColorPalette.TECHNO), "speed": 1.25, "amp": 1.1,
-            "patterns": ("odd_even", "tilt_cross", "figure8", "tilt_circle")},
+            "patterns": ("tilt_ripple", "sym_tilt", "figure8", "fly_out")},
     "trance": {"palettes": (ColorPalette.EDM, ColorPalette.AMBIENT), "speed": 0.9, "amp": 1.15,
-               "patterns": ("circle", "tilt_circle", "pan_wave", "figure8")},
+               "patterns": ("circle", "fly_out", "fan_sweep", "figure8")},
     "edm": {"palettes": (ColorPalette.EDM, ColorPalette.DUBSTEP), "speed": 1.0, "amp": 1.0,
             "patterns": None},
     "hip_hop": {"palettes": (ColorPalette.HIP_HOP, ColorPalette.ROCK), "speed": 0.8, "amp": 0.85,
-                "patterns": ("tilt_cross", "odd_even", "pan_wave")},
+                "patterns": ("sym_tilt", "tilt_ripple", "fan_sweep")},
     "latin": {"palettes": (ColorPalette.HOUSE, ColorPalette.POP), "speed": 0.9, "amp": 1.05,
-              "patterns": ("figure8", "pan_wave", "circle")},
+              "patterns": ("figure8", "fan_sweep", "circle")},
     "afro": {"palettes": (ColorPalette.HOUSE, ColorPalette.HIP_HOP), "speed": 0.9, "amp": 1.0,
-             "patterns": ("pan_wave", "figure8", "circle")},
+             "patterns": ("fan_sweep", "figure8", "circle")},
     "open_format": {"palettes": (ColorPalette.POP, ColorPalette.HOUSE), "speed": 1.0, "amp": 1.0,
                     "patterns": None},
     "rock": {"palettes": (ColorPalette.ROCK, ColorPalette.POP), "speed": 1.05, "amp": 1.0,
-             "patterns": ("tilt_cross", "odd_even", "pan_wave", "circle")},
+             "patterns": ("sym_tilt", "tilt_ripple", "fan_sweep", "circle")},
     "lounge": {"palettes": (ColorPalette.AMBIENT, ColorPalette.HOUSE), "speed": 0.7, "amp": 0.7,
-               "patterns": ("pan_wave", "circle", "tilt_circle")},
+               "patterns": ("fan_sweep", "circle", "sym_tilt")},
 }
 # A style is adopted after this many fresh, agreeing answers at or above this
 # confidence (the model answers every 5 s, so about 15 s of agreement). A
@@ -541,7 +544,10 @@ class EffectsEngine:
         self._rebuild_base_color: RGB = RGB(1.0, 1.0, 1.0)
         self._rebuild_snare_strobe_until: float = -999.0
         self._rebuild_snare_last_trigger: float = -999.0
-        self._rebuild_active_pattern: str = "tilt_cross"
+        self._rebuild_active_pattern: str = live_moves.DEFAULT_PATTERN
+        # Where each head was last sent, so the next frame can only ask for a
+        # move a fixture can make. Keyed by fixture id.
+        self._rebuild_head_pos: Dict[str, Tuple[float, float]] = {}
         # Bar zero is a real bar on the locked clock, so the hold has to start
         # before any bar the clock can report.
         self._rebuild_pattern_hold_until_bar: int = -(10 ** 9)
@@ -1156,29 +1162,48 @@ class EffectsEngine:
                 key=lambda x: (float(getattr(x, "x", 0.0)), str(getattr(x, "id", ""))),
             )
 
-        # Precompute stable membership so paired fixtures always get distinct phase slots.
-        row_membership: Dict[str, Tuple[int, int, int]] = {}
-        for row_i, row_fixtures in selected_rows.items():
-            count = len(row_fixtures)
-            for local_i, fx in enumerate(row_fixtures):
-                row_membership[str(fx.id)] = (row_i, local_i, count)
+        # The part each fixture plays. See live_roles: beams carry the movement
+        # and the chase, washes and pars are a steady bed in a second colour,
+        # bars run their own pattern, strobes wait for an accent.
+        rig_has_beams = any(
+            str(getattr(f, "fixture_type", "") or "").lower() != "wash"
+            for f in all_fixtures if _is_motion_capable(f)
+        )
+        roles: Dict[str, str] = {
+            str(f.id): live_roles.role_for(getattr(f, "fixture_type", ""), _is_motion_capable(f), rig_has_beams)
+            for f in all_fixtures
+        }
+        bar_places = live_roles.truss_places([f for f in all_fixtures if roles[str(f.id)] == live_roles.BAR])
+        bed_places = live_roles.truss_places([f for f in all_fixtures if roles[str(f.id)] == live_roles.BED])
 
-        # Stable fixture order for MA-style linear chase.
+        # Stable fixture order for MA-style linear chase. The chase is the
+        # beams' alone: a wash that chased would stop being a bed.
         chase_order: List[Fixture] = []
         for ridx in sorted(selected_rows.keys()):
-            chase_order.extend(selected_rows[ridx])
+            chase_order.extend(fx for fx in selected_rows[ridx] if roles.get(str(fx.id)) == live_roles.BEAM)
         chase_index = {fx.id: idx for idx, fx in enumerate(chase_order)}
 
-        # Movement patterns are beat-locked and section-aware, with circle-heavy busker looks.
+        # Where each head sits on its truss, for mirrored movement: how far along
+        # from the truss's own centre (-1 left end, +1 right end), which way the
+        # truss leans to face the room, and which truss it is.
+        head_geometry: Dict[str, Tuple[float, float, int]] = {}
+        z_mid = (row_keys[0] + row_keys[-1]) / 2.0 if row_keys else 0.0
+        z_half = (row_keys[-1] - row_keys[0]) / 2.0 if row_keys else 0.0
+        for row_i, row_fixtures in selected_rows.items():
+            xs = [float(getattr(fx, "x", 0.0)) for fx in row_fixtures]
+            x_mid = (min(xs) + max(xs)) / 2.0
+            x_half = (max(xs) - min(xs)) / 2.0
+            # A downstage truss leans back toward the booth; the rest lean out
+            # toward the audience.
+            leans_upstage = z_half > 0.0 and (row_keys[row_i] - z_mid) > 0.33 * z_half
+            for fx, x in zip(row_fixtures, xs):
+                u = (x - x_mid) / x_half if x_half > 1e-6 else 0.0
+                head_geometry[str(fx.id)] = (u, 1.0 if leans_upstage else -1.0, row_i)
+
+        # Movement is beat-locked and section-aware; the vocabulary is live_moves.
         bar_clock = int(math.floor(self._beat_clock_bars()))
-        section_pattern_pool = {
-            "breakdown": ["pan_wave", "tilt_circle", "circle"],
-            "verse": ["tilt_cross", "circle", "pan_wave", "figure8"],
-            "buildup": ["tilt_circle", "circle", "figure8", "odd_even"],
-            "chorus": ["circle", "tilt_circle", "figure8", "pan_wave"],
-            "drop": ["tilt_circle", "circle", "odd_even", "figure8"],
-        }
-        pattern_pool = section_pattern_pool.get(section, ["tilt_cross", "circle", "pan_wave", "figure8", "odd_even"])
+        pattern_pool = list(live_moves.SECTION_POOLS.get(section, live_moves.DEFAULT_POOL))
+        motion = live_moves.SECTION_MOTION.get(section, live_moves.DEFAULT_MOTION)
         style_look = _CLUB_STYLE_LOOKS.get(self._club_style or "")
         if style_look and style_look["patterns"]:
             narrowed = [p for p in pattern_pool if p in style_look["patterns"]]
@@ -1211,9 +1236,6 @@ class EffectsEngine:
             self._rebuild_style_amp = style_amp
         pattern = self._rebuild_active_pattern
 
-        pan_amp = 22.0
-        tilt_amp = 12.0
-        move_speed = 0.45
         base_floor = 0.62
         chase_floor = 0.26
         chase_steps_per_beat = 1.5
@@ -1221,51 +1243,31 @@ class EffectsEngine:
         chase_falloff = 0.26
 
         if section == "breakdown":
-            pan_amp = 12.0
-            tilt_amp = 9.0
-            move_speed = 0.28
             base_floor = 0.26
             chase_floor = 0.18
             chase_steps_per_beat = 1.0
             chase_heads = 1
             chase_falloff = 0.22
         elif section == "verse":
-            pan_amp = 20.0
-            tilt_amp = 14.0
-            move_speed = 0.42
             base_floor = 0.68
             chase_floor = 0.24
             chase_steps_per_beat = 1.8
             chase_heads = 2
             chase_falloff = 0.24
         elif section == "buildup":
-            pan_amp = 30.0
-            tilt_amp = 22.0
-            move_speed = 0.70
             base_floor = 0.74
             chase_floor = 0.20
             chase_steps_per_beat = 3.0
             chase_heads = 3
             chase_falloff = 0.20
         elif section == "chorus":
-            pan_amp = 26.0
-            tilt_amp = 19.0
-            move_speed = 0.60
             base_floor = 0.78
             chase_floor = 0.22
             chase_steps_per_beat = 2.4
             chase_heads = 3
             chase_falloff = 0.22
         elif section == "drop":
-            pan_amp = 34.0
-            tilt_amp = 25.0
-            move_speed = 0.85
             base_floor = 1.0
-
-        # The club style's movement character, on top of the section's.
-        pan_amp *= self._rebuild_style_amp
-        tilt_amp *= self._rebuild_style_amp
-        move_speed *= self._rebuild_style_speed
 
         # The drop look, whether the detector named it or the anticipation path
         # committed to it a beat earlier. It is one sustained level across the
@@ -1393,6 +1395,7 @@ class EffectsEngine:
         live_emotional = self._rebuild_get_emotional_color(section)
         self._rebuild_base_color = self._rebuild_base_color.blend(live_emotional, 0.018)
         base_color = self._rebuild_base_color
+        bed_color = live_roles.secondary_colour(base_color.r, base_color.g, base_color.b, section)
         white_accent = 0.0
         if not strobe_on:
             # Decay persistent accent envelope (lets bass hits "hang" briefly).
@@ -1429,39 +1432,25 @@ class EffectsEngine:
             ftype = str(getattr(fixture, "fixture_type", "") or "").lower()
             is_mover = _is_motion_capable(fixture)
 
-            # Symmetric BPM movement around home look (pan=0, tilt=0/down-home).
+            # Position: a designer's movement, mirrored about each truss's centre
+            # line and locked to the beat clock. The club style leans its size
+            # and speed. See live_moves for the vocabulary and the conventions.
             if is_mover:
-                ridx, local_idx, row_count = row_membership.get(str(fixture.id), (0, 0, 1))
-
-                # Global phase slot prevents "every other pair looks static" artifacts.
-                global_idx = chase_index.get(fixture.id, local_idx)
-                global_count = max(1, len(chase_order))
-                global_frac = (global_idx / max(1, global_count - 1)) if global_count > 1 else 0.5
-                frac = global_frac
-                row_sign = -1.0 if ridx % 2 == 0 else 1.0
-                phase = ((beats * move_speed) + frac) % 1.0
-
-                pan = 0.0
-                tilt = 0.0
-                if pattern == "tilt_cross":
-                    pan = row_sign * (8.0 + pan_amp * (2.0 * frac - 1.0)) * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * math.sin(2.0 * math.pi * phase + (0.0 if ridx == 0 else math.pi))
-                elif pattern == "pan_wave":
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * (0.42 + 0.33 * math.cos(2.0 * math.pi * phase))
-                elif pattern == "circle":
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * (0.25 + 0.75 * math.cos(2.0 * math.pi * phase))
-                elif pattern == "tilt_circle":
-                    pan = row_sign * (pan_amp * 0.65) * math.sin(2.0 * math.pi * phase)
-                    tilt = (tilt_amp * 1.25) * (0.15 + 0.85 * math.cos(2.0 * math.pi * phase))
-                elif pattern == "figure8":
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * math.sin(4.0 * math.pi * phase)
-                else:  # odd_even
-                    parity_phase = phase if (local_idx % 2 == 0) else (phase + 0.5)
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * parity_phase)
-                    tilt = tilt_amp * math.cos(2.0 * math.pi * parity_phase)
+                fid = str(fixture.id)
+                u, row_dir, ridx = head_geometry.get(fid, (0.0, -1.0, 0))
+                target_pan, target_tilt = live_moves.head_target(
+                    pattern, u=u, row_dir=row_dir, row_index=ridx, beats=beats, motion=motion,
+                    speed=self._rebuild_style_speed, amp=self._rebuild_style_amp,
+                )
+                # Never ask for a step a head cannot make: a change of pattern
+                # or section is a glide to the new position, not a jump.
+                last = self._rebuild_head_pos.get(fid)
+                if last is None:
+                    pan, tilt = target_pan, target_tilt
+                else:
+                    pan = live_moves.slew(last[0], target_pan, live_moves.MAX_PAN_DEG_PER_S, delta_time)
+                    tilt = live_moves.slew(last[1], target_tilt, live_moves.MAX_TILT_DEG_PER_S, delta_time)
+                self._rebuild_head_pos[fid] = (pan, tilt)
 
                 fixture.pan = max(-270.0, min(270.0, float(pan)))
                 fixture.tilt = max(-135.0, min(135.0, float(tilt)))
@@ -1471,12 +1460,28 @@ class EffectsEngine:
 
             # Dimmer policy: chase in verse/buildup/chorus, strobe on drop, calm breakdown.
             # All paths scale from zero when no audio — beams form on activation.
-            if section == "breakdown":
+            role = roles.get(str(fixture.id), live_roles.BED)
+            if role == live_roles.ACCENT and (section == "breakdown" or not (drop_look or snare_strobe_on)):
+                # A strobe is dark outside the drop. Inside it, it does exactly
+                # what the rest of the rig does - the sustained drop level with
+                # the governed flashes on top - so the drop is, frame for frame,
+                # what it was before strobes had a role, and a strobe can never
+                # deepen or add to a flash.
+                dim = 0.0
+            elif section == "breakdown":
                 dim = energy * 0.40
             elif drop_look:
                 dim = 1.0 if strobe_flash else drop_bed
             elif snare_strobe_on:
                 dim = 1.0 if snare_strobe_flash else energy * 0.16
+            elif role == live_roles.BAR:
+                bar_u, bar_row = bar_places.get(str(fixture.id), (0.0, 0))
+                dim = energy * base_floor * live_roles.bar_shape(bar_u, bar_row, beats, section)
+            elif role == live_roles.WASH:
+                dim = energy * base_floor * live_roles.WASH_LEVEL
+            elif role == live_roles.BED:
+                _, bed_row = bed_places.get(str(fixture.id), (0.0, 0))
+                dim = energy * base_floor * live_roles.bed_shape(bed_row, beats)
             elif chase_active and is_mover and chase_head >= 0 and fixture.id in chase_index:
                 idx = chase_index[fixture.id]
                 chase_len = max(1, len(chase_order))
@@ -1527,9 +1532,12 @@ class EffectsEngine:
                 fixture.green = 1.0
                 fixture.blue = 1.0
             else:
-                fixture.red = max(0.0, min(1.0, base_color.r * (1.0 - white_accent) + white_accent))
-                fixture.green = max(0.0, min(1.0, base_color.g * (1.0 - white_accent) + white_accent))
-                fixture.blue = max(0.0, min(1.0, base_color.b * (1.0 - white_accent) + white_accent))
+                # The bed takes the second colour; beams and bars take the first.
+                cr, cg, cb = bed_color if role in (live_roles.WASH, live_roles.BED) else (
+                    base_color.r, base_color.g, base_color.b)
+                fixture.red = max(0.0, min(1.0, cr * (1.0 - white_accent) + white_accent))
+                fixture.green = max(0.0, min(1.0, cg * (1.0 - white_accent) + white_accent))
+                fixture.blue = max(0.0, min(1.0, cb * (1.0 - white_accent) + white_accent))
                 # Apply section narrative shaping (saturation/whiteness/accent behavior).
                 self._apply_palette_narrative_to_fixture(fixture, i, section)
 
