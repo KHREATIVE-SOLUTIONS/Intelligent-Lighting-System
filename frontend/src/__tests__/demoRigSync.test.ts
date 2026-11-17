@@ -339,6 +339,27 @@ describe('the demo rig follows the engine', () => {
     expect(drawn).toEqual(rigOf('club_night'));
   });
 
+  it('follows a second switch made straight after the first', async () => {
+    // The ask for the first switch has finished. The next one must be a new
+    // ask, not a ride on the finished one.
+    const { engine, source } = fakeBackend('club_night');
+    const store = fakeHealthStore(demoReading('club_night'));
+    let drawn: DemoRig = rigOf('club_night');
+    const follower = createDemoRigFollower<DemoRig>({ source, draw: (rig) => { drawn = rig; } });
+    onEngineOnAnotherRig(store, () => drawn.venue, () => void follower.follow());
+
+    engine.running = 'small_nightclub';
+    store.poll(demoReading('small_nightclub'));
+    await settle();
+    expect(drawn).toEqual(rigOf('small_nightclub'));
+
+    engine.running = 'festival_mainstage';
+    store.poll(demoReading('festival_mainstage'));
+    await settle();
+    expect(drawn).toEqual(rigOf('festival_mainstage'));
+    expect(source.getRig).toHaveBeenCalledTimes(2);
+  });
+
   it('draws once when a restart is seen by the socket and the poll together', async () => {
     const { engine, source } = fakeBackend('pro_beam_room');
     const link = fakeLink('connected');
@@ -531,7 +552,38 @@ describe('the demo rig follows the engine', () => {
     expect(draw).not.toHaveBeenCalled();
   });
 
-  it('lets a newer ask replace one still waiting to retry', async () => {
+  it('still draws a slow answer while status readings keep arriving', async () => {
+    // The answer takes longer than the gap between two polls. A new reading
+    // must not throw away the ask already on its way, or a slow box would
+    // never be caught up with: every answer dropped by the next ask.
+    const answers: Array<ReturnType<typeof deferred<DemoRig>>> = [];
+    const source: DemoRigSource<DemoRig> = {
+      getRig: vi.fn((preset?: string) => {
+        if (preset) return Promise.resolve(rigOf(preset));
+        const answer = deferred<DemoRig>();
+        answers.push(answer);
+        return answer.promise;
+      }),
+      applyPreset: vi.fn(async () => {}),
+    };
+    const store = fakeHealthStore();
+    let drawn: DemoRig = rigOf('club_night');
+    const follower = createDemoRigFollower<DemoRig>({ source, draw: (rig) => { drawn = rig; } });
+    onEngineOnAnotherRig(store, () => drawn.venue, () => void follower.follow());
+
+    store.poll(demoReading('small_nightclub'));
+    await settle();
+    store.poll(demoReading('small_nightclub'));
+    await settle();
+    answers[0].resolve(rigOf('small_nightclub'));
+    await settle();
+
+    expect(drawn).toEqual(rigOf('small_nightclub'));
+    // The second reading joined the ask that was out; it sent nothing.
+    expect(answers.length).toBe(1);
+  });
+
+  it('joins an ask that is waiting to retry', async () => {
     const gate = deferred<void>();
     let calls = 0;
     const source: DemoRigSource<DemoRig> = {
@@ -547,11 +599,75 @@ describe('the demo rig follows the engine', () => {
 
     const first = follower.follow();
     await settle();
-    expect(await follower.follow()).toBe(true);
+    const second = follower.follow();
     gate.resolve();
 
-    expect(await first).toBe(false);
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
     expect(source.getRig).toHaveBeenCalledTimes(2);
+    expect(draw).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not join an ask that left before a pick', async () => {
+    // The ask is out when a pick starts and is refused. The answer on its way
+    // predates the pick, so the pick's own ask has to be a fresh one.
+    const before = deferred<DemoRig>();
+    let unnamed = 0;
+    const source: DemoRigSource<DemoRig> = {
+      getRig: vi.fn((preset?: string) => {
+        if (preset) return Promise.resolve(rigOf(preset));
+        unnamed += 1;
+        return unnamed === 1 ? before.promise : Promise.resolve(rigOf('pro_beam_room'));
+      }),
+      applyPreset: vi.fn(async () => {
+        throw new Error('409');
+      }),
+    };
+    const draw = vi.fn();
+    const follower = createDemoRigFollower<DemoRig>({ source, draw });
+
+    const early = follower.follow();
+    await expect(follower.pick('club_night')).rejects.toThrow('409');
+    await settle();
+    expect(unnamed).toBe(2);
+    expect(draw).toHaveBeenLastCalledWith(rigOf('pro_beam_room'));
+
+    before.resolve(rigOf('small_nightclub'));
+    expect(await early).toBe(false);
+    expect(draw).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up on an ask that never answers and asks afresh', async () => {
+    // No timeout on the request itself: a hung one must not block every
+    // later ask for good.
+    const hung = deferred<DemoRig>();
+    let unnamed = 0;
+    const source: DemoRigSource<DemoRig> = {
+      getRig: vi.fn(() => {
+        unnamed += 1;
+        return unnamed === 1 ? hung.promise : Promise.resolve(rigOf('pro_beam_room'));
+      }),
+      applyPreset: vi.fn(async () => {}),
+    };
+    const draw = vi.fn();
+    let clock = 0;
+    const follower = createDemoRigFollower<DemoRig>({ source, draw, askTimeoutMs: 8000, now: () => clock });
+
+    const first = follower.follow();
+    clock = 7000;
+    void follower.follow();
+    await settle();
+    // Still inside the time allowed: joined, nothing new sent.
+    expect(unnamed).toBe(1);
+
+    clock = 9000;
+    expect(await follower.follow()).toBe(true);
+    expect(unnamed).toBe(2);
+    expect(draw).toHaveBeenLastCalledWith(rigOf('pro_beam_room'));
+
+    // The hung one answers at last. It is no longer wanted.
+    hung.resolve(rigOf('club_night'));
+    expect(await first).toBe(false);
     expect(draw).toHaveBeenCalledTimes(1);
   });
 });

@@ -126,6 +126,9 @@ export interface DemoRigFollowerOptions<R> {
   /** Waits between failed asks. After the last one the ask gives up. */
   retryDelaysMs?: number[];
   wait?(ms: number): Promise<void>;
+  /** How long an ask may be out before a new one is allowed to replace it. */
+  askTimeoutMs?: number;
+  now?(): number;
 }
 
 export interface DemoRigFollower {
@@ -143,41 +146,66 @@ export interface DemoRigFollower {
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [1000, 3000];
+// The shared HTTP client sets no timeout, so a request can hang for minutes.
+const DEFAULT_ASK_TIMEOUT_MS = 8000;
 
 export function createDemoRigFollower<R>({
   source,
   draw,
   retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
   wait = (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  askTimeoutMs = DEFAULT_ASK_TIMEOUT_MS,
+  now = () => Date.now(),
 }: DemoRigFollowerOptions<R>): DemoRigFollower {
-  let asks = 0;
   let picks = 0;
   let picksRunning = 0;
+  let asks = 0;
+  // The ask on its way, if there is one.
+  let out: { picksAtStart: number; startedAt: number; done: Promise<boolean> } | null = null;
 
-  async function follow(): Promise<boolean> {
+  function follow(): Promise<boolean> {
+    // An ask already on its way is joined, not replaced. While the view is
+    // behind, a status reading asks again every two seconds; if each new ask
+    // dropped the one before, an answer slower than that would never be
+    // drawn. Two things do call for a fresh ask: a pick since it left, which
+    // makes its answer worthless, and its having been out too long.
+    if (out && out.picksAtStart === picks && now() - out.startedAt < askTimeoutMs) {
+      return out.done;
+    }
+
     const ask = ++asks;
     const picksAtStart = picks;
     // A pick outranks an ask. An ask sent just before a pick's apply can come
     // back with the rig the engine has since left, and "latest request wins"
     // would draw it over the pick. So an answer is dropped if a pick began
-    // after the ask or is still running, and if a newer ask replaced it.
+    // after the ask or is still running, and if a fresh ask replaced it.
     const superseded = () => ask !== asks || picks !== picksAtStart || picksRunning > 0;
 
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        const rig = await source.getRig();
-        if (superseded()) return false;
-        draw(rig);
-        return true;
-      } catch {
-        // Keep what is drawn. The backend can accept the socket a moment
-        // before it answers requests, so try again before giving up; the next
-        // reconnect asks afresh either way.
-        if (superseded() || attempt >= retryDelaysMs.length) return false;
-        await wait(retryDelaysMs[attempt]);
-        if (superseded()) return false;
+    const run = async (): Promise<boolean> => {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const rig = await source.getRig();
+          if (superseded()) return false;
+          draw(rig);
+          return true;
+        } catch {
+          // Keep what is drawn. The backend can accept the socket a moment
+          // before it answers requests, so try again before giving up; the
+          // next reconnect or status reading asks afresh either way.
+          if (superseded() || attempt >= retryDelaysMs.length) return false;
+          await wait(retryDelaysMs[attempt]);
+          if (superseded()) return false;
+        }
       }
-    }
+    };
+
+    const entry = { picksAtStart, startedAt: now(), done: run() };
+    out = entry;
+    const clear = () => {
+      if (out === entry) out = null;
+    };
+    void entry.done.then(clear, clear);
+    return entry.done;
   }
 
   async function pick(name: string): Promise<void> {
