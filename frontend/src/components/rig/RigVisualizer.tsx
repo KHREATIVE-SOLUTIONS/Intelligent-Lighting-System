@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import type { MutableRefObject } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
@@ -1051,6 +1051,16 @@ function Scene({
   );
 
   const camera = useMemo(() => cameraPreset(cameraMode, venue.layout), [cameraMode, venue.layout]);
+
+  // Empty the beam debug buffer when the rig changes. It is keyed by fixture
+  // id and nothing ever removed an entry, so after the Demo rig chooser went
+  // from a 52-fixture rig to a 34-fixture one the table still listed 52.
+  // A layout effect in the scene itself, not in the page: by the time it runs
+  // the old rig's fixtures have unmounted in this same commit, so none of them
+  // can write a row back afterwards.
+  useLayoutEffect(() => {
+    debugBuffer.current = {};
+  }, [rig, debugBuffer]);
 
   return (
     <>
