@@ -7,11 +7,12 @@ import {
   phaseDelta,
   sectionEnergy,
 } from '../components/rig/previs/beatClock';
+import { beamRise, beamThrow } from '../components/rig/previs/beamThrow';
 import { crowdCapacity, placeCrowd } from '../components/rig/previs/crowdLayout';
 import { getFixtureGeometry } from '../components/rig/previs/fixtureGeometry';
 import { FIXTURE_SPECS, resolveModelKind } from '../components/rig/previs/fixtureSpecs';
 import type { FixtureModelKind } from '../components/rig/previs/fixtureSpecs';
-import { buildVenue, cameraPreset } from '../components/rig/previs/layout';
+import { buildVenue, cameraPreset, roomSpan } from '../components/rig/previs/layout';
 import type { LayoutFixture } from '../components/rig/previs/layout';
 
 // The club_night demo rig, as backend/app/services/demo/venue_presets.py lays
@@ -510,5 +511,110 @@ describe('beat clock', () => {
     expect(phaseDelta(0.9, 0.1)).toBeCloseTo(0.2, 6);
     expect(phaseDelta(0.1, 0.9)).toBeCloseTo(-0.2, 6);
     expect(phaseDelta(0.25, 0.5)).toBeCloseTo(0.25, 6);
+  });
+});
+
+// The groups a fixture is drawn with, nested as Fixture3D nests them: the body
+// at the fixture's position, turned by the yaw it is hung at, and inside it the
+// head, turned tilt first and pan second. The beam runs down the head's -Y.
+function drawnBeam({ y, yawDeg = 0, panDeg = 0, tiltDeg = 0 }: {
+  y: number; yawDeg?: number; panDeg?: number; tiltDeg?: number;
+}) {
+  const body = new THREE.Group();
+  body.position.set(1.5, y, -2);
+  body.rotation.y = THREE.MathUtils.degToRad(yawDeg);
+  const head = new THREE.Group();
+  head.rotation.order = 'YXZ';
+  head.rotation.y = THREE.MathUtils.degToRad(panDeg);
+  head.rotation.x = THREE.MathUtils.degToRad(tiltDeg);
+  body.add(head);
+  body.updateMatrixWorld(true);
+  const direction = new THREE.Vector3(0, -1, 0).transformDirection(head.matrixWorld);
+  return { direction, tiltRad: head.rotation.x };
+}
+
+describe('how far a beam travels', () => {
+  const CEILING = 5.4;
+  const FAR = 1000;
+
+  it('is the distance to the floor along the beam, however the head is turned', () => {
+    for (const yawDeg of [0, 90, 180, -45]) {
+      for (const panDeg of [-200, -80, 0, 35, 170]) {
+        for (const tiltDeg of [-68, -40, -10, 0, 25, 48, 60, 75]) {
+          const y = 4.2;
+          const { direction, tiltRad } = drawnBeam({ y, yawDeg, panDeg, tiltDeg });
+          // Follow the drawn beam down to the floor plane.
+          const alongBeam = y / -direction.y;
+          expect(beamThrow(y, beamRise(tiltRad), CEILING, FAR)).toBeCloseTo(alongBeam, 6);
+        }
+      }
+    }
+  });
+
+  it('is the height of the fixture for a beam pointing straight down, as it always was', () => {
+    expect(beamThrow(4.2, beamRise(0), CEILING, FAR)).toBeCloseTo(4.2, 9);
+    expect(beamThrow(9.2, beamRise(0), 11, FAR)).toBeCloseTo(9.2, 9);
+  });
+
+  it('grows as the head leans, so the light still reaches the floor', () => {
+    const lean = (deg: number) => beamThrow(4.2, beamRise(THREE.MathUtils.degToRad(deg)), CEILING, FAR);
+    expect(lean(40)).toBeGreaterThan(lean(0) * 1.3);
+    // The old range was 1.5 times the height: gone by 48 degrees of lean.
+    expect(lean(60)).toBeGreaterThan(4.2 * 1.5);
+    expect(lean(-60)).toBeCloseTo(lean(60), 9);
+  });
+
+  it('goes to the ceiling for a beam pointing above level', () => {
+    for (const tiltDeg of [100, 120, 135, -135, 180]) {
+      const y = 4.2;
+      const { direction, tiltRad } = drawnBeam({ y, panDeg: 30, tiltDeg });
+      expect(direction.y).toBeGreaterThan(0);
+      const alongBeam = (CEILING - y) / direction.y;
+      expect(beamThrow(y, beamRise(tiltRad), CEILING, FAR)).toBeCloseTo(alongBeam, 6);
+    }
+  });
+
+  it('stops at the longest line in the room for a beam that is level or nearly so', () => {
+    for (const tiltDeg of [89.9, 90, 90.1, -90]) {
+      expect(beamThrow(4.2, beamRise(THREE.MathUtils.degToRad(tiltDeg)), CEILING, 19)).toBe(19);
+    }
+    expect(beamThrow(4.2, 0, CEILING, 19)).toBe(19);
+    expect(beamThrow(4.2, -0, CEILING, 19)).toBe(19);
+  });
+
+  it('is always a positive, finite distance: three.js reads a range of 0 as no limit', () => {
+    const awkward: Array<[number, number, number, number]> = [
+      [Number.NaN, -1, CEILING, 19], // a fixture with no position
+      [4.2, Number.NaN, CEILING, 19], // a tilt that is not a number
+      [0, -1, CEILING, 19], // on the floor, pointing down
+      [-0.5, -1, CEILING, 19], // patched under the floor
+      [6, 1, CEILING, 19], // above the ceiling, pointing up
+      [4.2, -1, Number.NaN, 19],
+      [4.2, 1, Number.NaN, 19],
+      [4.2, -1, CEILING, Number.NaN],
+      [4.2, -1, CEILING, 0],
+      [4.2, -1, CEILING, -3],
+      [4.2, 0, CEILING, Number.POSITIVE_INFINITY],
+    ];
+    for (const [sourceY, rise, ceilingY, longest] of awkward) {
+      const reach = beamThrow(sourceY, rise, ceilingY, longest);
+      expect(Number.isFinite(reach)).toBe(true);
+      expect(reach).toBeGreaterThan(0);
+    }
+  });
+
+  it('takes the room corner to corner as the longest line in it', () => {
+    const { layout } = buildVenue({ width: 12, depth: 10, height: 4.5 }, clubNight().fixtures);
+    const corners: THREE.Vector3[] = [];
+    for (const x of [-layout.wallX, layout.wallX]) {
+      for (const y of [0, layout.ceilingY]) {
+        for (const z of [layout.backZ, layout.houseZ]) corners.push(new THREE.Vector3(x, y, z));
+      }
+    }
+    let longest = 0;
+    for (const a of corners) for (const b of corners) longest = Math.max(longest, a.distanceTo(b));
+    expect(roomSpan(layout)).toBeCloseTo(longest, 9);
+    // Longer than the throw of the steepest lean the engine asks for (68 degrees).
+    expect(roomSpan(layout)).toBeGreaterThan(4.3 / Math.cos(THREE.MathUtils.degToRad(68)));
   });
 });

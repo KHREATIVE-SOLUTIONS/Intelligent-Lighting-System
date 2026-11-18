@@ -277,6 +277,14 @@ export function buildVenue(
   return { layout, mounts, trussRows };
 }
 
+/**
+ * The longest straight line that fits in the room, corner to corner. No beam
+ * travels further than this before it meets a wall, the floor or the ceiling.
+ */
+export function roomSpan(layout: ClubLayout): number {
+  return Math.hypot(layout.wallX * 2, layout.houseZ - layout.backZ, layout.ceilingY);
+}
+
 // ---------------------------------------------------------------------------
 // Cameras
 // ---------------------------------------------------------------------------

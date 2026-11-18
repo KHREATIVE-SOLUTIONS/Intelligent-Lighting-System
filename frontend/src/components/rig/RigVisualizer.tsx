@@ -20,12 +20,13 @@ import { createDemoRigFollower, onEngineOnAnotherRig, onLinkRestored, settleRig 
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
 import { createBeatClock, ingestAnalysis } from './previs/beatClock';
 import type { BeatClock } from './previs/beatClock';
+import { beamRise, beamThrow } from './previs/beamThrow';
 import { ClubRoom } from './previs/ClubRoom';
 import { BeatClockTicker, Crowd } from './previs/Crowd';
 import { DJBooth } from './previs/DJBooth';
 import { FixtureHead, FixtureSupport, FixtureYoke } from './previs/FixtureBody';
 import { FIXTURE_SPECS, resolveModelKind } from './previs/fixtureSpecs';
-import { buildVenue, cameraPreset } from './previs/layout';
+import { buildVenue, cameraPreset, roomSpan } from './previs/layout';
 import type { CameraMode, FixtureMount } from './previs/layout';
 import { RigTruss } from './previs/Truss';
 
@@ -194,6 +195,15 @@ function spotIntensityFor(level: number): number {
   return level > SPOT_LIGHT_THRESHOLD ? level * 8 : 0;
 }
 
+// The spot light's range, as a multiple of how far its beam has to travel.
+// 1.5 is what a beam pointing straight down always had.
+const SPOT_RANGE_FACTOR = 1.5;
+
+// Where the spot light's target sits in the head group: straight down the beam
+// from the head, further out than any lens. One array for every fixture, so
+// the prop is the same object on every render.
+const SPOT_TARGET_POSITION: [number, number, number] = [0, -10, 0];
+
 // ============================================================================
 // VOLUMETRIC BEAM COMPONENT
 // ============================================================================
@@ -261,6 +271,8 @@ function Fixture3D({
   spotCap,
   beamSegments,
   mount,
+  ceilingY,
+  longestThrow,
   showLabel,
   onDebugUpdate,
 }: {
@@ -271,6 +283,10 @@ function Fixture3D({
   spotCap: number;
   beamSegments: number;
   mount: FixtureMount;
+  /** Height of the room's ceiling, for a beam that points above level. */
+  ceilingY: number;
+  /** The furthest any beam can travel in this room. */
+  longestThrow: number;
   showLabel: boolean;
   onDebugUpdate?: (snapshot: BeamDebugSnapshot) => void;
 }) {
@@ -279,6 +295,16 @@ function Fixture3D({
   const yokeRef = useRef<THREE.Group>(null);
   const lensRef = useRef<THREE.Mesh>(null);
   const spotRef = useRef<THREE.SpotLight>(null);
+
+  // What the spot light aims at. A light points at its target's place in the
+  // world, and three.js only works that out for an object that is in the
+  // scene. The light's own target never was, so it stayed at the world's
+  // origin and every fixture lit one pool at stage centre, up to 88 degrees
+  // off its own beam. This one is mounted in the head group, down the beam
+  // from the head, so it takes pan, tilt and the body's yaw exactly as the
+  // beam cone does. Held in state, not wired up in an effect: the light is
+  // remounted when the quality changes and must get the same target again.
+  const [spotTarget] = useState(() => new THREE.Object3D());
 
   // Memoised: this component re-renders every frame, and walking the channel
   // list each time was most of what that cost.
@@ -632,6 +658,16 @@ function Fixture3D({
       hold = o.holdDurationSec > 0.35;
     }
 
+    // The spot light's range follows the beam: a leaning beam has further to
+    // go, and a fixed range let its pool fade out as the head leaned. Read
+    // from the head group itself, so it is this frame's tilt and the same one
+    // the beam cone is drawn with. A fixture that does not move stays at 0.
+    if (spotRef.current) {
+      const tiltRad = headRef.current ? headRef.current.rotation.x : 0;
+      const reach = beamThrow(fixture.position_y + standLift, beamRise(tiltRad), ceilingY, longestThrow);
+      spotRef.current.distance = reach * SPOT_RANGE_FACTOR;
+    }
+
     onDebugUpdate?.({
       fixtureId: fixture.id,
       fixtureLabel: fixture.name || fixture.fixture?.model || `Fixture ${fixture.id}`,
@@ -672,13 +708,6 @@ function Fixture3D({
     [fixture.rotation_y]
   );
 
-  // SpotLight target. World space - light.target is not a child of the light -
-  // so it is the one thing in here the body yaw must not be applied to twice.
-  const targetPos = useMemo(
-    () => new THREE.Vector3(fixture.position_x, 0, fixture.position_z),
-    [fixture.position_x, fixture.position_z]
-  );
-
   return (
     <group
       ref={groupRef}
@@ -714,7 +743,9 @@ function Fixture3D({
             scene every time a fixture faded or strobed, and three.js builds a
             new shader for every lit material at each new count: 168 shaders
             in 100 seconds of music, each a freeze of a second or more the
-            first time a machine meets it. */}
+            first time a machine meets it.
+            Its range is not set here: the frame loop sets it from where the
+            beam is pointing, before the first frame it is drawn in. */}
         {fixtureIndex < spotCap && (
           <>
             <spotLight
@@ -727,10 +758,10 @@ function Fixture3D({
               castShadow={fixtureIndex < 4}
               shadow-mapSize-width={256}
               shadow-mapSize-height={256}
-              distance={beamLength * 1.5}
               decay={1.5}
-              target-position={targetPos}
+              target={spotTarget}
             />
+            <primitive object={spotTarget} position={SPOT_TARGET_POSITION} />
           </>
         )}
       </group>
@@ -1053,6 +1084,7 @@ function Scene({
   );
 
   const camera = useMemo(() => cameraPreset(cameraMode, venue.layout), [cameraMode, venue.layout]);
+  const longestThrow = useMemo(() => roomSpan(venue.layout), [venue.layout]);
 
   // Empty the beam debug buffer when the rig changes. It is keyed by fixture
   // id and nothing ever removed an entry, so after the Demo rig chooser went
@@ -1123,6 +1155,8 @@ function Scene({
           spotCap={quality.spotCap}
           beamSegments={quality.beamSegments}
           mount={venue.mounts.get(fixture.id) ?? DEFAULT_MOUNT}
+          ceilingY={venue.layout.ceilingY}
+          longestThrow={longestThrow}
           showLabel={showLabels}
           onDebugUpdate={(snapshot) => {
             debugBuffer.current[snapshot.fixtureId] = snapshot;
