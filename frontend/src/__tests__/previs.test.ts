@@ -13,6 +13,12 @@ import { getFixtureGeometry } from '../components/rig/previs/fixtureGeometry';
 import { FIXTURE_SPECS, resolveModelKind } from '../components/rig/previs/fixtureSpecs';
 import type { FixtureModelKind } from '../components/rig/previs/fixtureSpecs';
 import { buildVenue, cameraPreset, roomSpan } from '../components/rig/previs/layout';
+import {
+  POOL_LIGHT_AT_FULL,
+  POOL_LIGHT_DECAY,
+  poolLightIntensity,
+  poolLightRange,
+} from '../components/rig/previs/poolLight';
 import type { LayoutFixture } from '../components/rig/previs/layout';
 
 // The club_night demo rig, as backend/app/services/demo/venue_presets.py lays
@@ -664,5 +670,74 @@ describe('how far a beam travels', () => {
     expect(roomSpan(layout)).toBeCloseTo(longest, 9);
     // Longer than the throw of the steepest lean the engine asks for (68 degrees).
     expect(roomSpan(layout)).toBeGreaterThan(4.3 / Math.cos(THREE.MathUtils.degToRad(68)));
+  });
+});
+
+// How much of a light with a range is left at a distance, as three.js works it
+// out (getDistanceAttenuation in lights_pars_begin.glsl.js, three 0.160, the
+// branch used when legacy lights are off): a falloff with distance, times a
+// fade that reaches nothing at the range.
+function lightLeft(distance: number, range: number, decay: number): number {
+  const falloff = 1 / Math.max(Math.pow(distance, decay), 0.01);
+  if (!(range > 0)) return falloff;
+  const fade = Math.min(1, Math.max(0, 1 - Math.pow(distance / range, 4)));
+  return falloff * fade * fade;
+}
+
+describe('how bright a pool of light is', () => {
+  // Where the beam lands, for a level and a throw.
+  const atLanding = (level: number, throwDistance: number) =>
+    poolLightIntensity(level) * lightLeft(throwDistance, poolLightRange(throwDistance), POOL_LIGHT_DECAY);
+
+  it('is the same from a 13 m truss as from a stand a metre off the floor', () => {
+    const fromClubTruss = atLanding(0.5, 4.2);
+    expect(fromClubTruss).toBeGreaterThan(0);
+    for (const throwDistance of [0.93, 2.8, 4.2, 6.5, 9.2, 13]) {
+      expect(atLanding(0.5, throwDistance)).toBeCloseTo(fromClubTruss, 9);
+    }
+  });
+
+  it('does not burn out something close to the fixture', () => {
+    // With the falloff three.js applies by default, a head 0.5 m under a lamp
+    // 9 m up took dozens of times the light the floor did.
+    for (const throwDistance of [4.2, 9.2, 13]) {
+      const range = poolLightRange(throwDistance);
+      const near = lightLeft(0.5, range, POOL_LIGHT_DECAY);
+      const landing = lightLeft(throwDistance, range, POOL_LIGHT_DECAY);
+      expect(near / landing).toBeLessThan(1.6);
+    }
+  });
+
+  it('follows the level from zero, with no step on the way up', () => {
+    expect(poolLightIntensity(0)).toBe(0);
+    expect(poolLightIntensity(0.2)).toBeCloseTo(0.2 * POOL_LIGHT_AT_FULL, 9);
+    expect(poolLightIntensity(0.5)).toBeCloseTo(0.5 * POOL_LIGHT_AT_FULL, 9);
+    // The light used to switch on at 8 % of full as the level passed 0.08.
+    expect(poolLightIntensity(0.05)).toBeGreaterThan(0);
+    let previous = 0;
+    for (let i = 1; i <= 200; i += 1) {
+      const now = poolLightIntensity(i / 200);
+      expect(now).toBeGreaterThan(previous);
+      expect(now - previous).toBeLessThan(POOL_LIGHT_AT_FULL * 0.006);
+      previous = now;
+    }
+  });
+
+  it('is full at a level of 1, no more above it, and nothing for a level that makes no sense', () => {
+    expect(poolLightIntensity(1)).toBe(POOL_LIGHT_AT_FULL);
+    expect(poolLightIntensity(1.7)).toBe(POOL_LIGHT_AT_FULL);
+    for (const level of [-0.3, Number.NaN, Number.NEGATIVE_INFINITY]) expect(poolLightIntensity(level)).toBe(0);
+  });
+
+  it('ends the light a little way past where the beam lands, and not before', () => {
+    for (const throwDistance of [0.93, 4.2, 9.2]) {
+      const range = poolLightRange(throwDistance);
+      expect(range).toBeGreaterThan(throwDistance);
+      // More than half the light is still there at the landing point...
+      expect(lightLeft(throwDistance, range, POOL_LIGHT_DECAY)).toBeGreaterThan(0.5);
+      // ...and none at the range, which is under twice as far.
+      expect(lightLeft(range, range, POOL_LIGHT_DECAY)).toBe(0);
+      expect(range).toBeLessThan(throwDistance * 2);
+    }
   });
 });

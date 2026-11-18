@@ -27,6 +27,7 @@ import { DJBooth } from './previs/DJBooth';
 import { FixtureHead, FixtureSupport, FixtureYoke } from './previs/FixtureBody';
 import { FIXTURE_SPECS, resolveModelKind } from './previs/fixtureSpecs';
 import { buildVenue, cameraPreset, roomSpan } from './previs/layout';
+import { POOL_LIGHT_DECAY, poolLightIntensity, poolLightRange } from './previs/poolLight';
 import type { CameraMode, FixtureMount } from './previs/layout';
 import { RigTruss } from './previs/Truss';
 
@@ -187,17 +188,6 @@ function describeFixture(fixture: RigFixture, channelMap: Record<string, number>
     modelKind: resolveModelKind(fixtureType, isMovingHead),
   };
 }
-
-// Floor light from a fixture, for a beam level of 0 to 1. Below the threshold
-// the spot light is off, as it was when it was unmounted instead.
-const SPOT_LIGHT_THRESHOLD = 0.08;
-function spotIntensityFor(level: number): number {
-  return level > SPOT_LIGHT_THRESHOLD ? level * 8 : 0;
-}
-
-// The spot light's range, as a multiple of how far its beam has to travel.
-// 1.5 is what a beam pointing straight down always had.
-const SPOT_RANGE_FACTOR = 1.5;
 
 // Where the spot light's target sits in the head group: straight down the beam
 // from the head, further out than any lens. One array for every fixture, so
@@ -550,7 +540,7 @@ function Fixture3D({
       : THREE.MathUtils.clamp(finalSpotAngleDeg, 2.5, 11.5);
     if (spotRef.current) {
       spotRef.current.color.setRGB(s.r, s.g, s.b);
-      spotRef.current.intensity = spotIntensityFor(effectiveIntensity);
+      spotRef.current.intensity = poolLightIntensity(effectiveIntensity);
       spotRef.current.angle = THREE.MathUtils.degToRad(finalSpotAngleDeg); // Narrower to wider with zoom
     }
 
@@ -686,7 +676,7 @@ function Fixture3D({
     if (spotRef.current) {
       const tiltRad = headRef.current ? headRef.current.rotation.x : 0;
       const reach = beamThrow(sourceY, beamRise(tiltRad, lensUp), ceilingY, longestThrow);
-      spotRef.current.distance = reach * SPOT_RANGE_FACTOR;
+      spotRef.current.distance = poolLightRange(reach);
     }
 
     onDebugUpdate?.({
@@ -779,12 +769,12 @@ function Fixture3D({
                 position={[0, -modelSpec.lensOffset - 0.02, 0]}
                 angle={0.3}
                 penumbra={0.6}
-                intensity={spotIntensityFor(beamIntensity)}
+                intensity={poolLightIntensity(beamIntensity)}
                 color={beamColor}
                 castShadow={fixtureIndex < 4}
                 shadow-mapSize-width={256}
                 shadow-mapSize-height={256}
-                decay={1.5}
+                decay={POOL_LIGHT_DECAY}
                 target={spotTarget}
               />
               <primitive object={spotTarget} position={SPOT_TARGET_POSITION} />
