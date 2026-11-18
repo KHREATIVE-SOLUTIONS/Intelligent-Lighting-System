@@ -82,11 +82,18 @@ const DEFAULT_MOUNT: FixtureMount = { type: 'truss', drop: 0 };
 // CONSTANTS
 // ============================================================================
 
-// Beam cone material - shared across all fixtures for performance
+// Beam cone shaders. The beam is one strength from the fixture to its far end.
+//
+// It used to fade in from the fixture, and the fade was worked out from the
+// cone's own height in metres rather than from how far along the beam a point
+// is: nothing showed until a metre above the cone's middle, and full strength
+// began at the middle. So the hidden stretch grew with the rig. Half the beam
+// less a metre could not be seen: about 1.1 m of a 4.2 m beam, 3.6 m of a 9.2 m
+// one, and beams on a tall rig were short wedges hanging over the crowd with
+// nothing joining them to their fixtures. The half that did show was already
+// at full strength, and that half is drawn exactly as it was.
 const BEAM_VERTEX_SHADER = `
-  varying float vIntensity;
   void main() {
-    vIntensity = position.y;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
@@ -94,11 +101,8 @@ const BEAM_VERTEX_SHADER = `
 const BEAM_FRAGMENT_SHADER = `
   uniform vec3 beamColor;
   uniform float beamIntensity;
-  varying float vIntensity;
   void main() {
-    float falloff = smoothstep(0.0, 1.0, 1.0 - vIntensity);
-    float alpha = falloff * beamIntensity * 0.42;
-    gl_FragColor = vec4(beamColor, alpha);
+    gl_FragColor = vec4(beamColor, beamIntensity * 0.42);
   }
 `;
 
