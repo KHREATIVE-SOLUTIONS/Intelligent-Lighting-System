@@ -668,6 +668,15 @@ function Fixture3D({
       tiltVelocityDegPerSec = THREE.MathUtils.radToDeg(o.tiltVelocityRadPerSec);
       signalConfidence = confidence;
       hold = o.holdDurationSec > 0.35;
+    } else if (headRef.current) {
+      // Nothing turns the head of a fixture that cannot pan or tilt, so it has
+      // to be put straight here. Fixtures are keyed by id and every demo rig
+      // numbers its fixtures from 1, so when the rig is swapped under an open
+      // view this component is reused for whatever has the same id in the new
+      // rig. A par drawn where a moving head was kept that head's last pan and
+      // tilt: its housing was drawn turned and its beam leaned with it.
+      const turn = headRef.current.rotation;
+      if (turn.x !== 0 || turn.y !== 0 || turn.z !== 0) turn.set(0, 0, 0);
     }
 
     // The spot light's range follows the beam: a leaning beam has further to
@@ -1108,8 +1117,10 @@ function Scene({
   // id and nothing ever removed an entry, so after the Demo rig chooser went
   // from a 52-fixture rig to a 34-fixture one the table still listed 52.
   // A layout effect in the scene itself, not in the page: by the time it runs
-  // the old rig's fixtures have unmounted in this same commit, so none of them
-  // can write a row back afterwards.
+  // the old rig's fixtures that have no counterpart in the new one have
+  // unmounted in this same commit, so none of them can write a row back
+  // afterwards. A fixture whose id is in both rigs is the same component
+  // reused, and the next row it writes is the new rig's.
   useLayoutEffect(() => {
     debugBuffer.current = {};
   }, [rig, debugBuffer]);
