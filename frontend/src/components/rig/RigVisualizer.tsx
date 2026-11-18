@@ -20,13 +20,16 @@ import { createDemoRigFollower, onEngineOnAnotherRig, onLinkRestored, settleRig 
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
 import { createBeatClock, ingestAnalysis } from './previs/beatClock';
 import type { BeatClock } from './previs/beatClock';
-import { beamRise, beamThrow } from './previs/beamThrow';
+import { beamMouth, beamTube, createBeamMaterial, shapeBeam } from './previs/beamShape';
+import type { BeamMouth } from './previs/beamShape';
+import { beamDirection, beamLanding } from './previs/beamThrow';
+import type { BeamRoom, BeamVector } from './previs/beamThrow';
 import { ClubRoom } from './previs/ClubRoom';
 import { BeatClockTicker, Crowd } from './previs/Crowd';
 import { DJBooth } from './previs/DJBooth';
 import { FixtureHead, FixtureSupport, FixtureYoke } from './previs/FixtureBody';
 import { FIXTURE_SPECS, resolveModelKind } from './previs/fixtureSpecs';
-import { buildVenue, cameraPreset, roomSpan } from './previs/layout';
+import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
 import { POOL_LIGHT_DECAY, poolLightIntensity, poolLightRange } from './previs/poolLight';
 import type { CameraMode, FixtureMount } from './previs/layout';
 import { RigTruss } from './previs/Truss';
@@ -81,30 +84,6 @@ const DEFAULT_MOUNT: FixtureMount = { type: 'truss', drop: 0 };
 // ============================================================================
 // CONSTANTS
 // ============================================================================
-
-// Beam cone shaders. The beam is one strength from the fixture to its far end.
-//
-// It used to fade in from the fixture, and the fade was worked out from the
-// cone's own height in metres rather than from how far along the beam a point
-// is: nothing showed until a metre above the cone's middle, and full strength
-// began at the middle. So the hidden stretch grew with the rig. Half the beam
-// less a metre could not be seen: about 1.1 m of a 4.2 m beam, 3.6 m of a 9.2 m
-// one, and beams on a tall rig were short wedges hanging over the crowd with
-// nothing joining them to their fixtures. The half that did show was already
-// at full strength, and that half is drawn exactly as it was.
-const BEAM_VERTEX_SHADER = `
-  void main() {
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  }
-`;
-
-const BEAM_FRAGMENT_SHADER = `
-  uniform vec3 beamColor;
-  uniform float beamIntensity;
-  void main() {
-    gl_FragColor = vec4(beamColor, beamIntensity * 0.42);
-  }
-`;
 
 // 9-zone stage grid positions (normalized -0.33 to 0.33 for both axes)
 const ZONE_POSITIONS: Record<string, { x: number; z: number }> = {
@@ -208,53 +187,41 @@ const FACING_UP: [number, number, number] = [Math.PI, 0, 0];
 // ============================================================================
 
 function BeamCone({
+  material,
   color,
   intensity,
-  beamAngle,
-  beamLength,
+  mouth,
   segments,
 }: {
+  /** Made and shaped by the fixture, in its frame loop, where the head moves. */
+  material: THREE.ShaderMaterial;
   color: THREE.Color;
   intensity: number;
-  beamAngle: number;
-  beamLength: number;
+  /** The lit face of the fixture: where the beam starts. */
+  mouth: BeamMouth;
   segments: number;
 }) {
-  const materialRef = useRef<THREE.ShaderMaterial>(null);
-
-  const uniforms = useMemo(
-    () => ({
-      beamColor: { value: new THREE.Color(1, 1, 1) },
-      beamIntensity: { value: 0 },
-    }),
-    []
-  );
-
   useFrame(() => {
-    if (materialRef.current) {
-      materialRef.current.uniforms.beamColor.value.copy(color);
-      materialRef.current.uniforms.beamIntensity.value = intensity;
-    }
+    material.uniforms.beamColor.value.copy(color);
+    material.uniforms.beamIntensity.value = intensity;
   });
 
-  const topRadius = Math.tan((beamAngle * Math.PI) / 360) * beamLength;
+  const position = useMemo<[number, number, number]>(() => [0, -mouth.offset, 0], [mouth]);
 
   if (intensity < 0.015) return null;
 
+  // Not culled by three: the tube is shaped in the shader, so its own bounds
+  // (a unit cylinder) say nothing about where the beam is on screen. And not
+  // disposed with the mesh: the mesh comes and goes as the fixture fades in
+  // and out, and the tube and the material outlive it.
   return (
-    <mesh position={[0, -beamLength / 2, 0]}>
-      <coneGeometry args={[topRadius, beamLength, segments, 1, true]} />
-      <shaderMaterial
-        ref={materialRef}
-        vertexShader={BEAM_VERTEX_SHADER}
-        fragmentShader={BEAM_FRAGMENT_SHADER}
-        uniforms={uniforms}
-        transparent
-        side={THREE.DoubleSide}
-        depthWrite={false}
-        blending={THREE.AdditiveBlending}
-      />
-    </mesh>
+    <mesh
+      geometry={beamTube(segments)}
+      material={material}
+      position={position}
+      frustumCulled={false}
+      dispose={null}
+    />
   );
 }
 
@@ -270,7 +237,7 @@ function Fixture3D({
   spotCap,
   beamSegments,
   mount,
-  ceilingY,
+  room,
   longestThrow,
   showLabel,
   onDebugUpdate,
@@ -282,8 +249,8 @@ function Fixture3D({
   spotCap: number;
   beamSegments: number;
   mount: FixtureMount;
-  /** Height of the room's ceiling, for a beam that points above level. */
-  ceilingY: number;
+  /** What a beam can land on: the floor, the ceiling and, when drawn, the walls. */
+  room: BeamRoom;
   /** The furthest any beam can travel in this room. */
   longestThrow: number;
   showLabel: boolean;
@@ -353,13 +320,23 @@ function Fixture3D({
   // Height of the point the light comes from.
   const sourceY = fixture.position_y + standLift;
 
-  // The beam is drawn as long as the fixture is high, so one pointing straight
-  // down ends on the floor. One facing up runs to the ceiling instead: it was
-  // drawn `position_y` long and pointing down, 0.3 m into the floor for a par
-  // standing on it.
-  const beamLength = lensUp
-    ? beamThrow(sourceY, beamRise(0, true), ceilingY, longestThrow)
-    : fixture.position_y > 0 ? fixture.position_y : 3;
+  // Where the beam lands is worked out every frame, below: it is where the
+  // drawn beam ends and what the spot light's range is measured from.
+  const beamPointing = useRef<BeamVector>({ x: 0, y: -1, z: 0 });
+  const mouth = useMemo(() => beamMouth(modelKind), [modelKind]);
+  // One beam material for the life of the fixture, shaped in the frame loop.
+  const beamMaterial = useMemo(() => createBeamMaterial(), []);
+  useEffect(() => () => beamMaterial.dispose(), [beamMaterial]);
+
+  // The yaw the rig says this fixture is hung at. Object3D.rotation.y takes the
+  // wizard's convention directly: 0 aims down local +Z (downstage, toward the
+  // audience), +90 deg aims toward +X. Ignoring it rendered every fixture facing
+  // the same way, so "each fixture points at the performance area" had no
+  // observable effect in the previs.
+  const bodyYawRad = useMemo(
+    () => THREE.MathUtils.degToRad(fixture.rotation_y || 0),
+    [fixture.rotation_y]
+  );
 
   const [beamColor] = useState(() => new THREE.Color(1, 1, 1));
   const [beamIntensity, setBeamIntensity] = useState(0);
@@ -673,15 +650,31 @@ function Fixture3D({
       if (turn.x !== 0 || turn.y !== 0 || turn.z !== 0) turn.set(0, 0, 0);
     }
 
-    // The spot light's range follows the beam: a leaning beam has further to
-    // go, and a fixed range let its pool fade out as the head leaned. Read
-    // from the head group itself, so it is this frame's tilt and the same one
-    // the beam cone is drawn with. A fixture that does not move stays at 0.
-    if (spotRef.current) {
-      const tiltRad = headRef.current ? headRef.current.rotation.x : 0;
-      const reach = beamThrow(sourceY, beamRise(tiltRad, lensUp), ceilingY, longestThrow);
-      spotRef.current.distance = poolLightRange(reach);
-    }
+    // Where the beam lands: the first of the floor, the ceiling and the walls
+    // along it. The drawn beam ends there and the spot light's range is
+    // measured from it, so the beam, its pool and the room agree. Worked out
+    // for every fixture, with or without a spot light, from the head group
+    // itself: this frame's pan and tilt, the ones the beam is drawn with. A
+    // fixture that cannot move stays at 0.
+    const head = headRef.current;
+    const reach = beamLanding(
+      fixture.position_x,
+      sourceY,
+      fixture.position_z,
+      beamDirection(
+        head ? head.rotation.x : 0,
+        (head ? head.rotation.y : 0) + bodyYawRad,
+        lensUp,
+        beamPointing.current
+      ),
+      room,
+      longestThrow
+    );
+    // Shaped here and not in the beam's own frame callback: that one runs
+    // before this, so it would draw the beam with last frame's length on this
+    // frame's head, and its end would trail its pool as the head moves.
+    shapeBeam(beamMaterial, mouth, reach, defaultBeamAngleDeg / 2);
+    if (spotRef.current) spotRef.current.distance = poolLightRange(reach);
 
     onDebugUpdate?.({
       fixtureId: fixture.id,
@@ -713,16 +706,6 @@ function Fixture3D({
     });
   });
 
-  // The yaw the rig says this fixture is hung at. Object3D.rotation.y takes the
-  // wizard's convention directly: 0 aims down local +Z (downstage, toward the
-  // audience), +90 deg aims toward +X. Ignoring it rendered every fixture facing
-  // the same way, so "each fixture points at the performance area" had no
-  // observable effect in the previs.
-  const bodyYawRad = useMemo(
-    () => THREE.MathUtils.degToRad(fixture.rotation_y || 0),
-    [fixture.rotation_y]
-  );
-
   return (
     <group
       ref={groupRef}
@@ -748,12 +731,12 @@ function Fixture3D({
           {/* Housing and the lit lens; the lens material is driven in useFrame */}
           <FixtureHead kind={modelKind} lensRef={lensRef} />
 
-          {/* Volumetric beam cone */}
+          {/* The beam, from the lit face to where it lands */}
           <BeamCone
+            material={beamMaterial}
             color={beamColor}
             intensity={beamIntensity}
-            beamAngle={defaultBeamAngleDeg}
-            beamLength={beamLength}
+            mouth={mouth}
             segments={beamSegments}
           />
 
@@ -1106,6 +1089,8 @@ function Scene({
 
   const camera = useMemo(() => cameraPreset(cameraMode, venue.layout), [cameraMode, venue.layout]);
   const longestThrow = useMemo(() => roomSpan(venue.layout), [venue.layout]);
+  // With the venue hidden no walls are drawn, so none stops a beam.
+  const room = useMemo(() => beamRoom(venue.layout, showVenue), [venue.layout, showVenue]);
 
   // Empty the beam debug buffer when the rig changes. It is keyed by fixture
   // id and nothing ever removed an entry, so after the Demo rig chooser went
@@ -1178,7 +1163,7 @@ function Scene({
           spotCap={quality.spotCap}
           beamSegments={quality.beamSegments}
           mount={venue.mounts.get(fixture.id) ?? DEFAULT_MOUNT}
-          ceilingY={venue.layout.ceilingY}
+          room={room}
           longestThrow={longestThrow}
           showLabel={showLabels}
           onDebugUpdate={(snapshot) => {

@@ -51,3 +51,71 @@ export function beamThrow(sourceY: number, rise: number, ceilingY: number, longe
   if (!Number.isFinite(distance)) return cap;
   return Math.min(cap, Math.max(SHORTEST_THROW, distance));
 }
+
+/** A direction or a place in the room: x across, y up, z toward the audience. */
+export type BeamVector = { x: number; y: number; z: number };
+
+/**
+ * Which way a fixture's beam points in the room, as a unit vector.
+ *
+ * `tiltRad` is the head's tilt. `turnRad` is everything that turns the head
+ * about the vertical: its pan plus the yaw its body is hung at. The head is
+ * turned tilt first and that turn second, so this is straight down, tilted
+ * about X and then turned about Y. A fixture standing lens-up points the
+ * opposite way.
+ *
+ * Writes into `out` and returns it, so the frame loop makes no garbage: this
+ * runs for every fixture on every frame.
+ */
+export function beamDirection(tiltRad: number, turnRad: number, lensUp: boolean, out: BeamVector): BeamVector {
+  const way = lensUp ? -1 : 1;
+  const lean = Math.sin(tiltRad);
+  out.x = way * -lean * Math.sin(turnRad);
+  out.y = way * -Math.cos(tiltRad);
+  out.z = way * -lean * Math.cos(turnRad);
+  return out;
+}
+
+/**
+ * What a beam can land on. The floor is at 0. `walls` is null when no walls
+ * are drawn (the venue is hidden): a beam then ends only on the floor or the
+ * ceiling height, however far out that is.
+ */
+export type BeamRoom = {
+  ceilingY: number;
+  walls: { xMin: number; xMax: number; zMin: number; zMax: number } | null;
+};
+
+/** Distance along one axis to the wall a beam is heading for; none if it is heading away from both. */
+function toWall(from: number, heading: number, low: number, high: number): number {
+  const distance = heading > 0 ? (high - from) / heading : heading < 0 ? (low - from) / heading : Infinity;
+  return distance > 0 ? distance : Infinity;
+}
+
+/**
+ * Distance along the beam from the light at (x, y, z) to the first thing it
+ * meets: the floor, the ceiling or a wall. This is where its pool is and
+ * where the drawn beam ends.
+ *
+ * As `beamThrow`, the answer is always a positive, finite number.
+ */
+export function beamLanding(
+  x: number,
+  y: number,
+  z: number,
+  direction: BeamVector,
+  room: BeamRoom,
+  longest: number,
+): number {
+  let reach = beamThrow(y, direction.y, room.ceilingY, longest);
+  const walls = room.walls;
+  if (walls) {
+    reach = Math.min(
+      reach,
+      toWall(x, direction.x, walls.xMin, walls.xMax),
+      toWall(z, direction.z, walls.zMin, walls.zMax),
+    );
+  }
+  return Math.max(SHORTEST_THROW, reach);
+}
+

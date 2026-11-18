@@ -9,6 +9,7 @@
  * floor, X runs across, Y is up, -Z is upstage where the DJ booth is, and +Z is
  * toward the audience and the dance floor.
  */
+import type { BeamRoom } from './beamThrow';
 import { FIXTURE_SPECS } from './fixtureSpecs';
 import type { FixtureModelKind } from './fixtureSpecs';
 
@@ -283,6 +284,19 @@ export function buildVenue(
  */
 export function roomSpan(layout: ClubLayout): number {
   return Math.hypot(layout.wallX * 2, layout.houseZ - layout.backZ, layout.ceilingY);
+}
+
+/**
+ * What a beam can land on in this room. With the venue hidden there are no
+ * walls to stop it, so only the floor and the ceiling height count.
+ */
+export function beamRoom(layout: ClubLayout, withWalls: boolean): BeamRoom {
+  return {
+    ceilingY: layout.ceilingY,
+    walls: withWalls
+      ? { xMin: -layout.wallX, xMax: layout.wallX, zMin: layout.backZ, zMax: layout.houseZ }
+      : null,
+  };
 }
 
 // ---------------------------------------------------------------------------

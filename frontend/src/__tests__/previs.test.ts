@@ -7,12 +7,21 @@ import {
   phaseDelta,
   sectionEnergy,
 } from '../components/rig/previs/beatClock';
-import { beamRise, beamThrow } from '../components/rig/previs/beamThrow';
+import {
+  beamLengthFrom,
+  beamMouth,
+  beamTube,
+  beamWidening,
+  createBeamMaterial,
+  shapeBeam,
+} from '../components/rig/previs/beamShape';
+import { beamDirection, beamLanding, beamRise, beamThrow } from '../components/rig/previs/beamThrow';
+import type { BeamRoom } from '../components/rig/previs/beamThrow';
 import { crowdCapacity, placeCrowd } from '../components/rig/previs/crowdLayout';
 import { getFixtureGeometry } from '../components/rig/previs/fixtureGeometry';
 import { FIXTURE_SPECS, resolveModelKind } from '../components/rig/previs/fixtureSpecs';
 import type { FixtureModelKind } from '../components/rig/previs/fixtureSpecs';
-import { buildVenue, cameraPreset, roomSpan } from '../components/rig/previs/layout';
+import { beamRoom, buildVenue, cameraPreset, roomSpan } from '../components/rig/previs/layout';
 import {
   POOL_LIGHT_AT_FULL,
   POOL_LIGHT_DECAY,
@@ -525,11 +534,11 @@ describe('beat clock', () => {
 // head, turned tilt first and pan second; and inside that the group that faces
 // the fixture down or, with half a turn about X, up. The housing, the beam and
 // the spot light all sit in that last group, and the beam runs down its -Y.
-function drawnBeam({ y, yawDeg = 0, panDeg = 0, tiltDeg = 0, lensUp = false }: {
-  y: number; yawDeg?: number; panDeg?: number; tiltDeg?: number; lensUp?: boolean;
+function drawnBeam({ y, x = 1.5, z = -2, yawDeg = 0, panDeg = 0, tiltDeg = 0, lensUp = false }: {
+  y: number; x?: number; z?: number; yawDeg?: number; panDeg?: number; tiltDeg?: number; lensUp?: boolean;
 }) {
   const body = new THREE.Group();
-  body.position.set(1.5, y, -2);
+  body.position.set(x, y, z);
   body.rotation.y = THREE.MathUtils.degToRad(yawDeg);
   const head = new THREE.Group();
   head.rotation.order = 'YXZ';
@@ -541,7 +550,13 @@ function drawnBeam({ y, yawDeg = 0, panDeg = 0, tiltDeg = 0, lensUp = false }: {
   head.add(facing);
   body.updateMatrixWorld(true);
   const direction = new THREE.Vector3(0, -1, 0).transformDirection(facing.matrixWorld);
-  return { direction, tiltRad: head.rotation.x, facing };
+  return {
+    direction,
+    tiltRad: head.rotation.x,
+    turnRad: head.rotation.y + body.rotation.y,
+    facing,
+    origin: body.position.clone(),
+  };
 }
 
 describe('how far a beam travels', () => {
@@ -739,5 +754,221 @@ describe('how bright a pool of light is', () => {
       expect(lightLeft(range, range, POOL_LIGHT_DECAY)).toBe(0);
       expect(range).toBeLessThan(throwDistance * 2);
     }
+  });
+});
+
+describe('where a beam lands', () => {
+  const { layout } = buildVenue({ width: 12, depth: 10, height: 4.5 }, clubNight().fixtures);
+  const room = beamRoom(layout, true);
+  const open = beamRoom(layout, false);
+  // The same room as a box, for three.js to cast a ray in.
+  const box = new THREE.Box3(
+    new THREE.Vector3(-layout.wallX, 0, layout.backZ),
+    new THREE.Vector3(layout.wallX, layout.ceilingY, layout.houseZ),
+  );
+  const out = { x: 0, y: 0, z: 0 };
+
+  it('points the way the head is drawn pointing, pan, tilt, yaw and lens-up', () => {
+    for (const lensUp of [false, true]) {
+      for (const yawDeg of [0, 90, -135]) {
+        for (const panDeg of [-200, -60, 0, 35, 170]) {
+          for (const tiltDeg of [-120, -50, 0, 20, 68, 100]) {
+            const drawn = drawnBeam({ y: 4.2, yawDeg, panDeg, tiltDeg, lensUp });
+            const pointing = beamDirection(drawn.tiltRad, drawn.turnRad, lensUp, out);
+            expect(pointing).toBe(out);
+            expect(new THREE.Vector3(out.x, out.y, out.z).distanceTo(drawn.direction)).toBeLessThan(1e-9);
+            // And it agrees with the older, vertical-only measure.
+            expect(out.y).toBeCloseTo(beamRise(drawn.tiltRad, lensUp), 12);
+          }
+        }
+      }
+    }
+  });
+
+  it('stops at the first of the floor, the ceiling and the walls', () => {
+    const ray = new THREE.Ray();
+    const exit = new THREE.Vector3();
+    let onWall = 0, onFloor = 0, onCeiling = 0;
+    for (const [x, y, z] of [[-5, 4.2, -3.5], [1, 4.3, 0], [4.5, 4.2, 3.5], [-5.8, 0.3, 1], [0, 1, -3.8]]) {
+      for (const panDeg of [-150, -90, -20, 0, 45, 90, 160]) {
+        for (const tiltDeg of [-100, -68, -30, 0, 30, 68, 100, 150]) {
+          const drawn = drawnBeam({ x, y, z, panDeg, tiltDeg });
+          ray.set(drawn.origin, drawn.direction);
+          // From inside a box three.js gives the point where the ray leaves it.
+          // A landing is never counted as nearer than 25 cm: a par stands
+          // 20 cm from the wall here and can be turned to face it.
+          const expected = Math.max(0.25, ray.intersectBox(box, exit)!.distanceTo(drawn.origin));
+          const pointing = beamDirection(drawn.tiltRad, drawn.turnRad, false, out);
+          expect(beamLanding(x, y, z, pointing, room, 1000)).toBeCloseTo(expected, 6);
+          if (exit.y < 1e-6) onFloor += 1;
+          else if (exit.y > layout.ceilingY - 1e-6) onCeiling += 1;
+          else onWall += 1;
+        }
+      }
+    }
+    // The cases above really do reach all three.
+    expect(onFloor).toBeGreaterThan(20);
+    expect(onCeiling).toBeGreaterThan(20);
+    expect(onWall).toBeGreaterThan(20);
+  });
+
+  it('lands on a side wall, short of the floor, for an end fixture leaning outward', () => {
+    // The stage-left end of the mid truss: 1 m from the wall, 4.3 m up.
+    const drawn = drawnBeam({ x: -5, y: 4.3, z: 0, panDeg: -90, tiltDeg: -40 });
+    const pointing = beamDirection(drawn.tiltRad, drawn.turnRad, false, out);
+    expect(pointing.x).toBeLessThan(-0.6);
+    const withWalls = beamLanding(-5, 4.3, 0, pointing, room, 1000);
+    const toTheFloor = beamLanding(-5, 4.3, 0, pointing, open, 1000);
+    expect(withWalls).toBeCloseTo(1 / -pointing.x, 9);
+    expect(toTheFloor).toBeCloseTo(4.3 / -pointing.y, 9);
+    expect(withWalls).toBeLessThan(toTheFloor * 0.4);
+  });
+
+  it('ignores walls that are not drawn', () => {
+    for (const tiltDeg of [-68, -20, 0, 45, 110]) {
+      const drawn = drawnBeam({ x: -5, y: 4.3, z: 0, panDeg: -90, tiltDeg });
+      const pointing = beamDirection(drawn.tiltRad, drawn.turnRad, false, out);
+      expect(beamLanding(-5, 4.3, 0, pointing, open, 19)).toBe(beamThrow(4.3, pointing.y, layout.ceilingY, 19));
+    }
+    expect(open.walls).toBeNull();
+    expect(room.walls).toEqual({ xMin: -layout.wallX, xMax: layout.wallX, zMin: layout.backZ, zMax: layout.houseZ });
+    expect(room.ceilingY).toBe(layout.ceilingY);
+  });
+
+  it('is not stopped by a wall that is behind the light', () => {
+    // A fixture patched outside the room, pointing away from it: the wall it
+    // has already passed must not cut its beam short. The floor still does.
+    const away = { x: 0.6, y: -0.8, z: 0 };
+    expect(beamLanding(layout.wallX + 3, 4.2, 0, away, room, 1000)).toBeCloseTo(4.2 / 0.8, 9);
+    // Pointing back in, it is stopped by the far wall or the floor as usual.
+    const backIn = { x: -0.6, y: -0.8, z: 0 };
+    expect(beamLanding(layout.wallX + 3, 4.2, 0, backIn, room, 1000)).toBeCloseTo(4.2 / 0.8, 9);
+    const level = { x: -1, y: 0, z: 0 };
+    expect(beamLanding(layout.wallX + 3, 4.2, 0, level, room, 1000)).toBeCloseTo(layout.wallX * 2 + 3, 9);
+  });
+
+  it('sends a fixture standing lens-up to the ceiling', () => {
+    const pointing = beamDirection(0, 0.7, true, out);
+    expect(beamLanding(-5.8, 0.3, 1, pointing, room, 1000)).toBeCloseTo(layout.ceilingY - 0.3, 9);
+  });
+
+  it('is always a positive, finite distance, whatever it is given', () => {
+    const awkward: Array<[number, number, number, { x: number; y: number; z: number }, BeamRoom]> = [
+      [Number.NaN, 4.2, 0, { x: 0, y: -1, z: 0 }, room],
+      [0, Number.NaN, 0, { x: 0, y: -1, z: 0 }, room],
+      [0, 4.2, 0, { x: Number.NaN, y: Number.NaN, z: Number.NaN }, room],
+      [0, 4.2, 0, { x: 1, y: 0, z: 0 }, open], // level, and no wall to stop it
+      [9, 4.2, 0, { x: 1, y: 0, z: 0 }, room], // outside the room, heading away
+      [9, 4.2, 0, { x: -1, y: 0, z: 0 }, room], // outside the room, heading in
+      [layout.wallX, 4.2, 0, { x: 1, y: 0, z: 0 }, room], // on the wall, heading into it
+      [0, 0, 0, { x: 0, y: -1, z: 0 }, room],
+    ];
+    for (const [x, y, z, pointing, where] of awkward) {
+      const reach = beamLanding(x, y, z, pointing, where, 19);
+      expect(Number.isFinite(reach)).toBe(true);
+      expect(reach).toBeGreaterThan(0);
+      expect(reach).toBeLessThanOrEqual(19);
+    }
+  });
+});
+
+describe('the shape of a drawn beam', () => {
+  const kinds: FixtureModelKind[] = ['moving_head', 'beam', 'spot', 'wash', 'led_par', 'led_bar', 'strobe', 'other'];
+
+  it('starts at the lit face of the model, as wide and as deep as that face', () => {
+    for (const kind of kinds) {
+      const emitter = getFixtureGeometry(kind).emitter;
+      emitter.computeBoundingBox();
+      const size = emitter.boundingBox!.getSize(new THREE.Vector3());
+      const mouth = beamMouth(kind);
+      expect(mouth.halfX).toBeCloseTo(size.x / 2, 9);
+      expect(mouth.halfZ).toBeCloseTo(size.z / 2, 9);
+      // At the outer face of the lens or cells, a centimetre or two at most
+      // from where the spec says the lens is.
+      expect(mouth.offset).toBeCloseTo(-emitter.boundingBox!.min.y, 9);
+      expect(Math.abs(mouth.offset - FIXTURE_SPECS[kind].lensOffset)).toBeLessThan(0.03);
+      expect(mouth.halfX).toBeGreaterThan(0.02);
+      expect(mouth.halfZ).toBeGreaterThan(0.02);
+    }
+    expect(beamMouth('beam')).toBe(beamMouth('beam'));
+  });
+
+  it('gives a round lens a round mouth and a batten a long thin one', () => {
+    for (const kind of ['moving_head', 'beam', 'spot'] as const) {
+      const mouth = beamMouth(kind);
+      expect(mouth.halfX).toBeCloseTo(mouth.halfZ, 3);
+      expect(Math.abs(mouth.halfX - FIXTURE_SPECS[kind].mover!.lensRadius)).toBeLessThan(0.006);
+    }
+    const batten = beamMouth('led_bar');
+    expect(batten.halfX).toBeGreaterThan(0.4);
+    expect(batten.halfX).toBeGreaterThan(batten.halfZ * 10);
+    const wash = beamMouth('wash');
+    expect(wash.halfX).toBeGreaterThan(beamMouth('beam').halfX * 1.8);
+  });
+
+  it('runs from the mouth to where the beam lands', () => {
+    const mouth = beamMouth('moving_head');
+    expect(beamLengthFrom(mouth, 4.2)).toBeCloseTo(4.2 - mouth.offset, 9);
+    expect(beamLengthFrom(mouth, 11)).toBeCloseTo(11 - mouth.offset, 9);
+    // Something right in front of the lens: still a beam, never inside out.
+    for (const landing of [mouth.offset, 0.01, 0, -3]) expect(beamLengthFrom(mouth, landing)).toBeGreaterThan(0);
+  });
+
+  it('widens by its spread, so a longer beam ends wider', () => {
+    // 2.5 degrees either side of the axis: 5 degrees across, as it was.
+    expect(beamWidening(4, 2.5)).toBeCloseTo(4 * Math.tan(THREE.MathUtils.degToRad(2.5)), 12);
+    expect(beamWidening(9, 2.5)).toBeGreaterThan(beamWidening(4, 2.5) * 2);
+    expect(beamWidening(4, 9)).toBeGreaterThan(beamWidening(4, 2.5) * 3);
+    expect(beamWidening(0, 9)).toBe(0);
+  });
+
+  it('shapes a beam from its mouth to its landing point, and again as the head moves', () => {
+    const material = createBeamMaterial();
+    const { beamNear, beamFar, beamLength } = material.uniforms;
+    const batten = beamMouth('led_bar');
+    shapeBeam(material, batten, 3, 2.5);
+    expect(beamLength.value).toBeCloseTo(3 - batten.offset, 9);
+    // As wide and as deep as the lit face at the mouth...
+    expect([beamNear.value.x, beamNear.value.y]).toEqual([batten.halfX, batten.halfZ]);
+    // ...and wider by the same amount all round at the far end.
+    const widening = beamWidening(3 - batten.offset, 2.5);
+    expect(beamFar.value.x).toBeCloseTo(batten.halfX + widening, 9);
+    expect(beamFar.value.y).toBeCloseTo(batten.halfZ + widening, 9);
+    expect(beamFar.value.x).toBeGreaterThan(beamNear.value.x);
+
+    // The same material, reused by a moving head whose beam now lands further off.
+    const head = beamMouth('moving_head');
+    shapeBeam(material, head, 9.6, 9);
+    expect(beamLength.value).toBeCloseTo(9.6 - head.offset, 9);
+    expect(beamNear.value.x).toBeCloseTo(head.halfX, 9);
+    expect(beamFar.value.x).toBeCloseTo(head.halfX + beamWidening(9.6 - head.offset, 9), 9);
+
+    // The shader reads these three and the two the beam is coloured with.
+    expect(Object.keys(material.uniforms).sort()).toEqual(
+      ['beamColor', 'beamFar', 'beamIntensity', 'beamLength', 'beamNear'],
+    );
+    for (const name of ['beamNear', 'beamFar', 'beamLength']) expect(material.vertexShader).toContain(name);
+    for (const name of ['beamColor', 'beamIntensity']) expect(material.fragmentShader).toContain(name);
+    material.dispose();
+  });
+
+  it('draws every beam from one unit tube: mouth at 0, far end at -1, radius 1', () => {
+    for (const segments of [10, 16, 24]) {
+      const tube = beamTube(segments);
+      expect(beamTube(segments)).toBe(tube);
+      const position = tube.getAttribute('position');
+      let atMouth = 0, atEnd = 0;
+      for (let i = 0; i < position.count; i += 1) {
+        const y = position.getY(i);
+        if (Math.abs(y) < 1e-9) atMouth += 1;
+        else if (Math.abs(y + 1) < 1e-9) atEnd += 1;
+        // The shader multiplies x and z by a half-width and a half-depth.
+        expect(Math.hypot(position.getX(i), position.getZ(i))).toBeCloseTo(1, 6);
+      }
+      expect(atMouth + atEnd).toBe(position.count);
+      expect(atMouth).toBe(atEnd);
+      expect(atMouth).toBeGreaterThanOrEqual(segments);
+    }
+    expect(beamTube(16)).not.toBe(beamTube(24));
   });
 });
