@@ -515,10 +515,12 @@ describe('beat clock', () => {
 });
 
 // The groups a fixture is drawn with, nested as Fixture3D nests them: the body
-// at the fixture's position, turned by the yaw it is hung at, and inside it the
-// head, turned tilt first and pan second. The beam runs down the head's -Y.
-function drawnBeam({ y, yawDeg = 0, panDeg = 0, tiltDeg = 0 }: {
-  y: number; yawDeg?: number; panDeg?: number; tiltDeg?: number;
+// at the fixture's position, turned by the yaw it is hung at; inside it the
+// head, turned tilt first and pan second; and inside that the group that faces
+// the fixture down or, with half a turn about X, up. The housing, the beam and
+// the spot light all sit in that last group, and the beam runs down its -Y.
+function drawnBeam({ y, yawDeg = 0, panDeg = 0, tiltDeg = 0, lensUp = false }: {
+  y: number; yawDeg?: number; panDeg?: number; tiltDeg?: number; lensUp?: boolean;
 }) {
   const body = new THREE.Group();
   body.position.set(1.5, y, -2);
@@ -528,9 +530,12 @@ function drawnBeam({ y, yawDeg = 0, panDeg = 0, tiltDeg = 0 }: {
   head.rotation.y = THREE.MathUtils.degToRad(panDeg);
   head.rotation.x = THREE.MathUtils.degToRad(tiltDeg);
   body.add(head);
+  const facing = new THREE.Group();
+  facing.rotation.x = lensUp ? Math.PI : 0;
+  head.add(facing);
   body.updateMatrixWorld(true);
-  const direction = new THREE.Vector3(0, -1, 0).transformDirection(head.matrixWorld);
-  return { direction, tiltRad: head.rotation.x };
+  const direction = new THREE.Vector3(0, -1, 0).transformDirection(facing.matrixWorld);
+  return { direction, tiltRad: head.rotation.x, facing };
 }
 
 describe('how far a beam travels', () => {
@@ -601,6 +606,49 @@ describe('how far a beam travels', () => {
       expect(Number.isFinite(reach)).toBe(true);
       expect(reach).toBeGreaterThan(0);
     }
+  });
+
+  it('sends the light of a fixture standing lens-up to the ceiling', () => {
+    const { layout, mounts } = buildVenue({ width: 12, depth: 10, height: 4.5 }, clubNight().fixtures);
+    for (const id of [29, 30, 31, 32, 33, 34]) {
+      const mount = mounts.get(id)!;
+      expect(mount.type === 'stand' && mount.lensUp).toBe(true);
+    }
+    // The six floor pars stand at 0.3 m, turned to face whichever way.
+    for (const yawDeg of [0, 90, -90, 180]) {
+      const { direction, tiltRad } = drawnBeam({ y: 0.3, yawDeg, lensUp: true });
+      expect(direction.distanceTo(new THREE.Vector3(0, 1, 0))).toBeLessThan(1e-9);
+      const reach = beamThrow(0.3, beamRise(tiltRad, true), layout.ceilingY, roomSpan(layout));
+      expect(reach).toBeCloseTo(layout.ceilingY - 0.3, 9);
+      // The old beam was as long as the fixture is high: 0.3 m, into the floor.
+      expect(reach).toBeGreaterThan(4);
+    }
+  });
+
+  it('turns the lit face of the housing up with the beam, not on its own', () => {
+    // The lit face of every model is on its -Y side, where the beam leaves.
+    // The one group that faces a fixture up carries both, so after the turn
+    // the lit face is on top and the beam goes the same way.
+    const { direction, facing } = drawnBeam({ y: 0.3, lensUp: true });
+    for (const kind of ['led_par', 'led_bar', 'strobe', 'other'] as const) {
+      const emitter = getFixtureGeometry(kind).emitter;
+      emitter.computeBoundingBox();
+      const litFace = emitter.boundingBox!.getCenter(new THREE.Vector3());
+      expect(litFace.y).toBeLessThan(0);
+      const turned = litFace.clone().applyMatrix4(facing.matrixWorld).sub(new THREE.Vector3(1.5, 0.3, -2));
+      expect(turned.y).toBeGreaterThan(0);
+      expect(Math.sign(turned.y)).toBe(Math.sign(direction.y));
+    }
+  });
+
+  it('leaves every other fixture pointing as its tilt says', () => {
+    for (const tiltDeg of [-120, -40, 0, 30, 95]) {
+      const tiltRad = THREE.MathUtils.degToRad(tiltDeg);
+      expect(beamRise(tiltRad)).toBe(beamRise(tiltRad, false));
+      expect(beamRise(tiltRad, true)).toBeCloseTo(-beamRise(tiltRad), 12);
+    }
+    expect(beamRise(0)).toBe(-1);
+    expect(beamRise(0, true)).toBe(1);
   });
 
   it('takes the room corner to corner as the longest line in it', () => {

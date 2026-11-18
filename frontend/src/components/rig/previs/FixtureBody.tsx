@@ -6,7 +6,7 @@
  * frame. Each is one or two meshes over shared geometry: `dispose={null}`
  * stops react-three-fiber freeing that geometry when one fixture unmounts.
  */
-import { forwardRef, memo, useMemo } from 'react';
+import { forwardRef, memo } from 'react';
 import type { Ref } from 'react';
 import * as THREE from 'three';
 import { box, cylY, merge, paint, place } from './geometryKit';
@@ -126,27 +126,24 @@ export const FixtureYoke = memo(forwardRef(function FixtureYoke(
  * `lensRef` is the lit mesh. It has its own material so each fixture can glow
  * its own colour; the caller drives that material every frame.
  *
- * `lensUp` turns a fixed-body fixture over to face the ceiling, for one that
- * stands on the floor. It turns only the model: the caller's beam and spot
- * light are separate and are not affected.
+ * The lit face is on the -Y side, the side the caller's beam leaves from.
+ * Which way that side faces is the caller's business: it turns this, the beam
+ * and the spot light together, in one group, so they cannot point apart.
  */
 export const FixtureHead = memo(function FixtureHead({
   kind,
   lensRef,
-  lensUp,
 }: {
   kind: FixtureModelKind;
   lensRef: Ref<THREE.Mesh>;
-  lensUp: boolean;
 }) {
   const geometry = getFixtureGeometry(kind);
-  const rotation = useMemo<[number, number, number]>(() => [lensUp ? Math.PI : 0, 0, 0], [lensUp]);
   return (
-    <group rotation={rotation}>
+    <>
       <mesh geometry={geometry.shell} material={bodyMaterial} castShadow dispose={null} />
       <mesh ref={lensRef} geometry={geometry.emitter} dispose={null}>
         <meshStandardMaterial color="#111" emissive="#000000" roughness={0.25} metalness={0} toneMapped={false} />
       </mesh>
-    </group>
+    </>
   );
 });

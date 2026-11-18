@@ -22,9 +22,13 @@ const FALLBACK_LONGEST_THROW = 30;
  * Only tilt sets it. The head is turned tilt first and pan second (rotation
  * order 'YXZ'), and pan and the body's yaw are both turns about the vertical,
  * so neither changes how steeply the beam runs.
+ *
+ * `lensUp` is a fixed-body fixture standing on the floor, turned over to face
+ * the ceiling. Its beam is turned over with it.
  */
-export function beamRise(tiltRad: number): number {
-  return -Math.cos(tiltRad);
+export function beamRise(tiltRad: number, lensUp = false): number {
+  const down = -Math.cos(tiltRad);
+  return lensUp ? -down : down;
 }
 
 /**

@@ -204,6 +204,11 @@ const SPOT_RANGE_FACTOR = 1.5;
 // the prop is the same object on every render.
 const SPOT_TARGET_POSITION: [number, number, number] = [0, -10, 0];
 
+// The two ways a fixture can face. Everything that points (housing, beam, spot
+// light) is built pointing down its own -Y; half a turn about X points it up.
+const FACING_DOWN: [number, number, number] = [0, 0, 0];
+const FACING_UP: [number, number, number] = [Math.PI, 0, 0];
+
 // ============================================================================
 // VOLUMETRIC BEAM COMPONENT
 // ============================================================================
@@ -346,14 +351,21 @@ function Fixture3D({
   const modelSpec = FIXTURE_SPECS[modelKind];
   const motionProfile = FIXTURE_MOTION_PROFILES[fixtureType] || FIXTURE_MOTION_PROFILES.default;
 
-  // A fixed-body fixture standing on the floor is drawn lens-up. Its beam and
-  // spot light are not turned with it: they still point down, as before.
+  // A fixed-body fixture standing on the floor faces the ceiling: the model,
+  // its beam and its spot light are turned over together, below.
   const lensUp = mount.type === 'stand' && mount.lensUp;
   // A fixture patched lower than its own feet is raised to stand on the floor.
   const standLift = mount.type === 'stand' ? mount.lift : 0;
+  // Height of the point the light comes from.
+  const sourceY = fixture.position_y + standLift;
 
-  // Beam length scales with fixture height (fixtures on truss beam to floor)
-  const beamLength = fixture.position_y > 0 ? fixture.position_y : 3;
+  // The beam is drawn as long as the fixture is high, so one pointing straight
+  // down ends on the floor. One facing up runs to the ceiling instead: it was
+  // drawn `position_y` long and pointing down, 0.3 m into the floor for a par
+  // standing on it.
+  const beamLength = lensUp
+    ? beamThrow(sourceY, beamRise(0, true), ceilingY, longestThrow)
+    : fixture.position_y > 0 ? fixture.position_y : 3;
 
   const [beamColor] = useState(() => new THREE.Color(1, 1, 1));
   const [beamIntensity, setBeamIntensity] = useState(0);
@@ -664,7 +676,7 @@ function Fixture3D({
     // the beam cone is drawn with. A fixture that does not move stays at 0.
     if (spotRef.current) {
       const tiltRad = headRef.current ? headRef.current.rotation.x : 0;
-      const reach = beamThrow(fixture.position_y + standLift, beamRise(tiltRad), ceilingY, longestThrow);
+      const reach = beamThrow(sourceY, beamRise(tiltRad, lensUp), ceilingY, longestThrow);
       spotRef.current.distance = reach * SPOT_RANGE_FACTOR;
     }
 
@@ -725,45 +737,51 @@ function Fixture3D({
       {/* Head group (rotates for moving heads). It sits on the fixture's own
           position, so the beam starts where the rig says the fixture is. */}
       <group ref={headRef}>
-        {/* Housing and the lit lens; the lens material is driven in useFrame */}
-        <FixtureHead kind={modelKind} lensRef={lensRef} lensUp={lensUp} />
+        {/* Which way the fixture faces: down, or up for a fixed-body fixture
+            standing on the floor. One turn for the housing, the beam and the
+            spot light, so the three cannot point apart. The housing used to be
+            turned on its own and the light went on shining into the floor. */}
+        <group rotation={lensUp ? FACING_UP : FACING_DOWN}>
+          {/* Housing and the lit lens; the lens material is driven in useFrame */}
+          <FixtureHead kind={modelKind} lensRef={lensRef} />
 
-        {/* Volumetric beam cone */}
-        <BeamCone
-          color={beamColor}
-          intensity={beamIntensity}
-          beamAngle={defaultBeamAngleDeg}
-          beamLength={beamLength}
-          segments={beamSegments}
-        />
+          {/* Volumetric beam cone */}
+          <BeamCone
+            color={beamColor}
+            intensity={beamIntensity}
+            beamAngle={defaultBeamAngleDeg}
+            beamLength={beamLength}
+            segments={beamSegments}
+          />
 
-        {/* SpotLight for floor color projection (cap count for performance).
-            It stays mounted and is switched with its intensity. Mounting it
-            only while the fixture was lit changed the number of lights in the
-            scene every time a fixture faded or strobed, and three.js builds a
-            new shader for every lit material at each new count: 168 shaders
-            in 100 seconds of music, each a freeze of a second or more the
-            first time a machine meets it.
-            Its range is not set here: the frame loop sets it from where the
-            beam is pointing, before the first frame it is drawn in. */}
-        {fixtureIndex < spotCap && (
-          <>
-            <spotLight
-              ref={spotRef}
-              position={[0, -modelSpec.lensOffset - 0.02, 0]}
-              angle={0.3}
-              penumbra={0.6}
-              intensity={spotIntensityFor(beamIntensity)}
-              color={beamColor}
-              castShadow={fixtureIndex < 4}
-              shadow-mapSize-width={256}
-              shadow-mapSize-height={256}
-              decay={1.5}
-              target={spotTarget}
-            />
-            <primitive object={spotTarget} position={SPOT_TARGET_POSITION} />
-          </>
-        )}
+          {/* SpotLight for floor color projection (cap count for performance).
+              It stays mounted and is switched with its intensity. Mounting it
+              only while the fixture was lit changed the number of lights in the
+              scene every time a fixture faded or strobed, and three.js builds a
+              new shader for every lit material at each new count: 168 shaders
+              in 100 seconds of music, each a freeze of a second or more the
+              first time a machine meets it.
+              Its range is not set here: the frame loop sets it from where the
+              beam is pointing, before the first frame it is drawn in. */}
+          {fixtureIndex < spotCap && (
+            <>
+              <spotLight
+                ref={spotRef}
+                position={[0, -modelSpec.lensOffset - 0.02, 0]}
+                angle={0.3}
+                penumbra={0.6}
+                intensity={spotIntensityFor(beamIntensity)}
+                color={beamColor}
+                castShadow={fixtureIndex < 4}
+                shadow-mapSize-width={256}
+                shadow-mapSize-height={256}
+                decay={1.5}
+                target={spotTarget}
+              />
+              <primitive object={spotTarget} position={SPOT_TARGET_POSITION} />
+            </>
+          )}
+        </group>
       </group>
 
       {/* Fixture ID label for quick patch/debug identification */}
