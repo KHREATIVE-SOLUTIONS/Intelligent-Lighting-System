@@ -1,9 +1,10 @@
 /**
- * How bright a fixture's light on the room is.
+ * How bright and how wide a fixture's light on the room is.
  *
  * Each fixture throws a three.js spot light down its beam, and the patch that
  * light makes on the floor, a wall or the crowd is its pool. Three choices set
- * how a pool reads, and they are made together here.
+ * how bright a pool reads, and they are made together here. How wide it is
+ * comes last, and the drawn beam takes its width from the same numbers.
  *
  * 1. No falloff with distance. A real lamp's light thins out as it travels,
  *    and so does a three.js light by default. With that left on, one setting
@@ -49,4 +50,48 @@ export function poolLightIntensity(level: number): number {
 /** Spot light range for a beam that travels `throwDistance` (see `beamThrow`). */
 export function poolLightRange(throwDistance: number): number {
   return throwDistance * RANGE_PER_THROW;
+}
+
+/**
+ * How wide a fixture's light is: the spot light's cone in degrees either side
+ * of its axis, for a zoom of 0 (tightest) to 1 (widest). The zoom is the
+ * fixture's zoom channel, or its profile's beam angle if it has none.
+ *
+ * The light is nothing at the cone's edge and at half some way inside it (see
+ * `poolRadius`), so the width a fixture is said to have, its beam angle, is
+ * about three quarters of this, doubled.
+ *
+ * A spot's cone runs from 6 to 18 degrees. It used to run from 10 to 50: at
+ * the middle of its zoom a spot lit a patch 46 degrees across from a beam
+ * drawn 18 across. 6 to 18 puts the middle of the zoom at that drawn beam.
+ * Every other fixture runs from 2.5 to 11.5, as it always has.
+ */
+export function poolConeDeg(spot: boolean, zoom: number): number {
+  const amount = zoom > 0 ? Math.min(1, zoom) : 0;
+  return spot ? 6 + amount * 12 : 2.5 + amount * 9;
+}
+
+/**
+ * three.js `penumbra` for the spot lights: how soft a pool's edge is. The
+ * light is full inside the inner 40 % of its cone and fades to nothing at the
+ * cone's edge.
+ */
+export const POOL_LIGHT_PENUMBRA = 0.6;
+
+/**
+ * Radius of a pool on a surface square to the beam, `throwDistance` from the
+ * light whose cone is `coneRad` either side of its axis: the ring where the
+ * light has fallen to half. The drawn beam ends this wide, so a beam and the
+ * pool it makes are the same size where they meet. The pool goes on, fading,
+ * for about a third as far again outside it.
+ *
+ * three.js fades a spot light with a smoothstep on the cosine of the angle off
+ * its axis, between the cone's edge and the inner cone, so half falls where
+ * that cosine is midway between the two.
+ */
+export function poolRadius(throwDistance: number, coneRad: number): number {
+  const edge = Math.cos(coneRad);
+  const inner = Math.cos(coneRad * (1 - POOL_LIGHT_PENUMBRA));
+  const half = (edge + inner) / 2;
+  return (throwDistance * Math.sqrt(Math.max(0, 1 - half * half))) / half;
 }

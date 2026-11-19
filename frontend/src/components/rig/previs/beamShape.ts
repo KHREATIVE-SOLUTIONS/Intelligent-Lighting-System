@@ -2,17 +2,20 @@
  * The shape of a drawn beam.
  *
  * A beam is a tube that starts at the fixture's lit face, as wide and as deep
- * as that face, and widens steadily to where the beam lands. It used to be a
- * cone from a point at the fixture's middle: a wash, a batten or a strobe
- * showed a pencil beam leaving the centre of a wide face. And it used to be as
- * long as the fixture is high whichever way it pointed, so a leaning beam
- * stopped in the air short of its own pool.
+ * as that face, and widens steadily to where the beam lands, where it is as
+ * wide as the pool of light it makes. It used to be a cone from a point at the
+ * fixture's middle: a wash, a batten or a strobe showed a pencil beam leaving
+ * the centre of a wide face. It used to be as long as the fixture is high
+ * whichever way it pointed, so a leaning beam stopped in the air short of its
+ * own pool. And it used to spread by the same few degrees whatever the
+ * fixture, so its pool was up to two and a half times as wide as its end.
  *
- * Every beam is the same unit tube, shaped in the vertex shader from three
+ * Every beam is the same unit tube, shaped in the vertex shader from four
  * numbers. Nothing is rebuilt as a head moves, and all beams of one quality
  * setting share one geometry.
  */
 import * as THREE from 'three';
+import type { BeamSurface } from './beamThrow';
 import { getFixtureGeometry } from './fixtureGeometry';
 import type { FixtureModelKind } from './fixtureSpecs';
 
@@ -56,11 +59,6 @@ export function beamLengthFrom(mouth: BeamMouth, landing: number): number {
   return length > SHORTEST_BEAM ? length : SHORTEST_BEAM;
 }
 
-/** How much wider the beam is, on each side, at its far end than at its mouth. */
-export function beamWidening(length: number, spreadHalfAngleDeg: number): number {
-  return length * Math.tan((spreadHalfAngleDeg * Math.PI) / 180);
-}
-
 const tubes = new Map<number, THREE.BufferGeometry>();
 
 /**
@@ -77,19 +75,43 @@ export function beamTube(segments: number): THREE.BufferGeometry {
 }
 
 /**
- * Shapes the unit tube: `beamNear` and `beamFar` are the half-width and
+ * How far along its own line an edge of the beam may be cut or run on to meet
+ * the surface, as a share of its length to the flat end. An edge that would
+ * have to go further (a beam skimming the floor) keeps to these and ends in
+ * the air on that side.
+ */
+export const BEAM_EDGE_SHORTEST = 0.4;
+export const BEAM_EDGE_LONGEST = 2.5;
+
+/**
+ * Shapes the unit tube. `beamNear` and `beamFar` are the half-width and
  * half-depth at the mouth and at the far end, `beamLength` the distance
- * between them.
+ * between them along the beam.
+ *
+ * `beamSurface` is what the beam lands on, as a plane in the room (see
+ * `BeamSurface`). Each edge of the tube is followed from the mouth until it
+ * meets that plane, so the end of the beam lies on the floor, the ceiling or
+ * the wall as the pool does. With no surface (all zeros) the end is flat.
  */
 export const BEAM_VERTEX_SHADER = `
   uniform vec2 beamNear;
   uniform vec2 beamFar;
   uniform float beamLength;
+  uniform vec4 beamSurface;
   void main() {
-    float along = -position.y;
-    vec2 halfSize = mix(beamNear, beamFar, along);
-    vec3 shaped = vec3(position.x * halfSize.x, -along * beamLength, position.z * halfSize.y);
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(shaped, 1.0);
+    vec4 place = modelMatrix * vec4(position.x * beamNear.x, 0.0, position.z * beamNear.y, 1.0);
+    if (position.y < -0.5) {
+      vec4 flatEnd = modelMatrix * vec4(position.x * beamFar.x, -beamLength, position.z * beamFar.y, 1.0);
+      vec3 edge = flatEnd.xyz - place.xyz;
+      float closing = dot(beamSurface.xyz, edge);
+      float share = 1.0;
+      if (abs(closing) > 0.000001) {
+        float meets = (beamSurface.w - dot(beamSurface.xyz, place.xyz)) / closing;
+        if (meets > 0.0) share = clamp(meets, ${BEAM_EDGE_SHORTEST.toFixed(2)}, ${BEAM_EDGE_LONGEST.toFixed(2)});
+      }
+      place.xyz += edge * share;
+    }
+    gl_Position = projectionMatrix * viewMatrix * place;
   }
 `;
 
@@ -113,6 +135,7 @@ export function createBeamMaterial(): THREE.ShaderMaterial {
       beamNear: { value: new THREE.Vector2(0.05, 0.05) },
       beamFar: { value: new THREE.Vector2(0.05, 0.05) },
       beamLength: { value: 1 },
+      beamSurface: { value: new THREE.Vector4(0, 0, 0, 0) },
     },
     transparent: true,
     side: THREE.DoubleSide,
@@ -122,20 +145,22 @@ export function createBeamMaterial(): THREE.ShaderMaterial {
 }
 
 /**
- * Give a beam its shape for this frame: from `mouth`, widening by
- * `spreadHalfAngleDeg` either side, to where the beam lands, `landing` being
- * the distance from the light source.
+ * Give a beam its shape for this frame: from `mouth` to where the beam lands,
+ * `landing` being the distance from the light source, ending as wide as the
+ * pool it makes there (`endRadius`, see `poolRadius`) and lying on `surface`.
+ * It never narrows: an end smaller than the mouth is drawn as wide as the
+ * mouth, as a batten a metre from its wall is.
  */
 export function shapeBeam(
   material: THREE.ShaderMaterial,
   mouth: BeamMouth,
   landing: number,
-  spreadHalfAngleDeg: number,
+  endRadius: number,
+  surface: BeamSurface,
 ): void {
-  const length = beamLengthFrom(mouth, landing);
-  const widening = beamWidening(length, spreadHalfAngleDeg);
   const uniforms = material.uniforms;
   uniforms.beamNear.value.set(mouth.halfX, mouth.halfZ);
-  uniforms.beamFar.value.set(mouth.halfX + widening, mouth.halfZ + widening);
-  uniforms.beamLength.value = length;
+  uniforms.beamFar.value.set(Math.max(mouth.halfX, endRadius), Math.max(mouth.halfZ, endRadius));
+  uniforms.beamLength.value = beamLengthFrom(mouth, landing);
+  uniforms.beamSurface.value.set(surface.x, surface.y, surface.z, surface.d);
 }

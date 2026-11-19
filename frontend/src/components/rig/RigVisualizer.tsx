@@ -23,14 +23,21 @@ import type { BeatClock } from './previs/beatClock';
 import { beamMouth, beamTube, createBeamMaterial, shapeBeam } from './previs/beamShape';
 import type { BeamMouth } from './previs/beamShape';
 import { beamDirection, beamLanding } from './previs/beamThrow';
-import type { BeamRoom, BeamVector } from './previs/beamThrow';
+import type { BeamRoom, BeamSurface, BeamVector } from './previs/beamThrow';
 import { ClubRoom } from './previs/ClubRoom';
 import { BeatClockTicker, Crowd } from './previs/Crowd';
 import { DJBooth } from './previs/DJBooth';
 import { FixtureHead, FixtureSupport, FixtureYoke } from './previs/FixtureBody';
 import { FIXTURE_SPECS, resolveModelKind } from './previs/fixtureSpecs';
 import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
-import { POOL_LIGHT_DECAY, poolLightIntensity, poolLightRange } from './previs/poolLight';
+import {
+  POOL_LIGHT_DECAY,
+  POOL_LIGHT_PENUMBRA,
+  poolConeDeg,
+  poolLightIntensity,
+  poolLightRange,
+  poolRadius,
+} from './previs/poolLight';
 import type { CameraMode, FixtureMount } from './previs/layout';
 import { RigTruss } from './previs/Truss';
 
@@ -308,8 +315,9 @@ function Fixture3D({
   );
   const isBeamLike = fixtureType === 'beam' || fixtureType === 'moving_head' || fixtureType === 'mover';
   const isSpotLike = fixtureType === 'spot';
-  const defaultBeamAngleDeg = isSpotLike ? 18.0 : 5.0;
   const modelSpec = FIXTURE_SPECS[modelKind];
+  // How far down the beam from the fixture's own position its spot light sits.
+  const lightDepth = modelSpec.lensOffset + 0.02;
   const motionProfile = FIXTURE_MOTION_PROFILES[fixtureType] || FIXTURE_MOTION_PROFILES.default;
 
   // A fixed-body fixture standing on the floor faces the ceiling: the model,
@@ -323,6 +331,7 @@ function Fixture3D({
   // Where the beam lands is worked out every frame, below: it is where the
   // drawn beam ends and what the spot light's range is measured from.
   const beamPointing = useRef<BeamVector>({ x: 0, y: -1, z: 0 });
+  const beamSurface = useRef<BeamSurface>({ x: 0, y: 0, z: 0, d: 0 });
   const mouth = useMemo(() => beamMouth(modelKind), [modelKind]);
   // One beam material for the life of the fixture, shaped in the frame loop.
   const beamMaterial = useMemo(() => createBeamMaterial(), []);
@@ -513,12 +522,8 @@ function Fixture3D({
     }
 
     // Update spotlight for floor projection
-    const finalSpotAngleDeg = isSpotLike
-      ? (10.0 + zoom * 40.0)
-      : (2.5 + zoom * 9.0);
-    const finalBeamAngleDeg = isSpotLike
-      ? THREE.MathUtils.clamp(finalSpotAngleDeg, 10.0, 50.0)
-      : THREE.MathUtils.clamp(finalSpotAngleDeg, 2.5, 11.5);
+    // How wide the light is. The pool and the drawn beam both come from this.
+    const finalSpotAngleDeg = poolConeDeg(isSpotLike, zoom);
     if (spotRef.current) {
       spotRef.current.color.setRGB(s.r, s.g, s.b);
       spotRef.current.intensity = poolLightIntensity(effectiveIntensity);
@@ -668,12 +673,23 @@ function Fixture3D({
         beamPointing.current
       ),
       room,
-      longestThrow
+      longestThrow,
+      beamSurface.current
     );
     // Shaped here and not in the beam's own frame callback: that one runs
     // before this, so it would draw the beam with last frame's length on this
     // frame's head, and its end would trail its pool as the head moves.
-    shapeBeam(beamMaterial, mouth, reach, defaultBeamAngleDeg / 2);
+    // It ends as wide as its pool, measured from where the spot light sits, and
+    // on the surface the pool is on. A fixture past the cap on spot lights has
+    // no pool; its beam is the width its pool would be, so a beam does not
+    // change with the quality setting.
+    shapeBeam(
+      beamMaterial,
+      mouth,
+      reach,
+      poolRadius(reach - lightDepth, THREE.MathUtils.degToRad(finalSpotAngleDeg)),
+      beamSurface.current
+    );
     if (spotRef.current) spotRef.current.distance = poolLightRange(reach);
 
     onDebugUpdate?.({
@@ -753,9 +769,9 @@ function Fixture3D({
             <>
               <spotLight
                 ref={spotRef}
-                position={[0, -modelSpec.lensOffset - 0.02, 0]}
+                position={[0, -lightDepth, 0]}
                 angle={0.3}
-                penumbra={0.6}
+                penumbra={POOL_LIGHT_PENUMBRA}
                 intensity={poolLightIntensity(beamIntensity)}
                 color={beamColor}
                 castShadow={fixtureIndex < 4}

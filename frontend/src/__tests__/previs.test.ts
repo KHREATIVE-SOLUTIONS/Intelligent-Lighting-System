@@ -8,15 +8,16 @@ import {
   sectionEnergy,
 } from '../components/rig/previs/beatClock';
 import {
+  BEAM_EDGE_LONGEST,
+  BEAM_EDGE_SHORTEST,
   beamLengthFrom,
   beamMouth,
   beamTube,
-  beamWidening,
   createBeamMaterial,
   shapeBeam,
 } from '../components/rig/previs/beamShape';
 import { beamDirection, beamLanding, beamRise, beamThrow } from '../components/rig/previs/beamThrow';
-import type { BeamRoom } from '../components/rig/previs/beamThrow';
+import type { BeamRoom, BeamSurface } from '../components/rig/previs/beamThrow';
 import { crowdCapacity, placeCrowd } from '../components/rig/previs/crowdLayout';
 import { getFixtureGeometry } from '../components/rig/previs/fixtureGeometry';
 import { FIXTURE_SPECS, resolveModelKind } from '../components/rig/previs/fixtureSpecs';
@@ -25,8 +26,11 @@ import { beamRoom, buildVenue, cameraPreset, roomSpan } from '../components/rig/
 import {
   POOL_LIGHT_AT_FULL,
   POOL_LIGHT_DECAY,
+  POOL_LIGHT_PENUMBRA,
+  poolConeDeg,
   poolLightIntensity,
   poolLightRange,
+  poolRadius,
 } from '../components/rig/previs/poolLight';
 import type { LayoutFixture } from '../components/rig/previs/layout';
 
@@ -757,6 +761,104 @@ describe('how bright a pool of light is', () => {
   });
 });
 
+// How much of a spot light is left at an angle off its axis, as three.js works
+// it out (getSpotAttenuation in lights_pars_begin.glsl.js and the two cosines
+// WebGLLights.js gives it, three 0.160): a smoothstep on the cosine of the
+// angle, from the cone's edge to the inner cone the penumbra leaves.
+function lightAcross(angleRad: number, coneRad: number, penumbra: number): number {
+  const edge = Math.cos(coneRad);
+  const inner = Math.cos(coneRad * (1 - penumbra));
+  const t = Math.min(1, Math.max(0, (Math.cos(angleRad) - edge) / (inner - edge)));
+  return t * t * (3 - 2 * t);
+}
+
+describe('how wide a pool of light is', () => {
+  const rad = THREE.MathUtils.degToRad;
+  const deg = THREE.MathUtils.radToDeg;
+
+  it('takes its width from the zoom, and keeps every fixture but a spot as wide as it was', () => {
+    for (const zoom of [0, 0.12, 0.498, 0.875, 1]) {
+      expect(poolConeDeg(false, zoom)).toBeCloseTo(2.5 + zoom * 9, 12);
+    }
+    // The demo rigs: a moving head or a wash at 7 degrees, a par or a batten at 10.4.
+    expect(poolConeDeg(false, 0.5)).toBeCloseTo(7, 12);
+    expect(poolConeDeg(false, 0.875)).toBeCloseTo(10.375, 12);
+    expect(poolConeDeg(true, 0)).toBe(6);
+    expect(poolConeDeg(true, 1)).toBe(18);
+    for (const spot of [false, true]) {
+      let previous = poolConeDeg(spot, 0);
+      for (let i = 1; i <= 50; i += 1) {
+        const now = poolConeDeg(spot, i / 50);
+        expect(now).toBeGreaterThan(previous);
+        previous = now;
+      }
+      // A zoom outside 0 to 1, or one that is not a number, cannot widen or
+      // invert the cone.
+      expect(poolConeDeg(spot, -0.4)).toBe(poolConeDeg(spot, 0));
+      expect(poolConeDeg(spot, Number.NaN)).toBe(poolConeDeg(spot, 0));
+      expect(poolConeDeg(spot, 3)).toBe(poolConeDeg(spot, 1));
+    }
+  });
+
+  it('gives a spot at the middle of its zoom the 18 degree beam it was drawn with', () => {
+    const cone = rad(poolConeDeg(true, 0.5));
+    const acrossAtHalf = 2 * deg(Math.atan(poolRadius(1, cone)));
+    expect(acrossAtHalf).toBeGreaterThan(17.5);
+    expect(acrossAtHalf).toBeLessThan(18.5);
+    // It used to light a patch 46 degrees across there.
+    expect(2 * deg(Math.atan(poolRadius(1, rad(10 + 0.5 * 40))))).toBeGreaterThan(45);
+    // A spot is still the wider light at any zoom.
+    for (const zoom of [0, 0.5, 1]) expect(poolConeDeg(true, zoom)).toBeGreaterThan(poolConeDeg(false, zoom));
+  });
+
+  it('measures a pool to where its light has fallen to half', () => {
+    for (const coneDeg of [2.5, 7, 10.375, 12, 18]) {
+      const cone = rad(coneDeg);
+      for (const throwDistance of [1, 4.2, 9.2]) {
+        const radius = poolRadius(throwDistance, cone);
+        const at = (r: number) => lightAcross(Math.atan(r / throwDistance), cone, POOL_LIGHT_PENUMBRA);
+        expect(at(radius)).toBeCloseTo(0.5, 9);
+        expect(at(radius * 0.9)).toBeGreaterThan(0.55);
+        expect(at(radius * 1.1)).toBeLessThan(0.45);
+        // Full in the middle, and gone a third as far again outside the radius.
+        expect(at(radius * 0.5)).toBe(1);
+        expect(at(radius * 1.34)).toBe(0);
+        expect(at(radius * 1.25)).toBeGreaterThan(0);
+      }
+      // The same cone makes a pool twice as wide from twice as far.
+      expect(poolRadius(8.4, cone)).toBeCloseTo(poolRadius(4.2, cone) * 2, 9);
+    }
+    // A moving head on the demo rigs, 4.2 m up: a pool 78 cm across at half.
+    expect(poolRadius(4.2, rad(7))).toBeCloseTo(0.392, 3);
+    expect(POOL_LIGHT_PENUMBRA).toBe(0.6);
+  });
+});
+
+// One edge of the beam's tube, as the vertex shader draws it (BEAM_VERTEX_SHADER
+// in beamShape.ts, written out again here because a shader cannot be run in
+// these tests): from its place on the mouth, along the line to its place on
+// the flat end, as far as the surface the beam lands on.
+function edgeOfBeam(
+  material: THREE.ShaderMaterial,
+  model: THREE.Matrix4,
+  aroundX: number,
+  aroundZ: number,
+): { end: THREE.Vector3; flatEnd: THREE.Vector3; share: number } {
+  const { beamNear, beamFar, beamLength, beamSurface } = material.uniforms;
+  const place = new THREE.Vector3(aroundX * beamNear.value.x, 0, aroundZ * beamNear.value.y).applyMatrix4(model);
+  const flatEnd = new THREE.Vector3(aroundX * beamFar.value.x, -beamLength.value, aroundZ * beamFar.value.y)
+    .applyMatrix4(model);
+  const edge = flatEnd.clone().sub(place);
+  const normal = new THREE.Vector3(beamSurface.value.x, beamSurface.value.y, beamSurface.value.z);
+  const closing = normal.dot(edge);
+  let share = 1;
+  if (Math.abs(closing) > 0.000001) {
+    const meets = (beamSurface.value.w - normal.dot(place)) / closing;
+    if (meets > 0) share = Math.min(BEAM_EDGE_LONGEST, Math.max(BEAM_EDGE_SHORTEST, meets));
+  }
+  return { end: place.add(edge.multiplyScalar(share)), flatEnd, share };
+}
+
 describe('where a beam lands', () => {
   const { layout } = buildVenue({ width: 12, depth: 10, height: 4.5 }, clubNight().fixtures);
   const room = beamRoom(layout, true);
@@ -810,6 +912,80 @@ describe('where a beam lands', () => {
     expect(onFloor).toBeGreaterThan(20);
     expect(onCeiling).toBeGreaterThan(20);
     expect(onWall).toBeGreaterThan(20);
+  });
+
+  it('says which surface that is, as a plane the landing point is on', () => {
+    const ray = new THREE.Ray();
+    const exit = new THREE.Vector3();
+    const surface: BeamSurface = { x: 9, y: 9, z: 9, d: 9 };
+    const seen = { floor: 0, ceiling: 0, sideWall: 0, endWall: 0, none: 0 };
+    for (const [x, y, z] of [[-5, 4.2, -3.5], [1, 4.3, 0], [4.5, 4.2, 3.5], [-5.8, 0.3, 1], [0, 1, -3.8]]) {
+      for (const panDeg of [-150, -90, -20, 0, 45, 90, 160]) {
+        for (const tiltDeg of [-100, -68, -30, 0, 30, 68, 100, 150]) {
+          const drawn = drawnBeam({ x, y, z, panDeg, tiltDeg });
+          ray.set(drawn.origin, drawn.direction);
+          ray.intersectBox(box, exit);
+          const pointing = beamDirection(drawn.tiltRad, drawn.turnRad, false, out);
+          const reach = beamLanding(x, y, z, pointing, room, 1000, surface);
+          const normal = [surface.x, surface.y, surface.z];
+          if (exit.distanceTo(drawn.origin) < 0.25) {
+            // Nearer than a landing is ever counted: the end is on nothing.
+            expect([...normal, surface.d]).toEqual([0, 0, 0, 0]);
+            seen.none += 1;
+            continue;
+          }
+          // The landing point, worked out from the reach alone, is on the plane...
+          const landing = drawn.origin.clone().addScaledVector(drawn.direction, reach);
+          expect(surface.x * landing.x + surface.y * landing.y + surface.z * landing.z).toBeCloseTo(surface.d, 6);
+          // ...and the plane is the face of the room three.js says the ray leaves by.
+          if (exit.y < 1e-6) {
+            expect([...normal, surface.d]).toEqual([0, 1, 0, 0]);
+            seen.floor += 1;
+          } else if (exit.y > layout.ceilingY - 1e-6) {
+            expect([...normal, surface.d]).toEqual([0, 1, 0, layout.ceilingY]);
+            seen.ceiling += 1;
+          } else if (Math.abs(Math.abs(exit.x) - layout.wallX) < 1e-6) {
+            expect([...normal, surface.d]).toEqual([1, 0, 0, Math.sign(exit.x) * layout.wallX]);
+            seen.sideWall += 1;
+          } else {
+            expect([...normal, surface.d]).toEqual([0, 0, 1, exit.z > 0 ? layout.houseZ : layout.backZ]);
+            seen.endWall += 1;
+          }
+        }
+      }
+    }
+    for (const count of Object.values(seen)) expect(count).toBeGreaterThan(0);
+    expect(seen.sideWall).toBeGreaterThan(10);
+    expect(seen.endWall).toBeGreaterThan(10);
+  });
+
+  it('has no surface for a beam that ends in the air, and forgets the last one', () => {
+    const surface: BeamSurface = { x: 0, y: 0, z: 0, d: 0 };
+    beamLanding(0, 4.2, 0, { x: 0, y: -1, z: 0 }, room, 1000, surface);
+    expect(surface).toEqual({ x: 0, y: 1, z: 0, d: 0 });
+    // Level, with no walls drawn: it runs out at the longest throw.
+    expect(beamLanding(0, 4.2, 0, { x: 1, y: 0, z: 0 }, open, 19, surface)).toBe(19);
+    expect(surface).toEqual({ x: 0, y: 0, z: 0, d: 0 });
+    // Leaning so far that the floor is past the longest throw.
+    beamLanding(0, 4.2, 0, { x: 0, y: 1, z: 0 }, room, 1000, surface);
+    expect(surface.d).toBe(layout.ceilingY);
+    const skim = beamDirection(THREE.MathUtils.degToRad(89), 0, false, out);
+    expect(beamLanding(0, 4.2, 0, skim, open, 19, surface)).toBe(19);
+    expect(surface).toEqual({ x: 0, y: 0, z: 0, d: 0 });
+    // Walls that are not drawn are not landed on.
+    const outward = beamDirection(THREE.MathUtils.degToRad(-40), THREE.MathUtils.degToRad(-90), false, out);
+    beamLanding(-5, 4.3, 0, outward, room, 1000, surface);
+    expect(surface).toEqual({ x: 1, y: 0, z: 0, d: -layout.wallX });
+    beamLanding(-5, 4.3, 0, outward, open, 1000, surface);
+    expect(surface).toEqual({ x: 0, y: 1, z: 0, d: 0 });
+    // A light level with the floor or the ceiling and shining level lands on
+    // the wall in front of it, not on the surface it is level with.
+    beamLanding(0, 0, 0, { x: 1, y: 0, z: 0 }, room, 1000, surface);
+    expect(surface).toEqual({ x: 1, y: 0, z: 0, d: layout.wallX });
+    beamLanding(0, layout.ceilingY, 0, { x: 0, y: 0, z: -1 }, room, 1000, surface);
+    expect(surface).toEqual({ x: 0, y: 0, z: 1, d: layout.backZ });
+    // Asking for no surface changes nothing about the distance.
+    expect(beamLanding(-5, 4.3, 0, outward, room, 1000)).toBe(beamLanding(-5, 4.3, 0, outward, room, 1000, surface));
   });
 
   it('lands on a side wall, short of the floor, for an end fixture leaning outward', () => {
@@ -914,42 +1090,150 @@ describe('the shape of a drawn beam', () => {
     for (const landing of [mouth.offset, 0.01, 0, -3]) expect(beamLengthFrom(mouth, landing)).toBeGreaterThan(0);
   });
 
-  it('widens by its spread, so a longer beam ends wider', () => {
-    // 2.5 degrees either side of the axis: 5 degrees across, as it was.
-    expect(beamWidening(4, 2.5)).toBeCloseTo(4 * Math.tan(THREE.MathUtils.degToRad(2.5)), 12);
-    expect(beamWidening(9, 2.5)).toBeGreaterThan(beamWidening(4, 2.5) * 2);
-    expect(beamWidening(4, 9)).toBeGreaterThan(beamWidening(4, 2.5) * 3);
-    expect(beamWidening(0, 9)).toBe(0);
+  it('ends as wide as its pool, and never narrower than its mouth', () => {
+    const material = createBeamMaterial();
+    const { beamNear, beamFar, beamLength, beamSurface } = material.uniforms;
+    const floor = { x: 0, y: 1, z: 0, d: 0 };
+    const head = beamMouth('moving_head');
+    shapeBeam(material, head, 4.2, 0.39, floor);
+    expect(beamLength.value).toBeCloseTo(4.2 - head.offset, 9);
+    // As wide and as deep as the lit face at the mouth...
+    expect([beamNear.value.x, beamNear.value.y]).toEqual([head.halfX, head.halfZ]);
+    // ...and the pool's own radius at the far end, round whatever the mouth is.
+    expect([beamFar.value.x, beamFar.value.y]).toEqual([0.39, 0.39]);
+    expect([beamSurface.value.x, beamSurface.value.y, beamSurface.value.z, beamSurface.value.w]).toEqual([0, 1, 0, 0]);
+
+    // The same material, reused by a batten a metre from the wall it lights:
+    // its pool there is narrower than the batten is long. The beam keeps the
+    // batten's length and takes the pool's size the other way.
+    const batten = beamMouth('led_bar');
+    const wall = { x: 0, y: 0, z: 1, d: -4.8 };
+    shapeBeam(material, batten, 1, 0.14, wall);
+    expect(beamLength.value).toBeCloseTo(1 - batten.offset, 9);
+    expect([beamNear.value.x, beamNear.value.y]).toEqual([batten.halfX, batten.halfZ]);
+    expect([beamFar.value.x, beamFar.value.y]).toEqual([batten.halfX, 0.14]);
+    expect([beamSurface.value.x, beamSurface.value.y, beamSurface.value.z, beamSurface.value.w]).toEqual([0, 0, 1, -4.8]);
+    // From across the room the pool is the wider, and the end is round.
+    shapeBeam(material, batten, 8.4, 1.17, floor);
+    expect([beamFar.value.x, beamFar.value.y]).toEqual([1.17, 1.17]);
+    // A pool with no size cannot pinch the beam shut.
+    shapeBeam(material, head, 4.2, 0, floor);
+    expect([beamFar.value.x, beamFar.value.y]).toEqual([head.halfX, head.halfZ]);
+
+    // The shader reads these four and the two the beam is coloured with.
+    expect(Object.keys(material.uniforms).sort()).toEqual(
+      ['beamColor', 'beamFar', 'beamIntensity', 'beamLength', 'beamNear', 'beamSurface'],
+    );
+    for (const name of ['beamNear', 'beamFar', 'beamLength', 'beamSurface']) expect(material.vertexShader).toContain(name);
+    for (const name of ['beamColor', 'beamIntensity']) expect(material.fragmentShader).toContain(name);
+    // The two limits edgeOfBeam above shares with the shader are in its text.
+    expect(material.vertexShader).toContain(`clamp(meets, ${BEAM_EDGE_SHORTEST.toFixed(2)}, ${BEAM_EDGE_LONGEST.toFixed(2)})`);
+    material.dispose();
   });
 
-  it('shapes a beam from its mouth to its landing point, and again as the head moves', () => {
-    const material = createBeamMaterial();
-    const { beamNear, beamFar, beamLength } = material.uniforms;
-    const batten = beamMouth('led_bar');
-    shapeBeam(material, batten, 3, 2.5);
-    expect(beamLength.value).toBeCloseTo(3 - batten.offset, 9);
-    // As wide and as deep as the lit face at the mouth...
-    expect([beamNear.value.x, beamNear.value.y]).toEqual([batten.halfX, batten.halfZ]);
-    // ...and wider by the same amount all round at the far end.
-    const widening = beamWidening(3 - batten.offset, 2.5);
-    expect(beamFar.value.x).toBeCloseTo(batten.halfX + widening, 9);
-    expect(beamFar.value.y).toBeCloseTo(batten.halfZ + widening, 9);
-    expect(beamFar.value.x).toBeGreaterThan(beamNear.value.x);
+  describe('the end of a beam on the surface it lands on', () => {
+    const { layout } = buildVenue({ width: 12, depth: 10, height: 4.5 }, clubNight().fixtures);
+    const room = beamRoom(layout, true);
+    const open = beamRoom(layout, false);
+    const pointing = { x: 0, y: 0, z: 0 };
+    const surface: BeamSurface = { x: 0, y: 0, z: 0, d: 0 };
+    const around = Array.from({ length: 12 }, (_, i) => [Math.cos((i * Math.PI) / 6), Math.sin((i * Math.PI) / 6)]);
+    const cone = THREE.MathUtils.degToRad(poolConeDeg(false, 0.5));
 
-    // The same material, reused by a moving head whose beam now lands further off.
-    const head = beamMouth('moving_head');
-    shapeBeam(material, head, 9.6, 9);
-    expect(beamLength.value).toBeCloseTo(9.6 - head.offset, 9);
-    expect(beamNear.value.x).toBeCloseTo(head.halfX, 9);
-    expect(beamFar.value.x).toBeCloseTo(head.halfX + beamWidening(9.6 - head.offset, 9), 9);
+    // A fixture drawn as Fixture3D draws it, its beam shaped for this frame.
+    const beamOf = (
+      kind: FixtureModelKind,
+      at: { x: number; y: number; z: number; panDeg?: number; tiltDeg?: number; lensUp?: boolean },
+      where: BeamRoom,
+      longest = 1000,
+    ) => {
+      const drawn = drawnBeam(at);
+      const mouth = beamMouth(kind);
+      beamDirection(drawn.tiltRad, drawn.turnRad, at.lensUp ?? false, pointing);
+      const reach = beamLanding(at.x, at.y, at.z, pointing, where, longest, surface);
+      const material = createBeamMaterial();
+      shapeBeam(material, mouth, reach, poolRadius(reach, cone), surface);
+      // The beam's mesh sits at the mouth, inside the group that faces the fixture.
+      const model = drawn.facing.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(0, -mouth.offset, 0));
+      const edges = around.map(([ax, az]) => edgeOfBeam(material, model, ax, az));
+      const onSurface = (point: THREE.Vector3) =>
+        Math.abs(surface.x * point.x + surface.y * point.y + surface.z * point.z - surface.d);
+      return { edges, onSurface, reach, landing: drawn.origin.clone().addScaledVector(drawn.direction, reach) };
+    };
 
-    // The shader reads these three and the two the beam is coloured with.
-    expect(Object.keys(material.uniforms).sort()).toEqual(
-      ['beamColor', 'beamFar', 'beamIntensity', 'beamLength', 'beamNear'],
-    );
-    for (const name of ['beamNear', 'beamFar', 'beamLength']) expect(material.vertexShader).toContain(name);
-    for (const name of ['beamColor', 'beamIntensity']) expect(material.fragmentShader).toContain(name);
-    material.dispose();
+    it('leaves the end of a beam that lands square as it was: flat', () => {
+      for (const y of [4.2, 9.2]) {
+        const { edges, onSurface } = beamOf('moving_head', { x: 0, y, z: 0 }, room);
+        for (const edge of edges) {
+          expect(edge.share).toBeCloseTo(1, 9);
+          expect(edge.end.distanceTo(edge.flatEnd)).toBeLessThan(1e-9);
+          expect(onSurface(edge.end)).toBeLessThan(1e-9);
+        }
+      }
+      // And one standing on the floor, facing the ceiling.
+      const up = beamOf('led_par', { x: -5.8, y: 0.3, z: 1, lensUp: true }, room);
+      for (const edge of up.edges) {
+        expect(edge.share).toBeCloseTo(1, 9);
+        expect(edge.end.y).toBeCloseTo(layout.ceilingY, 9);
+      }
+    });
+
+    it('lays the end of a leaning beam on the floor, where a flat end hung over it', () => {
+      const { edges, onSurface, landing } = beamOf('moving_head', { x: 0, y: 4.2, z: 0, panDeg: 30, tiltDeg: 45 }, room);
+      expect(surface).toEqual({ x: 0, y: 1, z: 0, d: 0 });
+      let cutShort = 0, runOn = 0, flatEndOff = 0;
+      for (const edge of edges) {
+        expect(edge.end.y).toBeCloseTo(0, 9);
+        expect(onSurface(edge.end)).toBeLessThan(1e-9);
+        if (edge.share < 0.999) cutShort += 1;
+        if (edge.share > 1.001) runOn += 1;
+        flatEndOff = Math.max(flatEndOff, Math.abs(edge.flatEnd.y));
+        // Round the landing point, not off to one side of it.
+        expect(edge.end.distanceTo(landing)).toBeLessThan(1.5);
+      }
+      // One side of the beam meets the floor sooner than the middle, the other later.
+      expect(cutShort).toBeGreaterThan(3);
+      expect(runOn).toBeGreaterThan(3);
+      // The flat end stood this far above the floor on one side and below it on the other.
+      expect(flatEndOff).toBeGreaterThan(0.3);
+    });
+
+    it('does the same on a wall and on the ceiling', () => {
+      const onWall = beamOf('moving_head', { x: -5, y: 4.3, z: 0, panDeg: -90, tiltDeg: -40 }, room);
+      expect(surface).toEqual({ x: 1, y: 0, z: 0, d: -layout.wallX });
+      for (const edge of onWall.edges) expect(edge.end.x).toBeCloseTo(-layout.wallX, 9);
+      expect(Math.max(...onWall.edges.map((edge) => Math.abs(edge.flatEnd.x + layout.wallX)))).toBeGreaterThan(0.05);
+
+      const onCeiling = beamOf('moving_head', { x: 1, y: 1, z: 0, panDeg: 20, tiltDeg: 140 }, room);
+      expect(surface).toEqual({ x: 0, y: 1, z: 0, d: layout.ceilingY });
+      for (const edge of onCeiling.edges) expect(edge.end.y).toBeCloseTo(layout.ceilingY, 9);
+    });
+
+    it('keeps every edge within reason for a beam that skims the floor', () => {
+      // 84 degrees off straight down, no walls drawn: the top of the beam runs
+      // level or above it and would meet the floor hundreds of metres off, or never.
+      const { edges, onSurface } = beamOf('moving_head', { x: 0, y: 4.2, z: 0, tiltDeg: 84 }, open);
+      expect(surface).toEqual({ x: 0, y: 1, z: 0, d: 0 });
+      let held = 0, onFloor = 0;
+      for (const edge of edges) {
+        expect(edge.share).toBeGreaterThanOrEqual(BEAM_EDGE_SHORTEST);
+        expect(edge.share).toBeLessThanOrEqual(BEAM_EDGE_LONGEST);
+        expect(Number.isFinite(edge.end.x + edge.end.y + edge.end.z)).toBe(true);
+        if (onSurface(edge.end) < 1e-6) onFloor += 1;
+        else held += 1;
+      }
+      expect(onFloor).toBeGreaterThan(0);
+      expect(held).toBeGreaterThan(0);
+    });
+
+    it('leaves the end flat when the beam lands on nothing', () => {
+      const { edges } = beamOf('moving_head', { x: 0, y: 4.2, z: 0, tiltDeg: 89.5 }, open, 19);
+      expect(surface).toEqual({ x: 0, y: 0, z: 0, d: 0 });
+      for (const edge of edges) {
+        expect(edge.share).toBe(1);
+        expect(edge.end.distanceTo(edge.flatEnd)).toBe(0);
+      }
+    });
   });
 
   it('draws every beam from one unit tube: mouth at 0, far end at -1, radius 1', () => {
