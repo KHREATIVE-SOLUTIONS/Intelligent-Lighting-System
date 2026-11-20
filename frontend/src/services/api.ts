@@ -219,7 +219,9 @@ export const rigsApi = {
     await api.delete(`/rigs/${id}`);
   },
 
-  activate: async (id: number): Promise<Rig> => {
+  // Puts the rig on the running show. `live` is false when the rig has no
+  // fixtures to drive: it is marked active but the show keeps its rig.
+  activate: async (id: number): Promise<Rig & { live?: boolean }> => {
     const response = await api.post(`/rigs/${id}/activate`);
     return response.data;
   },
@@ -911,11 +913,13 @@ export interface EffectsStatus {
   movement_enabled: boolean;
   dimmer_enabled: boolean;
   color_enabled: boolean;
-  // The rig the engine is driving right now (read once when the box boots).
+  // The rig the engine is driving right now.
   live_rig_id?: number | null;
   live_rig_name?: string | null;
   live_rig_demo?: boolean;
   live_rig_fixtures?: number;
+  // Changes each time the engine is given a rig, the same one again included.
+  live_rig_version?: number;
 }
 
 export const effectsApi = {

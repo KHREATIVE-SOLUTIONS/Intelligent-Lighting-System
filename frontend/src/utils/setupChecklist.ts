@@ -57,7 +57,8 @@ function rigStep(
         key: 'rig',
         title,
         state: 'warn',
-        detail: `"${activeRig.name}" is marked active, but the engine is still running the demo rig. Restart the box to load it.`,
+        detail: `"${activeRig.name}" is marked active, but the engine is still running the demo rig. Press Apply to show on the Rigs page to load it.`,
+        link: { to: '/rigs', label: 'Rigs' },
       };
     }
     return {
@@ -68,14 +69,16 @@ function rigStep(
       link: { to: '/rigs/new/wizard', label: 'Set up rig' },
     };
   }
-  // The engine reads the active rig once at boot, so a later switch only lands
-  // after a restart. Say so instead of letting the patch look wrong.
+  // Activate puts a rig on the engine at once, so the two only part when the
+  // active rig could not go live (it has no fixtures yet). Say so instead of
+  // letting the patch look wrong, and say where the fix is.
   if (activeRig && effects.live_rig_id != null && activeRig.id !== effects.live_rig_id) {
     return {
       key: 'rig',
       title,
       state: 'warn',
-      detail: `"${activeRig.name}" is marked active, but the engine is running "${effects.live_rig_name}". Restart the box to switch.`,
+      detail: `"${activeRig.name}" is marked active, but the engine is running "${effects.live_rig_name}". Press Apply to show on the Rigs page to switch.`,
+      link: { to: '/rigs', label: 'Rigs' },
     };
   }
   const count = effects.live_rig_fixtures ?? 0;

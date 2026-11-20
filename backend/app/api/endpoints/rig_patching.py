@@ -266,14 +266,13 @@ async def _resolve_profile(db: AsyncSession, request: LibraryPatchRequest):
 
 def _install_live(app, manager) -> None:
     """Point the running show at the rebuilt rig, as boot does."""
-    engine = getattr(app.state, "effects_engine", None)
-    if engine is not None:
-        setter = getattr(engine, "set_fixture_manager", None)
-        if callable(setter):
-            setter(manager)
-        else:
-            engine.fixtures = manager
-    app.state.fixture_manager = manager
+    from app.services.rig.live_rig import swap_fixture_manager
+
+    swap_fixture_manager(app, manager)
+    # The rig on stage is the same one with more fixtures in it; say how many.
+    live = getattr(app.state, "live_rig", None)
+    if isinstance(live, dict) and not live.get("demo", True):
+        app.state.live_rig = {**live, "fixtures": len(manager.fixtures)}
 
 
 @router.post("/{rig_id}/patch-from-library", status_code=201)

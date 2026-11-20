@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
+from app.services.rig.live_rig import new_rig_is_active
 from app.models.fixture import Fixture, FixtureMode
 from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
 from app.services.rig.wizard_service import WizardService
@@ -144,7 +145,7 @@ async def create_rig_from_wizard(
         stage_depth=request.stage_depth,
         stage_height=request.stage_height,
         source_format="wizard",
-        is_active=True,
+        is_active=await new_rig_is_active(db),
     )
     db.add(rig)
     await db.flush()

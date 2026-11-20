@@ -72,12 +72,15 @@ class EffectsStatus(BaseModel):
     strobe_enabled: bool
     color_enabled: bool
 
-    # The rig the engine is actually driving. It is read once at boot, so it
-    # can differ from the rig marked active until the box restarts.
+    # The rig the engine is actually driving. It can differ from the rig
+    # marked active when that rig has nothing drivable in it.
     live_rig_id: Optional[int] = None
     live_rig_name: Optional[str] = None
     live_rig_demo: bool = False
     live_rig_fixtures: int = 0
+    # Changes every time the engine is given a rig, including the same rig
+    # again after an edit. Compare for equality only.
+    live_rig_version: int = 0
 
 
 class MovementRequest(BaseModel):
@@ -200,6 +203,7 @@ async def get_status(request: Request):
         live_rig_name=live_rig.get("name"),
         live_rig_demo=bool(live_rig.get("demo", False)),
         live_rig_fixtures=int(live_rig.get("fixtures") or 0),
+        live_rig_version=int(getattr(request.app.state, "live_rig_version", 0) or 0),
     )
 
 
