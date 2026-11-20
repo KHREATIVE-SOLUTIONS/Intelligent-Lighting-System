@@ -27,6 +27,10 @@ _CHANNEL_FIELDS = (
 )
 
 
+# The per-fixture hang flags, in one place for every path that carries them.
+PAN_TILT_FLAGS = ("pan_invert", "tilt_invert", "pan_tilt_swap")
+
+
 def _unloaded(obj: Any) -> frozenset:
     """Names of ORM attributes that would emit IO if read."""
     try:
@@ -106,8 +110,20 @@ class RigFixtureBase(BaseModel):
     is_active: bool = True
     is_inverted: bool = False
     is_address_locked: bool = False
+    # How this unit is hung: reverse an axis, or exchange the two. Applied in
+    # the engine where pan/tilt become DMX, so every look honours them.
+    pan_invert: bool = False
+    tilt_invert: bool = False
+    pan_tilt_swap: bool = False
     serial_number: Optional[str] = None
     qr_code_data: Optional[str] = None
+
+    # A rig saved before the flags existed, or a client that sends null, means
+    # "not set", which is False - never a validation error on a whole rig.
+    @field_validator(*PAN_TILT_FLAGS, mode="before")
+    @classmethod
+    def _default_hang_flag(cls, value: Any) -> Any:
+        return False if value is None else value
 
 
 class RigFixtureCreate(RigFixtureBase):
@@ -144,6 +160,9 @@ class RigFixtureUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_inverted: Optional[bool] = None
     is_address_locked: Optional[bool] = None
+    pan_invert: Optional[bool] = None
+    tilt_invert: Optional[bool] = None
+    pan_tilt_swap: Optional[bool] = None
     serial_number: Optional[str] = None
     qr_code_data: Optional[str] = None
 

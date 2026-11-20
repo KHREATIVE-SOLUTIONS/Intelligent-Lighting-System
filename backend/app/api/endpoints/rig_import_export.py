@@ -270,6 +270,9 @@ async def export_rig_json(rig_id: int, db: AsyncSession = Depends(get_db)):
                 "position": {"x": rf.position_x, "y": rf.position_y, "z": rf.position_z},
                 "rotation": {"x": rf.rotation_x, "y": rf.rotation_y, "z": rf.rotation_z},
                 "group": rf.group_name,
+                "pan_invert": bool(rf.pan_invert),
+                "tilt_invert": bool(rf.tilt_invert),
+                "pan_tilt_swap": bool(rf.pan_tilt_swap),
             }
             for rf in fixtures
         ],

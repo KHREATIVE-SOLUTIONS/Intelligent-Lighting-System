@@ -29,6 +29,8 @@ import { BeatClockTicker, Crowd } from './previs/Crowd';
 import { DJBooth } from './previs/DJBooth';
 import { FixtureHead, FixtureSupport, FixtureYoke } from './previs/FixtureBody';
 import { FIXTURE_SPECS, resolveModelKind } from './previs/fixtureSpecs';
+import { panTiltFromDmx } from './previs/hangFlags';
+import type { PanTiltPosition } from './previs/hangFlags';
 import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
 import {
   POOL_LIGHT_DECAY,
@@ -285,6 +287,7 @@ function Fixture3D({
   const channelMapRef = useRef(channelMap);
   channelMapRef.current = channelMap;
   const fallbackWarningRef = useRef<Set<string>>(new Set());
+  const dmxPanTilt = useRef<PanTiltPosition>({ pan: 0.5, tilt: 0.5 });
 
   // Smoothed values to avoid jitter
   const smoothed = useRef({ intensity: 0, r: 1, g: 1, b: 1 });
@@ -465,16 +468,21 @@ function Fixture3D({
     const tiltNormalizedFromState = hasLiveTilt
       ? THREE.MathUtils.clamp((Number(liveState?.tilt) + 135) / 270, 0, 1)
       : undefined;
-    const panNormalized = panNormalizedFromState ?? (
-      chMap.pan_fine !== undefined
-        ? ((coarsePan << 8) | finePan) / 65535
-        : coarsePan / 255
+    // The engine's own state is already where the look points. DMX is what the
+    // fixture is sent, which for a head hung the other way round is reversed
+    // or carried on the other axis; read it back to where the beam really goes.
+    const fromDmx = panTiltFromDmx(
+      { coarse: coarsePan, fine: chMap.pan_fine !== undefined ? finePan : undefined },
+      { coarse: coarseTilt, fine: chMap.tilt_fine !== undefined ? fineTilt : undefined },
+      {
+        panInvert: fixture.pan_invert,
+        tiltInvert: fixture.tilt_invert,
+        swap: Boolean(fixture.pan_tilt_swap) && chMap.pan !== undefined && chMap.tilt !== undefined,
+      },
+      dmxPanTilt.current
     );
-    const tiltNormalized = tiltNormalizedFromState ?? (
-      chMap.tilt_fine !== undefined
-        ? ((coarseTilt << 8) | fineTilt) / 65535
-        : coarseTilt / 255
-    );
+    const panNormalized = panNormalizedFromState ?? fromDmx.pan;
+    const tiltNormalized = tiltNormalizedFromState ?? fromDmx.tilt;
 
     // Smooth interpolation
     const s = smoothed.current;
