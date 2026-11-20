@@ -67,7 +67,9 @@ the output simply follows the engine once more.
 
 The watchdog is armed by the first beat and stood down by a deliberate stop
 (``stand_down_watchdog``). A loop that is cancelled, blocked, or failing every
-frame does not stand it down, and fades.
+frame does not stand it down, and fades. Nor does a stop that comes after the
+fade has begun: that rig stays black until the engine is producing frames
+again.
 """
 
 from __future__ import annotations
@@ -302,6 +304,7 @@ class OutputStage:
         # belongs to the transmitter.
         self._watchdog_seconds = WATCHDOG_SECONDS
         self._watchdog_armed = False
+        self._stand_down_asked = False
         self._beats = 0
         self._beats_seen = 0
         self._alive_at: Optional[float] = None
@@ -378,11 +381,18 @@ class OutputStage:
         no lock either: the engine must never wait on a frame being staged.
         """
         self._beats += 1
+        self._stand_down_asked = False
         self._watchdog_armed = True
 
     def stand_down_watchdog(self) -> None:
-        """The engine was stopped on purpose. Silence from it is not a hang."""
-        self._watchdog_armed = False
+        """The engine was stopped on purpose. Silence from it is not a hang.
+
+        This only asks. The transmitter decides at its next frame, and says no
+        if the engine had already gone quiet long enough to start the fade: a
+        stop that arrives after a hang is not what silenced the engine, and
+        standing down for it would put the frozen frame back on the wire.
+        """
+        self._stand_down_asked = True
 
     @property
     def watchdog_armed(self) -> bool:
@@ -414,6 +424,13 @@ class OutputStage:
             level = 0.0
         else:
             level = (dark_by - silent) / (dark_by - hold)
+        if self._stand_down_asked:
+            self._stand_down_asked = False
+            if level >= 1.0:
+                self._watchdog_armed = False
+                self._alive_at = None
+                self._watchdog_level = 1.0
+                return 1.0
         if level < 1.0 and self._watchdog_level >= 1.0:
             self.watchdog_trips += 1
         self._watchdog_level = level

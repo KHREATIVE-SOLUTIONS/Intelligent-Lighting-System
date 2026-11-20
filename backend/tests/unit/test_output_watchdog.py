@@ -184,6 +184,31 @@ def test_an_engine_stopped_on_purpose_is_not_a_hang():
     assert all(not frame.any() for frame in wire.since(stopped + X))
 
 
+@pytest.mark.parametrize("silent_for", [0.75 * X, 3 * X], ids=["mid-fade", "black"])
+def test_stopping_an_engine_that_already_hung_does_not_bring_the_frozen_frame_back(silent_for):
+    """The engine hangs, the rig fades, and then someone presses stop or shuts down.
+
+    That stop is not what silenced the engine. Standing the watchdog down for
+    it would put the frozen frame straight back on the wire.
+    """
+    wire = Wire().run(X)
+    stopped = wire.now - DT
+    wire.run(silent_for, engine_alive=False)
+    assert wire.sent[-1][0] < 200
+
+    wire.stage.stand_down_watchdog()
+    asked = wire.now
+    wire.run(3 * X, engine_alive=False)
+
+    assert wire.stage.watchdog_armed
+    assert np.all(np.diff(wire.slot(0, since=stopped)) <= 0), "the frozen frame came back"
+    assert all(not frame.any() for frame in wire.since(max(asked, stopped + X)))
+
+    # Only the engine producing frames again lifts it.
+    wire.run(X)
+    assert set(wire.sent[-1]) == {200}
+
+
 # ---------------------------------------------------------------------------
 # Black is light at zero, and nothing else moves
 # ---------------------------------------------------------------------------

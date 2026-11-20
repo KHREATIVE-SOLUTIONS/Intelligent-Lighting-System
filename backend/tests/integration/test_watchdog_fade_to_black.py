@@ -217,6 +217,41 @@ async def test_an_engine_that_fails_every_frame_fades_the_wire_to_black(controll
         await finish(task)
 
 
+async def test_stopping_a_failed_engine_does_not_bring_its_frozen_frame_back(
+        controller, transmitter):
+    """After the fade someone presses stop, or the app shuts down. Still dark.
+
+    Then the engine is started again with a renderer that works, and it is lit.
+    """
+    engine = still_engine(controller)
+    hold_the_look = engine.update
+    task = await running(engine)
+
+    def broken(delta_time=None):
+        raise RuntimeError("the renderer fell over")
+
+    engine.update = broken
+    await asyncio.sleep(X + SLACK + 0.3)
+    assert not lit(transmitter.frames()[-1])
+
+    stopped = time.perf_counter()
+    engine.stop()
+    await task
+    await asyncio.sleep(2 * X)
+    after = transmitter.between(stopped)
+    assert len(after) > 5 and not any(lit(frame) for frame in after), (
+        "stopping a hung engine relit its last frame")
+    assert any(controller.universes[0].data), "the frozen frame is still in the buffer"
+
+    engine.update = hold_the_look
+    task = await running(engine)
+    try:
+        frame = transmitter.frames()[-1]
+        assert frame[DIMMER] == 255 and frame[PAR] == 255
+    finally:
+        await finish(task)
+
+
 async def test_stopping_the_engine_on_purpose_does_not_fade(controller, transmitter):
     """A stop is a decision, and raw writes and fixture tests come after it."""
     engine = still_engine(controller)

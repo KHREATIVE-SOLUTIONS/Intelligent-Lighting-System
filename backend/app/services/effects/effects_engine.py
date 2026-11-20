@@ -4165,7 +4165,8 @@ class EffectsEngine:
         """Stop the effects engine."""
         self.running = False
         # Stopped on purpose is not hung. Without this the watchdog would black
-        # out the raw writes, test patterns and fixture tests that follow.
+        # out the raw writes, test patterns and fixture tests that follow. The
+        # stage refuses if the loop had already gone quiet and the fade begun.
         stand_down = getattr(self._output_stage, "stand_down_watchdog", None)
         if stand_down is not None:
             stand_down()
