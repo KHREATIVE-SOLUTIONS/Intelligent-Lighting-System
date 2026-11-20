@@ -348,6 +348,9 @@ _IDLE_LOOKS = {
 }
 _IDLE_LOOK_DEFAULT = "warm_amber"
 _IDLE_FADE_OUT_S = 1.0
+# The longest quiet gap that is still inside the music: the space between the
+# hits of a kick playing on its own, a rest, a held breath.
+_IDLE_GAP_S = 2.0
 # Emitters the renderers do not write every frame. The idle look takes them
 # over while it is up and puts back what it found.
 _IDLE_HELD_ATTRS = ("strobe", "white", "amber", "uv", "lime", "indigo")
@@ -609,7 +612,8 @@ class EffectsEngine:
         # Idle look: see `_idle_look_step`.
         self._idle_audio_loud: bool = False
         self._idle_silence_since: Optional[float] = None
-        self._idle_loud_since: Optional[float] = None
+        self._idle_last_loud_t: Optional[float] = None
+        self._idle_loud_time: float = 0.0
         self._idle_active: bool = False
         self._idle_mix: float = 0.0
         self._idle_held: Dict[str, Dict[str, float]] = {}
@@ -1740,15 +1744,17 @@ class EffectsEngine:
         """True while a long silence has the rig on its idle look."""
         return bool(self._idle_active)
 
-    def _idle_look_step(self) -> None:
+    def _idle_look_step(self, delta_time: float) -> None:
         """Decide whether the room has been silent long enough for the idle look.
 
         Counted on engine time, from the level each audio block arrived at:
 
         * a quiet block starts the count, and it runs until music returns;
-        * music has returned once the level has stayed above the threshold
-          for `idle_look_resume_seconds`. Anything shorter is a blip, and
-          neither drops the look nor restarts the count;
+        * music has returned once `idle_look_resume_seconds` of level above
+          the threshold have added up. They need not be unbroken: a dry kick
+          on its own is quiet between the hits, so quiet gaps of up to
+          `_IDLE_GAP_S` are forgiven. A longer gap starts the sum again, so
+          a blip neither drops the look nor restarts the count;
         * an input that never arrived, or that the operator stopped, counts
           nothing: there the room stays dark, as it always has;
         * a feed that dies mid-silence keeps counting, so the look holds. One
@@ -1759,24 +1765,32 @@ class EffectsEngine:
         after = self._idle_look_after_s()
         if after <= 0.0 or self._last_audio_t is None:
             self._idle_silence_since = None
-            self._idle_loud_since = None
+            self._idle_last_loud_t = None
+            self._idle_loud_time = 0.0
             self._idle_active = False
             return
+        dt = float(delta_time) if delta_time else 0.0
+        if not (0.0 < dt <= self.MAX_FRAME_DELTA):
+            dt = 0.0
 
         now = self.time
-        if self._idle_audio_loud:
-            if self._idle_loud_since is None:
-                self._idle_loud_since = now
-            try:
-                resume = max(0.0, float(self.config.idle_look_resume_seconds))
-            except (TypeError, ValueError):
-                resume = 0.0
-            if now - self._idle_loud_since >= resume:
-                self._idle_silence_since = None
-        else:
-            self._idle_loud_since = None
-            if self._idle_silence_since is None:
-                self._idle_silence_since = now
+        loud = self._idle_audio_loud
+        if loud:
+            self._idle_loud_time += dt
+            self._idle_last_loud_t = now
+        elif self._idle_last_loud_t is None or now - self._idle_last_loud_t > _IDLE_GAP_S:
+            self._idle_loud_time = 0.0
+        try:
+            resume = max(0.0, float(self.config.idle_look_resume_seconds))
+        except (TypeError, ValueError):
+            resume = 0.0
+        if self._idle_loud_time > 0.0 and self._idle_loud_time >= resume:
+            # Music, and it stays music through the gaps between its notes.
+            self._idle_silence_since = None
+        elif not loud and self._idle_silence_since is None:
+            # Counted from the last sound, not from when the gap ran out.
+            last = self._idle_last_loud_t
+            self._idle_silence_since = now if last is None else min(now, last)
 
         active = (
             bool(self.config.auto_mode)
@@ -1902,7 +1916,8 @@ class EffectsEngine:
         name, _ = self._idle_look_spec()
         return {
             "idle_look_active": self.idle_look_active,
-            "idle_look_level": round(float(self._idle_mix), 3),
+            # How far the fade has got, 0-1. Not the look's dimmer level.
+            "idle_look_mix": round(float(self._idle_mix), 3),
             "idle_look": name,
             "idle_look_after_seconds": self._idle_look_after_s(),
             "silence_seconds": round(self.silence_seconds, 2),
@@ -1932,7 +1947,8 @@ class EffectsEngine:
         # start the idle look's count. The look comes down with the input.
         self._idle_audio_loud = False
         self._idle_silence_since = None
-        self._idle_loud_since = None
+        self._idle_last_loud_t = None
+        self._idle_loud_time = 0.0
         self._idle_active = False
         # Whatever plays next may come from another input at another level.
         self.decision.reset_dynamics()
@@ -3188,7 +3204,7 @@ class EffectsEngine:
         # feed that is no longer arriving.
         self._audio_loss_check()
         self._settle_if_audio_lost(delta_time)
-        self._idle_look_step()
+        self._idle_look_step(delta_time)
 
         # Update decision engine - genre-aware mode when pro lighting is active
         if self.config.auto_mode and self._pro_lighting_enabled:

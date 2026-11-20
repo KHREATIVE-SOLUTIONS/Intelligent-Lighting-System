@@ -79,6 +79,13 @@ class EffectsStatus(BaseModel):
     live_rig_demo: bool = False
     live_rig_fixtures: int = 0
 
+    # The idle look a long silence brings up; see EffectsEngine.idle_look_status.
+    idle_look_active: bool = False
+    idle_look_mix: float = 0.0
+    idle_look: Optional[str] = None
+    idle_look_after_seconds: float = 0.0
+    silence_seconds: float = 0.0
+
 
 class MovementRequest(BaseModel):
     """Request to set movement pattern."""
@@ -200,6 +207,7 @@ async def get_status(request: Request):
         live_rig_name=live_rig.get("name"),
         live_rig_demo=bool(live_rig.get("demo", False)),
         live_rig_fixtures=int(live_rig.get("fixtures") or 0),
+        **engine.idle_look_status(),
     )
 
 

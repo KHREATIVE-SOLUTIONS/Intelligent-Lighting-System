@@ -158,7 +158,8 @@ class Settings(BaseSettings):
     IDLE_LOOK_NAME: str = "warm_amber"
     # The dimmer the look sits at, 0-1. The grand master still scales it.
     IDLE_LOOK_LEVEL: float = 0.35
-    # How long sound has to last to count as music coming back.
+    # How much sound it takes to count as music coming back. A click or a
+    # cough shorter than this leaves the idle look up.
     IDLE_LOOK_RESUME_SECONDS: float = 0.5
 
     # WebSocket

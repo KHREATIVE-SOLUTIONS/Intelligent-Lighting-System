@@ -207,6 +207,63 @@ def test_the_idle_look_leaves_no_trace_on_the_show_that_follows():
     assert louder.max() > 0.5
 
 
+def _kicks(engine, seconds, bpm=128.0, loud_blocks=2):
+    """A dry four-on-the-floor: a couple of loud blocks on each beat, nothing between."""
+    period = 60.0 / bpm
+    active = []
+    last_beat = -1
+    loud_left = 0
+    start = engine.time
+    for i in range(int(round(seconds * FPS))):
+        if i % 3 == 0:
+            beat = int((engine.time - start) / period)
+            hit = beat != last_beat
+            if hit:
+                last_beat, loud_left = beat, loud_blocks
+            energy = 0.8 if loud_left > 0 else 0.0
+            loud_left -= 1
+            engine.update_audio(energy=energy, bass=energy, is_beat=hit, beat_number=beat,
+                                bpm=bpm, programme_level=0.5)
+        engine.update(DT)
+        active.append(engine.idle_look_active)
+    return np.asarray(active)
+
+
+def test_a_kick_playing_on_its_own_still_ends_the_look():
+    """Music is not unbroken level: between the hits of a dry kick there is nothing."""
+    engine = _engine(idle_look_after_seconds=4.0, idle_look_fade_seconds=0.5)
+    _silence(engine, 6.0)
+    assert engine.idle_look_active
+
+    active = _kicks(engine, 6.0)
+
+    assert not active[-1]
+    assert np.argmin(active) / FPS <= 3.0, "the look must not sit over a track that has started"
+    assert not active[np.argmin(active):].any(), "and once gone it stays gone"
+
+
+def test_sparse_music_is_never_counted_as_a_long_silence():
+    engine = _engine(idle_look_after_seconds=4.0)
+
+    active = _kicks(engine, 12.0)
+
+    assert not active.any()
+    assert engine.silence_seconds < 1.0
+
+
+def test_the_legacy_renderer_gets_the_look_too():
+    engine = _engine(idle_look_after_seconds=3.0, idle_look_fade_seconds=0.5)
+    engine._rebuild_busker_enabled = False
+
+    _silence(engine, 6.0)
+
+    assert engine.idle_look_active and engine._idle_mix == 1.0
+    for fixture in _washes(engine):
+        assert fixture.dimmer == pytest.approx(LEVEL, abs=0.005)
+        assert fixture.strobe == 0.0
+        assert fixture.red > fixture.green > fixture.blue
+
+
 def test_a_short_blip_does_not_drop_the_look():
     engine = _engine(idle_look_after_seconds=4.0, idle_look_fade_seconds=0.5)
     _silence(engine, 6.0)
@@ -387,7 +444,7 @@ def test_the_status_payload_reports_the_idle_state():
     assert idle["idle_look_active"] is True
     assert idle["silence_seconds"] == pytest.approx(7.0, abs=0.1)
     assert idle["idle_look"] == "warm_amber"
-    assert idle["idle_look_level"] == 1.0
+    assert idle["idle_look_mix"] == 1.0
 
     # The same fields with the pro layer off, and on their own for the
     # websocket payload.
@@ -476,18 +533,24 @@ def _wire_silence(engine, controller, seconds):
 
 def test_the_idle_look_reaches_the_wire_with_no_strobe(controller):
     engine = _wire_engine(controller)
+    # Something left the bar's strobe channel running. Nothing in the show
+    # clears it, so it is on the wire until the look takes it over.
+    bar = engine.fixtures.fixtures["bar0"]
+    bar.strobe = 0.8
 
     sent = _wire_silence(engine, controller, 4.0)
 
     assert engine.idle_look_active
     assert sent[:FPS][:, INTENSITY].max() == 0, "the first second of silence is black"
+    assert sent[:FPS][:, BAR_STROBE].min() == 204
+    assert sent[int(2.1 * FPS):][:, BAR_STROBE].max() == 0, "no strobe once the look begins"
     last = sent[-1]
     for slot in WASH_DIMMERS + (BAR_DIMMER, PAR_RED):
         assert last[slot] == pytest.approx(IDLE_BYTE, abs=1)
     assert last[PAR_RED] > last[PAR_GREEN] > last[PAR_BLUE] > 0, "a warm amber"
     # No strobe anywhere, from the first frame of the fade to the last: the
     # bar's rate channel at zero, and the strobe fixture entirely off.
-    assert sent[:, BAR_STROBE].max() == 0
+    assert last[BAR_STROBE] == 0 and bar.strobe == 0.0
     assert sent[:, STROBE_DIMMER].max() == 0 and sent[:, STROBE_RATE].max() == 0
     # A shutter that is not strobing is open, at 255.
     assert last[3] == 255 and last[11] == 255
