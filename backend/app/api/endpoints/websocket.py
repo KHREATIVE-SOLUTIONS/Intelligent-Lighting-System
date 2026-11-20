@@ -535,6 +535,10 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         'dimmer': 'manual'
     }
     try:
+        result.update(effects_engine.idle_look_status())
+    except Exception:
+        pass
+    try:
         from ...services.lighting.look_spec import build_lighting_look_spec
         result['look_spec'] = build_lighting_look_spec(effects_engine).model_dump(mode="json")
     except Exception:

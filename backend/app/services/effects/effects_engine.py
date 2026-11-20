@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .fixture_groups import (
-    Fixture, FixtureGroup, FixtureGroupManager, create_demo_rig
+    Fixture, FixtureGroup, FixtureGroupManager, create_demo_rig, is_strobe_fixture
 )
 from .movement_patterns import (
     MovementEngine, MovementType, StaticLook, MovementParams, MOVEMENT_PRESETS
@@ -89,6 +89,17 @@ class EffectsConfig:
     lock_palette_per_song: bool = True
     silence_threshold: float = 0.02  # RMS below this = silence
     silence_duration_for_song_change: float = 1.5  # Seconds of silence = new song
+
+    # Idle look: what the room shows once the music has been gone a long time.
+    # Shorter silences (a breakdown, a track change) stay black. Zero or less
+    # switches the idle look off. See `_idle_look_step`.
+    idle_look_after_seconds: float = 60.0
+    idle_look_fade_seconds: float = 3.0       # how long the look takes to arrive
+    idle_look_name: str = "warm_amber"        # one of `_IDLE_LOOKS`
+    idle_look_level: float = 0.35             # dimmer the look sits at, 0-1
+    # Sound has to stay above the threshold this long to count as music coming
+    # back. A cough into an open mic or a cable click does not drop the look.
+    idle_look_resume_seconds: float = 0.5
 
     # Move-In-Black (MIB)
     mib_enabled: bool = True
@@ -319,6 +330,30 @@ _AMBIENT_FADE_OUT_S = 1.0
 _AMBIENT_DRIFT_HZ = 0.05      # one slow sweep every twenty seconds
 _AMBIENT_PAN_DEG = 10.0
 _AMBIENT_TILT_DEG = 6.0
+
+# Idle look. Silence that keeps arriving is the music stopping, and for a
+# breakdown or a track change the rig stays dark. After a long silence
+# (`idle_look_after_seconds`) nobody is waiting for a drop any more: the set is
+# over or has not begun, and a black room reads as a system that is switched
+# off. The rig then fades to one of these, and back out when music returns.
+#
+# Each look is a colour, the extra emitters that go with it, and whether the
+# heads drift. None of them strobes or moves at tempo. A colour of None is the
+# song's own colour, the look the ambient hold shows.
+_IDLE_LOOKS = {
+    "warm_amber": {"rgb": (1.0, 0.55, 0.12), "amber": 1.0, "white": 0.0, "drift": False},
+    "warm_white": {"rgb": (1.0, 0.78, 0.52), "amber": 0.3, "white": 0.5, "drift": False},
+    "cool_blue": {"rgb": (0.12, 0.32, 1.0), "amber": 0.0, "white": 0.0, "drift": False},
+    "song_colour": {"rgb": None, "amber": 0.0, "white": 0.0, "drift": True},
+}
+_IDLE_LOOK_DEFAULT = "warm_amber"
+_IDLE_FADE_OUT_S = 1.0
+# The longest quiet gap that is still inside the music: the space between the
+# hits of a kick playing on its own, a rest, a held breath.
+_IDLE_GAP_S = 2.0
+# Emitters the renderers do not write every frame. The idle look takes them
+# over while it is up and puts back what it found.
+_IDLE_HELD_ATTRS = ("strobe", "white", "amber", "uv", "lime", "indigo")
 
 # Club style, from the trained genre model. Energy and sections still decide how
 # big, how bright and how fast the show is; a style only leans the colours and
@@ -573,6 +608,16 @@ class EffectsEngine:
         self._music_heard: bool = False
         self._audio_lost: bool = False
         self._ambient_mix: float = 0.0
+
+        # Idle look: see `_idle_look_step`.
+        self._idle_audio_loud: bool = False
+        self._idle_silence_since: Optional[float] = None
+        self._idle_last_loud_t: Optional[float] = None
+        self._idle_loud_time: float = 0.0
+        self._idle_active: bool = False
+        self._idle_mix: float = 0.0
+        self._idle_held: Dict[str, Dict[str, float]] = {}
+        self._idle_unknown_look: Optional[str] = None
 
         # Drop anticipation: speculative dip, confirmed hit.
         self._drop_dip: float = 0.0
@@ -1675,6 +1720,209 @@ class EffectsEngine:
                 r=fixture.red, g=fixture.green, b=fixture.blue,
             )
 
+    # ------------------------------------------------------------------
+    # Idle look
+    # ------------------------------------------------------------------
+
+    def _idle_look_after_s(self) -> float:
+        """Seconds of silence before the idle look, or 0 when it is switched off."""
+        try:
+            after = float(self.config.idle_look_after_seconds)
+        except (TypeError, ValueError):
+            return 0.0
+        return after if math.isfinite(after) and after > 0.0 else 0.0
+
+    @property
+    def silence_seconds(self) -> float:
+        """How long the audio has been below the silence threshold, on engine time."""
+        if self._idle_silence_since is None:
+            return 0.0
+        return max(0.0, self.time - self._idle_silence_since)
+
+    @property
+    def idle_look_active(self) -> bool:
+        """True while a long silence has the rig on its idle look."""
+        return bool(self._idle_active)
+
+    def _idle_look_step(self, delta_time: float) -> None:
+        """Decide whether the room has been silent long enough for the idle look.
+
+        Counted on engine time, from the level each audio block arrived at:
+
+        * a quiet block starts the count, and it runs until music returns;
+        * music has returned once `idle_look_resume_seconds` of level above
+          the threshold have added up. They need not be unbroken: a dry kick
+          on its own is quiet between the hits, so quiet gaps of up to
+          `_IDLE_GAP_S` are forgiven. A longer gap starts the sum again, so
+          a blip neither drops the look nor restarts the count;
+        * an input that never arrived, or that the operator stopped, counts
+          nothing: there the room stays dark, as it always has;
+        * a feed that dies mid-silence keeps counting, so the look holds. One
+          that dies mid-music is the ambient hold's business, not this one's.
+
+        Only in auto mode. A look the operator set by hand is theirs.
+        """
+        after = self._idle_look_after_s()
+        if after <= 0.0 or self._last_audio_t is None:
+            self._idle_silence_since = None
+            self._idle_last_loud_t = None
+            self._idle_loud_time = 0.0
+            self._idle_active = False
+            return
+        dt = float(delta_time) if delta_time else 0.0
+        if not (0.0 < dt <= self.MAX_FRAME_DELTA):
+            dt = 0.0
+
+        now = self.time
+        loud = self._idle_audio_loud
+        if loud:
+            self._idle_loud_time += dt
+            self._idle_last_loud_t = now
+        elif self._idle_last_loud_t is None or now - self._idle_last_loud_t > _IDLE_GAP_S:
+            self._idle_loud_time = 0.0
+        try:
+            resume = max(0.0, float(self.config.idle_look_resume_seconds))
+        except (TypeError, ValueError):
+            resume = 0.0
+        if self._idle_loud_time > 0.0 and self._idle_loud_time >= resume:
+            # Music, and it stays music through the gaps between its notes.
+            self._idle_silence_since = None
+        elif not loud and self._idle_silence_since is None:
+            # Counted from the last sound, not from when the gap ran out.
+            last = self._idle_last_loud_t
+            self._idle_silence_since = now if last is None else min(now, last)
+
+        active = (
+            bool(self.config.auto_mode)
+            and self._idle_silence_since is not None
+            and (now - self._idle_silence_since) >= after
+        )
+        if active != self._idle_active:
+            self._idle_active = active
+            if active:
+                logger.info("Silent for %.0f s; fading to the idle look", after)
+            else:
+                logger.info("Leaving the idle look")
+
+    def _idle_look_spec(self) -> Tuple[str, dict]:
+        """The configured idle look, or the default when the name is not one."""
+        name = str(getattr(self.config, "idle_look_name", "") or "").strip().lower()
+        spec = _IDLE_LOOKS.get(name)
+        if spec is not None:
+            return name, spec
+        if name != self._idle_unknown_look:
+            self._idle_unknown_look = name
+            logger.warning(
+                "Unknown idle look %r; using %r. Known looks: %s",
+                name, _IDLE_LOOK_DEFAULT, ", ".join(sorted(_IDLE_LOOKS)),
+            )
+        return _IDLE_LOOK_DEFAULT, _IDLE_LOOKS[_IDLE_LOOK_DEFAULT]
+
+    def _apply_idle_look(self, delta_time: float) -> None:
+        """Cross the rendered frame to the idle look after a long silence.
+
+        Runs after the renderer and after the ambient hold, on the fixtures
+        themselves, so what it leaves goes out through `_emit_dmx` and the
+        output stage like any other frame: the grand master scales it, a
+        latched blackout holds it dark and strobe fixtures stay off.
+
+        Every fixture but a dedicated strobe sits at one low level in one
+        colour, with its strobe at zero. Heads go home, or drift slowly round
+        it. It fades in over `idle_look_fade_seconds` and out over
+        `_IDLE_FADE_OUT_S`, and neither is a flash.
+        """
+        dt = float(delta_time) if delta_time else 0.0
+        if not (0.0 < dt <= 0.25):
+            dt = 1.0 / 60.0
+        if self._idle_active:
+            try:
+                fade = float(self.config.idle_look_fade_seconds)
+            except (TypeError, ValueError):
+                fade = 0.0
+            if math.isfinite(fade) and fade > 0.0:
+                self._idle_mix = min(1.0, self._idle_mix + dt / fade)
+            else:
+                self._idle_mix = 1.0
+        else:
+            self._idle_mix = max(0.0, self._idle_mix - dt / _IDLE_FADE_OUT_S)
+        mix = self._idle_mix
+
+        fixtures = self.fixtures.get_fixtures_in_group("all")
+        if mix <= 0.0:
+            if self._idle_held:
+                # Hand back the emitters the look was holding.
+                for fixture in fixtures:
+                    for attr, value in self._idle_held.get(fixture.id, {}).items():
+                        setattr(fixture, attr, value)
+                self._idle_held = {}
+            return
+
+        _, spec = self._idle_look_spec()
+        rgb = spec["rgb"]
+        if rgb is None:
+            base = self._rebuild_base_color
+            rgb = (base.r, base.g, base.b)
+        targets = {"white": spec["white"], "amber": spec["amber"]}
+        try:
+            level = float(self.config.idle_look_level)
+        except (TypeError, ValueError):
+            level = 0.0
+        if not math.isfinite(level):
+            level = 0.0
+        audience_cap = max(0.0, min(1.0, float(self.config.audience_intensity_cap)))
+        level = max(0.0, min(1.0, level, audience_cap))
+        drift = 2.0 * math.pi * _AMBIENT_DRIFT_HZ * self.time
+        count = max(1, len(fixtures))
+        by_id = {}
+        for i, fixture in enumerate(fixtures):
+            held = self._idle_held.get(fixture.id)
+            if held is None:
+                held = self._idle_held[fixture.id] = {
+                    attr: float(getattr(fixture, attr, 0.0) or 0.0)
+                    for attr in _IDLE_HELD_ATTRS
+                }
+            # A strobe fixture has no gentle setting. It sits the look out.
+            target = 0.0 if is_strobe_fixture(fixture) else level
+            fixture.dimmer = max(0.0, min(1.0, fixture.dimmer + (target - fixture.dimmer) * mix))
+            fixture.red = fixture.red + (rgb[0] - fixture.red) * mix
+            fixture.green = fixture.green + (rgb[1] - fixture.green) * mix
+            fixture.blue = fixture.blue + (rgb[2] - fixture.blue) * mix
+            # No rate is a gentle one: the strobe is off for as long as any of
+            # the look is showing.
+            fixture.strobe = 0.0
+            for attr in _IDLE_HELD_ATTRS[1:]:
+                was = held[attr]
+                setattr(fixture, attr, was + (targets.get(attr, 0.0) - was) * mix)
+            if "pan" in (getattr(fixture, "channels", {}) or {}):
+                pan = tilt = 0.0
+                if spec["drift"]:
+                    offset = 2.0 * math.pi * i / count
+                    pan = _AMBIENT_PAN_DEG * math.sin(drift + offset)
+                    tilt = _AMBIENT_TILT_DEG * math.sin(0.5 * drift + offset)
+                fixture.pan = fixture.pan + (pan - fixture.pan) * mix
+                fixture.tilt = fixture.tilt + (tilt - fixture.tilt) * mix
+            by_id[fixture.id] = fixture
+        for entry in self._fixture_state_snapshot or []:
+            fixture = by_id.get(entry.get("id"))
+            if fixture is None:
+                continue
+            entry.update(
+                pan=fixture.pan, tilt=fixture.tilt, dimmer=fixture.dimmer,
+                r=fixture.red, g=fixture.green, b=fixture.blue,
+            )
+
+    def idle_look_status(self) -> Dict:
+        """The idle look's state, for the status payloads the UI reads."""
+        name, _ = self._idle_look_spec()
+        return {
+            "idle_look_active": self.idle_look_active,
+            # How far the fade has got, 0-1. Not the look's dimmer level.
+            "idle_look_mix": round(float(self._idle_mix), 3),
+            "idle_look": name,
+            "idle_look_after_seconds": self._idle_look_after_s(),
+            "silence_seconds": round(self.silence_seconds, 2),
+        }
+
     @property
     def audio_input_lost(self) -> bool:
         """True while music has stopped arriving and the ambient look holds."""
@@ -1695,6 +1943,13 @@ class EffectsEngine:
         self._last_audio_t = None
         self._audio_lost = False
         self._ambient_mix = 0.0
+        # The update_audio() above was silence of our own making; it must not
+        # start the idle look's count. The look comes down with the input.
+        self._idle_audio_loud = False
+        self._idle_silence_since = None
+        self._idle_last_loud_t = None
+        self._idle_loud_time = 0.0
+        self._idle_active = False
         # Whatever plays next may come from another input at another level.
         self.decision.reset_dynamics()
 
@@ -2320,10 +2575,15 @@ class EffectsEngine:
             self._audio_lost = False
             logger.info("Audio input is back; leaving the ambient hold")
         try:
-            if float(energy) >= float(self.config.silence_threshold):
-                self._music_heard = True
+            loud = float(energy) >= float(self.config.silence_threshold)
         except (TypeError, ValueError):
-            pass
+            loud = False
+        if loud:
+            self._music_heard = True
+        # The level as it arrived, for `_idle_look_step`. Not the analysed
+        # energy the renderers read: that is pulled up to a resting level when
+        # the feed dies, which is not music.
+        self._idle_audio_loud = loud
         try:
             self._reported_track_id = int(track_id) if track_id is not None else None
         except (TypeError, ValueError):
@@ -2944,6 +3204,7 @@ class EffectsEngine:
         # feed that is no longer arriving.
         self._audio_loss_check()
         self._settle_if_audio_lost(delta_time)
+        self._idle_look_step(delta_time)
 
         # Update decision engine - genre-aware mode when pro lighting is active
         if self.config.auto_mode and self._pro_lighting_enabled:
@@ -2983,6 +3244,7 @@ class EffectsEngine:
                 self._rebuild_update_intent(delta_time)
             self._update_fixtures_rebuild(delta_time)
             self._apply_ambient_hold(delta_time)
+            self._apply_idle_look(delta_time)
             self._emit_dmx()
             return
 
@@ -3137,6 +3399,7 @@ class EffectsEngine:
 
         # Generate DMX frame
         self._update_fixtures(delta_time)
+        self._apply_idle_look(delta_time)
 
         # Output DMX
         self._emit_dmx()
@@ -3807,7 +4070,7 @@ class EffectsEngine:
     def get_pro_lighting_state(self) -> Dict:
         """Get current professional lighting state for API/WebSocket."""
         if not self._pro_lighting_enabled:
-            return {"enabled": False}
+            return {"enabled": False, **self.idle_look_status()}
         timing_debug = self.decision.get_transition_debug()
         state = {
             "enabled": True,
@@ -3817,6 +4080,7 @@ class EffectsEngine:
             "palette_version": self._palette_version,
             "palette_locked": self._palette_locked,
             "palette": self._current_song_palette.value,
+            **self.idle_look_status(),
             "section_intensity": round(self.section_manager.get_intensity(), 3),
             "movement_energy": round(self.section_manager.get_movement_energy(), 3),
             "strobe_allowed": self.section_manager.is_strobe_allowed(),
