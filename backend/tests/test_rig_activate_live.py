@@ -314,6 +314,39 @@ async def test_an_empty_rig_is_marked_active_but_the_show_keeps_its_rig(
     assert (await _status(client))["live_rig_demo"] is True
 
 
+async def test_an_empty_active_rig_goes_live_with_its_first_patch(
+    client: AsyncClient, engine, sample_rig_data, monkeypatch
+):
+    """Status must name the rig the engine runs, however that rig got there."""
+    from app.api.endpoints import fixture_library
+    from app.services.fixture_library.ofl_client import OFLUnavailableError
+
+    class Offline:
+        async def get_fixture(self, *a, **k):
+            raise OFLUnavailableError("no internet at the venue")
+
+    monkeypatch.setattr(fixture_library, "get_ofl_client", lambda: Offline())
+    created = await client.post("/api/rigs/", json={**sample_rig_data, "name": "Filled later"})
+    rig_id = created.json()["id"]
+    assert (await client.post(f"/api/rigs/{rig_id}/activate")).json()["live"] is False
+    before = await _status(client)
+
+    patched = await client.post(
+        f"/api/rigs/{rig_id}/patch-from-library",
+        json={"library_key": "american-dj/mega-hex-par", "quantity": 3, "universe": 2},
+    )
+
+    assert patched.status_code == 201, patched.text
+    assert patched.json()["applied_live"] is True
+    assert len(engine.fixtures.fixtures) == 3 and engine.fixtures.get_universes() == [2]
+    status = await _status(client)
+    assert status["live_rig_id"] == rig_id
+    assert status["live_rig_demo"] is False
+    assert status["live_rig_fixtures"] == 3
+    assert status["live_rig_version"] != before["live_rig_version"]
+    assert app.state.dmx_output_held is False
+
+
 # ---------------------------------------------------------------------------
 # Swapping under a running engine
 # ---------------------------------------------------------------------------

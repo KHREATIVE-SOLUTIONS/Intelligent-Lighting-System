@@ -129,15 +129,25 @@ async def test_an_active_rig_goes_straight_to_the_running_show(client: AsyncClie
         def set_fixture_manager(self, manager):
             installed.append(manager)
 
-    previous = getattr(app.state, "effects_engine", None)
+    # Going live also records the rig as the one on stage and releases the
+    # demo's output hold; `app` is shared, so all of it is put back.
+    keys = ("effects_engine", "fixture_manager", "live_rig", "live_rig_version", "dmx_output_held")
+    missing = object()
+    saved = {key: getattr(app.state, key, missing) for key in keys}
     app.state.effects_engine = Engine()
     try:
         response = await client.post(
             f"/api/rigs/{rig_id}/patch-from-library",
             json={"library_key": "american-dj/mega-hex-par", "quantity": 4},
         )
+        assert app.state.live_rig == {"id": rig_id, "name": "Live rig", "demo": False, "fixtures": 4}
     finally:
-        app.state.effects_engine = previous
+        for key, value in saved.items():
+            if value is missing:
+                if hasattr(app.state, key):
+                    delattr(app.state, key)
+            else:
+                setattr(app.state, key, value)
     assert response.status_code == 201, response.text
     assert response.json()["applied_live"] is True
     assert response.json()["mode"]["name"] == "8-channel"

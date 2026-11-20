@@ -264,15 +264,16 @@ async def _resolve_profile(db: AsyncSession, request: LibraryPatchRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def _install_live(app, manager) -> None:
-    """Point the running show at the rebuilt rig, as boot does."""
-    from app.services.rig.live_rig import swap_fixture_manager
+def _install_live(app, manager, rig) -> None:
+    """Point the running show at the rebuilt rig, as Activate does.
 
-    swap_fixture_manager(app, manager)
-    # The rig on stage is the same one with more fixtures in it; say how many.
-    live = getattr(app.state, "live_rig", None)
-    if isinstance(live, dict) and not live.get("demo", True):
-        app.state.live_rig = {**live, "fixtures": len(manager.fixtures)}
+    Through the same installer, so status names this rig and the demo's output
+    hold is released: an active rig that was empty until now (and so never
+    went on stage) is live from its first patch.
+    """
+    from app.services.rig.live_rig import install_patched_rig
+
+    install_patched_rig(app, manager, rig_id=rig.id, name=rig.name)
 
 
 @router.post("/{rig_id}/patch-from-library", status_code=201)
@@ -357,9 +358,19 @@ async def patch_from_library(
     notes = []
     if rig.is_active and body.apply_live:
         db.expire(rig, ["fixtures"])
+        from app.services.rig.live_rig import rig_problems
+
         manager = await build_manager_for_rig_id(db, rig.id)
-        if manager is not None and manager.fixtures:
-            _install_live(request.app, manager)
+        problems = rig_problems(manager) if manager is not None else []
+        if problems:
+            # The same check Activate makes: a rig with a fault elsewhere in
+            # it must not reach the stage through a new patch either.
+            notes.append(
+                "patched, but not sent to the running show; fix the rig and press Activate: "
+                + "; ".join(problems[:3])
+            )
+        elif manager is not None and manager.fixtures:
+            _install_live(request.app, manager, rig)
             applied_live = True
         else:
             notes.append("the rig could not be rebuilt for the running show; it will load on restart")
