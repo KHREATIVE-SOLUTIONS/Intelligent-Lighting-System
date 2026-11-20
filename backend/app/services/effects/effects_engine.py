@@ -2080,6 +2080,17 @@ class EffectsEngine:
             stage.blackout()
         self._sync_output_stage()
 
+    def _beat_output_stage(self) -> None:
+        """Tell the stage's watchdog the loop has just finished a frame.
+
+        Called from the loop and nowhere else. A frame emitted by hand, or by
+        an API call such as a blackout, says nothing about whether the loop is
+        still running.
+        """
+        beat = getattr(self._output_stage, "heartbeat", None)
+        if beat is not None:
+            beat()
+
     def set_output_held(self, held: bool) -> None:
         """Say whether this rig is being kept off the wire (the unpatched demo)."""
         self._output_held = bool(held)
@@ -4132,6 +4143,9 @@ class EffectsEngine:
             try:
                 self.update()
                 error_logged = False
+                # Only a frame that was finished counts. A loop that fails on
+                # every frame is still going round, with the buffers frozen.
+                self._beat_output_stage()
             except Exception:
                 # Keep loop alive in live use; one bad frame should not kill output.
                 # Logged once per failure streak, not 60 times a second.
@@ -4150,6 +4164,11 @@ class EffectsEngine:
     def stop(self):
         """Stop the effects engine."""
         self.running = False
+        # Stopped on purpose is not hung. Without this the watchdog would black
+        # out the raw writes, test patterns and fixture tests that follow.
+        stand_down = getattr(self._output_stage, "stand_down_watchdog", None)
+        if stand_down is not None:
+            stand_down()
         # Not the operator blackout: stopping must not leave a latch behind
         # that keeps the room dark when the engine is started again.
         self._zero_dimmers()

@@ -8,13 +8,15 @@ The show engine, the raw DMX routes, cues and fades, the test patterns, the
 fixture tests and the identify walkthrough all end the same way: they leave
 values in a universe buffer, and the transmitter sends whatever is there. This
 stage sits in the transmitter, so it sees all of them and none of them can go
-round it. It owns four things:
+round it. It owns five things:
 
 * the **grand master**, which scales light and never position;
 * the **blackout latch**, which holds against every writer until released;
 * the **flash limiter**, which caps how often light may jump up;
 * the **strobe switch**, which holds every strobe fixture off while strobes
-  are disabled.
+  are disabled;
+* the **watchdog**, which fades the rig to black when the show engine stops
+  producing frames.
 
 It works on bytes, and bytes do not say which slot is a dimmer and which is a
 pan. The patch (``set_patch``) tells it. A slot the patch does not cover is
@@ -44,6 +46,28 @@ channels at zero, so neither a writer nor the fixture's own strobe can flash
 it. That happens before the flash limiter looks at the frame, so a strobe that
 is being held off spends none of the budget the rest of the rig shares. Every
 other fixture carries on under the limiter exactly as before.
+
+The watchdog
+------------
+The transmitter has its own thread, so it carries on when the show engine
+hangs, and what it carries on sending is the last frame the engine left in the
+buffers. A node cannot tell that from a look someone chose: the rig stays
+frozen, at whatever it happened to be showing, for as long as the process
+lives.
+
+The engine's loop calls ``heartbeat()`` after every frame it finishes. That is
+the only thing the watchdog reads. It never looks at the values, so a look
+that sits still for an hour is not a hang as long as the engine is still
+ticking under it. When the beats stop, the light holds for the first half of
+``watchdog_seconds`` (a short stall of the event loop should not dim the
+room), then fades, and is black before ``watchdog_seconds`` is up. Black here
+is what the blackout latch sends: light at zero, position left where it was.
+It stays black, against every writer, until the engine beats again, and then
+the output simply follows the engine once more.
+
+The watchdog is armed by the first beat and stood down by a deliberate stop
+(``stand_down_watchdog``). A loop that is cancelled, blocked, or failing every
+frame does not stand it down, and fades.
 """
 
 from __future__ import annotations
@@ -86,6 +110,15 @@ _HISTORY_ROWS = 8      # 100 ms of frames up to 80 fps
 _MAX_GRANTS = 32       # flashes remembered per slot; also the highest usable limit
 _EPS = 1e-9
 _FORGET_AFTER_S = 5.0  # how long a universe that left the wire keeps its flash record
+
+# The engine has to have been silent this long for the wire to be black. The
+# default, and what an unreadable setting falls back to.
+WATCHDOG_SECONDS = 2.0
+# Of that time: light holds until this fraction has passed, and is black by
+# this one. The rest is margin, because a beat is only noticed at the next
+# transmitted frame and black only arrives with the one after.
+WATCHDOG_HOLD = 0.5
+WATCHDOG_DARK_BY = 0.9
 
 
 class StagedFrame(bytes):
@@ -251,7 +284,7 @@ class _UniverseState:
 
 
 class OutputStage:
-    """Grand master, blackout latch and flash limiter, applied to every frame sent."""
+    """Grand master, blackout latch, flash limiter and watchdog, applied to every frame sent."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -265,6 +298,15 @@ class OutputStage:
         self._rig_budget = _Budget(2)
         self.limited_frames = 0
         self.frames = 0
+        # Watchdog. `_beats` is written by the engine and read here; the rest
+        # belongs to the transmitter.
+        self._watchdog_seconds = WATCHDOG_SECONDS
+        self._watchdog_armed = False
+        self._beats = 0
+        self._beats_seen = 0
+        self._alive_at: Optional[float] = None
+        self._watchdog_level = 1.0
+        self.watchdog_trips = 0
 
     # ------------------------------------------------------------------
     # Operator state
@@ -303,6 +345,79 @@ class OutputStage:
     def output_master(self) -> float:
         """The scale light is actually sent at."""
         return 0.0 if self._blackout else self._master
+
+    # ------------------------------------------------------------------
+    # Watchdog
+    # ------------------------------------------------------------------
+
+    def set_watchdog_seconds(self, seconds: Any) -> float:
+        """Set how long after the engine's last frame the wire must be black.
+
+        A value that cannot be read as a length of time selects the default.
+        It does not switch the watchdog off.
+        """
+        try:
+            value = float(seconds)
+        except (TypeError, ValueError):
+            value = WATCHDOG_SECONDS
+        if not math.isfinite(value) or value <= 0.0:
+            value = WATCHDOG_SECONDS
+        with self._lock:
+            self._watchdog_seconds = value
+            return value
+
+    @property
+    def watchdog_seconds(self) -> float:
+        return self._watchdog_seconds
+
+    def heartbeat(self) -> None:
+        """The engine finished a frame. The first call arms the watchdog.
+
+        It carries no time. The transmitter notes when it next sees the count
+        move, on its own clock, so there is only one clock to trust. It takes
+        no lock either: the engine must never wait on a frame being staged.
+        """
+        self._beats += 1
+        self._watchdog_armed = True
+
+    def stand_down_watchdog(self) -> None:
+        """The engine was stopped on purpose. Silence from it is not a hang."""
+        self._watchdog_armed = False
+
+    @property
+    def watchdog_armed(self) -> bool:
+        return self._watchdog_armed
+
+    @property
+    def watchdog_level(self) -> float:
+        """What the watchdog is letting through: 1 normally, 0 once it has faded out."""
+        return self._watchdog_level
+
+    def _watchdog(self, now: float) -> float:
+        """The share of light the watchdog allows on this frame."""
+        if not self._watchdog_armed:
+            self._alive_at = None
+            self._watchdog_level = 1.0
+            return 1.0
+        beats = self._beats
+        if beats != self._beats_seen or self._alive_at is None or now < self._alive_at:
+            self._beats_seen = beats
+            self._alive_at = now
+            self._watchdog_level = 1.0
+            return 1.0
+        silent = now - self._alive_at
+        hold = self._watchdog_seconds * WATCHDOG_HOLD
+        dark_by = self._watchdog_seconds * WATCHDOG_DARK_BY
+        if silent <= hold:
+            level = 1.0
+        elif silent >= dark_by - _EPS:
+            level = 0.0
+        else:
+            level = (dark_by - silent) / (dark_by - hold)
+        if level < 1.0 and self._watchdog_level >= 1.0:
+            self.watchdog_trips += 1
+        self._watchdog_level = level
+        return level
 
     # ------------------------------------------------------------------
     # Flash policy
@@ -430,7 +545,10 @@ class OutputStage:
 
     def _process(self, frames: Mapping[int, Any], now: float) -> Dict[int, StagedFrame]:
         self.frames += 1
-        scale = 0.0 if self._blackout else self._master
+        # The watchdog is one more thing between the master and the light. As
+        # part of the scale it darkens what the blackout latch darkens, and
+        # coming back from it is a rise the flash limiter sees like any other.
+        scale = (0.0 if self._blackout else self._master) * self._watchdog(now)
         allowed, window = self._allowance()
         free = FLASH_FREE_RISE * 255.0
 
@@ -632,4 +750,11 @@ class OutputStage:
             "frames": self.frames,
             "limited_frames": self.limited_frames,
             "patched_universes": sorted(self._patch),
+            "watchdog": {
+                "armed": self._watchdog_armed,
+                "seconds": self._watchdog_seconds,
+                "level": self._watchdog_level,
+                "tripped": self._watchdog_level < 1.0,
+                "trips": self.watchdog_trips,
+            },
         }
