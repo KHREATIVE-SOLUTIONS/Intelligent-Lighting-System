@@ -289,9 +289,25 @@ async def test_each_colour_is_one_colour_and_changing_look_never_passes_through_
 ):
     rig_id, ids = await _rig_with_lights(client, sample_rig_data, sample_fixture_data)
 
+    # Every value written to the dimmer, not just where it ends up: a zero that
+    # is rewritten inside the same request would still reach the transmitter
+    # thread some of the time.
+    dimmer_writes = []
+    set_channel = dmx_state.set_channel
+
+    async def watching(universe, channel, value):
+        if channel == 1 + DIMMER:
+            dimmer_writes.append(value)
+        await set_channel(universe, channel, value)
+
+    dmx_state.set_channel = watching
+
     for look, lit in (("red", RED), ("green", GREEN), ("blue", BLUE)):
         shown = await _show(client, rig_id, ids[0], "colour", look)
         assert shown.status_code == 200, shown.text
+        assert dimmer_writes and min(dimmer_writes) == 255, (
+            f"the dimmer was written to {min(dimmer_writes)} on the way to {look}"
+        )
         slots = _slots(dmx_state)
         assert slots[DIMMER] == 255, (
             f"the dimmer dropped on the way to {look}: a blink between looks is "
@@ -524,7 +540,9 @@ async def test_answers_are_kept_on_the_fixture(
     await client.post(url, json={"check": "colour", "passed": True})
 
     rows = {r["id"]: r for r in (await client.get(f"/api/rigs/{rig_id}/fixtures")).json()}
-    assert set(rows[ids[0]]["tags"]) == {"setup:flash:fail", "identify:no-response", "setup:colour:ok"}
+    patch = f"u0a1m{rows[ids[0]]['mode_id']}"
+    assert set(rows[ids[0]]["tags"]) == {
+        f"setup:flash:fail:{patch}", "identify:no-response", f"setup:colour:ok:{patch}"}
     assert rows[ids[1]]["tags"] == []
 
     # Changing an answer replaces it; a pass clears the never-lit mark.
@@ -538,3 +556,30 @@ async def test_answers_are_kept_on_the_fixture(
     cleared = await client.post(url, json={"check": "colour", "passed": None})
     assert {c["check"]: c["result"] for c in cleared.json()["checks"]}["colour"] is None
     assert (await client.post(url, json={"check": "bogus", "passed": True})).status_code == 422
+
+
+async def test_a_pass_does_not_outlive_the_patch_it_was_given_for(
+    client: AsyncClient, sample_rig_data, sample_fixture_data, dmx_state
+):
+    """Re-address a fixture and the tick it earned at the old address would
+    vouch for a patch nobody has looked at."""
+    rig_id, ids = await _rig_with_lights(client, sample_rig_data, sample_fixture_data)
+    url = f"/api/rigs/{rig_id}/fixtures/{ids[0]}/setup-check/result"
+    await client.post(url, json={"check": "flash", "passed": True})
+
+    def flash(listing):
+        return {c["check"]: c["result"] for c in listing["fixtures"][0]["checks"]}["flash"]
+
+    assert flash((await client.get(f"/api/rigs/{rig_id}/setup-checks")).json()) == "ok"
+
+    moved = await client.put(f"/api/rigs/{rig_id}/fixtures/{ids[0]}", json={"dmx_address": 5})
+    assert moved.status_code == 200, moved.text
+    listing = (await client.get(f"/api/rigs/{rig_id}/setup-checks")).json()
+    assert listing["fixtures"][0]["dmx_address"] == 5
+    assert flash(listing) is None, "the fixture still shows as checked at an address it was never tested on"
+
+    # Answered again at the new address, it counts, and the stale answer is gone.
+    await client.post(url, json={"check": "flash", "passed": True})
+    rows = {r["id"]: r for r in (await client.get(f"/api/rigs/{rig_id}/fixtures")).json()}
+    assert [t for t in rows[ids[0]]["tags"] if t.startswith("setup:flash")] == [
+        f"setup:flash:ok:u0a5m{rows[ids[0]]['mode_id']}"]

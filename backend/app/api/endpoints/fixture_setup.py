@@ -10,8 +10,10 @@ in order. This answers "is this light set up correctly" for whichever one the
 operator points at, in whatever order they like. Both hold a fixture steadily
 lit with the show parked, and each releases the other before it starts.
 
-Answers are written to the fixture's tags (``setup:<check>:ok`` or ``:fail``),
-so they survive a restart and travel with the rig. A flash that fails also sets
+Answers are written to the fixture's tags (``setup:<check>:ok:<patch>`` or
+``:fail:``), so they survive a restart and travel with the rig. ``<patch>`` is
+the universe, address and mode the answer was about; once any of those changes
+the answer no longer counts and the fixture reads as unchecked again. A flash that fails also sets
 the walkthrough's ``identify:no-response`` mark, and one that passes clears it:
 they are the same finding.
 """
@@ -80,6 +82,10 @@ def _label(rf: RigFixture) -> str:
     return rf.name or f"Light at address {rf.dmx_address}"
 
 
+def _signature(rf: RigFixture) -> str:
+    return setup_check.patch_signature(rf.universe, rf.dmx_address, rf.mode_id)
+
+
 def _channels(rf: RigFixture) -> List[Any]:
     return list(rf.mode.channels) if rf.mode else []
 
@@ -88,7 +94,7 @@ def _fixture_payload(rf: RigFixture, service: Any, dmx: Any) -> Dict[str, Any]:
     channels = _channels(rf)
     ch_map = service._build_channel_map(channels) if channels else {}
     channel_count = rf.mode.channel_count if rf.mode else 0
-    results = setup_check.results_from_tags(rf.tags)
+    results = setup_check.results_from_tags(rf.tags, _signature(rf))
 
     shutter = next(
         (c for c in channels
@@ -266,7 +272,7 @@ async def record_result(
     service = get_test_service(request)
     rf = await _load_fixture(rig_id, fixture_id, db)
 
-    tags = setup_check.tags_with_result(rf.tags, body.check, body.passed)
+    tags = setup_check.tags_with_result(rf.tags, body.check, body.passed, _signature(rf))
     if body.check == setup_check.CHECK_FLASH and body.passed is not None:
         # "It never lit" is the walkthrough's finding too; keep the two in step.
         tags = [t for t in tags if t != rig_identify.NO_RESPONSE_TAG]

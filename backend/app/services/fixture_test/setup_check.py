@@ -231,28 +231,45 @@ def look_values(channels: List[Any], ch_map: Dict[str, int], channel_count: int,
 # ---------------------------------------------------------------------------
 
 
-def results_from_tags(tags: Optional[Iterable[str]]) -> Dict[str, Optional[str]]:
-    """What the operator last said about each check, read off the fixture's tags."""
+def patch_signature(universe: Optional[int], dmx_address: Optional[int],
+                    mode_id: Optional[int]) -> str:
+    """Where and how a fixture was patched when an answer was given.
+
+    An answer is about a fixture at an address in a mode. Kept with the answer
+    so that re-addressing, changing mode or auto-patching quietly retires it:
+    a tick left over from the old patch would vouch for one nobody has tested.
+    """
+    return f"u{universe or 0}a{dmx_address or 0}m{mode_id or 0}"
+
+
+def results_from_tags(tags: Optional[Iterable[str]],
+                      signature: str) -> Dict[str, Optional[str]]:
+    """What the operator last said about each check, for the patch as it is now.
+
+    An answer recorded against a different universe, address or mode is ignored.
+    """
     results: Dict[str, Optional[str]] = {check: None for check in CHECKS}
     for tag in tags or []:
         parts = str(tag).split(":")
-        if (len(parts) == 3 and parts[0] + ":" == _RESULT_PREFIX
-                and parts[1] in results and parts[2] in (RESULT_OK, RESULT_FAIL)):
+        if (len(parts) == 4 and parts[0] + ":" == _RESULT_PREFIX
+                and parts[1] in results and parts[2] in (RESULT_OK, RESULT_FAIL)
+                and parts[3] == signature):
             results[parts[1]] = parts[2]
     return results
 
 
 def tags_with_result(tags: Optional[Iterable[str]], check: str,
-                     passed: Optional[bool]) -> List[str]:
+                     passed: Optional[bool], signature: str) -> List[str]:
     """The fixture's tags with one check's answer set, or cleared when None.
 
     Returns a new list: the column is plain JSON, so an in-place change would
-    never be written back.
+    never be written back. Any earlier answer for the check goes, whatever
+    patch it was about.
     """
     prefix = f"{_RESULT_PREFIX}{check}:"
     out = [tag for tag in (tags or []) if not str(tag).startswith(prefix)]
     if passed is not None:
-        out.append(prefix + (RESULT_OK if passed else RESULT_FAIL))
+        out.append(f"{prefix}{RESULT_OK if passed else RESULT_FAIL}:{signature}")
     return out
 
 
