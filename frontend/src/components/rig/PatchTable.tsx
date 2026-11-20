@@ -11,23 +11,58 @@ import {
   Chip,
   Tabs,
   Tab,
+  IconButton,
+  Tooltip,
 } from '@mui/material';
-import { Warning as WarningIcon } from '@mui/icons-material';
+import {
+  Warning as WarningIcon,
+  CheckCircle as PassedIcon,
+  ErrorOutline as FailedIcon,
+  RadioButtonUnchecked as UncheckedIcon,
+  Adjust as PartialIcon,
+  Block as BlockedIcon,
+} from '@mui/icons-material';
 import type { RigFixture, PatchConflict } from '../../types';
+import {
+  countOutstanding,
+  summariseChecks,
+  type CheckSummaryState,
+  type SetupCheckFixture,
+} from '../../utils/fixtureSetupChecks';
 
 interface PatchTableProps {
   fixtures: RigFixture[];
   conflicts?: PatchConflict[];
   selectedUniverse?: number;
   onUniverseChange?: (universe: number) => void;
+  /** Setup check records from the box. Absent until they have loaded. */
+  setupChecks?: SetupCheckFixture[];
+  /** Open the setup checks for one fixture. The column is hidden without it. */
+  onCheckFixture?: (fixtureId: number) => void;
 }
+
+const CHECK_ICONS: Record<CheckSummaryState, JSX.Element> = {
+  passed: <PassedIcon fontSize="small" color="success" />,
+  failed: <FailedIcon fontSize="small" color="error" />,
+  partial: <PartialIcon fontSize="small" color="warning" />,
+  unchecked: <UncheckedIcon fontSize="small" color="disabled" />,
+  blocked: <BlockedIcon fontSize="small" color="disabled" />,
+};
 
 export default function PatchTable({
   fixtures,
   conflicts = [],
   selectedUniverse = 0,
   onUniverseChange,
+  setupChecks,
+  onCheckFixture,
 }: PatchTableProps) {
+  const checksById = useMemo(
+    () => new Map((setupChecks ?? []).map((f) => [f.fixture_id, f])),
+    [setupChecks]
+  );
+  const outstanding = useMemo(() => countOutstanding(setupChecks ?? []), [setupChecks]);
+
   // Get unique universes
   const universes = useMemo(() => {
     const unis = new Set(fixtures.map((f) => f.universe));
@@ -122,6 +157,20 @@ export default function PatchTable({
         <Typography variant="caption" color="text.secondary">
           {usedChannels}/512 channels used ({((usedChannels / 512) * 100).toFixed(0)}%)
         </Typography>
+        {onCheckFixture && setupChecks && setupChecks.length > 0 && (
+          <Typography
+            variant="caption"
+            display="block"
+            color={outstanding.failed > 0 ? 'error' : 'text.secondary'}
+            data-testid="patch-check-summary"
+          >
+            {outstanding.failed > 0
+              ? `${outstanding.failed} light${outstanding.failed === 1 ? '' : 's'} failed a check`
+              : outstanding.unchecked > 0
+                ? `${outstanding.unchecked} light${outstanding.unchecked === 1 ? '' : 's'} still to check`
+                : 'Every light checked'}
+          </Typography>
+        )}
       </Box>
 
       {/* Fixture table */}
@@ -132,6 +181,7 @@ export default function PatchTable({
               <TableCell>Addr</TableCell>
               <TableCell>Name</TableCell>
               <TableCell>Ch</TableCell>
+              {onCheckFixture && <TableCell padding="none">Check</TableCell>}
               <TableCell></TableCell>
             </TableRow>
           </TableHead>
@@ -152,6 +202,25 @@ export default function PatchTable({
                     </Typography>
                   </TableCell>
                   <TableCell>{mode?.channel_count || '?'}</TableCell>
+                  {onCheckFixture && (() => {
+                    const summary = summariseChecks(checksById.get(f.id));
+                    const name = f.name || f.fixture?.model || `Fixture ${f.id}`;
+                    return (
+                      <TableCell padding="none">
+                        <Tooltip title={`${summary.label}. Click to check this light.`}>
+                          <IconButton
+                            size="small"
+                            aria-label={`Check ${name}: ${summary.label}`}
+                            data-testid={`patch-check-${f.id}`}
+                            data-check-state={summary.state}
+                            onClick={() => onCheckFixture(f.id)}
+                          >
+                            {CHECK_ICONS[summary.state]}
+                          </IconButton>
+                        </Tooltip>
+                      </TableCell>
+                    );
+                  })()}
                   <TableCell>
                     {isConflict && <WarningIcon color="error" fontSize="small" />}
                   </TableCell>

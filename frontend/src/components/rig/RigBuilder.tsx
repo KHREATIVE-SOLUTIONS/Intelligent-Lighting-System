@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Box, Typography, Paper, Snackbar, Alert } from '@mui/material';
-import { rigsApi, fixturesApi } from '../../services/api';
+import { rigsApi, fixturesApi, setupChecksApi } from '../../services/api';
+import FixtureSetupChecks from './FixtureSetupChecks';
+import type { SetupCheckFixture, SetupCheckListing } from '../../utils/fixtureSetupChecks';
 import { useRigEditorStore, computeTrussLines } from '../../stores/rigEditorStore';
 import type { FixturePositionSnapshot } from '../../stores/rigEditorStore';
 import RigEditorToolbar from './RigEditorToolbar';
@@ -37,6 +39,8 @@ export default function RigBuilder() {
   const [saveState, setSaveState] = useState<PositionSaveState>('idle');
   const [notice, setNotice] = useState<{ severity: 'error' | 'success'; text: string } | null>(null);
   const [identifyOpen, setIdentifyOpen] = useState(false);
+  const [setupChecks, setSetupChecks] = useState<SetupCheckListing | null>(null);
+  const [checkFixtureId, setCheckFixtureId] = useState<number | null>(null);
 
   const {
     viewMode, snapMode, gridSize, selectedFixtureIds,
@@ -57,6 +61,21 @@ export default function RigBuilder() {
     setRig(next);
   }, []);
 
+  // What each fixture can be checked for, and what was recorded. The patch is
+  // still usable without it (no light output on this box, say), so a failure
+  // here hides the check column's detail rather than the rig.
+  const fetchSetupChecks = useCallback(async () => {
+    if (!id) return null;
+    try {
+      const listing = await setupChecksApi.list(Number(id));
+      setSetupChecks(listing);
+      return listing;
+    } catch {
+      setSetupChecks(null);
+      return null;
+    }
+  }, [id]);
+
   const fetchRig = useCallback(async () => {
     if (!id) return;
     try {
@@ -70,7 +89,8 @@ export default function RigBuilder() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+    await fetchSetupChecks();
+  }, [id, fetchSetupChecks]);
 
   useEffect(() => { fetchRig(); }, [fetchRig]);
 
@@ -332,9 +352,38 @@ export default function RigBuilder() {
 
     try {
       await rigsApi.updateFixture(current.id, fixtureId, updates);
+      // A new mode or address changes what can be checked and where.
+      if ('mode_id' in updates || 'dmx_address' in updates || 'universe' in updates || 'name' in updates) {
+        void fetchSetupChecks();
+      }
     } catch {
       await fetchRig(); // Revert on error
     }
+  };
+
+  const handleCheckFixture = async (fixtureId: number) => {
+    // Read again first: the box decides what this fixture can be checked for
+    // from its mode and address as they are now, not as they were on load.
+    const listing = await fetchSetupChecks();
+    if (!listing?.fixtures.some((f) => f.fixture_id === fixtureId)) {
+      setNotice({
+        severity: 'error',
+        text: 'Could not reach the light output to check this fixture. Is the box running?',
+      });
+      return;
+    }
+    setCheckFixtureId(fixtureId);
+  };
+
+  const handleCheckRecorded = (updated: SetupCheckFixture) => {
+    setSetupChecks((current) =>
+      current
+        ? {
+            ...current,
+            fixtures: current.fixtures.map((f) => (f.fixture_id === updated.fixture_id ? updated : f)),
+          }
+        : current
+    );
   };
 
   const trussLineCount = useMemo(
@@ -430,9 +479,27 @@ export default function RigBuilder() {
             conflicts={conflicts}
             selectedUniverse={patchUniverse}
             onUniverseChange={setPatchUniverse}
+            setupChecks={setupChecks?.fixtures}
+            onCheckFixture={(fixtureId) => { void handleCheckFixture(fixtureId); }}
           />
         </Paper>
       </Box>
+
+      <FixtureSetupChecks
+        rigId={rig.id}
+        fixture={
+          checkFixtureId === null
+            ? null
+            : setupChecks?.fixtures.find((f) => f.fixture_id === checkFixtureId) ?? null
+        }
+        rigBlockedReason={setupChecks?.output_blocked_reason}
+        onClose={() => {
+          setCheckFixtureId(null);
+          // Picks up a blackout or master change made while the dialog was open.
+          void fetchSetupChecks();
+        }}
+        onRecorded={handleCheckRecorded}
+      />
 
       <IdentifyWalkthrough
         rigId={rig.id}
