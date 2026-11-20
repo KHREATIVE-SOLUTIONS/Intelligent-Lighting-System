@@ -52,18 +52,37 @@ def worst_flashes_per_second(times, series, rise=0.25, within=0.075):
         start = np.searchsorted(times, times[i] - within - 1e-9)
         flashing[i] = series[i] - series[start:i + 1].min() >= rise
     starts = [i for i in range(1, len(series)) if flashing[i] and not flashing[i - 1]]
-    # One rise still climbing can cross the threshold, dip under it by a hair
-    # and cross again. That is one flash: a second one needs the light to have
-    # come back down in between.
+    # One rise still climbing can cross the threshold, slip a hair under it as
+    # the window slides and cross again. That is one flash. A second one needs
+    # the light to have fallen at all in between; 0.02 is rounding, not a fall.
     kept = []
     for i in starts:
-        if kept and series[kept[-1]:i + 1].min() > series[kept[-1]] - 0.1:
-            continue
+        if kept:
+            since = series[kept[-1]:i + 1]
+            if (np.maximum.accumulate(since) - since).max() < 0.02:
+                continue
         kept.append(i)
-    edges = times[kept]
+    worst = _worst_in_a_second(times[kept])
+
+    # On the simulator's own 25 ms grid, count its way as well and take the worse.
+    if len(times) > 4 and np.allclose(np.diff(times), 0.025, atol=1e-6):
+        worst = max(worst, venue_sim_flashes(times, series, rise))
+    return worst
+
+
+def _worst_in_a_second(edges):
+    edges = np.asarray(edges, dtype=float)
     if edges.size == 0:
         return 0
     return max(int(np.count_nonzero((edges >= t) & (edges < t + 1.0))) for t in edges)
+
+
+def venue_sim_flashes(times, series, rise=0.25):
+    """scripts/venue_sim/venue_sim.py `flashes`, line for line: rises over three 25 ms frames."""
+    series = np.asarray(series, dtype=float)
+    d3 = series[3:] - series[:-3]
+    edges = np.where((d3[1:] >= rise) & (d3[:-1] < rise))[0]
+    return _worst_in_a_second(np.asarray(times, dtype=float)[edges])
 
 
 def play(stage, source, seconds, start=0.0):
@@ -212,7 +231,10 @@ def test_colour_flashing_behind_an_open_dimmer_is_limited():
 def test_colours_taking_turns_cannot_flash_a_fixture_faster_than_the_limit():
     """A par with no dimmer: red, green and blue each at 2 Hz, a third of a beat apart."""
     stage = OutputStage()
-    stage.set_patch(PATCH)
+    # Enough dark fixtures around it that the rig as a whole barely moves, so
+    # it is the limit on the fixture that is being tested and not the rig's.
+    bystanders = [{200 + i: ROLE_INTENSITY} for i in range(12)]
+    stage.set_patch({0: PATCH[0] + bystanders})
     stage.set_flash_policy(False, 2.0)
     waves = [square(2.0, 0.12, offset=k / 6.0) for k in range(3)]
 
@@ -228,6 +250,29 @@ def test_colours_taking_turns_cannot_flash_a_fixture_faster_than_the_limit():
 
     assert worst_flashes_per_second(times, fixture(asked)) >= 6, "the test is not flashing"
     assert worst_flashes_per_second(times, fixture(sent)) <= 2
+
+
+def test_a_universe_that_comes_and_goes_does_not_get_a_fresh_budget_each_time():
+    """A test pattern started and stopped over and over, on a universe it borrows."""
+    stage = OutputStage()
+    stage.set_flash_policy(False, 2.0)
+    times, level = [], []
+    was_lit = False
+    for n in range(6 * FPS):
+        t = n * DT
+        lit = (t * 8.0) % 1.0 < 0.5
+        if lit:
+            frames = {3: [255] * 8}
+        elif was_lit:
+            frames = {3: [0] * 8}   # the controller blacks a universe out before it lets go
+        else:
+            frames = {}
+        was_lit = lit
+        out = stage.process(frames, t)
+        times.append(t)
+        level.append(out[3][0] / 255.0 if 3 in out else 0.0)
+    assert max(level) == 1.0
+    assert worst_flashes_per_second(times, level) <= 2
 
 
 def test_position_is_never_limited():

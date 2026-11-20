@@ -72,6 +72,7 @@ STROBE_OFF_MAX_HZ = 3.0
 _HISTORY_ROWS = 8      # 100 ms of frames up to 80 fps
 _MAX_GRANTS = 32       # flashes remembered per slot; also the highest usable limit
 _EPS = 1e-9
+_FORGET_AFTER_S = 5.0  # how long a universe that left the wire keeps its flash record
 
 
 class StagedFrame(bytes):
@@ -221,6 +222,7 @@ class _UniverseState:
         self.history = _History(SLOTS)
         self.budget = _Budget(SLOTS)
         self.seen_lit = np.zeros(SLOTS, dtype=bool)
+        self.last_seen = -np.inf
         self.patch: Optional[_UniversePatch] = None
         self.fixture_history = _History(0)
         self.fixture_budget = _Budget(0)
@@ -397,7 +399,11 @@ class OutputStage:
         allowed, window = self._allowance()
         free = FLASH_FREE_RISE * 255.0
 
-        for gone in [u for u in self._universes if u not in frames]:
+        # A universe that leaves the wire keeps its record for a while. Dropped
+        # at once, starting and stopping a test pattern on a borrowed universe
+        # would hand it a fresh flash budget every time.
+        for gone in [u for u, state in self._universes.items()
+                     if u not in frames and now - state.last_seen > _FORGET_AFTER_S]:
             del self._universes[gone]
 
         work = []
@@ -408,6 +414,7 @@ class OutputStage:
             state = self._universes.get(universe)
             if state is None:
                 state = self._universes[universe] = _UniverseState()
+            state.last_seen = now
 
             # Everything below is in "light": 0 dark, 255 full, on every slot.
             level = raw.astype(np.float64)

@@ -284,7 +284,9 @@ class DMXController:
         next_frame = time.perf_counter()
 
         while not stop.is_set() and self.is_connected:
-            self._transmit_frame(time.monotonic(), stop)
+            # perf_counter, not monotonic: on Windows monotonic ticks every
+            # 15.6 ms, most of a frame, and the stage times flashes with this.
+            self._transmit_frame(time.perf_counter(), stop)
 
             self._count_down_releases()
 

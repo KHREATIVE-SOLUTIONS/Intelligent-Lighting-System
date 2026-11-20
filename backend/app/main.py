@@ -80,6 +80,9 @@ def _install_fixture_manager(app: FastAPI, manager, *, demo: bool = False):
     app.state.dmx_output_held = demo and not settings.DEMO_RIG_DMX_OUTPUT
     engine = getattr(app.state, 'effects_engine', None)
     if engine is not None:
+        hold = getattr(engine, 'set_output_held', None)
+        if callable(hold):
+            hold(app.state.dmx_output_held)
         setter = getattr(engine, 'set_fixture_manager', None)
         if callable(setter):
             setter(manager)

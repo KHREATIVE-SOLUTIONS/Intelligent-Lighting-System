@@ -357,6 +357,45 @@ def test_the_stage_learns_a_rig_that_changes_under_it(controller):
     assert frame[200] == 200 and frame[204] == 100
 
 
+async def test_a_rig_held_off_the_wire_does_not_tell_the_stage_what_is_plugged_in(controller):
+    """The demo rig on a fresh install is rendered but not sent.
+
+    Its patch describes nothing real: the slot it calls pan may be a dimmer on
+    whatever is actually connected. A raw write there has to meet the blackout,
+    the master and the flash limit like any other.
+    """
+    engine = live_engine(controller)
+    engine.set_dmx_callback(None)          # held: the demo's frames never reach the buffers
+    engine.set_output_held(True)
+    engine.set_safety_profile("no_strobe")
+    engine._emit_dmx()
+    pan = 1                                # channel 1 is mh0's pan in the demo's eyes
+
+    controller.output_stage.blackout()
+    await controller.set_channel(0, pan, 255)
+    controller._transmit_frame(0.0)
+    assert not any(controller.socket.packets[-1][1]), "lit through a blackout on a 'pan' slot"
+    controller.output_stage.restore()
+
+    times = []
+    for n in range(6 * WIRE_FPS):
+        t = 1.0 + n / WIRE_FPS
+        await controller.set_channel(0, pan, 255 if (t * 8.0) % 1.0 < 0.5 else 0)
+        controller._transmit_frame(t)
+        times.append(t)
+    level = [f[0] / 255.0 for f in controller.socket.frames()[1:]]
+    assert max(level) == 1.0
+    assert worst_flashes_per_second(times, level) <= 2
+
+    # Once a real rig is live, its pan is a pan again.
+    engine.set_output_held(False)
+    engine._emit_dmx()
+    controller.output_stage.blackout()
+    await controller.set_channel(0, pan, 200)
+    controller._transmit_frame(10.0)
+    assert controller.socket.packets[-1][1][0] == 200
+
+
 # ---------------------------------------------------------------------------
 # Manual mode cannot out-strobe the limit
 # ---------------------------------------------------------------------------

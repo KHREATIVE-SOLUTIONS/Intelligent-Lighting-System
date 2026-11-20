@@ -407,6 +407,7 @@ class EffectsEngine:
         # this one, and the engine renders at full and leaves the scaling to it.
         self._output_stage = None
         self._output_stage_patch_key = None
+        self._output_held = False
 
         # Beat tracking
         self.beat_count = 0
@@ -2079,6 +2080,10 @@ class EffectsEngine:
             stage.blackout()
         self._sync_output_stage()
 
+    def set_output_held(self, held: bool) -> None:
+        """Say whether this rig is being kept off the wire (the unpatched demo)."""
+        self._output_held = bool(held)
+
     def flash_policy(self) -> Tuple[bool, float]:
         """Whether strobing is allowed right now, and the flash-rate cap."""
         # Named rather than excluded: a profile this does not recognise is not
@@ -2105,12 +2110,17 @@ class EffectsEngine:
         try:
             stage.set_flash_policy(*self.flash_policy())
             fixtures = self.fixtures.fixtures
-            key = (id(self.fixtures), tuple(
+            held = self._output_held
+            key = (held, id(self.fixtures), tuple(
                 (f.id, getattr(f, "universe", 0), f.dmx_address, len(f.channels))
                 for f in fixtures.values()
             ))
             if key != self._output_stage_patch_key:
-                stage.set_patch(self.fixtures.light_patch())
+                # A rig that is rendered but kept off the wire says nothing
+                # about what is plugged in. Its pan slot may be a dimmer on the
+                # real rig, so the stage is told nothing and treats every slot
+                # as light.
+                stage.set_patch({} if held else self.fixtures.light_patch())
                 self._output_stage_patch_key = key
         except Exception:
             # The stage keeps its last policy and patch; unpatched slots are
