@@ -2112,7 +2112,8 @@ class EffectsEngine:
             fixtures = self.fixtures.fixtures
             held = self._output_held
             key = (held, id(self.fixtures), tuple(
-                (f.id, getattr(f, "universe", 0), f.dmx_address, len(f.channels))
+                (f.id, getattr(f, "universe", 0), f.dmx_address, len(f.channels),
+                 str(getattr(f, "fixture_type", "")))
                 for f in fixtures.values()
             ))
             if key != self._output_stage_patch_key:
@@ -2120,7 +2121,11 @@ class EffectsEngine:
                 # about what is plugged in. Its pan slot may be a dimmer on the
                 # real rig, so the stage is told nothing and treats every slot
                 # as light.
-                stage.set_patch({} if held else self.fixtures.light_patch())
+                # For the same reason it names no strobe fixtures.
+                if held:
+                    stage.set_patch({})
+                else:
+                    stage.set_patch(self.fixtures.light_patch(), self.fixtures.strobe_patch())
                 self._output_stage_patch_key = key
         except Exception:
             # The stage keeps its last policy and patch; unpatched slots are

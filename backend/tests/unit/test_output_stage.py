@@ -409,3 +409,117 @@ def test_a_malformed_buffer_still_goes_out_as_a_universe():
     out = OutputStage().process({0: [127.5, 300, -4, "x", None]}, 0.0)[0]
     assert len(out) == 512
     assert list(out[:5]) == [128, 255, 0, 0, 0]
+
+
+# ---------------------------------------------------------------------------
+# Strobe fixtures are off while strobes are disabled
+# ---------------------------------------------------------------------------
+
+# A strobe at slots 200-203: dimmer, rate, macro, speed. The last three are not light.
+STROBE_PATCH = {0: PATCH[0] + [
+    {200: ROLE_INTENSITY, 201: ROLE_FIXED, 202: ROLE_FIXED, 203: ROLE_FIXED},
+]}
+STROBE_FIXTURE_SLOTS = {0: [200, 201, 202, 203]}
+
+
+def strobe_frame(value=255):
+    frame = lit_frame()
+    frame[200:204] = [value] * 4
+    return frame
+
+
+def test_a_strobe_fixture_is_off_until_strobes_are_allowed():
+    """Before any policy arrives the stage has strobes disabled, which is the safe way round."""
+    stage = OutputStage()
+    stage.set_patch(STROBE_PATCH, STROBE_FIXTURE_SLOTS)
+    assert stage.status()["strobe_fixtures_held_off"]
+
+    out = stage.process({0: strobe_frame()}, 0.0)[0]
+    assert out[200:204] == bytes(4), "dimmer and rate channel both"
+    assert out[DIMMER] == 255 and out[100] == 255, "the mover and the par are not strobes"
+    assert list(out[PAN:TILT_FINE + 1]) == [200, 17, 90, 3]
+
+    stage.set_flash_policy(True, 18.0)
+    assert not stage.status()["strobe_fixtures_held_off"]
+    out = stage.process({0: strobe_frame()}, 1.0)[0]
+    assert list(out[200:204]) == [255] * 4
+
+
+@pytest.mark.parametrize("cap", [0.0, 2.0, 3.0, 18.0, None, "fast"])
+def test_a_strobe_fixture_is_off_whatever_the_cap_says(cap):
+    stage = OutputStage()
+    stage.set_patch(STROBE_PATCH, STROBE_FIXTURE_SLOTS)
+    stage.set_flash_policy(False, cap)
+    _, asked, sent = play(stage, lambda t: {0: strobe_frame(square(8.0)(t))}, 3.0)
+    assert slot(asked, 200).max() == 1.0
+    for index in (200, 201, 202, 203):
+        assert slot(sent, index).max() == 0.0
+
+
+def test_a_patch_without_strobe_slots_holds_nothing_off():
+    stage = OutputStage()
+    stage.set_patch(STROBE_PATCH)
+    stage.set_flash_policy(False, 2.0)
+    assert not stage.status()["strobe_fixtures_held_off"]
+    assert list(stage.process({0: strobe_frame()}, 0.0)[0][200:204]) == [255] * 4
+
+
+def test_strobe_slots_in_a_universe_the_patch_leaves_out_are_still_held_off():
+    stage = OutputStage()
+    stage.set_patch(PATCH, {4: [10, 11, "x", 999, -1]})
+    out = stage.process({4: [255] * 512}, 0.0)[4]
+    assert out[10] == 0 and out[11] == 0
+    assert out[9] == 255 and out[12] == 255
+
+
+def test_a_strobe_fixture_held_off_closes_a_subtractive_flag():
+    """Off is dark, and on an inverted slot dark is 255."""
+    stage = OutputStage()
+    stage.set_patch({0: [{0: ROLE_INTENSITY_INVERTED}]}, {0: [0]})
+    assert stage.process({0: [0]}, 0.0)[0][0] == 255
+
+
+def test_a_strobe_held_off_does_not_spend_the_rigs_flash_budget():
+    """Whatever a held-off strobe is asked to do, the rest of the rig goes out the same.
+
+    The strobe is made dark before the limiter runs. Made dark after it, its
+    8 Hz would be counted against the rig, and the par would be slowed for the
+    sake of a flash nobody saw.
+    """
+    def par(t):
+        frame = [0] * 512
+        frame[100:103] = [square(8.0)(t)] * 3
+        return frame
+
+    def par_and_strobe(t):
+        frame = par(t)
+        frame[200:204] = [square(8.0, offset=0.06)(t)] * 4
+        return frame
+
+    quiet, noisy = OutputStage(), OutputStage()
+    for stage in (quiet, noisy):
+        stage.set_patch(STROBE_PATCH, STROBE_FIXTURE_SLOTS)
+        stage.set_flash_policy(False, 3.0)
+    times, _, alone = play(quiet, lambda t: {0: par(t)}, 6.0)
+    _, asked, together = play(noisy, lambda t: {0: par_and_strobe(t)}, 6.0)
+
+    assert worst_flashes_per_second(times, slot(asked, 200)) >= 8
+    assert slot(together, 200).max() == 0.0
+    assert np.array_equal(slot(together, 100), slot(alone, 100))
+    assert slot(alone, 100).max() == 1.0
+    assert 1 <= worst_flashes_per_second(times, slot(alone, 100)) <= 3
+    assert quiet.limited_frames == noisy.limited_frames
+
+
+def test_switching_strobes_off_is_a_fall_and_is_immediate():
+    stage = OutputStage()
+    stage.set_patch(STROBE_PATCH, STROBE_FIXTURE_SLOTS)
+    stage.set_flash_policy(True, 18.0)
+    for n in range(10):
+        out = stage.process({0: strobe_frame()}, n * DT)[0]
+    assert list(out[200:204]) == [255] * 4
+
+    stage.set_flash_policy(False, 18.0)
+    out = stage.process({0: strobe_frame()}, 10 * DT)[0]
+    assert out[200:204] == bytes(4)
+    assert out[DIMMER] == 255 and out[100] == 255

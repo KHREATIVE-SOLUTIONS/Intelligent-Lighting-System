@@ -8,11 +8,13 @@ The show engine, the raw DMX routes, cues and fades, the test patterns, the
 fixture tests and the identify walkthrough all end the same way: they leave
 values in a universe buffer, and the transmitter sends whatever is there. This
 stage sits in the transmitter, so it sees all of them and none of them can go
-round it. It owns three things:
+round it. It owns four things:
 
 * the **grand master**, which scales light and never position;
 * the **blackout latch**, which holds against every writer until released;
-* the **flash limiter**, which caps how often light may jump up.
+* the **flash limiter**, which caps how often light may jump up;
+* the **strobe switch**, which holds every strobe fixture off while strobes
+  are disabled.
 
 It works on bytes, and bytes do not say which slot is a dimmer and which is a
 pan. The patch (``set_patch``) tells it. A slot the patch does not cover is
@@ -30,7 +32,18 @@ blackout is always immediate and the limiter cannot hold light on.
 
 What it cannot see: a fixture's own strobe. A constant value on a shutter or
 strobe channel makes the fixture flash with no change in the DMX at all, and
-which values do that differs per profile. Those slots pass through untouched.
+which values do that differs per profile. On a par, a mover or a batten those
+slots pass through untouched.
+
+The strobe switch
+-----------------
+A dedicated strobe fixture is the exception, because flashing is all it is for.
+While strobes are disabled every slot the patch gives to a strobe fixture is
+sent as off: its dimmer and colour dark, and its rate, shutter and macro
+channels at zero, so neither a writer nor the fixture's own strobe can flash
+it. That happens before the flash limiter looks at the frame, so a strobe that
+is being held off spends none of the budget the rest of the rig shares. Every
+other fixture carries on under the limiter exactly as before.
 """
 
 from __future__ import annotations
@@ -119,6 +132,8 @@ class _UniversePatch:
     light: np.ndarray = field(default_factory=lambda: np.ones(SLOTS, dtype=bool))
     inverted: np.ndarray = field(default_factory=lambda: np.zeros(SLOTS, dtype=bool))
     unpatched: np.ndarray = field(default_factory=lambda: np.ones(SLOTS, dtype=bool))
+    # Slots of dedicated strobe fixtures: held off while strobes are disabled.
+    strobe: np.ndarray = field(default_factory=lambda: np.zeros(SLOTS, dtype=bool))
     # Per fixture: (mastered slots, colour slots behind them). Its light is
     # the brightest of one times the brightest of the other.
     fixtures: List[Tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
@@ -296,8 +311,9 @@ class OutputStage:
     def set_flash_policy(self, strobe_allowed: bool, hz_cap: Any) -> None:
         """Take the venue's strobe switch and flash-rate cap.
 
-        Switching strobes off does not lift the limit, it tightens it. A cap
-        that cannot be read as a rate selects the strictest limit.
+        Switching strobes off does not lift the limit, it tightens it, and it
+        holds every strobe fixture in the patch fully off. A cap that cannot
+        be read as a rate selects the strictest limit.
         """
         try:
             cap: Optional[float] = float(hz_cap)
@@ -335,21 +351,31 @@ class OutputStage:
     # Patch
     # ------------------------------------------------------------------
 
-    def set_patch(self, patch: Optional[Mapping[int, Iterable[Mapping[int, str]]]]) -> None:
+    def set_patch(self, patch: Optional[Mapping[int, Iterable[Mapping[int, str]]]],
+                  strobe_slots: Optional[Mapping[int, Iterable[int]]] = None) -> None:
         """Say what each patched slot is.
 
         ``patch`` maps a universe to its fixtures, each a mapping of 0-based
         slot to role. Slots it leaves out stay unpatched, and so stay light.
+
+        ``strobe_slots`` maps a universe to the 0-based slots that belong to
+        dedicated strobe fixtures. They are sent as off while strobes are
+        disabled. Left out, the rig is taken to have no strobe fixtures.
         """
         built: Dict[int, _UniversePatch] = {}
-        for universe, fixtures in (patch or {}).items():
-            entry = _UniversePatch(
+
+        def new_entry() -> _UniversePatch:
+            return _UniversePatch(
                 mastered=np.ones(SLOTS, dtype=bool),
                 light=np.ones(SLOTS, dtype=bool),
                 inverted=np.zeros(SLOTS, dtype=bool),
                 unpatched=np.ones(SLOTS, dtype=bool),
+                strobe=np.zeros(SLOTS, dtype=bool),
                 fixtures=[],
             )
+
+        for universe, fixtures in (patch or {}).items():
+            entry = new_entry()
             for slots in fixtures:
                 dimmers: List[int] = []
                 colours: List[int] = []
@@ -377,6 +403,15 @@ class OutputStage:
                         np.asarray(colours, dtype=np.intp),
                     ))
             built[int(universe)] = entry
+        for universe, slots in (strobe_slots or {}).items():
+            entry = built.setdefault(int(universe), new_entry())
+            for slot in slots:
+                try:
+                    slot = int(slot)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= slot < SLOTS:
+                    entry.strobe[slot] = True
         with self._lock:
             self._patch = built
 
@@ -422,6 +457,13 @@ class OutputStage:
             if scale != 1.0:
                 level[patch.mastered] = np.floor(level[patch.mastered] * scale)
             state.seen_lit |= patch.unpatched & (raw > 0)
+            # A strobe fixture is off while strobes are disabled. Dark here,
+            # ahead of the limiter, so what it was asked to do is never seen
+            # as a flash and never spends the budget the rig shares.
+            held_off = None
+            if not self._strobe_allowed and patch.strobe.any():
+                held_off = patch.strobe
+                level[held_off] = 0.0
 
             previous = state.history.previous
             ceiling = np.maximum(previous, state.history.floor(now) + free)
@@ -432,7 +474,7 @@ class OutputStage:
                 limited = True
             if self._limit_fixtures(patch, state, level, now, allowed, window):
                 limited = True
-            work.append((universe, raw, patch, state, level))
+            work.append((universe, raw, patch, state, level, held_off))
 
         if self._limit_rig(work, now, allowed, window):
             limited = True
@@ -440,12 +482,16 @@ class OutputStage:
             self.limited_frames += 1
 
         out: Dict[int, StagedFrame] = {}
-        for universe, raw, patch, state, level in work:
+        for universe, raw, patch, state, level, held_off in work:
             state.history.push(level, now)
             state.fixture_history.push(self._fixture_levels(patch, level), now)
             wire = level.copy()
             wire[patch.inverted] = 255.0 - wire[patch.inverted]
             sent = np.where(patch.light, wire, raw).astype(np.uint8)
+            if held_off is not None:
+                # Its rate, shutter and macro channels are not light, and a
+                # constant value there flashes the fixture by itself.
+                sent[held_off & ~patch.light] = 0
             out[universe] = StagedFrame(sent.tobytes())
         return out
 
@@ -505,7 +551,7 @@ class OutputStage:
         by_dimmer = 0.0
         by_light = 0.0
         units = 0
-        for (_, _, patch, state, _), level in zip(work, levels):
+        for (_, _, patch, state, _, _), level in zip(work, levels):
             for dimmers, colours in patch.fixtures:
                 dimmer, light = _fixture_light(dimmers, colours, level)
                 by_dimmer += dimmer
@@ -580,6 +626,8 @@ class OutputStage:
             "blackout": self._blackout,
             "output_master": self.output_master,
             "strobe_allowed": self._strobe_allowed,
+            "strobe_fixtures_held_off": bool((not self._strobe_allowed) and any(
+                entry.strobe.any() for entry in self._patch.values())),
             "flash_limit_hz": self.flash_limit_hz,
             "frames": self.frames,
             "limited_frames": self.limited_frames,
