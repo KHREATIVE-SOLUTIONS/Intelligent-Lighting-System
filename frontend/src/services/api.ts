@@ -24,6 +24,12 @@ import type {
   ProLightingState,
 } from '../types';
 import type { BoxHealthPayload, DmxStatusPayload } from '../utils/showHealth';
+import type {
+  SetupCheckFixture,
+  SetupCheckListing,
+  SetupCheckName,
+  SetupCheckState,
+} from '../utils/fixtureSetupChecks';
 
 const API_BASE_URL = '/api';
 
@@ -525,6 +531,71 @@ export const identifyApi = {
       });
     } catch {
       // The server watchdog is the guarantee; this is only the fast path.
+    }
+  },
+};
+
+// Per-fixture setup checks: light one fixture from the patch and record what
+// the operator saw.
+const setupCheckPath = (rigId: number, fixtureId?: number) =>
+  fixtureId === undefined
+    ? `/rigs/${rigId}/setup-check`
+    : `/rigs/${rigId}/fixtures/${fixtureId}/setup-check`;
+
+export const setupChecksApi = {
+  /** Read-only: lights nothing. */
+  list: async (rigId: number): Promise<SetupCheckListing> => {
+    const response = await api.get(`/rigs/${rigId}/setup-checks`);
+    return response.data;
+  },
+
+  /** Hold one look steadily on one fixture, with the rest of the room dark. */
+  show: async (
+    rigId: number,
+    fixtureId: number,
+    check: SetupCheckName,
+    look: string
+  ): Promise<SetupCheckState> => {
+    const response = await api.post(`${setupCheckPath(rigId, fixtureId)}/show`, { check, look });
+    return response.data;
+  },
+
+  heartbeat: async (rigId: number): Promise<SetupCheckState> => {
+    const response = await api.post(`${setupCheckPath(rigId)}/heartbeat`);
+    return response.data;
+  },
+
+  release: async (rigId: number): Promise<SetupCheckState> => {
+    const response = await api.post(`${setupCheckPath(rigId)}/release`);
+    return response.data;
+  },
+
+  /** `passed: null` forgets the answer. */
+  recordResult: async (
+    rigId: number,
+    fixtureId: number,
+    check: SetupCheckName,
+    passed: boolean | null
+  ): Promise<SetupCheckFixture> => {
+    const response = await api.post(`${setupCheckPath(rigId, fixtureId)}/result`, { check, passed });
+    return response.data;
+  },
+
+  /**
+   * Release from a tab that is going away. A normal request is abandoned when
+   * the document unloads, which would leave the fixture lit and the show off
+   * the wire until the box's own timeout fires.
+   */
+  releaseOnUnload: (rigId: number): void => {
+    const token = useAuthStore.getState().token;
+    try {
+      void fetch(`${API_BASE_URL}${setupCheckPath(rigId)}/release`, {
+        method: 'POST',
+        keepalive: true,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+    } catch {
+      // The box's timeout is the guarantee; this is only the fast path.
     }
   },
 };
