@@ -117,6 +117,10 @@ class DMXController:
         # limit live, so no writer can be outside them.
         self.universes: Dict[int, DMXUniverse] = {}
         self.output_stage = OutputStage()
+        # If the show engine stops producing frames, the stage fades the rig
+        # to black inside this many seconds rather than hold its last frame.
+        self.output_stage.set_watchdog_seconds(settings.DMX_WATCHDOG_SECONDS)
+        self._watchdog_tripped = False
         self.stage_failures = 0
         self.last_stage_error: Optional[str] = None
         # Universes that exist only to carry a test pattern, and the pending tasks
@@ -333,6 +337,7 @@ class DMXController:
             self.last_stage_error = str(e)
             if self.stage_failures == 1:
                 logger.exception("Output stage failed; sending dark (logged once)")
+        self._note_watchdog()
 
         for universe_num, frame in staged.items():
             if stop is not None and stop.is_set():
@@ -348,6 +353,19 @@ class DMXController:
                 if not self._send_error_logged:
                     logger.warning("ArtNet output error (suppressing repeats): %s", e)
                     self._send_error_logged = True
+
+    def _note_watchdog(self) -> None:
+        """Say so once when the watchdog starts fading the rig, and once when it lets go."""
+        tripped = self.output_stage.watchdog_level < 1.0
+        if tripped == self._watchdog_tripped:
+            return
+        self._watchdog_tripped = tripped
+        if tripped:
+            logger.error(
+                "The show engine has stopped producing frames; fading output to black "
+                "(black within %.1fs of its last frame)", self.output_stage.watchdog_seconds)
+        else:
+            logger.warning("The show engine is producing frames again; output follows it")
 
     def _put_on_wire(self, sock: socket.socket, universe: int, frame: StagedFrame) -> None:
         """Send one ArtDmx packet. The only place in the application a packet leaves.
