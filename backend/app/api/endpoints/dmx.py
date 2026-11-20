@@ -197,6 +197,13 @@ async def blackout(
         )
     else:
         await controller_blackout
+    if not command.universes:
+        # Latched at the output stage, in front of the wire, so it holds against
+        # every writer and not only the show: a raw channel write, a test
+        # pattern and the identify walkthrough all stay dark until restore.
+        stage = getattr(request.app.state.dmx_controller, "output_stage", None)
+        if stage is not None:
+            stage.blackout()
     return {"status": "blackout", "universes": command.universes or "all"}
 
 
@@ -210,6 +217,9 @@ async def restore_from_blackout(
         raise HTTPException(status_code=500, detail="DMX controller not initialized")
 
     await request.app.state.dmx_controller.restore(fade_time=fade_time)
+    stage = getattr(request.app.state.dmx_controller, "output_stage", None)
+    if stage is not None:
+        stage.restore()
     engine = getattr(request.app.state, "effects_engine", None)
     if engine is not None:
         engine.restore()

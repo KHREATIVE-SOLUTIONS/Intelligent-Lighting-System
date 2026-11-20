@@ -402,6 +402,11 @@ class EffectsEngine:
         # kind -> (preset name, the copy a layer holds); see _take_preset.
         self._held_presets: Dict[str, tuple] = {}
         self._blackout_latched: bool = False
+        # The stage in front of the wire, once one is attached. From then on it
+        # holds the master and the blackout latch for every writer, not just
+        # this one, and the engine renders at full and leaves the scaling to it.
+        self._output_stage = None
+        self._output_stage_patch_key = None
 
         # Beat tracking
         self.beat_count = 0
@@ -2057,13 +2062,71 @@ class EffectsEngine:
         """
         self._release_callback = callback
 
+    def attach_output_stage(self, stage) -> None:
+        """Hand the grand master and the blackout latch to the output stage.
+
+        The engine applied both itself, at its own render step, which left
+        every other writer outside them: a raw channel write lit a fixture
+        through a latched blackout. The stage sits in the transmitter, after
+        all of them. Whatever the operator had already set carries over.
+        """
+        self._output_stage = stage
+        self._output_stage_patch_key = None
+        if stage is None:
+            return
+        stage.set_master(self._grand_master)
+        if self._blackout_latched:
+            stage.blackout()
+        self._sync_output_stage()
+
+    def flash_policy(self) -> Tuple[bool, float]:
+        """Whether strobing is allowed right now, and the flash-rate cap."""
+        # Named rather than excluded: a profile this does not recognise is not
+        # a licence to strobe.
+        policy = str(getattr(self.config, "accessibility_mode", "no_strobe")).lower()
+        venue_mode = str(getattr(self.config, "venue_mode", "concert") or "concert").lower()
+        allowed = (
+            bool(self.config.strobe_enabled)
+            and policy in {"conservative", "performance"}
+            and not bool(getattr(self.config, "camera_mode", False))
+            and venue_mode not in {"theatre", "broadcast", "corporate"}
+        )
+        return allowed, self._strobe_cap_hz()
+
+    def _sync_output_stage(self) -> None:
+        """Keep the stage's flash policy and patch in step with the show.
+
+        Runs every frame, whether or not the engine is the one writing, so the
+        limit a manual or raw write meets is the one the venue has set now.
+        """
+        stage = self._output_stage
+        if stage is None:
+            return
+        try:
+            stage.set_flash_policy(*self.flash_policy())
+            fixtures = self.fixtures.fixtures
+            key = (id(self.fixtures), tuple(
+                (f.id, getattr(f, "universe", 0), f.dmx_address, len(f.channels))
+                for f in fixtures.values()
+            ))
+            if key != self._output_stage_patch_key:
+                stage.set_patch(self.fixtures.light_patch())
+                self._output_stage_patch_key = key
+        except Exception:
+            # The stage keeps its last policy and patch; unpatched slots are
+            # treated as light, so a failure here errs towards dark.
+            logger.exception("Could not sync the output stage")
+
     def _emit_dmx(self):
         """Send one DMX frame per universe that currently holds fixtures."""
+        self._sync_output_stage()
         callback = self._dmx_callback
         if callback is None:
             return
 
-        master = self.output_master
+        # With a stage attached the master is applied there, once, to every
+        # writer. Applying it here as well would square it.
+        master = 1.0 if self._output_stage is not None else self.output_master
         get_frames = getattr(self.fixtures, "get_dmx_frames", None)
         if get_frames is None:
             callback(0, self.fixtures.get_dmx_frame(universe=0, master=master))
@@ -3978,15 +4041,21 @@ class EffectsEngine:
         so nothing swings while the room is dark.
         """
         self._blackout_latched = True
+        if self._output_stage is not None:
+            self._output_stage.blackout()
         self._zero_dimmers()
         self._emit_dmx()
 
     def restore(self):
         """Release an operator blackout; the show comes back on the next frame."""
         self._blackout_latched = False
+        if self._output_stage is not None:
+            self._output_stage.restore()
 
     @property
     def blackout_active(self) -> bool:
+        if self._output_stage is not None:
+            return self._output_stage.blackout_active
         return self._blackout_latched
 
     def set_grand_master(self, level: float) -> float:
@@ -3998,15 +4067,21 @@ class EffectsEngine:
         if value != value:  # NaN
             raise ValueError("grand master must be a number between 0 and 1")
         self._grand_master = max(0.0, min(1.0, value))
+        if self._output_stage is not None:
+            return self._output_stage.set_master(self._grand_master)
         return self._grand_master
 
     @property
     def grand_master(self) -> float:
+        if self._output_stage is not None:
+            return self._output_stage.master
         return self._grand_master
 
     @property
     def output_master(self) -> float:
         """The intensity scale actually applied to the next frame."""
+        if self._output_stage is not None:
+            return self._output_stage.output_master
         return 0.0 if self._blackout_latched else self._grand_master
 
     def _zero_dimmers(self):

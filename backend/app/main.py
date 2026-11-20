@@ -279,6 +279,11 @@ async def lifespan(app: FastAPI):
             app.state.effects_engine.set_dmx_release_callback(
                 lambda universe: _release_engine_universe(app, universe)
             )
+            # The grand master, the blackout latch and the flash limit belong to
+            # the stage in the transmitter, where every writer meets them.
+            app.state.effects_engine.attach_output_stage(
+                app.state.dmx_controller.output_stage
+            )
 
         # Register with API
         set_effects_engine(app.state.effects_engine)

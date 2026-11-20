@@ -17,6 +17,7 @@ from collections import defaultdict
 
 from app.core.config import settings
 from app.schemas.dmx import DMXFrame, DMXUniverse, ArtNetConfig, DMXSceneState, DMXFixtureState
+from app.services.dmx.output_stage import OutputStage, StagedFrame, dark_frame
 
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,16 @@ class DMXController:
         )
 
         # Universe data
+        # These buffers are what the writers asked for, not what is sent. Every
+        # writer - the show, a raw channel write, a fade, a test pattern, the
+        # identify walkthrough - leaves its values here, and the transmitter
+        # puts the whole set through the output stage on its way to the wire.
+        # That is where the grand master, the blackout latch and the flash
+        # limit live, so no writer can be outside them.
         self.universes: Dict[int, DMXUniverse] = {}
+        self.output_stage = OutputStage()
+        self.stage_failures = 0
+        self.last_stage_error: Optional[str] = None
         # Universes that exist only to carry a test pattern, and the pending tasks
         # that hand them back once their blackout frame has gone out.
         self._borrowed_universes: Set[int] = set()
@@ -274,20 +284,7 @@ class DMXController:
         next_frame = time.perf_counter()
 
         while not stop.is_set() and self.is_connected:
-            for universe_num, universe in list(self.universes.items()):
-                if stop.is_set():
-                    break
-                try:
-                    self._send_universe(universe_num, self._frame_bytes(universe.data))
-                except Exception as e:
-                    # This thread is the only thing keeping the rig lit; it does not
-                    # get to die on one bad frame.
-                    self.send_error_count += 1
-                    self.last_send_error = str(e)
-                    self._universe_errors[universe_num] = str(e)
-                    if not self._send_error_logged:
-                        logger.warning("ArtNet output error (suppressing repeats): %s", e)
-                        self._send_error_logged = True
+            self._transmit_frame(time.monotonic(), stop)
 
             self._count_down_releases()
 
@@ -317,6 +314,52 @@ class DMXController:
         self.current_fps = 0.0
         if self.blackout_on_stop:
             self._send_final_blackout(sock)
+
+    def _transmit_frame(self, now: float, stop: Optional[threading.Event] = None) -> None:
+        """Put every live universe through the output stage, then on the wire.
+
+        The stage takes the universes together because its flash limit is on
+        the rig as well as on each slot. If it fails, the frame goes out dark:
+        a stage that cannot vouch for a frame does not get to pass it.
+        """
+        requested = {number: entry.data for number, entry in list(self.universes.items())}
+        try:
+            staged = self.output_stage.process(requested, now)
+        except Exception as e:
+            staged = {number: dark_frame() for number in requested}
+            self.stage_failures += 1
+            self.last_stage_error = str(e)
+            if self.stage_failures == 1:
+                logger.exception("Output stage failed; sending dark (logged once)")
+
+        for universe_num, frame in staged.items():
+            if stop is not None and stop.is_set():
+                break
+            try:
+                self._send_universe(universe_num, frame)
+            except Exception as e:
+                # This thread is the only thing keeping the rig lit; it does not
+                # get to die on one bad frame.
+                self.send_error_count += 1
+                self.last_send_error = str(e)
+                self._universe_errors[universe_num] = str(e)
+                if not self._send_error_logged:
+                    logger.warning("ArtNet output error (suppressing repeats): %s", e)
+                    self._send_error_logged = True
+
+    def _put_on_wire(self, sock: socket.socket, universe: int, frame: StagedFrame) -> None:
+        """Send one ArtDmx packet. The only place in the application a packet leaves.
+
+        It takes a frame the output stage produced and nothing else, so a new
+        write path cannot reach the wire without going through the stage.
+        """
+        if not isinstance(frame, StagedFrame):
+            raise TypeError("only a frame from the output stage may be sent")
+        packet = ArtNetProtocol.create_dmx_packet(
+            universe, frame, self._next_sequence(universe),
+            net=self.config.net, subnet=self.config.subnet,
+        )
+        sock.sendto(packet, (self.target_ip, self.config.port))
 
     FINAL_BLACKOUT_REPEATS = 3
     RELEASE_FRAMES = 3
@@ -373,16 +416,11 @@ class DMXController:
         """
         if sock is None:
             return
-        target = (self.target_ip, self.config.port)
-        zeros = bytes(512)
+        zeros = dark_frame()
         for attempt in range(self.FINAL_BLACKOUT_REPEATS):
             for universe_num in list(self.universes):
-                packet = ArtNetProtocol.create_dmx_packet(
-                    universe_num, zeros, self._next_sequence(universe_num),
-                    net=self.config.net, subnet=self.config.subnet,
-                )
                 try:
-                    sock.sendto(packet, target)
+                    self._put_on_wire(sock, universe_num, zeros)
                 except OSError as e:
                     logger.warning("ArtNet blackout-on-stop failed for universe %s: %s",
                                    universe_num, e)
@@ -414,24 +452,15 @@ class DMXController:
         self._sequences[universe] = seq
         return seq
 
-    def _send_universe(self, universe: int, data: bytes):
-        """Send a single universe of DMX data."""
-        if not self.socket or not self.is_connected:
+    def _send_universe(self, universe: int, data: StagedFrame):
+        """Send a single universe the output stage has passed."""
+        sock = self.socket
+        if not sock or not self.is_connected:
             return
 
-        # Create packet
-        packet = ArtNetProtocol.create_dmx_packet(
-            universe,
-            data,
-            self._next_sequence(universe),
-            net=self.config.net,
-            subnet=self.config.subnet,
-        )
-
-        # Send packet
         target = (self.target_ip, self.config.port)
         try:
-            self.socket.sendto(packet, target)
+            self._put_on_wire(sock, universe, data)
             self.frames_sent += 1
             self.last_send_time = time.time()
             # Healthy only once every universe is: one good universe must not
@@ -475,6 +504,11 @@ class DMXController:
             "last_send_error": self.last_send_error,
             "failing_universes": sorted(self._universe_errors),
             "last_send_time": last_send_time,
+            "output_stage": {
+                **self.output_stage.status(),
+                "failures": self.stage_failures,
+                "last_error": self.last_stage_error,
+            },
         }
 
     async def update_config(self, config: ArtNetConfig):
