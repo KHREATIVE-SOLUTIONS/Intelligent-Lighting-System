@@ -147,6 +147,20 @@ class Settings(BaseSettings):
     # Turn on to watch the demo in previs software.
     DEMO_RIG_DMX_OUTPUT: bool = False
 
+    # Idle look. Short silences in a set stay black; once the audio has been
+    # below the silence threshold for this many seconds the rig fades to a
+    # gentle static look, and back to the show when music returns. Zero or a
+    # negative number switches it off and silence stays black for good.
+    IDLE_LOOK_AFTER_SECONDS: float = 60.0
+    IDLE_LOOK_FADE_SECONDS: float = 3.0
+    # warm_amber, warm_white, cool_blue or song_colour (the current song's
+    # colour, drifting slowly). An unknown name falls back to warm_amber.
+    IDLE_LOOK_NAME: str = "warm_amber"
+    # The dimmer the look sits at, 0-1. The grand master still scales it.
+    IDLE_LOOK_LEVEL: float = 0.35
+    # How long sound has to last to count as music coming back.
+    IDLE_LOOK_RESUME_SECONDS: float = 0.5
+
     # WebSocket
     WS_HEARTBEAT_INTERVAL: int = 30
 
