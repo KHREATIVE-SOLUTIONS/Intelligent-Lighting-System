@@ -34,6 +34,7 @@ import {
   FileUpload as ImportIcon,
 } from '@mui/icons-material';
 import { rigsApi } from '../../services/api';
+import ActivateRigButton from './ActivateRigButton';
 import ImportExportDialog from './ImportExportDialog';
 import type { ImportOutcome } from './ImportExportDialog';
 import TemplateGallery from './TemplateGallery';
@@ -108,15 +109,6 @@ export default function RigList() {
       return;
     }
     fetchRigs();
-  };
-
-  const handleActivate = async (id: number) => {
-    try {
-      await rigsApi.activate(id);
-      fetchRigs();
-    } catch (error) {
-      console.error('Failed to activate rig:', error);
-    }
   };
 
   return (
@@ -194,11 +186,8 @@ export default function RigList() {
                   <DeleteIcon />
                 </IconButton>
                 <Box sx={{ flexGrow: 1 }} />
-                {!rig.is_active && (
-                  <Button size="small" onClick={() => handleActivate(rig.id)}>
-                    Activate
-                  </Button>
-                )}
+                {/* On every card: pressing it on the active rig applies its edits. */}
+                <ActivateRigButton rigId={rig.id} isActive={rig.is_active} onDone={() => fetchRigs()} />
               </CardActions>
             </Card>
           </Grid>
