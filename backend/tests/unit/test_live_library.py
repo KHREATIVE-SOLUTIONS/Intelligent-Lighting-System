@@ -11,6 +11,7 @@ moves and nothing about how bright it is.
 import pytest
 
 from app.services.demo.venue_presets import create_venue_rig
+from app.services.effects import live_dimmer as LD
 from app.services.effects import live_library as LB
 from app.services.effects import live_looks as LL
 from app.services.effects import live_moves
@@ -175,10 +176,23 @@ def test_a_section_the_library_does_not_know_falls_back():
     assert chooser.choose(section="intermission", energy=0.4, mood="chill") is None
 
 
-def _asks_too_much(bpm, style_speed=1.0, style_amp=1.0):
-    """Library looks that ask a head on the club rig for more than it has, at this tempo."""
-    manager, _ = create_venue_rig("club_night")
-    rig = LL.build_rig([f for f in manager.fixtures.values() if "pan" in f.channels and "tilt" in f.channels])
+def _rig(name="club_night"):
+    manager, _ = create_venue_rig(name)
+    return LL.build_rig([f for f in manager.fixtures.values() if "pan" in f.channels and "tilt" in f.channels])
+
+
+def _fit(movement, rig, motion, speed, amp, bpm):
+    return LL.speed_fit(movement, rig, motion, speed=speed, amp=amp, bpm=bpm,
+                        max_pan_deg_per_s=live_moves.MAX_PAN_DEG_PER_S,
+                        max_tilt_deg_per_s=live_moves.MAX_TILT_DEG_PER_S)
+
+
+def _asks_too_much(bpm, style_speed=1.0, style_amp=1.0, fitted=False, rig_name="club_night"):
+    """Library looks that ask a head for more than it has, at this tempo.
+
+    `fitted` runs each look at the speed the engine would give it: its own,
+    times the club style's, times the fit to the tempo."""
+    rig = _rig(rig_name)
     beats_per_frame = bpm / 60.0 / 60.0
     step = 3
     max_pan = step * live_moves.MAX_PAN_DEG_PER_S / 60.0
@@ -192,11 +206,12 @@ def _asks_too_much(bpm, style_speed=1.0, style_amp=1.0):
             motion = LL.SECTION_MOTION.get(section)
             if motion is None:
                 continue  # predrop and ethereal are not sections this engine names yet
-            frames = int(2.0 * motion.cycle_beats / max(0.1, speed) / beats_per_frame) + step
+            run_speed = speed * (_fit(movement, rig, motion, speed, amp, bpm) if fitted else 1.0)
+            frames = int(2.0 * motion.cycle_beats / max(0.1, run_speed) / beats_per_frame) + step
             for head in heads:
                 last = None
                 for i in range(0, frames, step):
-                    now = LL.head_pan_tilt(movement, head, rig, i * beats_per_frame, motion, speed, amp)
+                    now = LL.head_pan_tilt(movement, head, rig, i * beats_per_frame, motion, run_speed, amp)
                     if last is not None and (abs(now[0] - last[0]) > max_pan or abs(now[1] - last[1]) > max_tilt):
                         over.add((look.name, section))
                     last = now
@@ -209,31 +224,75 @@ def test_every_look_moves_no_faster_than_a_head_can_up_to_drum_and_bass_tempo(bp
     assert _asks_too_much(bpm) == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "No speed governor yet. Above about 175 BPM, or under a fast club style, a few of the "
-    "library's quickest sweeps ask for more pan than a head has (up to 373 deg/s against 240). "
-    "The slew limit holds the head back, so the fixture is safe and the look flattens. "
-    "Roadmap I1c: fit a look's speed to the tempo when it is taken."))
-def test_no_look_outruns_a_head_at_any_tempo_or_under_any_club_style():
+def test_without_the_fit_the_quickest_looks_do_outrun_a_head():
+    """What the fit is for. If this stops being true the fit has nothing to do."""
     fastest = max(spec["speed"] for spec in _CLUB_STYLE_LOOKS.values())
     biggest = max(spec["amp"] for spec in _CLUB_STYLE_LOOKS.values())
-    assert _asks_too_much(190.0) == []
-    assert _asks_too_much(174.0, fastest, biggest) == []
+    assert _asks_too_much(190.0) != []
+    assert _asks_too_much(174.0, fastest, biggest) != []
+
+
+def test_no_look_outruns_a_head_at_any_tempo_or_under_any_club_style():
+    """Each look at the speed the engine gives it: fitted to the tempo when it is taken."""
+    fastest = max(spec["speed"] for spec in _CLUB_STYLE_LOOKS.values())
+    biggest = max(spec["amp"] for spec in _CLUB_STYLE_LOOKS.values())
+    assert _asks_too_much(190.0, fitted=True) == []
+    assert _asks_too_much(174.0, fastest, biggest, fitted=True) == []
+    assert _asks_too_much(240.0, fastest, biggest, fitted=True) == []
+    # And on the biggest and the smallest rooms, not only the reference rig.
+    for rig_name in ("pro_beam_room", "small_nightclub"):
+        assert _asks_too_much(190.0, fastest, biggest, fitted=True, rig_name=rig_name) == []
+
+
+def test_the_fit_leaves_every_look_alone_at_an_ordinary_tempo():
+    """At 128 BPM with no club style nothing is too fast, so nothing is slowed."""
+    rig = _rig()
+    for look in LOOK_LIBRARY:
+        movement, speed, amp = LB.movement_of(look)
+        for section in look.sections:
+            motion = LL.SECTION_MOTION.get(section)
+            if motion is not None:
+                assert _fit(movement, rig, motion, speed, amp, 128.0) == 1.0, (look.name, section)
+
+
+def test_the_fit_only_ever_slows_a_look_and_only_as_far_as_it_must():
+    rig = _rig()
+    motion = LL.SECTION_MOTION["drop"]
+    slowed = 0
+    for movement in sorted(set(LB.MOVEMENT_TO_LOOK.values())):
+        pan_per_beat, tilt_per_beat = LL.peak_rates(movement, rig, motion, 1.2)
+        for bpm in (100.0, 150.0, 200.0, 240.0):
+            fit = _fit(movement, rig, motion, 1.5, 1.2, bpm)
+            assert 0.0 < fit <= 1.0
+            beats_per_s = bpm / 60.0 * 1.5 * fit
+            assert pan_per_beat * beats_per_s <= live_moves.MAX_PAN_DEG_PER_S
+            assert tilt_per_beat * beats_per_s <= live_moves.MAX_TILT_DEG_PER_S
+            if fit < 1.0:
+                slowed += 1
+                # Slowed to the limit less the headroom, not further.
+                nearest = max(pan_per_beat * beats_per_s / live_moves.MAX_PAN_DEG_PER_S,
+                              tilt_per_beat * beats_per_s / live_moves.MAX_TILT_DEG_PER_S)
+                assert nearest == pytest.approx(LL.SPEED_HEADROOM)
+    assert slowed > 0
+    # A look that does not move has nothing to slow.
+    assert LL.peak_rates("cross_hold", rig, motion) == (0.0, 0.0)
+    assert _fit("cross_hold", rig, motion, 1.5, 1.2, 240.0) == 1.0
 
 
 # ---------------------------------------------------------------------------
 # Through the engine
 # ---------------------------------------------------------------------------
 
-def _engine(seed):
+def _engine(seed, look_dimmer_effects=True):
     engine = EffectsEngine(EffectsConfig(fps=60.0, auto_mode=True, movement_enabled=True, dimmer_enabled=True,
-                                         strobe_enabled=False, look_seed=seed))
+                                         strobe_enabled=False, look_seed=seed,
+                                         look_dimmer_effects=look_dimmer_effects))
     manager, _ = create_venue_rig("club_night")
     engine.set_fixture_manager(manager)
     return engine
 
 
-def _run(engine, plan, frames_each=180):
+def _run(engine, plan, frames_each=180, energy=0.6, bpm=128.0, each_frame=None):
     """Step the live renderer through sections; returns look names and dimmer levels per frame.
 
     Two things a test has to do to mean what it says. The beat clock places
@@ -244,14 +303,18 @@ def _run(engine, plan, frames_each=180):
     looks, levels, sections = [], [], []
     clock = M._Clock()
     i = 0
+    beat_frames = max(1, int(round(3600.0 / bpm)))
     with M.virtual_clock(clock):
         for section in plan:
             engine._force_section(section, 1e9)
             for _ in range(frames_each):
                 clock.t = (i + 1) / 60.0
-                engine.update_audio(energy=0.6, bass=0.5, mid=0.3, high=0.2, is_beat=(i % 28 == 0),
-                                    beat_number=i // 28, bpm=128.0)
+                engine.update_audio(energy=energy, bass=0.5 if energy else 0.0, mid=0.3 if energy else 0.0,
+                                    high=0.2 if energy else 0.0, is_beat=(i % beat_frames == 0),
+                                    beat_number=i // beat_frames, bpm=bpm)
                 engine.update(delta_time=1.0 / 60.0)
+                if each_frame is not None:
+                    each_frame(engine)
                 looks.append(engine._rebuild_active_pattern)
                 sections.append(engine._rebuild_section)
                 levels.append(tuple(round(f.dimmer, 6) for f in engine.fixtures.fixtures.values()))
@@ -291,15 +354,92 @@ def test_the_engine_moves_as_the_chosen_look_says():
     assert state["look_movement"] == LB.MOVEMENT_TO_LOOK[look.movement_pattern]
 
 
-def test_choosing_a_look_changes_movement_and_nothing_about_brightness():
-    """Stage one of bringing the library back. Its dimmer effects, bumps, base
-    levels and strobe modes are not performed yet, so two different nights are
-    frame-for-frame as bright as each other. When a look's brightness side is
-    brought in, this test is the one that has to change, on purpose."""
+def test_the_engine_fits_a_look_to_the_tempo_it_is_taken_at():
+    """A fast club style at a fast tempo: the looks that would outrun a head are slowed, and say so."""
+    engine = _engine(seed=4)
+    engine._club_style = "dnb"
+    rig = _rig()
+    seen = {}
+
+    def note(e):
+        key = (e._rebuild_active_pattern, e._rebuild_section)
+        if key not in seen:
+            motion = LL.SECTION_MOTION[e._rebuild_section]
+            speed = e._rebuild_style_speed * e._rebuild_look_speed
+            amp = e._rebuild_style_amp * e._rebuild_look_amp
+            pan, tilt = LL.peak_rates(e._rebuild_look_movement, rig, motion, amp)
+            beats_per_s = speed * e._rebuild_speed_fit / e._clock_period
+            seen[key] = (e._rebuild_speed_fit, pan * beats_per_s, tilt * beats_per_s)
+        # Stepped by hand the beat clock never locks, so it is held at the
+        # tempo here: 190 BPM is what the clock would be running at.
+        e._clock_period = 60.0 / 190.0
+
+    engine._clock_period = 60.0 / 190.0
+    _run(engine, ["drop", "chorus", "drop", "chorus", "drop", "chorus"], frames_each=240, bpm=190.0,
+         each_frame=note)
+    assert engine._rebuild_style_speed == pytest.approx(_CLUB_STYLE_LOOKS["dnb"]["speed"])
+    fits = [fit for fit, _, _ in seen.values()]
+    assert all(0.0 < fit <= 1.0 for fit in fits)
+    assert min(fits) < 1.0, "at this tempo and style something has to be slowed"
+    for key, (_, pan_rate, tilt_rate) in seen.items():
+        # Within a head's reach at the tempo the clock was running when it was taken.
+        assert pan_rate <= live_moves.MAX_PAN_DEG_PER_S * 1.02, (key, pan_rate)
+        assert tilt_rate <= live_moves.MAX_TILT_DEG_PER_S * 1.02, (key, tilt_rate)
+    assert engine.get_pro_lighting_state()["look_speed_fit"] == pytest.approx(engine._rebuild_speed_fit, abs=1e-3)
+
+
+def _beam_columns(engine):
+    """Which columns of a `_run` level frame are beams: the heads that carry the look's dimmer effect."""
+    fixtures = list(engine.fixtures.fixtures.values())
+    return [k for k, f in enumerate(fixtures)
+            if "pan" in f.channels and str(f.fixture_type).lower() not in ("wash", "strobe", "bar", "led_bar", "par")]
+
+
+def test_a_looks_dimmer_effect_moves_light_between_beams_and_never_adds_any():
+    """Stage two of bringing the library back: a look now chooses how the beams
+    are lit as well as how they move. Against the same night lit by the
+    renderer's one chase, on every frame: every other fixture is exactly as it
+    was, the drop is exactly as it was, and the beams together are never
+    brighter. Strobe modes, bumps, base levels and colour are still not
+    performed; when they are, this is the test that has to change."""
+    with_looks = _engine(seed=1)
+    looks_a, levels_a = _run(with_looks, PLAN)
+    looks_b, levels_b = _run(_engine(seed=1, look_dimmer_effects=False), PLAN)
+    assert looks_a == looks_b, "the same seed chooses the same looks either way"
+    beams = _beam_columns(with_looks)
+    assert len(beams) == 12
+    others = [k for k in range(len(levels_a[0])) if k not in beams]
+    changed = 0
+    for n, (a, b) in enumerate(zip(levels_a, levels_b)):
+        section = PLAN[n // 180]
+        assert [a[k] for k in others] == [b[k] for k in others], (n, section)
+        if section == "drop":
+            assert a == b, (n, "the drop is one sustained level, whatever the look")
+            continue
+        # Levels are recorded to six places; twelve of them are summed.
+        assert sum(a[k] for k in beams) <= sum(b[k] for k in beams) + 1e-5, (n, section, looks_a[n])
+        assert max(a[k] for k in beams) <= 0.6 + 1e-6, (n, "no beam above the moment's energy")
+        changed += a != b
+    assert changed > 600, "and the looks really are lit differently from the one chase"
+
+
+def test_two_nights_are_lit_differently_and_the_same_seed_is_the_same_night():
     looks_a, levels_a = _run(_engine(seed=1), PLAN)
     looks_b, levels_b = _run(_engine(seed=2), PLAN)
     looks_c, levels_c = _run(_engine(seed=1), PLAN)
     assert looks_a == looks_c and levels_a == levels_c, "the same seed is the same night"
-    assert looks_a != looks_b, "two seeds should be two different nights"
-    assert levels_a == levels_b
+    assert looks_a != looks_b and levels_a != levels_b
     assert max(max(frame) for frame in levels_a) > 0.3, "and the rig was actually lit"
+
+
+def test_a_looks_dimmer_effect_is_dark_in_silence():
+    _, levels = _run(_engine(seed=3), ["verse", "chorus", "breakdown", "buildup"], energy=0.0)
+    assert max(max(frame) for frame in levels) == 0.0
+
+
+def test_the_engine_lights_the_beams_as_the_chosen_look_says():
+    engine = _engine(seed=4)
+    _run(engine, ["verse"], frames_each=200)
+    look = LB.look_named(engine._rebuild_active_pattern)
+    assert engine._rebuild_dimmer == LD.dimmer_of(look)
+    assert engine._rebuild_dimmer.effect == look.dimmer_effect

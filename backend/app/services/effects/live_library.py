@@ -14,14 +14,17 @@ join. It asks the library's own selector for a look, using what this engine
 can honestly say about the music, and translates the part of the look this
 renderer can perform today.
 
-**Performed now:** which look, its movement (mapped onto `live_looks`), and its
-speed and size.
+**Performed now:** which look, its movement (mapped onto `live_looks`), its
+speed and size (the speed fitted to the tempo so no head is outrun, see
+`live_looks.speed_fit`), and its dimmer effect and chase style on the beams
+(`live_dimmer`), outside the drop.
 
-**Not performed yet, and deliberately:** the look's dimmer effect, chase,
-bump, base level, strobe mode, blinder, colour treatment and fixture-group
-isolation. Those change brightness and flashing, which is where the safety
-limits and the drop contract live, so each will come in on its own with the
-bench watching. Until then a look's name promises more than it delivers:
+**Not performed yet, and deliberately:** the look's bump, base level and
+chase brightness, strobe mode, blinder, colour treatment and fixture-group
+isolation, and any dimmer effect inside the drop. Those change brightness and
+flashing, which is where the safety limits and the drop contract live, so
+each will come in on its own with the bench watching. Until then a look's
+name promises more than it delivers:
 "drop_strobe_eighth" moves like itself but does not strobe on eighth notes,
 and should not until the accent governor is the one doing it.
 
