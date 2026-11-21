@@ -87,6 +87,7 @@ async def test_fixture(
         ch_map=ch_map,
         channel_count=channel_count,
         test_type=test_type,
+        open_values=service._build_open_values(rf.mode.channels),
     )
 
     return {
@@ -192,6 +193,7 @@ async def test_all_fixtures(
             ch_map=ch_map,
             channel_count=rf.mode.channel_count,
             test_type="identify",
+            open_values=service._build_open_values(rf.mode.channels),
         )
         tested += 1
 

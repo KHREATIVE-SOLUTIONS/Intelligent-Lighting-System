@@ -10,6 +10,9 @@ from a similar fixture, or filled in with a plausible default. Where a channel
 could not be sourced it carries no `value_ranges` at all - an empty gap is a
 known unknown, a guessed slot is a defect that reaches a venue.
 
+Ranges marked `(assumed)` are a separate, hand-entered set that this file
+neither counts nor describes; see `VALUE_RANGES_ASSUMED.md`.
+
 ## Coverage
 
 - Profiles matched to an OFL fixture: **11 / 50**

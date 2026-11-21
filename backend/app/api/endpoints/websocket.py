@@ -18,6 +18,7 @@ import numpy as np
 from ...core.config import settings
 from ...core.security import verify_token
 from ...schemas.audio import engine_energy, programme_level
+from ...services.effects.fixture_groups import profile_range_values
 from ...services.ml.training_recorder import get_recorder
 
 router = APIRouter()
@@ -958,8 +959,20 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
     state['pan_mod'] += (pan_signal - state['pan_mod']) * config.lowpass_pan
     state['tilt_mod'] += (tilt_signal - state['tilt_mod']) * config.lowpass_tilt
 
-    # Open shutter
-    shutter_open = 255
+    # Which byte opens a shutter or rests a strobe channel is the profile's to
+    # say. The numbers passed in below are what is sent when it says nothing.
+    def open_byte(fixture, channel_name: str, fallback: int) -> int:
+        ranges = profile_range_values(fixture, channel_name)
+        return ranges.open_byte() if ranges is not None else fallback
+
+    def dark_byte(fixture, channel_name: str, fallback: int) -> int:
+        ranges = profile_range_values(fixture, channel_name)
+        return ranges.closed_byte() if ranges is not None else fallback
+
+    def strobe_byte(fixture, channel_name: str, fallback: int) -> int:
+        """`fallback` is the rate as a raw byte, 0 being no strobe."""
+        ranges = profile_range_values(fixture, channel_name)
+        return ranges.strobe_byte(fallback / 255.0) if ranges is not None else fallback
 
     async def write(fixture, channel_name: str, value: float):
         offset = fixture.channels.get(channel_name)
@@ -1003,7 +1016,7 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
             await write(fixture, 'pan', pan_base + mirror * state['pan_mod'])
             await write(fixture, 'tilt', tilt_base + state['tilt_mod'])
             await write(fixture, 'dimmer', dimmer)
-            await write(fixture, 'shutter', shutter_open)
+            await write(fixture, 'shutter', open_byte(fixture, 'shutter', 255))
             await write_color(fixture, dimmer)
 
         washes = roles['washes']
@@ -1015,7 +1028,7 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
             await write(fixture, 'pan', pan_base + mirror * state['pan_mod'] * 0.5)
             await write(fixture, 'tilt', 118 + state['tilt_mod'] * 0.35)
             await write(fixture, 'dimmer', dimmer)
-            await write(fixture, 'shutter', shutter_open)
+            await write(fixture, 'shutter', open_byte(fixture, 'shutter', 255))
             await write_color(fixture, dimmer)
             await write(fixture, 'zoom', zoom)
 
@@ -1030,16 +1043,20 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
                 strobe = 80
 
             await write(fixture, 'dimmer', bar_dimmer)
-            await write(fixture, 'strobe', strobe)
-            await write(fixture, 'shutter', shutter_open)
+            await write(fixture, 'strobe', strobe_byte(fixture, 'strobe', strobe))
+            await write(fixture, 'shutter', open_byte(fixture, 'shutter', 255))
             await write_color(fixture, bar_dimmer)
 
         # Strobes idle dark and only fire on a high-arousal section change.
         firing = arousal > 0.75 and is_section
         for fixture in roles['strobes']:
             await write(fixture, 'dimmer', 255 if firing else 0)
-            await write(fixture, 'strobe', 160 if firing else 0)
-            await write(fixture, 'shutter', shutter_open if firing else 0)
+            if firing:
+                await write(fixture, 'strobe', strobe_byte(fixture, 'strobe', 160))
+                await write(fixture, 'shutter', open_byte(fixture, 'shutter', 255))
+            else:
+                await write(fixture, 'strobe', dark_byte(fixture, 'strobe', 0))
+                await write(fixture, 'shutter', dark_byte(fixture, 'shutter', 0))
             await write_color(fixture, 255 if firing else 0)
 
     except Exception:

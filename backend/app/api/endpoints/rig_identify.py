@@ -33,6 +33,9 @@ from app.api.endpoints.fixture_test import get_test_service
 from app.db.database import get_db
 from app.models.fixture import FixtureMode
 from app.models.rig import Rig, RigFixture
+from app.services.dmx.channel_ranges import (
+    FALLBACK_SHUTTER_OPEN, FALLBACK_STROBE_IDLE, resolve_channel_ranges,
+)
 from app.services.fixture_test.fixture_test_service import FixtureTestService
 
 logger = logging.getLogger(__name__)
@@ -146,17 +149,19 @@ def _channel_type(channel: Any) -> str:
 
 def _shutter_open_value(channel: Any) -> int:
     """The value that opens this shutter without putting it into strobe."""
-    for entry in getattr(channel, "value_ranges", None) or []:
-        if not isinstance(entry, dict):
-            continue
-        name = str(entry.get("name", "")).lower()
-        if any(word in name for word in ("strob", "puls", "random", "close")):
-            continue
-        if "open" in name or "no function" in name or "no func" in name:
-            low = int(entry.get("min_value", 0))
-            high = int(entry.get("max_value", 255))
-            return max(0, min(255, (low + high) // 2))
-    return 255
+    ranges = resolve_channel_ranges("shutter", getattr(channel, "value_ranges", None))
+    return ranges.open_byte() if ranges is not None else FALLBACK_SHUTTER_OPEN
+
+
+def _strobe_idle_value(channel: Any) -> int:
+    """The value at which this strobe channel does not strobe and shows light.
+
+    0 unless the profile says otherwise - and several say otherwise: a par whose
+    strobe channel names 0 "closed" stays dark at 0, and the owner would report
+    a light that never lit.
+    """
+    ranges = resolve_channel_ranges("strobe", getattr(channel, "value_ranges", None))
+    return ranges.open_byte() if ranges is not None else FALLBACK_STROBE_IDLE
 
 
 def _identify_values(channels: List[Any], ch_map: Dict[str, int], level: int) -> Dict[int, int]:
@@ -178,8 +183,9 @@ def _identify_values(channels: List[Any], ch_map: Dict[str, int], level: int) ->
             values[offset] = _shutter_open_value(channel)
         elif ctype == "strobe":
             # Explicitly parked off. A profile whose strobe channel happens to
-            # come up hot is the hazard this endpoint exists to avoid.
-            values[offset] = 0
+            # come up hot is the hazard this endpoint exists to avoid. "Off" is
+            # the profile's resting value, never a byte inside a strobe range.
+            values[offset] = _strobe_idle_value(channel)
         elif ctype in HOME_VALUE_TYPES:
             values[offset] = max(0, min(255, int(getattr(channel, "default_value", 0) or 0)))
 

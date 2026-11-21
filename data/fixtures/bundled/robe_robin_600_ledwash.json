@@ -68,7 +68,9 @@
           {"name": "Strobe slow->fast (random)", "min_value": 192, "max_value": 223},
           {"name": "Open", "min_value": 224, "max_value": 255}
         ]},
-        {"channel_number": 18, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
+        {"channel_number": 18, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Intensity 0->100% (assumed)", "min_value": 0, "max_value": 255}
+        ]}
       ]
     },
     {
@@ -160,7 +162,9 @@
           {"name": "Strobe slow->fast (random)", "min_value": 192, "max_value": 223},
           {"name": "Open", "min_value": 224, "max_value": 255}
         ]},
-        {"channel_number": 24, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 24, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Intensity 0->100% (assumed)", "min_value": 0, "max_value": 255}
+        ]},
         {"channel_number": 25, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 24},
         {"channel_number": 26, "channel_type": "effect", "name": "FX1 Select", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 27, "channel_type": "speed", "name": "FX1 Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},

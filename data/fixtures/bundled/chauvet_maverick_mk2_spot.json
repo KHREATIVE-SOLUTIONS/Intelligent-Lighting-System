@@ -39,9 +39,15 @@
         {"channel_number": 18, "channel_type": "focus", "name": "Focus Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 17},
         {"channel_number": 19, "channel_type": "zoom", "name": "Zoom", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 20, "channel_type": "frost", "name": "Frost", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 21, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 21, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Intensity 0->100% (assumed)", "min_value": 0, "max_value": 255}
+        ]},
         {"channel_number": 22, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 21},
-        {"channel_number": 23, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 23, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Closed (assumed)", "min_value": 0, "max_value": 0},
+          {"name": "Strobe slow->fast (assumed)", "min_value": 1, "max_value": 254},
+          {"name": "Open (assumed)", "min_value": 255, "max_value": 255}
+        ]},
         {"channel_number": 24, "channel_type": "macro", "name": "Control/Reset", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
       ]
     },
@@ -64,8 +70,14 @@
         {"channel_number": 12, "channel_type": "focus", "name": "Focus", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 13, "channel_type": "zoom", "name": "Zoom", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 14, "channel_type": "frost", "name": "Frost", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 15, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 16, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 15, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Intensity 0->100% (assumed)", "min_value": 0, "max_value": 255}
+        ]},
+        {"channel_number": 16, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Closed (assumed)", "min_value": 0, "max_value": 0},
+          {"name": "Strobe slow->fast (assumed)", "min_value": 1, "max_value": 254},
+          {"name": "Open (assumed)", "min_value": 255, "max_value": 255}
+        ]},
         {"channel_number": 17, "channel_type": "macro", "name": "Control/Reset", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 18, "channel_type": "macro", "name": "Movement Macros", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null}
       ]

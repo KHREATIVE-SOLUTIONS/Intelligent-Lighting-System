@@ -8,6 +8,7 @@ from typing import List, Dict, Optional, Callable
 from dataclasses import dataclass, field
 import math
 
+from app.services.dmx.channel_ranges import ChannelRangeValues
 from app.services.dmx.output_stage import (
     ROLE_COLOUR, ROLE_COLOUR_INVERTED, ROLE_FIXED, ROLE_INTENSITY, ROLE_INTENSITY_INVERTED,
 )
@@ -55,6 +56,11 @@ class Fixture:
 
     # Profile homes: channel name -> the DMX value the profile parks it at
     channel_defaults: Dict[str, int] = field(default_factory=dict)
+
+    # Profile value ranges: channel name -> ChannelRangeValues, for the shutter,
+    # strobe and dimmer channels whose profile says which bytes open, close
+    # and strobe. A channel missing from here is driven on fixed numbers.
+    range_values: Dict[str, ChannelRangeValues] = field(default_factory=dict)
 
     # Current state
     pan: float = 0.0
@@ -191,6 +197,17 @@ def canonical_channel_name(name: str) -> str:
     return base if base and suffix.isdigit() else text
 
 
+def profile_range_values(fixture, channel_name: str) -> Optional[ChannelRangeValues]:
+    """What the fixture's profile says a shutter, strobe or dimmer channel's
+    bytes mean, or None when it says nothing and the caller's fixed numbers
+    stand. Set by adapters after construction, so anything may be in there."""
+    ranges = getattr(fixture, 'range_values', None)
+    if not isinstance(ranges, dict):
+        return None
+    values = ranges.get(channel_name)
+    return values if isinstance(values, ChannelRangeValues) else None
+
+
 def _render_fixture(fixture: Fixture, master: float = 1.0) -> Dict[str, int]:
     """Map a fixture's state onto the channel types its profile declares.
 
@@ -219,7 +236,10 @@ def _render_fixture(fixture: Fixture, master: float = 1.0) -> Dict[str, int]:
 
     has_dimmer = fixture.has_channel('dimmer')
     if has_dimmer:
-        values['dimmer'] = _to_byte(dimmer)
+        dimmer_range = profile_range_values(fixture, 'dimmer')
+        values['dimmer'] = (
+            dimmer_range.dimmer_byte(dimmer) if dimmer_range is not None else _to_byte(dimmer)
+        )
         color_scale = 1.0
     elif any(fixture.has_channel(name) for name in COLOR_BEARING_CHANNELS):
         # No intensity channel: intensity has to live in the colour values.
@@ -269,11 +289,22 @@ def _render_fixture(fixture: Fixture, master: float = 1.0) -> Dict[str, int]:
                 values['tilt'] = int(round(tilt_norm * 255.0))
 
     strobe = max(0.0, min(1.0, _level(fixture.strobe)))
+    # Which byte opens a shutter, and which rest a strobe channel, is the
+    # profile's to say. 255 and 0 are only what is sent when it says nothing:
+    # plenty of pars name 0 on their strobe channel "closed".
     if fixture.has_channel('shutter'):
-        values['shutter'] = _to_byte(strobe) if strobe > 0 else 255
+        shutter_range = profile_range_values(fixture, 'shutter')
+        if shutter_range is not None:
+            values['shutter'] = shutter_range.strobe_byte(strobe)
+        else:
+            values['shutter'] = _to_byte(strobe) if strobe > 0 else 255
     if fixture.has_channel('strobe'):
-        # A dedicated strobe channel rates the flash; 0 is "no strobe", not "closed".
-        values['strobe'] = _to_byte(strobe)
+        strobe_range = profile_range_values(fixture, 'strobe')
+        if strobe_range is not None:
+            values['strobe'] = strobe_range.strobe_byte(strobe)
+        else:
+            # A dedicated strobe channel rates the flash; 0 is "no strobe", not "closed".
+            values['strobe'] = _to_byte(strobe)
 
     at_home = set()
     for name in LEVEL_CHANNELS + PASSIVE_CHANNELS:
@@ -294,7 +325,15 @@ def _render_fixture(fixture: Fixture, master: float = 1.0) -> Dict[str, int]:
             continue
         base = canonical_channel_name(name)
         if base != name and base in values:
-            values[name] = home(name) if base in at_home else values[base]
+            # A repeat with ranges of its own answers in its own bytes: two
+            # strobe channels on one fixture need not share a layout.
+            own_range = profile_range_values(fixture, name)
+            if own_range is not None and base in ('shutter', 'strobe'):
+                values[name] = own_range.strobe_byte(strobe)
+            elif own_range is not None and base == 'dimmer':
+                values[name] = own_range.dimmer_byte(dimmer)
+            else:
+                values[name] = home(name) if base in at_home else values[base]
 
     return values
 

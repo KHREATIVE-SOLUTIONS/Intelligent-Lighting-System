@@ -166,6 +166,7 @@ def _seed_fixture_library() -> Tuple[int, int, List[str]]:
 
     errors: List[str] = []
     seeded = 0
+    backfilled = 0
     session = SessionLocal()
     try:
         existing = {sid for (sid,) in session.query(Fixture.source_id).all() if sid}
@@ -181,6 +182,16 @@ def _seed_fixture_library() -> Tuple[int, int, List[str]]:
 
             source_id = data.get("source_id") or path.stem
             if source_id in existing:
+                # A library seeded before a definition gained value ranges
+                # would otherwise never see them, and the engine would go on
+                # driving that fixture's shutter on fixed numbers.
+                try:
+                    backfilled += _backfill_value_ranges(session, data, source_id)
+                    session.commit()
+                except Exception as e:
+                    session.rollback()
+                    errors.append(f"{path.name}: value ranges: {e}")
+                    logger.error("Could not backfill value ranges for %s: %s", path.name, e)
                 continue
 
             try:
@@ -203,8 +214,60 @@ def _seed_fixture_library() -> Tuple[int, int, List[str]]:
         logger.info("Seeded %d bundled fixtures (library holds %d)", seeded, total)
     else:
         logger.info("Fixture library already seeded (%d fixtures)", total)
+    if backfilled:
+        logger.info("Filled value ranges on %d already-seeded channels", backfilled)
 
     return seeded, total, errors
+
+
+def _backfill_value_ranges(session: Session, data: Dict[str, Any], source_id: str) -> int:
+    """Give an already-seeded bundled fixture the value ranges its definition
+    now carries. Returns the number of channels filled.
+
+    Only ever fills a channel that has none: ranges someone entered or imported
+    are theirs. A channel is matched on mode name and channel number, and left
+    alone if its type no longer agrees with the definition - then the layout
+    was edited after seeding and the definition's bytes describe something else.
+    """
+    wanted: Dict[Tuple[str, int], Tuple[str, List[Dict[str, Any]]]] = {}
+    for mode_data in data.get("modes", []):
+        for ch_data in mode_data.get("channels", []):
+            ranges = ch_data.get("value_ranges")
+            if not ranges:
+                continue
+            try:
+                key = (str(mode_data["name"]), int(ch_data["channel_number"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            wanted[key] = (str(ch_data.get("channel_type") or ""), ranges)
+    if not wanted:
+        return 0
+
+    fixtures = (
+        session.query(Fixture)
+        .filter(Fixture.source_id == source_id, Fixture.is_bundled.is_(True))
+        .all()
+    )
+    filled = 0
+    for fixture in fixtures:
+        for mode in fixture.modes or []:
+            for channel in mode.channels or []:
+                if channel.value_ranges:
+                    continue
+                try:
+                    key = (str(mode.name), int(channel.channel_number))
+                except (TypeError, ValueError):
+                    continue
+                hit = wanted.get(key)
+                if hit is None:
+                    continue
+                channel_type, ranges = hit
+                current = getattr(channel.channel_type, "value", channel.channel_type)
+                if str(current) != channel_type:
+                    continue
+                channel.value_ranges = ranges
+                filled += 1
+    return filled
 
 
 def _insert_fixture(session: Session, data: Dict[str, Any], source_id: str) -> None:
