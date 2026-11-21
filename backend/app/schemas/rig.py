@@ -7,7 +7,7 @@ Pydantic schemas for rig-related API operations.
 
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import NoInspectionAvailable
 
@@ -25,6 +25,25 @@ _CHANNEL_FIELDS = (
     "id", "mode_id", "channel_number", "channel_type", "name", "default_value",
     "min_value", "max_value", "is_fine", "coarse_channel", "value_ranges",
 )
+
+
+# The per-fixture hang flags, in one place for every path that carries them.
+PAN_TILT_FLAGS = ("pan_invert", "tilt_invert", "pan_tilt_swap")
+
+
+def apply_is_inverted_alias(item: dict) -> dict:
+    """Map a retired is_inverted flag onto tilt_invert.
+
+    is_inverted meant the unit was hung inverted: mid-tilt should still point
+    toward the floor, which is tilt_invert. The is_inverted value itself is
+    left in place so we do not delete user data.
+
+    Mutates and returns the dict. If tilt_invert is already present (including
+    an explicit False), it is left alone.
+    """
+    if item.get("is_inverted") and item.get("tilt_invert") is None:
+        item["tilt_invert"] = True
+    return item
 
 
 def _unloaded(obj: Any) -> frozenset:
@@ -106,8 +125,20 @@ class RigFixtureBase(BaseModel):
     is_active: bool = True
     is_inverted: bool = False
     is_address_locked: bool = False
+    # How this unit is hung: reverse an axis, or exchange the two. Applied in
+    # the engine where pan/tilt become DMX, so every look honours them.
+    pan_invert: bool = False
+    tilt_invert: bool = False
+    pan_tilt_swap: bool = False
     serial_number: Optional[str] = None
     qr_code_data: Optional[str] = None
+
+    # A rig saved before the flags existed, or a client that sends null, means
+    # "not set", which is False - never a validation error on a whole rig.
+    @field_validator(*PAN_TILT_FLAGS, mode="before")
+    @classmethod
+    def _default_hang_flag(cls, value: Any) -> Any:
+        return False if value is None else value
 
 
 class RigFixtureCreate(RigFixtureBase):
@@ -119,6 +150,16 @@ class RigFixtureCreate(RigFixtureBase):
     @classmethod
     def _check_zone(cls, value: Any) -> Optional[str]:
         return _validate_zone(value)
+
+    @model_validator(mode="after")
+    def _map_retired_is_inverted(self) -> "RigFixtureCreate":
+        # is_inverted is retired as a hang flag. If the client still sends it
+        # and does not set tilt_invert, copy it onto tilt_invert. The column
+        # stays on the model so existing data is not dropped.
+        if "is_inverted" in self.model_fields_set and self.is_inverted:
+            if "tilt_invert" not in self.model_fields_set:
+                self.tilt_invert = True
+        return self
 
 
 class RigFixtureUpdate(BaseModel):
@@ -144,6 +185,9 @@ class RigFixtureUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_inverted: Optional[bool] = None
     is_address_locked: Optional[bool] = None
+    pan_invert: Optional[bool] = None
+    tilt_invert: Optional[bool] = None
+    pan_tilt_swap: Optional[bool] = None
     serial_number: Optional[str] = None
     qr_code_data: Optional[str] = None
 
@@ -151,6 +195,13 @@ class RigFixtureUpdate(BaseModel):
     @classmethod
     def _check_zone(cls, value: Any) -> Optional[str]:
         return _validate_zone(value)
+
+    @model_validator(mode="after")
+    def _map_retired_is_inverted(self) -> "RigFixtureUpdate":
+        if "is_inverted" in self.model_fields_set and self.is_inverted:
+            if "tilt_invert" not in self.model_fields_set:
+                self.tilt_invert = True
+        return self
 
 
 class RigFixtureResponse(RigFixtureBase):

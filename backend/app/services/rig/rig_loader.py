@@ -392,6 +392,11 @@ def _build_fixture(
     fixture.tilt_range = _travel_range(profile.tilt_range, DEFAULT_TILT_RANGE) if 'tilt' in channels else 0.0
     fixture.channel_limits = limits
     fixture.channel_defaults = defaults
+    # How the unit is hung. A patch saved before the flags existed has no such
+    # attribute, or NULL in it; both mean "hung the ordinary way".
+    fixture.pan_invert = bool(getattr(rf, "pan_invert", False) or False)
+    fixture.tilt_invert = bool(getattr(rf, "tilt_invert", False) or False)
+    fixture.pan_tilt_swap = bool(getattr(rf, "pan_tilt_swap", False) or False)
     # What the light points at, or None when the rig declares nothing. Every
     # fixture carries the attribute so a consumer never has to tell "no zone"
     # apart from "built by a path that predates zones".

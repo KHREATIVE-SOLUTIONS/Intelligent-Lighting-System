@@ -21,6 +21,8 @@ from app.models.fixture import Fixture, FixtureMode, FixtureType
 from app.schemas.rig import (
     RigCreate, RigUpdate, RigResponse, RigListResponse,
     RigFixtureCreate, RigFixtureUpdate, RigFixtureResponse,
+    PAN_TILT_FLAGS,
+    apply_is_inverted_alias,
 )
 from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
 from app.services.rig.rig_detector import RigDetector, DemoRigGenerator, PatternGenerator
@@ -47,6 +49,26 @@ def _validated_zone(value: Any) -> Optional[str]:
             detail=f"unknown zone '{value}'; expected one of: {', '.join(ZONE_VALUES)}",
         )
     return zone.value
+
+
+def _put_hang_flags_on_stage(app, rig_id: int, rf: RigFixture) -> None:
+    """Carry a patch's pan/tilt hang flags onto the running show.
+
+    The show reads a rig once, when it is activated. Without this, flipping
+    "invert pan" while standing under the light it is meant to fix would
+    change the database and leave the head going the wrong way until the rig
+    was activated again. Only the rig on stage is touched, and only its flags.
+    """
+    live = getattr(app.state, "live_rig", None) or {}
+    if live.get("demo") or live.get("id") != rig_id:
+        return
+    manager = getattr(app.state, "fixture_manager", None)
+    fixtures = getattr(manager, "fixtures", None)
+    fixture = fixtures.get(f"rf{rf.id}") if isinstance(fixtures, dict) else None
+    if fixture is None:
+        return
+    for name in PAN_TILT_FLAGS:
+        setattr(fixture, name, bool(getattr(rf, name, False) or False))
 
 
 def _rig_fixture_footprint(rf: RigFixture) -> int:
@@ -336,6 +358,7 @@ async def add_fixture_to_rig(
 async def batch_update_fixtures(
     rig_id: int,
     body: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Batch update multiple rig fixture properties (positions, addresses)."""
@@ -375,6 +398,16 @@ async def batch_update_fixtures(
         if "zone" in item:
             rf.zone = _validated_zone(item["zone"])
 
+        # A client that still sends is_inverted, and omits tilt_invert, is
+        # asking for a hung-inverted unit: mid-tilt toward the floor.
+        apply_is_inverted_alias(item)
+
+        # Booleans, so False is a value to store and only null is skipped.
+        for flag in PAN_TILT_FLAGS:
+            if item.get(flag) is not None:
+                setattr(rf, flag, bool(item[flag]))
+        _put_hang_flags_on_stage(request.app, rig_id, rf)
+
         updated += 1
 
     await db.flush()
@@ -386,6 +419,7 @@ async def update_rig_fixture(
     rig_id: int,
     fixture_id: int,
     fixture_data: RigFixtureUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Update a fixture in a rig."""
@@ -420,10 +454,14 @@ async def update_rig_fixture(
             )
 
     for field, value in update_data.items():
+        # The hang flags are NOT NULL: a null means "leave it", not "clear it".
+        if field in PAN_TILT_FLAGS and value is None:
+            continue
         setattr(rig_fixture, field, value)
 
     await db.flush()
     await db.refresh(rig_fixture)
+    _put_hang_flags_on_stage(request.app, rig_id, rig_fixture)
     return rig_fixture
 
 
@@ -589,6 +627,9 @@ async def create_demo_rig(
                 "tags": rf.tags or [],
                 "is_active": rf.is_active,
                 "is_inverted": rf.is_inverted,
+                "pan_invert": bool(rf.pan_invert),
+                "tilt_invert": bool(rf.tilt_invert),
+                "pan_tilt_swap": bool(rf.pan_tilt_swap),
                 "fixture": {
                     "manufacturer": rf.fixture.manufacturer,
                     "model": rf.fixture.model,
@@ -1004,6 +1045,10 @@ async def duplicate_rig_fixture(
         group_name=source.group_name,
         tags=source.tags,
         is_active=True,
+        # A copy is the same model hung the same way until the owner says otherwise.
+        pan_invert=bool(source.pan_invert),
+        tilt_invert=bool(source.tilt_invert),
+        pan_tilt_swap=bool(source.pan_tilt_swap),
     )
     db.add(new_rf)
     await db.flush()

@@ -8,7 +8,7 @@ Database models for lighting rigs and fixture placements.
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, DateTime,
-    ForeignKey, JSON, Text
+    ForeignKey, JSON, Text, false
 )
 from sqlalchemy.orm import relationship
 
@@ -89,6 +89,13 @@ class RigFixture(Base):
     is_active = Column(Boolean, default=True)
     is_inverted = Column(Boolean, default=False)
     is_address_locked = Column(Boolean, default=False)
+
+    # How this unit is hung. Applied where the engine turns pan/tilt into DMX
+    # (fixture_groups.route_pan_tilt). NOT NULL with a database default so a
+    # row written before the columns existed reads False rather than NULL.
+    pan_invert = Column(Boolean, nullable=False, default=False, server_default=false())
+    tilt_invert = Column(Boolean, nullable=False, default=False, server_default=false())
+    pan_tilt_swap = Column(Boolean, nullable=False, default=False, server_default=false())
 
     # Identification
     serial_number = Column(String(100), nullable=True)
