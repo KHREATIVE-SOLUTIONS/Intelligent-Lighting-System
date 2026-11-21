@@ -73,8 +73,8 @@ times. Under the current counter both read 3. Everything else in those files sta
 ## Drop bench
 
 `drop_bench.py` asks one question of the same machinery: how often is the drop caught,
-and how often is one invented? It plays 12 single plays, 4 drops back to back, 16
-plays with no drop and 8 held-out builds, and prints hits, misses and false drops. See
+and how often is one invented? It plays 12 single plays, 4 drops back to back, 20
+plays with no drop and 8 other builds, and prints hits, misses and false drops. See
 `docs/DROP_DETECTION_BENCH.md`.
 
 ```bash

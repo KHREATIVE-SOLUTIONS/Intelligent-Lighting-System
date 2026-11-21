@@ -277,6 +277,42 @@
     "falseimpact"
    ],
    "false_drops_at_s": []
+  },
+  {
+   "play": "quiet then song",
+   "tracks": [
+    "quiet",
+    "song"
+   ],
+   "false_drops_at_s": [
+    27.55
+   ]
+  },
+  {
+   "play": "quiet then DJ mix",
+   "tracks": [
+    "quiet",
+    "mix"
+   ],
+   "false_drops_at_s": [
+    27.55
+   ]
+  },
+  {
+   "play": "dense at -12 dB then song",
+   "tracks": [
+    "dense:20@-12",
+    "song"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "dense at -12 dB then DJ mix",
+   "tracks": [
+    "dense:20@-12",
+    "mix"
+   ],
+   "false_drops_at_s": []
   }
  ],
  "other_builds": [
@@ -364,9 +400,10 @@
   "back_to_back_caught": 4,
   "back_to_back_drops": 4,
   "false_drops_in_drop_plays": 0,
-  "false_drops_in_no_drop_material": 1,
+  "false_drops_in_no_drop_material": 3,
   "other_builds_caught": 8,
   "other_builds_plays": 8,
   "false_drops_in_other_builds": 0
- }
+ },
+ "release_path": true
 }

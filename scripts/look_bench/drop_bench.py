@@ -17,8 +17,8 @@ clock, with nothing downloaded and nothing sent anywhere.
   * False drops. Every time the engine enters `drop` outside a true drop's
     window, in the plays above and in material that has no drop at all.
   * Other builds. The drop track at other tempos and build lengths, cold and
-    after loud music. Not part of the 12 + 4: they are there to show the
-    detector was not fitted to one render.
+    after loud music. Not part of the 12 + 4. They were in view while the
+    detector was tuned, so they widen the bench rather than validate it blind.
 
 A drop is "caught" by the look bench's own rule: the engine's section reads
 `drop` at some frame from 1 s before the true drop to 4 s after it.
@@ -27,6 +27,11 @@ Usage (from the repository root, with the backend's Python):
 
     backend/venv/Scripts/python scripts/look_bench/drop_bench.py
     backend/venv/Scripts/python scripts/look_bench/drop_bench.py --json out.json -v
+    backend/venv/Scripts/python scripts/look_bench/drop_bench.py --without-release-path
+
+--without-release-path switches off the detector's build-and-release rule, which
+is the detector as it was before backlog #10. It is how the "before" figures in
+docs/DROP_DETECTION_BENCH.md are reproduced.
 """
 from __future__ import annotations
 
@@ -87,9 +92,15 @@ NO_DROP: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("dense then click", ("dense:14", "click")),
     ("dense then build that never drops", ("dense:14", "nodrop")),
     ("dense then build, small hit, breakdown", ("dense:14", "falseimpact")),
+    # A step up in level into music whose bass share swings from phrase to phrase.
+    ("quiet then song", ("quiet", "song")),
+    ("quiet then DJ mix", ("quiet", "mix")),
+    ("dense at -12 dB then song", ("dense:20@-12", "song")),
+    ("dense at -12 dB then DJ mix", ("dense:20@-12", "mix")),
 )
 
-# The drop track rendered differently: `ibdv:<bpm>:<build bars>`. Held out.
+# The drop track rendered differently: `ibdv:<bpm>:<build bars>`. Not part of
+# the 12 + 4, but not blind either: they were in view while the detector was tuned.
 OTHER_BUILDS: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
     ("140 BPM, 16-bar build, cold", (), "ibdv:140:16"),
     ("140 BPM, 16-bar build, after dense", ("dense:20",), "ibdv:140:16"),
@@ -252,7 +263,7 @@ def show(report: dict) -> None:
     for p in report["no_drop"]:
         n = len(p["false_drops_at_s"])
         print(f"  {'ok   ' if not n else 'FALSE'} {p['play']:<40} {p['false_drops_at_s'] if n else ''}")
-    print("\nOther builds (held out; not part of the 12 + 4)")
+    print("\nOther builds (not part of the 12 + 4)")
     for p in report["other_builds"]:
         extra = f"   false drops at {p['false_drops_at_s']}" if p["false_drops_at_s"] else ""
         print(f"  {'HIT ' if p['caught'] else 'MISS'}  {p['play']:<40} {late(p['late_ms']):>9}{extra}")
@@ -271,8 +282,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--json", help="also write the full report here")
     ap.add_argument("-v", "--verbose", action="store_true", help="print each play's section timeline")
+    ap.add_argument("--without-release-path", action="store_true",
+                    help="the detector as it was before the build-and-release rule")
     args = ap.parse_args()
+    if args.without_release_path:
+        from app.services.lighting.section_manager import StreamingSectionDetector
+        StreamingSectionDetector._RELEASE_MIN_JUMP = float("inf")   # no bass jump is ever enough
     report = asyncio.run(bench(args.verbose))
+    report["release_path"] = not args.without_release_path
     show(report)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1))

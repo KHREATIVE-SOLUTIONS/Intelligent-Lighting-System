@@ -10,16 +10,21 @@ Backlog #10. Finding D2 of `ASSESSMENT_AND_ROADMAP_2026-11.md`: the drop was cau
 | Single plays caught | 9 / 12 | **12 / 12** |
 | Back to back caught | 2 / 4 | **4 / 4** |
 | False drops in those plays | 0 | 0 |
-| False drops in 16 plays with no drop | 1 | 1 (the same one) |
-| Other builds, held out | 6 / 8 | **8 / 8** |
-| False drops in the held-out plays | 0 | 0 |
+| False drops in 20 plays with no drop | 3 | 3 (the same three) |
+| Other builds | 6 / 8 | **8 / 8** |
+| False drops in the other builds | 0 | 0 |
 
 Measured on 2026-11-21 with `scripts/look_bench/drop_bench.py`. The bench is
-deterministic: two runs of the "before" code gave byte-identical reports. Both reports
+deterministic: two runs of the unmodified code gave byte-identical reports. Both reports
 are kept in `scripts/look_bench/baseline/2026-11-21_drop_bench_{before,after}.json`.
 
+"Before" is the bench run with `--without-release-path`, which switches the new rule
+off. The 12 + 4 and the other builds were also run on the code before the change and
+gave the same 9 / 12, 2 / 4 and 6 / 8, play for play.
+
 The section detector on its own, with the decision engine's rule taken out of the
-picture, went from 6 / 12 and 0 / 4 to 12 / 12 and 4 / 4.
+picture, went from 6 / 12 and 0 / 4 to 12 / 12 and 4 / 4. That figure came from a
+replay script used during the work and since deleted; the bench does not print it.
 
 ## What the numbers are, and are not
 
@@ -31,7 +36,7 @@ It reproduces the shape of the finding (9 / 12 and 2 / 4, every miss after loud 
 but the two sets of figures are not the same measurement.
 
 - **There is no recorded music in the repository**, and none was downloaded. Every
-  drop here is one synthesiser's intro, build and drop, at four tempos and three build
+  drop here is one synthesiser's intro, build and drop, at five tempos and three build
   lengths. Real records are still owed (roadmap G1, item 3). `look_bench.py` already
   takes WAV and FLAC paths; this bench does not yet.
 - **Not checked on the wire.** `scripts/venue_sim` was not re-run.
@@ -43,6 +48,7 @@ From the repository root, with the backend's Python. It takes about five minutes
 ```bash
 backend/venv/Scripts/python scripts/look_bench/drop_bench.py
 backend/venv/Scripts/python scripts/look_bench/drop_bench.py -v --json out.json
+backend/venv/Scripts/python scripts/look_bench/drop_bench.py --without-release-path
 ```
 
 `-v` prints the section timeline of every play. Nothing is sent anywhere.
@@ -54,10 +60,12 @@ backend/venv/Scripts/python scripts/look_bench/drop_bench.py -v --json out.json
   passes used (cold; after 14 s and 30 s of dense music; after an earlier drop) plus
   gain changes, a DJ mix and a quiet track.
 - **4 back to back.** One boot, the soak's playlist: DJ mix, drop track, four times.
-- **16 plays with no drop.** Dense, quiet, DJ mix, song, click, a build that never
-  drops, a build that hits once and breaks down, and those again after loud music.
-- **8 other builds.** The drop track at 100, 120, 140 and 174 BPM with 4, 8 and 16 bar
-  builds, cold and after loud music. These were not used to choose the thresholds.
+- **20 plays with no drop.** Dense, quiet, DJ mix, song, click, a build that never
+  drops, a build that hits once and breaks down, those again after loud music, and four
+  steps up in level into music whose bass share swings from phrase to phrase.
+- **8 other builds.** The drop track at 100, 120, 128, 140 and 174 BPM with 4, 8 and
+  16 bar builds, cold and after loud music. They are not a blind test: they were in
+  view while the rule was tuned, and the thinnest margin quoted below is one of them.
 
 A drop is caught when the engine's section reads `drop` at some frame from 1 s before
 the true drop to 4 s after it. That is the look bench's own rule. A false drop is any
@@ -152,10 +160,16 @@ a gate of 0.5, and programme loudness was 0.41 against 0.60.
 
 ## Still open
 
-- **One false drop, there before and after.** A quiet track cut straight into 30 s of
-  dense music is called a drop 0.7 s after the cut, by the older centre-based rule. The
-  new rule refuses it. Fixing it means changing the older rule, which would move
-  results that work today, so it was left alone.
+- **Three false drops, there before and after.** A quiet track cut straight into loud
+  music (dense, the song, the DJ mix) is called a drop 0.7 to 3.5 s after the cut, at
+  the same instant with the new rule on or off. It comes from the rules that were
+  already there. Fixing it means changing them, which would move results that work
+  today, so it was left alone.
+- **A step up in level counts as a climb.** After a hard step the level stays above
+  its lagged self for several seconds, so "a climb at least 4 s old" can be met with no
+  build. A bass return of 0.20 in that window, with the level holding, would be called
+  a drop. The four step-up plays above did not produce one, with the new rule on or
+  off, but they are the only evidence.
 - **Thin margin on short builds.** A 4-bar build gives a bass jump of 0.22 against the
   0.20 threshold, and is named 1.4 s late after loud music.
 - **Late.** The new rule names the drop 0.5 to 0.9 s after it lands. That is the same
