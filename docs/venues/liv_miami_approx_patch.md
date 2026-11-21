@@ -2,7 +2,7 @@
 
 **APPROXIMATE RECREATION of LIV Miami (Fontainebleau Miami Beach), built from public 2009 trade press. It is NOT LIV's real patch, plot or addressing, and is not endorsed by or affiliated with the venue.**
 
-134 fixtures on universe(s) 0, 1, 2, 3. Every fixture is patched on this system's generic demo profile for its type, not on the source fixture's own DMX personality.
+131 fixtures on universe(s) 0, 1, 2, 3. Every fixture is patched on this system's generic demo profile for its type, not on the source fixture's own DMX personality.
 
 Generated from the 'liv_miami_approx' venue preset by scripts/export_demo_patch_sheet.py - edit the preset, not this file.
 
@@ -13,7 +13,7 @@ Generated from the 'liv_miami_approx' venue preset by scripts/export_demo_patch_
 | 0 | 34 | 512 | 512 |
 | 1 | 48 | 512 | 512 |
 | 2 | 20 | 240 | 240 |
-| 3 | 32 | 384 | 384 |
+| 3 | 29 | 348 | 348 |
 
 ## Groups
 
@@ -36,15 +36,15 @@ The names a look selects on. The engine adds its own groups by type and by posit
 | `dome_spokes_outer` | 16 |
 | `led_strips` | 8 |
 | `booth_strips` | 4 |
-| `dj_booth` | 36 |
+| `dj_booth` | 33 |
 | `skybox_strips` | 4 |
 | `truss_strobes` | 8 |
 | `dome_rim` | 12 |
 | `led_pars` | 10 |
 | `wall_pars` | 6 |
 | `staircase_pars` | 2 |
-| `led_wall` | 30 |
-| `led_wall_centre` | 18 |
+| `led_wall` | 27 |
+| `led_wall_centre` | 15 |
 | `led_wall_wings` | 12 |
 | `booth_wash` | 2 |
 
@@ -156,35 +156,32 @@ Positions are metres from the centre of the floor: X across, Y up, Z toward the 
 | 100 | `tripar_6` | Tri Par 6 | Elation Opti Tri Par (as generic par) | Demo generic 12ch | 12 | 2 | 205 | Wall Pars | led_pars; wall_pars | 12.60 | 0.30 | 6.00 | 0 / 0 / 0 |
 | 101 | `tripar_7` | Tri Par 7 | Elation Opti Tri Par (as generic par) | Demo generic 12ch | 12 | 2 | 217 | Staircase Pars | led_pars; staircase_pars | -4.00 | 0.30 | 12.60 | 0 / 0 / 0 |
 | 102 | `tripar_8` | Tri Par 8 | Elation Opti Tri Par (as generic par) | Demo generic 12ch | 12 | 2 | 229 | Staircase Pars | led_pars; staircase_pars | 4.00 | 0.30 | 12.60 | 0 / 0 / 0 |
-| 103 | `ledwall_c_r1c1` | LED Wall Centre R1 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 1 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -2.50 | 3.80 | -13.30 | 0 / 0 / 0 |
-| 104 | `ledwall_c_r1c2` | LED Wall Centre R1 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 13 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -1.50 | 3.80 | -13.30 | 0 / 0 / 0 |
-| 105 | `ledwall_c_r1c3` | LED Wall Centre R1 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 25 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -0.50 | 3.80 | -13.30 | 0 / 0 / 0 |
-| 106 | `ledwall_c_r1c4` | LED Wall Centre R1 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 37 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 0.50 | 3.80 | -13.30 | 0 / 0 / 0 |
-| 107 | `ledwall_c_r1c5` | LED Wall Centre R1 C5 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 49 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 1.50 | 3.80 | -13.30 | 0 / 0 / 0 |
-| 108 | `ledwall_c_r1c6` | LED Wall Centre R1 C6 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 61 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 2.50 | 3.80 | -13.30 | 0 / 0 / 0 |
-| 109 | `ledwall_c_r2c1` | LED Wall Centre R2 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 73 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -2.50 | 3.00 | -13.30 | 0 / 0 / 0 |
-| 110 | `ledwall_c_r2c2` | LED Wall Centre R2 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 85 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -1.50 | 3.00 | -13.30 | 0 / 0 / 0 |
-| 111 | `ledwall_c_r2c3` | LED Wall Centre R2 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 97 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -0.50 | 3.00 | -13.30 | 0 / 0 / 0 |
-| 112 | `ledwall_c_r2c4` | LED Wall Centre R2 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 109 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 0.50 | 3.00 | -13.30 | 0 / 0 / 0 |
-| 113 | `ledwall_c_r2c5` | LED Wall Centre R2 C5 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 121 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 1.50 | 3.00 | -13.30 | 0 / 0 / 0 |
-| 114 | `ledwall_c_r2c6` | LED Wall Centre R2 C6 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 133 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 2.50 | 3.00 | -13.30 | 0 / 0 / 0 |
-| 115 | `ledwall_c_r3c1` | LED Wall Centre R3 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 145 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -2.50 | 2.20 | -13.30 | 0 / 0 / 0 |
-| 116 | `ledwall_c_r3c2` | LED Wall Centre R3 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 157 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -1.50 | 2.20 | -13.30 | 0 / 0 / 0 |
-| 117 | `ledwall_c_r3c3` | LED Wall Centre R3 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 169 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -0.50 | 2.20 | -13.30 | 0 / 0 / 0 |
-| 118 | `ledwall_c_r3c4` | LED Wall Centre R3 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 181 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 0.50 | 2.20 | -13.30 | 0 / 0 / 0 |
-| 119 | `ledwall_c_r3c5` | LED Wall Centre R3 C5 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 193 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 1.50 | 2.20 | -13.30 | 0 / 0 / 0 |
-| 120 | `ledwall_c_r3c6` | LED Wall Centre R3 C6 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 205 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 2.50 | 2.20 | -13.30 | 0 / 0 / 0 |
-| 121 | `ledwall_w_r1c1` | LED Wall Wing R1 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 217 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -5.50 | 3.80 | -13.30 | 0 / 0 / 0 |
-| 122 | `ledwall_w_r1c2` | LED Wall Wing R1 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 229 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -4.50 | 3.80 | -13.30 | 0 / 0 / 0 |
-| 123 | `ledwall_w_r1c3` | LED Wall Wing R1 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 241 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 4.50 | 3.80 | -13.30 | 0 / 0 / 0 |
-| 124 | `ledwall_w_r1c4` | LED Wall Wing R1 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 253 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 5.50 | 3.80 | -13.30 | 0 / 0 / 0 |
-| 125 | `ledwall_w_r2c1` | LED Wall Wing R2 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 265 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -5.50 | 3.00 | -13.30 | 0 / 0 / 0 |
-| 126 | `ledwall_w_r2c2` | LED Wall Wing R2 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 277 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -4.50 | 3.00 | -13.30 | 0 / 0 / 0 |
-| 127 | `ledwall_w_r2c3` | LED Wall Wing R2 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 289 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 4.50 | 3.00 | -13.30 | 0 / 0 / 0 |
-| 128 | `ledwall_w_r2c4` | LED Wall Wing R2 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 301 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 5.50 | 3.00 | -13.30 | 0 / 0 / 0 |
-| 129 | `ledwall_w_r3c1` | LED Wall Wing R3 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 313 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -5.50 | 2.20 | -13.30 | 0 / 0 / 0 |
-| 130 | `ledwall_w_r3c2` | LED Wall Wing R3 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 325 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -4.50 | 2.20 | -13.30 | 0 / 0 / 0 |
-| 131 | `ledwall_w_r3c3` | LED Wall Wing R3 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 337 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 4.50 | 2.20 | -13.30 | 0 / 0 / 0 |
-| 132 | `ledwall_w_r3c4` | LED Wall Wing R3 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 349 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 5.50 | 2.20 | -13.30 | 0 / 0 / 0 |
-| 133 | `booth_wash_1` | Booth Wash 1 | Elation Opti Tri Par (as generic par) | Demo generic 12ch | 12 | 3 | 361 | Booth Wash | led_pars; booth_wash; dj_booth | -3.50 | 4.60 | -13.30 | 0 / 0 / 0 |
-| 134 | `booth_wash_2` | Booth Wash 2 | Elation Opti Tri Par (as generic par) | Demo generic 12ch | 12 | 3 | 373 | Booth Wash | led_pars; booth_wash; dj_booth | 3.50 | 4.60 | -13.30 | 0 / 0 / 0 |
+| 103 | `ledwall_c_r1c1` | LED Wall Centre R1 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 1 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -2.40 | 5.20 | -13.30 | 0 / 0 / 0 |
+| 104 | `ledwall_c_r1c2` | LED Wall Centre R1 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 13 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -1.20 | 5.20 | -13.30 | 0 / 0 / 0 |
+| 105 | `ledwall_c_r1c3` | LED Wall Centre R1 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 25 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 0.00 | 5.20 | -13.30 | 0 / 0 / 0 |
+| 106 | `ledwall_c_r1c4` | LED Wall Centre R1 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 37 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 1.20 | 5.20 | -13.30 | 0 / 0 / 0 |
+| 107 | `ledwall_c_r1c5` | LED Wall Centre R1 C5 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 49 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 2.40 | 5.20 | -13.30 | 0 / 0 / 0 |
+| 108 | `ledwall_c_r2c1` | LED Wall Centre R2 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 61 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -2.40 | 4.40 | -13.30 | 0 / 0 / 0 |
+| 109 | `ledwall_c_r2c2` | LED Wall Centre R2 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 73 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -1.20 | 4.40 | -13.30 | 0 / 0 / 0 |
+| 110 | `ledwall_c_r2c3` | LED Wall Centre R2 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 85 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 0.00 | 4.40 | -13.30 | 0 / 0 / 0 |
+| 111 | `ledwall_c_r2c4` | LED Wall Centre R2 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 97 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 1.20 | 4.40 | -13.30 | 0 / 0 / 0 |
+| 112 | `ledwall_c_r2c5` | LED Wall Centre R2 C5 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 109 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 2.40 | 4.40 | -13.30 | 0 / 0 / 0 |
+| 113 | `ledwall_c_r3c1` | LED Wall Centre R3 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 121 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -2.40 | 3.60 | -13.30 | 0 / 0 / 0 |
+| 114 | `ledwall_c_r3c2` | LED Wall Centre R3 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 133 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | -1.20 | 3.60 | -13.30 | 0 / 0 / 0 |
+| 115 | `ledwall_c_r3c3` | LED Wall Centre R3 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 145 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 0.00 | 3.60 | -13.30 | 0 / 0 / 0 |
+| 116 | `ledwall_c_r3c4` | LED Wall Centre R3 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 157 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 1.20 | 3.60 | -13.30 | 0 / 0 / 0 |
+| 117 | `ledwall_c_r3c5` | LED Wall Centre R3 C5 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 169 | LED Wall Centre | led_wall; led_wall_centre; dj_booth | 2.40 | 3.60 | -13.30 | 0 / 0 / 0 |
+| 118 | `ledwall_w_r1c1` | LED Wall Wing R1 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 181 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -5.50 | 5.20 | -13.30 | 0 / 0 / 0 |
+| 119 | `ledwall_w_r1c2` | LED Wall Wing R1 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 193 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -4.50 | 5.20 | -13.30 | 0 / 0 / 0 |
+| 120 | `ledwall_w_r1c3` | LED Wall Wing R1 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 205 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 4.50 | 5.20 | -13.30 | 0 / 0 / 0 |
+| 121 | `ledwall_w_r1c4` | LED Wall Wing R1 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 217 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 5.50 | 5.20 | -13.30 | 0 / 0 / 0 |
+| 122 | `ledwall_w_r2c1` | LED Wall Wing R2 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 229 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -5.50 | 4.40 | -13.30 | 0 / 0 / 0 |
+| 123 | `ledwall_w_r2c2` | LED Wall Wing R2 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 241 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -4.50 | 4.40 | -13.30 | 0 / 0 / 0 |
+| 124 | `ledwall_w_r2c3` | LED Wall Wing R2 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 253 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 4.50 | 4.40 | -13.30 | 0 / 0 / 0 |
+| 125 | `ledwall_w_r2c4` | LED Wall Wing R2 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 265 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 5.50 | 4.40 | -13.30 | 0 / 0 / 0 |
+| 126 | `ledwall_w_r3c1` | LED Wall Wing R3 C1 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 277 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -5.50 | 3.60 | -13.30 | 0 / 0 / 0 |
+| 127 | `ledwall_w_r3c2` | LED Wall Wing R3 C2 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 289 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | -4.50 | 3.60 | -13.30 | 0 / 0 / 0 |
+| 128 | `ledwall_w_r3c3` | LED Wall Wing R3 C3 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 301 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 4.50 | 3.60 | -13.30 | 0 / 0 / 0 |
+| 129 | `ledwall_w_r3c4` | LED Wall Wing R3 C4 | LED video wall (make and model not reported) (as generic bar) | Demo generic 12ch | 12 | 3 | 313 | LED Wall Wings | led_wall; led_wall_wings; dj_booth | 5.50 | 3.60 | -13.30 | 0 / 0 / 0 |
+| 130 | `booth_wash_1` | Booth Wash 1 | Elation Opti Tri Par (as generic par) | Demo generic 12ch | 12 | 3 | 325 | Booth Wash | led_pars; booth_wash; dj_booth | -3.50 | 6.00 | -13.30 | 0 / 0 / 0 |
+| 131 | `booth_wash_2` | Booth Wash 2 | Elation Opti Tri Par (as generic par) | Demo generic 12ch | 12 | 3 | 337 | Booth Wash | led_pars; booth_wash; dj_booth | 3.50 | 6.00 | -13.30 | 0 / 0 / 0 |

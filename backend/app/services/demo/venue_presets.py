@@ -789,11 +789,11 @@ def _liv_room_shell() -> RoomShell:
                             name="Rear stage riser"),
         led_walls=[
             BoxShell(center_x=0.0, center_z=LIV_LED_WALL_Z - 0.1, width=6.0, depth=0.1, height=2.4,
-                     base_height=1.8, basis=wall, name="LED wall centre"),
+                     base_height=3.2, basis=wall, name="LED wall centre"),
             BoxShell(center_x=-5.0, center_z=LIV_LED_WALL_Z - 0.1, width=2.0, depth=0.1, height=2.4,
-                     base_height=1.8, basis=wall, name="LED wall wing left"),
+                     base_height=3.2, basis=wall, name="LED wall wing left"),
             BoxShell(center_x=5.0, center_z=LIV_LED_WALL_Z - 0.1, width=2.0, depth=0.1, height=2.4,
-                     base_height=1.8, basis=wall, name="LED wall wing right"),
+                     base_height=3.2, basis=wall, name="LED wall wing right"),
         ],
     )
 
@@ -832,7 +832,7 @@ def _build_liv_miami_approx() -> VenuePreset:
         mezzanine       z=11                 4 spots on the soffit, facing the booth
         booth, skyboxes                      8 LED strips
         floor                                8 LED pars up the walls and the staircase
-        behind the booth z=-13.3             its LED walls as 30 cells, 2 booth wash pars
+        behind the booth z=-13.3             its LED walls as 27 cells, 2 booth wash pars
 
     The spots hang on straight chords, not a ring: the engine and the 3D view
     both read a rig as rows, and a ring would be eleven rows of two heads.
@@ -955,12 +955,17 @@ def _build_liv_miami_approx() -> VenuePreset:
     # stand-in the engine can colour: a centre wall and a wing each side, cut
     # into cells about a metre wide. They are on the upstage wall, where the 3D
     # view brackets a fixture to the wall instead of standing it on the floor.
-    wall_rows = (3.8, 3.0, 2.2)
+    #
+    # The wall starts at 3.2 m: the view's DJ camera stands behind this wall at
+    # head height and looks out through it, and its speaker stacks and the DJ
+    # reach about 2.1 m. An odd number of centre columns keeps every cell off
+    # x = +/-0.5, where the engine divides its left, centre and right groups.
+    wall_rows = (5.2, 4.4, 3.6)
     for r, y in enumerate(wall_rows, start=1):
-        for c, x in enumerate((-2.5, -1.5, -0.5, 0.5, 1.5, 2.5), start=1):
+        for c, x in enumerate((-2.4, -1.2, 0.0, 1.2, 2.4), start=1):
             add(booth, "bar", BAR_CH_COUNT, f"ledwall_c_r{r}c{c}", f"LED Wall Centre R{r} C{c}",
                 (x, y, LIV_LED_WALL_Z), "LED video wall (make and model not reported)",
-                "about 1.0 x 0.8 m of wall",
+                "about 1.2 x 0.8 m of wall",
                 "sourced: LED walls at the booth; size, layout and cell count assumed",
                 "LED Wall Centre", ["led_wall", "led_wall_centre", "dj_booth"])
     for r, y in enumerate(wall_rows, start=1):
@@ -974,7 +979,7 @@ def _build_liv_miami_approx() -> VenuePreset:
     # Two pars over the wall to light the DJ. The press lists no booth wash.
     for i, x in enumerate((-3.5, 3.5), start=1):
         add(booth, "par", BAR_CH_COUNT, f"booth_wash_{i}", f"Booth Wash {i}",
-            (x, 4.6, LIV_LED_WALL_Z), "Elation Opti Tri Par", "1 fixture",
+            (x, 6.0, LIV_LED_WALL_Z), "Elation Opti Tri Par", "1 fixture",
             "assumed: no booth wash is reported", "Booth Wash",
             ["led_pars", "booth_wash", "dj_booth"])
 
@@ -989,7 +994,7 @@ def _build_liv_miami_approx() -> VenuePreset:
             f"{LIV_DISCLAIMER} Round room under an 88 ft dome: 22 dance-floor spots, 4 mezzanine "
             "spots, 8 moving washes at 10 ft, the dome's LED spokes and rim floods folded into "
             "44 cells, 8 LED strips, 8 pars and 8 strobes, plus a stand-in for the booth's LED "
-            "walls (30 cells) and 2 booth wash pars. 134 fixtures on 4 universes."
+            "walls (27 cells) and 2 booth wash pars. 131 fixtures on 4 universes."
         ),
         size=VenueSize.LIV_MIAMI_APPROX,
         stage=stage,

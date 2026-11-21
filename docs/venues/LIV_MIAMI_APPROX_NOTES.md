@@ -35,7 +35,7 @@ checked.
 | Elation Opti Tri Pars | 8, plus 2 as booth wash - count and positions assumed |
 | Elation DLED 60 strips | 8 - count and positions assumed |
 | Martin Atomic 3000 DMX strobes | 8 - count and positions assumed |
-| DJ booth with LED walls | 30 cells standing in for the walls, plus 2 booth wash pars the press does not list. See "LED walls and booth" |
+| DJ booth with LED walls | 27 cells standing in for the walls, plus 2 booth wash pars the press does not list. See "LED walls and booth" |
 | Mezzanine, DJ booth, rear VIP level that converts to a stage | Room shell data only. See "Room shell" |
 | Backlit VIP skyboxes, glowing staircase, three bars | Not patched. See "Not modelled" |
 
@@ -43,8 +43,8 @@ checked.
 
 The press gives fixture types for these but no counts or positions:
 
-- **Opti Tri Pars (8):** three up each side wall and two at the foot of the
-  staircase, all on the floor.
+- **Opti Tri Pars (10):** three up each side wall and two at the foot of the
+  staircase, all on the floor, and two over the booth as its wash.
 - **DLED 60 strips (8):** four across the DJ booth front, two on each side
   wall at skybox height.
 - **Atomic 3000 strobes (8):** one off each end of each of the four spot
@@ -125,22 +125,35 @@ The press says the DJ booth has LED walls. It gives no size, make, resolution
 or signal path, and a video wall is fed by a media server, not patched as
 lighting. What is here is a stand-in the engine can colour:
 
-- **30 cells on universe 3**: a centre wall 6 cells wide by 3 high and a wing
-  each side 2 wide by 3 high, each cell about 1.0 x 0.8 m, from 1.8 to 4.2 m
-  up the upstage wall. Each cell is a generic 12-channel bar. The count, the
-  layout and the three-wall arrangement are assumed.
-- **2 booth wash pars** on the same universe, above the wall either side of
-  centre. The press lists no booth wash; they are patched as Opti Tri Pars
-  because that is the par the press names.
-- The 4 booth front strips from the first pass stay on universe 1.
+- **27 cells on universe 3**: a centre wall 5 cells wide by 3 high and a wing
+  each side 2 wide by 3 high, each cell about a metre wide and 0.8 m high,
+  from 3.2 to 5.6 m up the upstage wall. Each cell is a generic 12-channel
+  bar. The count, the layout and the three-wall arrangement are assumed.
+- **2 booth wash pars** on the same universe, at 6.0 m above the wall either
+  side of centre. The press lists no booth wash; they are patched as Opti Tri
+  Pars because that is the par the press names.
+- The 4 booth front strips from the first pass stay on universe 1, so the
+  `dj_booth` group spans universes 1 and 3.
 
-To the engine the wall cells are 30 more bars and the two pars are washes, so
-the `bars` group goes from 40 to 70 and `washes` from 28 to 30. A look that
+Two things about this system set the wall's shape, not the room:
+
+- It starts at 3.2 m. The 3D view's DJ camera stands behind the upstage wall
+  at 2.6 m and looks out through it, and the view's speaker stacks and DJ
+  reach about 2.1 m. Cells lower down would sit in front of that camera.
+- The centre wall has an odd number of columns. The engine splits a rig into
+  left, centre and right half a metre either side of its middle, and a
+  column at exactly 0.5 m could land on either side of that line.
+
+To the engine the wall cells are 27 more bars and the two pars are washes, so
+the `bars` group goes from 40 to 67 and `washes` from 28 to 30. A look that
 drives every bar now lights the wall with it. Use `led_wall` to address the
 wall alone. It can show colour, a chase or a wipe, not video.
 
 In the 3D view each cell is drawn as a batten on a wall bracket, not as a
-panel.
+panel. **Not looked at:** the view could not be run in the session that
+added the wall, so how the wall reads from the DJ, dance-floor and front
+cameras is unchecked. The heights above come from reading the camera and
+booth code, not from a render.
 
 ## Groups
 
@@ -162,8 +175,8 @@ it. So the washes are `centre_washes` and the strobes `truss_strobes`.
 | `led_strips` | 8 | All strips: `booth_strips` (4), `skybox_strips` (4) |
 | `dome_pixels` | 44 | The whole dome: `dome_spokes` (32) and `dome_rim` (12) |
 | `dome_spokes_inner`, `dome_spokes_outer` | 16, 16 | The two rings of spoke cells |
-| `led_wall` | 30 | `led_wall_centre` (18), `led_wall_wings` (12) |
-| `dj_booth` | 36 | Everything at the booth: wall, booth strips, booth wash |
+| `led_wall` | 27 | `led_wall_centre` (15), `led_wall_wings` (12) |
+| `dj_booth` | 33 | Everything at the booth: wall, booth strips, booth wash |
 
 Every fixture is in at least one group, and the patch sheets list each
 fixture's groups. These are this system's names, not the venue's console
@@ -183,7 +196,7 @@ Only the dome's diameter is from the press.
 | Balcony / mezzanine | Half ring round the rear of the room, 10.0 to 13.4 m out, soffit at 4.0 m, deck at 4.4 m | A mezzanine is reported; shape and size assumed |
 | DJ booth | Box 6.5 x 1.3 m, 1.25 m high, against the upstage wall | A booth is reported; size and position assumed |
 | Rear stage riser | Box 7.0 x 1.8 m, 0.6 m high, at the rear between the staircase pars | A rear level that converts to a stage is reported; size assumed |
-| LED walls | Three panels behind the booth, 6 m and 2 x 2 m wide, 2.4 m high | Walls reported; size assumed |
+| LED walls | Three panels on the upstage wall above the booth, 6 m and 2 x 2 m wide, from 3.2 to 5.6 m | Walls reported; size assumed |
 
 The two outer mezzanine spots moved in half a metre (x = 7.5, was 8.0) so
 that all four hang inside the balcony ring.
@@ -236,9 +249,9 @@ view mounts and aims each one from where it is patched.
 | 0 | 22 dance-floor spots, 4 mezzanine spots, 8 washes | 512 |
 | 1 | 32 dome spoke cells, 8 strips, 8 strobes | 512 |
 | 2 | 12 dome rim segments, 8 pars | 240 |
-| 3 | 30 LED wall cells, 2 booth wash pars | 384 |
+| 3 | 27 LED wall cells, 2 booth wash pars | 348 |
 
-134 fixtures. Universes 0 and 1 are full: adding a fixture to either means
+131 fixtures. Universes 0 and 1 are full: adding a fixture to either means
 moving a group to universe 2 or 3, or a new universe in the preset.
 
 As with every demo rig, DMX output is held off the network unless

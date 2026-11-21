@@ -80,7 +80,7 @@ def test_the_sourced_counts_are_the_ones_the_press_gives():
     assert by_model["Elation Design Spot 575E"] == 22
     assert by_model["Elation Design Spot 300E"] == 4
     assert by_model["Elation Impression RGB"] == 8
-    assert len(_preset().fixtures) == 134
+    assert len(_preset().fixtures) == 131
     assert all(f.model and f.basis and f.stands_for for f in _preset().fixtures)
 
 
@@ -101,13 +101,13 @@ def test_no_universe_carries_more_than_512_channels():
     for f in _preset().fixtures:
         used[f.universe] = used.get(f.universe, 0) + channel_count(f.fixture_type)
     assert all(total <= 512 for total in used.values()), used
-    assert used == {0: 512, 1: 512, 2: 240, 3: 384}
+    assert used == {0: 512, 1: 512, 2: 240, 3: 348}
 
 
 def test_the_led_walls_and_booth_wash_have_a_universe_to_themselves():
     fixtures = _preset().fixtures
     booth = [f for f in fixtures if f.id.startswith(BOOTH_UNIVERSE_IDS)]
-    assert len([f for f in booth if f.id.startswith("ledwall_")]) == 30
+    assert len([f for f in booth if f.id.startswith("ledwall_")]) == 27
     assert len([f for f in booth if f.id.startswith("booth_wash_")]) == 2
     assert {f.universe for f in booth} == {3}
     assert [f.id for f in fixtures if f.universe == 3 and f not in booth] == []
@@ -137,6 +137,27 @@ def test_the_led_walls_and_booth_wash_are_bracketed_to_the_upstage_wall():
         if f.id.startswith(BOOTH_UNIVERSE_IDS):
             assert 0 <= f.z - back_wall <= 0.25, f.id
             assert f.y >= 0.6, f.id
+
+
+def test_the_led_walls_hang_above_the_booth_and_the_dj_camera():
+    # The view's DJ camera stands a metre behind the upstage wall at 2.6 m and
+    # looks out through it; its speaker stacks and the DJ reach about 2.1 m. A
+    # wall cell at that height would fill the camera's frame.
+    for f in _preset().fixtures:
+        if f.id.startswith(BOOTH_UNIVERSE_IDS):
+            assert f.y >= 3.5, f.id
+            assert f.y < _preset().stage.height, f.id
+
+
+def test_no_fixture_sits_on_the_line_between_the_engines_left_centre_and_right():
+    # The engine calls a fixture left or right when it is more than 0.5 m off
+    # the mean x of the rig. The mean of a mirrored rig is zero give or take
+    # float noise, so a fixture at exactly 0.5 could fall either side of it
+    # and its mirror image the other way.
+    manager, preset = create_venue_rig(NAME)
+    for f in preset.fixtures:
+        assert abs(abs(f.x) - 0.5) > 0.05, f.id
+    assert len(manager.groups["left"].fixture_ids) == len(manager.groups["right"].fixture_ids)
 
 
 def test_every_fixture_has_a_mirror_image_of_its_own_kind():
@@ -184,13 +205,13 @@ def test_the_key_zones_name_real_zones_and_real_fixtures():
 
 def test_the_engine_rig_carries_every_fixture_and_only_movers_move():
     manager, preset = create_venue_rig(NAME)
-    assert len(manager.fixtures) == len(preset.fixtures) == 134
+    assert len(manager.fixtures) == len(preset.fixtures) == 131
     moving = [f for f in manager.fixtures.values() if f.pan_range > 0]
     assert len(moving) == 34
     assert len(manager.groups["movers"].fixture_ids) == 26
     # To the engine the two booth wash pars are washes and the LED wall cells bars.
     assert len(manager.groups["washes"].fixture_ids) == 30
-    assert len(manager.groups["bars"].fixture_ids) == 70
+    assert len(manager.groups["bars"].fixture_ids) == 67
     assert len(manager.groups["strobes"].fixture_ids) == 8
 
 
@@ -220,8 +241,8 @@ def test_the_groups_are_the_ones_a_look_would_ask_for():
         "led_strips": 8, "booth_strips": 4, "skybox_strips": 4,
         "dome_pixels": 44, "dome_spokes": 32, "dome_spokes_inner": 16,
         "dome_spokes_outer": 16, "dome_rim": 12,
-        "led_wall": 30, "led_wall_centre": 18, "led_wall_wings": 12,
-        "dj_booth": 36,
+        "led_wall": 27, "led_wall_centre": 15, "led_wall_wings": 12,
+        "dj_booth": 33,
     }
 
 
@@ -317,7 +338,7 @@ async def test_the_demo_rig_payload_carries_the_room_shell():
     assert set(shell) == {"basis", "dome", "dance_floor", "balcony", "dj_booth", "rear_stage", "led_walls"}
     assert shell["dome"]["diameter_ft"] == 88.0
     assert shell["rear_stage"]["name"] == "Rear stage riser"
-    assert len(rig["fixtures"]) == 134
+    assert len(rig["fixtures"]) == 131
 
     # A preset that describes no room says so rather than leaving the key out.
     assert (await demo_endpoints.get_demo_rig("club_night"))["room_shell"] is None
