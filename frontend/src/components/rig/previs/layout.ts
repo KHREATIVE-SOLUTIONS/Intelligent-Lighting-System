@@ -31,6 +31,9 @@ export type LayoutFixture = {
  *
  * - `truss`: clamped under a truss. `drop` is the pipe between its clamp and
  *   the chord, for a fixture hung lower than its neighbours on the same truss.
+ * - `ceiling`: fixed to the ceiling itself, above the trim height the truss
+ *   hangs at. `drop` is the pipe from its clamp up to the ceiling. No truss is
+ *   drawn for it.
  * - `wall`: on an arm off a wall or the booth front. `dirX/dirZ` point at the
  *   surface and `reach` is the distance to it.
  * - `stand`: on the floor. `plinth` is the height of the block or pole under
@@ -39,6 +42,7 @@ export type LayoutFixture = {
  */
 export type FixtureMount =
   | { type: 'truss'; drop: number }
+  | { type: 'ceiling'; drop: number }
   | { type: 'wall'; dirX: number; dirZ: number; reach: number }
   | { type: 'stand'; plinth: number; lift: number; lensUp: boolean };
 
@@ -95,6 +99,12 @@ export type Venue = {
 export const FLOOR_MOUNT_BELOW = 0.6;
 /** A fixture this close to a wall is bracketed to it. */
 export const WALL_REACH = 0.25;
+/**
+ * A fixed-body fixture patched this far above the trim height is part of the
+ * ceiling, not of the rig hung under it: cove lighting in a dome, say. Each
+ * would otherwise get a truss of its own across the room.
+ */
+export const CEILING_MOUNT_ABOVE = 0.25;
 /** Depth of the box truss section, chord centre to chord centre. */
 export const TRUSS_SECTION = 0.24;
 export const TRUSS_CHORD_RADIUS = 0.025;
@@ -147,6 +157,7 @@ export function buildVenue(
   // --- How each fixture is held up -----------------------------------------
   const mounts = new Map<number, FixtureMount>();
   const trussMembers: Array<{ fixture: LayoutFixture; clampY: number }> = [];
+  const ceilingMembers: Array<{ fixture: LayoutFixture; clampY: number }> = [];
 
   for (const fixture of usable) {
     const spec = FIXTURE_SPECS[fixture.kind];
@@ -183,6 +194,12 @@ export function buildVenue(
         dirZ: nearest.dirZ,
         reach: Math.max(0.02, nearest.reach),
       });
+      continue;
+    }
+
+    if (!fixture.hasPanTilt && fixture.y > height + CEILING_MOUNT_ABOVE) {
+      // Its pipe is measured once the ceiling height is known, below.
+      ceilingMembers.push({ fixture, clampY: fixture.y + spec.hangHeight });
       continue;
     }
 
@@ -242,6 +259,10 @@ export function buildVenue(
   // `stage_height` is the trim height the fixtures hang at, so the ceiling
   // sits above it with room for the truss.
   const ceilingY = Math.max(height + 0.9, trussTop + 0.45, highest + 0.6);
+
+  for (const member of ceilingMembers) {
+    mounts.set(member.fixture.id, { type: 'ceiling', drop: Math.max(0, ceilingY - member.clampY) });
+  }
 
   const layout: ClubLayout = {
     width,

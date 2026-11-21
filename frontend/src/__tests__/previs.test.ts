@@ -231,6 +231,31 @@ describe('venue layout on the club_night rig', () => {
     }
   });
 
+  it('fixes static lights above the trim height to the ceiling, with no truss', () => {
+    // Cove lighting in a dome: a mirrored pair of battens well above the rig.
+    // On a truss each pair would get a run of its own across the room.
+    const dome: LayoutFixture[] = [
+      { id: 101, x: -3, y: 6.2, z: 1, kind: 'led_bar', hasPanTilt: false },
+      { id: 102, x: 3, y: 6.2, z: 1, kind: 'led_bar', hasPanTilt: false },
+    ];
+    const withDome = buildVenue(stage, [...fixtures, ...dome]);
+    expect(withDome.trussRows).toHaveLength(3);
+    for (const id of [101, 102]) {
+      const mount = withDome.mounts.get(id)!;
+      expect(mount.type).toBe('ceiling');
+      // The pipe reaches the ceiling, which is above the highest fixture.
+      if (mount.type === 'ceiling') {
+        expect(mount.drop).toBeCloseTo(withDome.layout.ceilingY - 6.2 - FIXTURE_SPECS.led_bar.hangHeight, 5);
+        expect(mount.drop).toBeGreaterThan(0);
+      }
+    }
+    // A moving head up there still hangs on a truss: it has to be reachable.
+    const highMover = buildVenue(stage, [{ id: 1, x: 0, y: 6.2, z: 0, kind: 'moving_head', hasPanTilt: true }]);
+    expect(highMover.mounts.get(1)!.type).toBe('truss');
+    // And nothing on the club rig itself is above its trim.
+    for (const mount of venue.mounts.values()) expect(mount.type).not.toBe('ceiling');
+  });
+
   it('fits the booth, the DJ and the dance floor inside the room', () => {
     const { layout } = venue;
     const { booth, danceFloor } = layout;
