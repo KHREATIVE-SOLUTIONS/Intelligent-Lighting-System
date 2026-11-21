@@ -734,6 +734,9 @@ export interface AudioCaptureStatus {
   chunk_count?: number;
   last_rms?: number;
   last_peak?: number;
+  // The device last picked on the box, whichever browser picked it.
+  remembered_device?: string | null;
+  remembered_hostapi?: string | null;
 }
 
 export const audioApi = {

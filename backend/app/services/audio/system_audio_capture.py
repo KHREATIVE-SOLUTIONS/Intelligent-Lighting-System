@@ -114,6 +114,33 @@ def _soundcard_hostapi_label() -> str:
     return "WASAPI Loopback (soundcard)"
 
 
+# Windows host APIs that bypass the shared mixer. Opening a device through them
+# can lock every other program out of it (and a DJ's own software with it), so
+# they are never opened here. MME, DirectSound and WASAPI all share.
+_EXCLUSIVE_HOSTAPIS_WIN = ("wdm-ks", "wdm ks", "kernel streaming", "asio")
+
+
+def capture_refusal(device: dict, platform: Optional[str] = None) -> Optional[str]:
+    """Why this device cannot be captured from, or None if it can.
+
+    Loopback devices and anything with input channels (a line-in, a USB
+    interface, a mixer's USB return, a microphone) are fine on every platform.
+    """
+    platform = PLATFORM if platform is None else platform
+    if device.get("is_loopback", False):
+        return None
+    has_inputs = device.get("is_input", False) or (device.get("max_input_channels") or 0) > 0
+    if not has_inputs:
+        return "Selected device has no input channels"
+    hostapi = str(device.get("hostapi") or "").lower()
+    if platform == "win32" and any(p in hostapi for p in _EXCLUSIVE_HOSTAPIS_WIN):
+        return (
+            "This entry would take the device away from other programs. "
+            "Pick the same input under Windows WASAPI, DirectSound or MME."
+        )
+    return None
+
+
 class SystemAudioCapture:
     """Captures system audio output with selectable device backends."""
 
@@ -151,6 +178,9 @@ class SystemAudioCapture:
         # A device picked by name (a remembered choice) is found again by name
         # on every attempt, since its index can differ from one boot to the next.
         self._selection_name: Optional[str] = None
+        # Windows lists one input once per host API under the same name; this
+        # says which of them was picked.
+        self._selection_hostapi: Optional[str] = None
         self._watchdog: Optional[threading.Thread] = None
         self._watchdog_stop = threading.Event()
         self._last_chunk_t: Optional[float] = None
@@ -406,22 +436,54 @@ class SystemAudioCapture:
                 return False
 
             capture_channels = min(self.channels, max(1, max_channels))
-            self._stream = sd.InputStream(
-                device=sd_index,
-                samplerate=self.sample_rate,
-                channels=capture_channels,
-                blocksize=self.chunk_size,
-                dtype=np.float32,
-                callback=self._sounddevice_callback,
-            )
-            self._stream.start()
+
+            def _open(rate: int):
+                # Shared mode only: no exclusive or host-API specific settings
+                # are passed, so other programs keep the device.
+                stream = sd.InputStream(
+                    device=sd_index,
+                    samplerate=rate,
+                    channels=capture_channels,
+                    blocksize=self.chunk_size,
+                    dtype=np.float32,
+                    callback=self._sounddevice_callback,
+                )
+                try:
+                    stream.start()
+                except Exception:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                    raise
+                return stream
+
+            # Set before the stream starts: its first blocks can arrive before
+            # start() returns, and a block that finds this unset is dropped.
             self._running = True
+            try:
+                self._stream = _open(self.sample_rate)
+            except Exception as first_error:
+                # A shared WASAPI input (a USB interface, a mixer's line-in)
+                # opens only at the rate Windows runs it at, usually 48 kHz.
+                # Take the device's rate; the analyzer follows `sample_rate`.
+                device_rate = int(dev_info.get("default_samplerate") or 0)
+                if device_rate <= 0 or device_rate == int(self.sample_rate):
+                    raise
+                logger.info(
+                    "Input would not open at %s Hz (%s); using its own rate %s Hz",
+                    self.sample_rate, first_error, device_rate,
+                )
+                self._stream = _open(device_rate)
+                self.sample_rate = device_rate
             self._device_name = dev_info["name"]
             self._capture_method = "sounddevice"
             logger.info(f"Audio capture started on sounddevice: {self._device_name}")
             return True
         except Exception as e:
             logger.error(f"Failed to start sounddevice capture: {e}")
+            self._running = False
+            self._stream = None
             return False
 
     # ------------------------------------------------------------------
@@ -487,6 +549,7 @@ class SystemAudioCapture:
         loop: Optional[asyncio.AbstractEventLoop] = None,
         device_name: Optional[str] = None,
         keep_trying: bool = False,
+        device_hostapi: Optional[str] = None,
     ):
         """Start capture with explicit device index or platform-aware auto-fallback.
 
@@ -498,6 +561,8 @@ class SystemAudioCapture:
         remembered choice is found after a reboot. With `keep_trying`, a first
         attempt that fails (the interface is not up yet at boot) is not the end:
         the watchdog keeps retrying with backoff and this returns False for now.
+        `device_hostapi` tells apart entries that share a name (Windows lists
+        an input once per host API).
         """
         if self._running:
             logger.warning("Audio capture already running")
@@ -506,6 +571,7 @@ class SystemAudioCapture:
         self._loop = loop
         self._selection = device_index
         self._selection_name = device_name or None
+        self._selection_hostapi = (device_hostapi or None) if self._selection_name else None
         try:
             target = device_index if self._selection_name is None else self._reconnect_target()
             started = self._start_backend(target)
@@ -607,15 +673,37 @@ class SystemAudioCapture:
             name = self._device_name.replace("[Loopback] ", "")
             if any(d.get("index") == self._selection and name in str(d.get("name", "")) for d in devices):
                 return self._selection
-        for d in devices:
-            if name and str(d.get("name", "")) == name:
-                return d.get("index")
-        for d in devices:
-            if name and name in str(d.get("name", "")):
-                return d.get("index")
+        if name:
+            for matches in (
+                [d for d in devices if str(d.get("name", "")) == name],
+                [d for d in devices if name in str(d.get("name", ""))],
+            ):
+                found = self._pick_same_name(matches)
+                if found is not None:
+                    return found.get("index")
         if self._selection_name:
             return -1
         return self._selection
+
+    def _pick_same_name(self, matches: list) -> Optional[dict]:
+        """Of several entries with the wanted name, the one that was picked.
+
+        The remembered host API wins. Failing that, the first entry that can be
+        captured from without taking the device from other programs.
+        """
+        if not matches:
+            return None
+        if self._selection_hostapi:
+            for d in matches:
+                if str(d.get("hostapi") or "") == self._selection_hostapi:
+                    return d
+        for d in matches:
+            # Entries that say nothing about their channels are taken on trust.
+            if "max_input_channels" not in d and "is_loopback" not in d:
+                return d
+            if capture_refusal(d) is None:
+                return d
+        return None
 
     def _start_backend(self, device_index: Optional[int] = None) -> bool:
         """Open one capture backend; no watchdog."""
@@ -628,6 +716,11 @@ class SystemAudioCapture:
             selected = next((d for d in devices if d["index"] == device_index), None)
             if selected is None:
                 logger.error(f"Device index {device_index} not found")
+                return False
+
+            refusal = capture_refusal(selected)
+            if refusal:
+                logger.error(f"Device index {device_index} refused: {refusal}")
                 return False
 
             self._device_index = device_index
