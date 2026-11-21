@@ -28,12 +28,19 @@
  * at the default quality, so that a pool shows on the dance floor at the
  * levels a show mostly runs at (0.1 to 0.3).
  *
+ * After each fixture's floor light was aimed down its own beam, the one
+ * stacked-bright pool at stage centre went away and each pool was about a
+ * thirtieth as bright, hard to see on the dark floor. The owner chose to
+ * brighten them (Q3). 48 is three times the previous 16: enough for a single
+ * pool to read at show levels, without restoring the old all-lights-on-one-
+ * spot blow-out (that would be about 30 times).
+ *
  * At full, a white beam's pool is white: the people standing in it, and the
  * pale floor tiles under it very nearly. Pools that land on the same spot add
  * up, so a look that stacks a dozen heads on one point is white there well
  * below full. Lower this if a show sits at full for long.
  */
-export const POOL_LIGHT_AT_FULL = 16;
+export const POOL_LIGHT_AT_FULL = 48;
 
 /** three.js `decay` for the spot lights: 0 is no falloff with distance. */
 export const POOL_LIGHT_DECAY = 0;
