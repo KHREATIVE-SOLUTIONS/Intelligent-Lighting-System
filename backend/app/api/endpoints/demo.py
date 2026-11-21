@@ -370,9 +370,9 @@ async def get_demo_rig(preset: Optional[str] = None, request: Request = None):
             "position_x": f.x,
             "position_y": f.y,
             "position_z": f.z,
-            "rotation_x": 0,
-            "rotation_y": 0,
-            "rotation_z": 0,
+            "rotation_x": f.rotation[0],
+            "rotation_y": f.rotation[1],
+            "rotation_z": f.rotation[2],
             "group_name": f.fixture_type,
             "tags": [f.fixture_type],
             "is_active": True,
@@ -418,6 +418,9 @@ async def get_demo_rig(preset: Optional[str] = None, request: Request = None):
         "created_by": "demo",
         "is_active": True,
         "fixtures": rig_fixtures,
+        # The room round the rig, where the preset describes one. Scenery for
+        # the 3D view; a database rig has no such field.
+        "room_shell": venue.room.to_dict() if venue.room else None,
     }
 
 
