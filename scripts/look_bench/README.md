@@ -112,6 +112,16 @@ and median tilt is 25, 24, 46 and 35 against 65, 48, 70 and 48. Tilt is smaller
 because a look stretches its throw toward a point in the room instead of swinging
 through a set angle, and many library looks run at less than full size.
 
+`2026-11-21_after_dimmer` is the look library's next stages 0 and 1: each look's speed
+fitted to the tempo, a deeper tilt, and the look's own dimmer effect and chase style on
+the beams outside the drop. Against `2026-11-17_after_looks` the same 22 looks run, and
+rig level per track (0.111, 0.090, 0.115, 0.069), the level before and after each drop,
+white flashes and the worst second of brightness swings are unchanged: a look moves
+light between beams and the beams' total is what the single chase gave. Median pan is
+unchanged. Median tilt is 37, 37, 51 and 40 degrees against 25, 24, 46 and 35. In the
+picture the beam rows now differ from look to look: a travelling spot, alternate heads
+swapping, left against right.
+
 The `peaks/s` figures in `2026-11-17_before` and `2026-11-17_after_moves` (7 and 9)
 were produced by an earlier peak counter that counted a held level two or three
 times. Under the current counter both read 3. Everything else in those files stands.
