@@ -16,7 +16,10 @@ from typing import Dict, List, Optional, Set, Any
 from collections import defaultdict
 
 from app.core.config import settings
-from app.schemas.dmx import DMXFrame, DMXUniverse, ArtNetConfig, DMXSceneState, DMXFixtureState
+from app.schemas.dmx import (
+    DMXFrame, DMXUniverse, ArtNetConfig, DMXSceneState, DMXFixtureState, OutputTarget,
+)
+from app.services.dmx import sacn
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,28 @@ class ArtNetProtocol:
         if universe > 0x0F:
             return universe & 0x7FFF
         return ((net & 0x7F) << 8) | ((subnet & 0x0F) << 4) | (universe & 0x0F)
+
+    @staticmethod
+    def pack_port_address(net: int, subnet: int, universe: int) -> int:
+        """Pack Net (0-127), Sub-Net (0-15) and Universe (0-15) into the Port-Address.
+
+        Strict, unlike ``encode_port_address``: a value that does not fit its
+        field is an error here rather than being masked into a different address.
+        """
+        for name, value, top in (("net", net, 127), ("subnet", subnet, 15),
+                                 ("universe", universe, 15)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"Art-Net {name} must be an integer 0-{top}")
+            if not 0 <= value <= top:
+                raise ValueError(f"Art-Net {name} must be 0-{top}, got {value}")
+        return (net << 8) | (subnet << 4) | universe
+
+    @staticmethod
+    def unpack_port_address(port_address: int) -> tuple:
+        """Split a 15-bit Port-Address into (net, subnet, universe)."""
+        if not 0 <= port_address <= 0x7FFF:
+            raise ValueError(f"Art-Net Port-Address must be 0-32767, got {port_address}")
+        return (port_address >> 8) & 0x7F, (port_address >> 4) & 0x0F, port_address & 0x0F
 
     @staticmethod
     def create_dmx_packet(
@@ -107,6 +132,24 @@ class DMXController:
             universes=[settings.DMX_UNIVERSE],
         )
 
+        # Which protocol the transmitter speaks. Kept beside ``config`` rather
+        # than inside it: PUT /config and the previs endpoints replace ``config``
+        # wholesale and must not silently switch the protocol back.
+        self.protocol = "artnet"
+        # Where engine universe 0 lands inside the Net/Sub-Net (Art-Net) or as
+        # an E1.31 universe (sACN); later engine universes follow on from it.
+        self.artnet_universe = 0
+        self.sacn_universe = 1
+        self.sacn_ip: Optional[str] = None
+        self.sacn_port = sacn.SACN_PORT
+        self.sacn_multicast = False
+        self.sacn_priority = sacn.DEFAULT_PRIORITY
+        self.sacn_source_name = sacn.DEFAULT_SOURCE_NAME
+        # Startup swaps in the install's persisted CID; this one only serves a
+        # controller built on its own (tests, scripts).
+        self.sacn_cid = sacn.new_cid()
+        self._sacn_sequences: Dict[int, int] = {}
+
         # Universe data
         self.universes: Dict[int, DMXUniverse] = {}
         # Universes that exist only to carry a test pattern, and the pending tasks
@@ -169,6 +212,10 @@ class DMXController:
         An unset or wildcard address is not routable as a destination, so it
         falls back to limited broadcast - the standard ArtNet default.
         """
+        if self.protocol == "sacn":
+            if self.sacn_multicast:
+                return sacn.multicast_address(self.sacn_universe)
+            return self.sacn_ip or ''
         ip_address = (self.config.ip_address or '').strip()
         if self.config.broadcast or ip_address in self.UNSPECIFIED_ADDRESSES:
             return self.BROADCAST_ADDRESS
@@ -177,6 +224,8 @@ class DMXController:
     @property
     def is_broadcast(self) -> bool:
         """Whether the resolved destination is a broadcast address."""
+        if self.protocol == "sacn" and self.sacn_multicast:
+            return False
         target = self.target_ip
         return target == self.BROADCAST_ADDRESS or target.endswith('.255')
 
@@ -373,18 +422,18 @@ class DMXController:
         """
         if sock is None:
             return
-        target = (self.target_ip, self.config.port)
         zeros = bytes(512)
         for attempt in range(self.FINAL_BLACKOUT_REPEATS):
             for universe_num in list(self.universes):
-                packet = ArtNetProtocol.create_dmx_packet(
-                    universe_num, zeros, self._next_sequence(universe_num),
-                    net=self.config.net, subnet=self.config.subnet,
-                )
+                try:
+                    packet, target = self._build_packet(universe_num, zeros)
+                except ValueError:
+                    # It never reached the wire while running either.
+                    continue
                 try:
                     sock.sendto(packet, target)
                 except OSError as e:
-                    logger.warning("ArtNet blackout-on-stop failed for universe %s: %s",
+                    logger.warning("DMX blackout-on-stop failed for universe %s: %s",
                                    universe_num, e)
                     return
             if attempt + 1 < self.FINAL_BLACKOUT_REPEATS:
@@ -414,22 +463,68 @@ class DMXController:
         self._sequences[universe] = seq
         return seq
 
+    def _next_sacn_sequence(self, wire_universe: int) -> int:
+        # E1.31 counts 0-255 and wraps through 0, per universe - unlike ArtDmx,
+        # where 0 means "not sequenced".
+        seq = (self._sacn_sequences.get(wire_universe, -1) + 1) & 0xFF
+        self._sacn_sequences[wire_universe] = seq
+        return seq
+
+    def artnet_port_address(self, universe: int) -> int:
+        """The Port-Address an engine universe goes out on.
+
+        Engine universes 0-15 sit inside the configured Net/Sub-Net, starting at
+        the target's Universe. Anything above 15 is already a full Port-Address.
+        """
+        if universe > 0x0F:
+            return universe & 0x7FFF
+        port_address = (
+            ArtNetProtocol.encode_port_address(0, self.config.net, self.config.subnet)
+            + self.artnet_universe + universe
+        )
+        if port_address > 0x7FFF:
+            raise ValueError(f"Art-Net Port-Address {port_address} is above 32767")
+        return port_address
+
+    def sacn_wire_universe(self, universe: int) -> int:
+        """The E1.31 universe an engine universe goes out on."""
+        return sacn.validate_universe(self.sacn_universe + universe)
+
+    def _build_packet(self, universe: int, data: bytes):
+        """One universe as (packet, destination) in the protocol currently chosen.
+
+        The only place a frame becomes wire bytes, so the live loop and the
+        blackout-on-stop cannot disagree about protocol or destination.
+        """
+        if self.protocol == "sacn":
+            wire = self.sacn_wire_universe(universe)
+            host = sacn.multicast_address(wire) if self.sacn_multicast else self.sacn_ip
+            if not host:
+                raise ValueError("sACN has no destination IP")
+            packet = sacn.create_data_packet(
+                wire,
+                data,
+                self._next_sacn_sequence(wire),
+                cid=self.sacn_cid,
+                source_name=self.sacn_source_name,
+                priority=self.sacn_priority,
+            )
+            return packet, (host, self.sacn_port)
+
+        packet = ArtNetProtocol.create_dmx_packet(
+            self.artnet_port_address(universe),
+            data,
+            self._next_sequence(universe),
+        )
+        return packet, (self.target_ip, self.config.port)
+
     def _send_universe(self, universe: int, data: bytes):
         """Send a single universe of DMX data."""
         if not self.socket or not self.is_connected:
             return
 
-        # Create packet
-        packet = ArtNetProtocol.create_dmx_packet(
-            universe,
-            data,
-            self._next_sequence(universe),
-            net=self.config.net,
-            subnet=self.config.subnet,
-        )
+        packet, target = self._build_packet(universe, data)
 
-        # Send packet
-        target = (self.target_ip, self.config.port)
         try:
             self.socket.sendto(packet, target)
             self.frames_sent += 1
@@ -447,7 +542,7 @@ class DMXController:
             self._universe_errors[universe] = str(e)
             if not self._send_error_logged:
                 logger.warning(
-                    f"ArtNet send error to {target[0]}:{target[1]} (suppressing repeats): {e}"
+                    f"{self.protocol} send error to {target[0]}:{target[1]} (suppressing repeats): {e}"
                 )
                 self._send_error_logged = True
 
@@ -467,9 +562,11 @@ class DMXController:
             "transmitting": (
                 self.is_connected and not stalled and self.last_send_error is None
             ),
+            "protocol": self.protocol,
             "target_ip": self.target_ip,
-            "port": self.config.port,
+            "port": self.sacn_port if self.protocol == "sacn" else self.config.port,
             "broadcast": self.is_broadcast,
+            "multicast": self.protocol == "sacn" and self.sacn_multicast,
             "frames_sent": self.frames_sent,
             "send_error_count": self.send_error_count,
             "last_send_error": self.last_send_error,
@@ -489,6 +586,66 @@ class DMXController:
 
             if was_connected:
                 await self._connect()
+
+    async def apply_output_target(self, target: OutputTarget):
+        """Point the transmitter at a remembered target, restarting it if it runs.
+
+        Same stop-swap-start as ``update_config``, so the old destination gets
+        its blackout-on-stop (when enabled) in the protocol it was listening to
+        and the new socket is opened with the right broadcast setting.
+        """
+        async with self._connection_lock():
+            was_connected = self.is_connected
+
+            if was_connected:
+                await self._disconnect()
+
+            self.protocol = target.protocol
+            if target.protocol == "sacn":
+                self.sacn_ip = target.ip_address
+                self.sacn_port = target.resolved_port
+                self.sacn_universe = target.universe
+                self.sacn_multicast = target.multicast
+                self.sacn_priority = target.priority
+                self.sacn_source_name = target.source_name
+            else:
+                self.artnet_universe = target.universe
+                self.config = ArtNetConfig(
+                    ip_address=target.ip_address,
+                    port=target.resolved_port,
+                    broadcast=target.ip_address == self.BROADCAST_ADDRESS,
+                    net=target.net,
+                    subnet=target.subnet,
+                    universes=self.config.universes,
+                )
+            self._universe_errors.clear()
+            self.last_send_error = None
+
+            if was_connected:
+                await self._connect()
+
+    def describe_output(self) -> Dict[str, Any]:
+        """Where engine universe 0 is going right now, in wire terms."""
+        if self.protocol == "sacn":
+            return {
+                "protocol": "sacn",
+                "destination": self.target_ip,
+                "port": self.sacn_port,
+                "multicast": self.sacn_multicast,
+                "universe": self.sacn_universe,
+                "priority": self.sacn_priority,
+                "source_name": self.sacn_source_name,
+            }
+        return {
+            "protocol": "artnet",
+            "destination": self.target_ip,
+            "port": self.config.port,
+            "broadcast": self.is_broadcast,
+            "net": self.config.net,
+            "subnet": self.config.subnet,
+            "universe": self.artnet_universe,
+            "port_address": self.artnet_port_address(0),
+        }
 
     def get_universe(self, universe: int) -> DMXUniverse:
         """Get the current state of a universe."""

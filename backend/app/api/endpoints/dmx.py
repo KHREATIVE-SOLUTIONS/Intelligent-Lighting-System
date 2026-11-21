@@ -14,8 +14,9 @@ from app.db.database import get_db
 from app.schemas.dmx import (
     DMXFrame, DMXUniverse, ArtNetConfig,
     DMXFixtureState, DMXSceneState,
-    DMXCueCommand, DMXBlackoutCommand,
+    DMXCueCommand, DMXBlackoutCommand, OutputTarget,
 )
+from app.services.dmx import output_target
 
 router = APIRouter()
 
@@ -40,6 +41,42 @@ async def update_dmx_config(
 
     await request.app.state.dmx_controller.update_config(config)
     return config
+
+
+def _output_target_response(request: Request, target: Optional[OutputTarget]) -> dict:
+    controller = getattr(request.app.state, 'dmx_controller', None)
+    return {
+        "remembered": target is not None,
+        "target": target.model_dump() if target is not None else None,
+        # What the transmitter is doing right now, which is the settings default
+        # (or whatever /config last set) until a target has been remembered.
+        "active": controller.describe_output() if controller is not None else None,
+    }
+
+
+@router.get("/output-target")
+async def get_output_target(request: Request):
+    """The remembered output destination and what is being sent right now."""
+    return _output_target_response(request, output_target.load())
+
+
+@router.put("/output-target")
+async def set_output_target(target: OutputTarget, request: Request):
+    """Point the show at a node and remember it across restarts.
+
+    Art-Net: ``ip_address`` plus ``net``/``subnet``/``universe``. sACN:
+    ``ip_address`` and ``universe`` (1-63999), or ``multicast=true``. A
+    broadcast address is refused unless ``allow_broadcast`` is set.
+    """
+    saved = output_target.save(target)
+    controller = getattr(request.app.state, 'dmx_controller', None)
+    if controller is not None:
+        await controller.apply_output_target(target)
+    response = _output_target_response(request, target)
+    # A read-only disk still gets the show pointed at the node; it just will
+    # not survive a restart, and the operator should know that now.
+    response["remembered"] = saved
+    return response
 
 
 @router.get("/status")
@@ -67,9 +104,11 @@ async def get_transmit_status(request: Request):
         return {
             "connected": False,
             "transmitting": False,
+            "protocol": None,
             "target_ip": None,
             "port": None,
             "broadcast": False,
+            "multicast": False,
             "frames_sent": 0,
             "send_error_count": 0,
             "last_send_error": "DMX controller not initialized",
