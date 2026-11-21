@@ -1,0 +1,107 @@
+# LIV Miami (approximate recreation) - demo patch sheet
+# APPROXIMATE RECREATION of LIV Miami (Fontainebleau Miami Beach), built from public 2009 trade press. It is NOT LIV's real patch, plot or addressing, and is not endorsed by or affiliated with the venue.
+# 102 fixtures on universe(s) 0, 1, 2. Every fixture is patched on this system's generic demo profile for its type, not on the source fixture's own DMX personality.
+# Generated from the 'liv_miami_approx' venue preset by scripts/export_demo_patch_sheet.py - edit the preset, not this file.
+Number,Name,Source Fixture,Type,Universe,Address,Mode,Channels,Position X,Position Y,Position Z,Group,Stands For,Basis
+1,Design Spot A1,Elation Design Spot 575E,mover,0,1,Demo generic 16ch,16,-6.00,6.50,-7.50,Dance Floor Spots,1 fixture,sourced: 22
+2,Design Spot A2,Elation Design Spot 575E,mover,0,17,Demo generic 16ch,16,-3.00,6.50,-7.50,Dance Floor Spots,1 fixture,sourced: 22
+3,Design Spot A3,Elation Design Spot 575E,mover,0,33,Demo generic 16ch,16,0.00,6.50,-7.50,Dance Floor Spots,1 fixture,sourced: 22
+4,Design Spot A4,Elation Design Spot 575E,mover,0,49,Demo generic 16ch,16,3.00,6.50,-7.50,Dance Floor Spots,1 fixture,sourced: 22
+5,Design Spot A5,Elation Design Spot 575E,mover,0,65,Demo generic 16ch,16,6.00,6.50,-7.50,Dance Floor Spots,1 fixture,sourced: 22
+6,Design Spot B1,Elation Design Spot 575E,mover,0,81,Demo generic 16ch,16,-9.00,6.50,-2.50,Dance Floor Spots,1 fixture,sourced: 22
+7,Design Spot B2,Elation Design Spot 575E,mover,0,97,Demo generic 16ch,16,-5.40,6.50,-2.50,Dance Floor Spots,1 fixture,sourced: 22
+8,Design Spot B3,Elation Design Spot 575E,mover,0,113,Demo generic 16ch,16,-1.80,6.50,-2.50,Dance Floor Spots,1 fixture,sourced: 22
+9,Design Spot B4,Elation Design Spot 575E,mover,0,129,Demo generic 16ch,16,1.80,6.50,-2.50,Dance Floor Spots,1 fixture,sourced: 22
+10,Design Spot B5,Elation Design Spot 575E,mover,0,145,Demo generic 16ch,16,5.40,6.50,-2.50,Dance Floor Spots,1 fixture,sourced: 22
+11,Design Spot B6,Elation Design Spot 575E,mover,0,161,Demo generic 16ch,16,9.00,6.50,-2.50,Dance Floor Spots,1 fixture,sourced: 22
+12,Design Spot C1,Elation Design Spot 575E,mover,0,177,Demo generic 16ch,16,-9.00,6.50,2.50,Dance Floor Spots,1 fixture,sourced: 22
+13,Design Spot C2,Elation Design Spot 575E,mover,0,193,Demo generic 16ch,16,-5.40,6.50,2.50,Dance Floor Spots,1 fixture,sourced: 22
+14,Design Spot C3,Elation Design Spot 575E,mover,0,209,Demo generic 16ch,16,-1.80,6.50,2.50,Dance Floor Spots,1 fixture,sourced: 22
+15,Design Spot C4,Elation Design Spot 575E,mover,0,225,Demo generic 16ch,16,1.80,6.50,2.50,Dance Floor Spots,1 fixture,sourced: 22
+16,Design Spot C5,Elation Design Spot 575E,mover,0,241,Demo generic 16ch,16,5.40,6.50,2.50,Dance Floor Spots,1 fixture,sourced: 22
+17,Design Spot C6,Elation Design Spot 575E,mover,0,257,Demo generic 16ch,16,9.00,6.50,2.50,Dance Floor Spots,1 fixture,sourced: 22
+18,Design Spot D1,Elation Design Spot 575E,mover,0,273,Demo generic 16ch,16,-6.00,6.50,7.50,Dance Floor Spots,1 fixture,sourced: 22
+19,Design Spot D2,Elation Design Spot 575E,mover,0,289,Demo generic 16ch,16,-3.00,6.50,7.50,Dance Floor Spots,1 fixture,sourced: 22
+20,Design Spot D3,Elation Design Spot 575E,mover,0,305,Demo generic 16ch,16,0.00,6.50,7.50,Dance Floor Spots,1 fixture,sourced: 22
+21,Design Spot D4,Elation Design Spot 575E,mover,0,321,Demo generic 16ch,16,3.00,6.50,7.50,Dance Floor Spots,1 fixture,sourced: 22
+22,Design Spot D5,Elation Design Spot 575E,mover,0,337,Demo generic 16ch,16,6.00,6.50,7.50,Dance Floor Spots,1 fixture,sourced: 22
+23,Mezzanine Spot 1,Elation Design Spot 300E,spot,0,353,Demo generic 12ch,12,-8.00,4.00,11.00,Mezzanine Spots,1 fixture,sourced: 4
+24,Mezzanine Spot 2,Elation Design Spot 300E,spot,0,365,Demo generic 12ch,12,-2.67,4.00,11.00,Mezzanine Spots,1 fixture,sourced: 4
+25,Mezzanine Spot 3,Elation Design Spot 300E,spot,0,377,Demo generic 12ch,12,2.67,4.00,11.00,Mezzanine Spots,1 fixture,sourced: 4
+26,Mezzanine Spot 4,Elation Design Spot 300E,spot,0,389,Demo generic 12ch,12,8.00,4.00,11.00,Mezzanine Spots,1 fixture,sourced: 4
+27,Impression Wash 1,Elation Impression RGB,wash,0,401,Demo generic 14ch,14,-3.60,3.05,-1.50,Dome Centre Washes,1 fixture,sourced: 8
+28,Impression Wash 2,Elation Impression RGB,wash,0,415,Demo generic 14ch,14,-1.20,3.05,-1.50,Dome Centre Washes,1 fixture,sourced: 8
+29,Impression Wash 3,Elation Impression RGB,wash,0,429,Demo generic 14ch,14,1.20,3.05,-1.50,Dome Centre Washes,1 fixture,sourced: 8
+30,Impression Wash 4,Elation Impression RGB,wash,0,443,Demo generic 14ch,14,3.60,3.05,-1.50,Dome Centre Washes,1 fixture,sourced: 8
+31,Impression Wash 5,Elation Impression RGB,wash,0,457,Demo generic 14ch,14,-3.60,3.05,1.50,Dome Centre Washes,1 fixture,sourced: 8
+32,Impression Wash 6,Elation Impression RGB,wash,0,471,Demo generic 14ch,14,-1.20,3.05,1.50,Dome Centre Washes,1 fixture,sourced: 8
+33,Impression Wash 7,Elation Impression RGB,wash,0,485,Demo generic 14ch,14,1.20,3.05,1.50,Dome Centre Washes,1 fixture,sourced: 8
+34,Impression Wash 8,Elation Impression RGB,wash,0,499,Demo generic 14ch,14,3.60,3.05,1.50,Dome Centre Washes,1 fixture,sourced: 8
+35,Dome Spoke 1 Inner,Color Kinetics iColor Cove MX,bar,1,1,Demo generic 12ch,12,0.68,8.60,-3.43,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+36,Dome Spoke 1 Outer,Color Kinetics iColor Cove MX,bar,1,13,Demo generic 12ch,12,1.66,7.80,-8.34,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+37,Dome Spoke 2 Inner,Color Kinetics iColor Cove MX,bar,1,25,Demo generic 12ch,12,1.94,8.60,-2.91,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+38,Dome Spoke 2 Outer,Color Kinetics iColor Cove MX,bar,1,37,Demo generic 12ch,12,4.72,7.80,-7.07,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+39,Dome Spoke 3 Inner,Color Kinetics iColor Cove MX,bar,1,49,Demo generic 12ch,12,2.91,8.60,-1.94,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+40,Dome Spoke 3 Outer,Color Kinetics iColor Cove MX,bar,1,61,Demo generic 12ch,12,7.07,7.80,-4.72,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+41,Dome Spoke 4 Inner,Color Kinetics iColor Cove MX,bar,1,73,Demo generic 12ch,12,3.43,8.60,-0.68,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+42,Dome Spoke 4 Outer,Color Kinetics iColor Cove MX,bar,1,85,Demo generic 12ch,12,8.34,7.80,-1.66,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+43,Dome Spoke 5 Inner,Color Kinetics iColor Cove MX,bar,1,97,Demo generic 12ch,12,3.43,8.60,0.68,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+44,Dome Spoke 5 Outer,Color Kinetics iColor Cove MX,bar,1,109,Demo generic 12ch,12,8.34,7.80,1.66,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+45,Dome Spoke 6 Inner,Color Kinetics iColor Cove MX,bar,1,121,Demo generic 12ch,12,2.91,8.60,1.94,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+46,Dome Spoke 6 Outer,Color Kinetics iColor Cove MX,bar,1,133,Demo generic 12ch,12,7.07,7.80,4.72,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+47,Dome Spoke 7 Inner,Color Kinetics iColor Cove MX,bar,1,145,Demo generic 12ch,12,1.94,8.60,2.91,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+48,Dome Spoke 7 Outer,Color Kinetics iColor Cove MX,bar,1,157,Demo generic 12ch,12,4.72,7.80,7.07,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+49,Dome Spoke 8 Inner,Color Kinetics iColor Cove MX,bar,1,169,Demo generic 12ch,12,0.68,8.60,3.43,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+50,Dome Spoke 8 Outer,Color Kinetics iColor Cove MX,bar,1,181,Demo generic 12ch,12,1.66,7.80,8.34,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+51,Dome Spoke 9 Inner,Color Kinetics iColor Cove MX,bar,1,193,Demo generic 12ch,12,-0.68,8.60,3.43,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+52,Dome Spoke 9 Outer,Color Kinetics iColor Cove MX,bar,1,205,Demo generic 12ch,12,-1.66,7.80,8.34,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+53,Dome Spoke 10 Inner,Color Kinetics iColor Cove MX,bar,1,217,Demo generic 12ch,12,-1.94,8.60,2.91,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+54,Dome Spoke 10 Outer,Color Kinetics iColor Cove MX,bar,1,229,Demo generic 12ch,12,-4.72,7.80,7.07,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+55,Dome Spoke 11 Inner,Color Kinetics iColor Cove MX,bar,1,241,Demo generic 12ch,12,-2.91,8.60,1.94,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+56,Dome Spoke 11 Outer,Color Kinetics iColor Cove MX,bar,1,253,Demo generic 12ch,12,-7.07,7.80,4.72,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+57,Dome Spoke 12 Inner,Color Kinetics iColor Cove MX,bar,1,265,Demo generic 12ch,12,-3.43,8.60,0.68,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+58,Dome Spoke 12 Outer,Color Kinetics iColor Cove MX,bar,1,277,Demo generic 12ch,12,-8.34,7.80,1.66,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+59,Dome Spoke 13 Inner,Color Kinetics iColor Cove MX,bar,1,289,Demo generic 12ch,12,-3.43,8.60,-0.68,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+60,Dome Spoke 13 Outer,Color Kinetics iColor Cove MX,bar,1,301,Demo generic 12ch,12,-8.34,7.80,-1.66,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+61,Dome Spoke 14 Inner,Color Kinetics iColor Cove MX,bar,1,313,Demo generic 12ch,12,-2.91,8.60,-1.94,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+62,Dome Spoke 14 Outer,Color Kinetics iColor Cove MX,bar,1,325,Demo generic 12ch,12,-7.07,7.80,-4.72,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+63,Dome Spoke 15 Inner,Color Kinetics iColor Cove MX,bar,1,337,Demo generic 12ch,12,-1.94,8.60,-2.91,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+64,Dome Spoke 15 Outer,Color Kinetics iColor Cove MX,bar,1,349,Demo generic 12ch,12,-4.72,7.80,-7.07,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+65,Dome Spoke 16 Inner,Color Kinetics iColor Cove MX,bar,1,361,Demo generic 12ch,12,-0.68,8.60,-3.43,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+66,Dome Spoke 16 Outer,Color Kinetics iColor Cove MX,bar,1,373,Demo generic 12ch,12,-1.66,7.80,-8.34,Dome Spokes,about 18 nodes,sourced: about 585 nodes; spoke count assumed
+67,Booth Strip 1,Elation DLED 60 Strip,bar,1,385,Demo generic 12ch,12,-2.70,1.00,-12.10,Booth Strips,1 strip,assumed count and position
+68,Booth Strip 2,Elation DLED 60 Strip,bar,1,397,Demo generic 12ch,12,-0.90,1.00,-12.10,Booth Strips,1 strip,assumed count and position
+69,Booth Strip 3,Elation DLED 60 Strip,bar,1,409,Demo generic 12ch,12,0.90,1.00,-12.10,Booth Strips,1 strip,assumed count and position
+70,Booth Strip 4,Elation DLED 60 Strip,bar,1,421,Demo generic 12ch,12,2.70,1.00,-12.10,Booth Strips,1 strip,assumed count and position
+71,Skybox Strip 1,Elation DLED 60 Strip,bar,1,433,Demo generic 12ch,12,-13.30,3.60,-4.00,Skybox Strips,1 strip,assumed count and position
+72,Skybox Strip 2,Elation DLED 60 Strip,bar,1,445,Demo generic 12ch,12,-13.30,3.60,4.00,Skybox Strips,1 strip,assumed count and position
+73,Skybox Strip 3,Elation DLED 60 Strip,bar,1,457,Demo generic 12ch,12,13.30,3.60,-4.00,Skybox Strips,1 strip,assumed count and position
+74,Skybox Strip 4,Elation DLED 60 Strip,bar,1,469,Demo generic 12ch,12,13.30,3.60,4.00,Skybox Strips,1 strip,assumed count and position
+75,Atomic Strobe 1,Martin Atomic 3000 DMX,strobe,1,481,Demo generic 4ch,4,-8.00,6.50,-7.50,Strobes,1 fixture,assumed count and position
+76,Atomic Strobe 2,Martin Atomic 3000 DMX,strobe,1,485,Demo generic 4ch,4,8.00,6.50,-7.50,Strobes,1 fixture,assumed count and position
+77,Atomic Strobe 3,Martin Atomic 3000 DMX,strobe,1,489,Demo generic 4ch,4,-10.50,6.50,-2.50,Strobes,1 fixture,assumed count and position
+78,Atomic Strobe 4,Martin Atomic 3000 DMX,strobe,1,493,Demo generic 4ch,4,10.50,6.50,-2.50,Strobes,1 fixture,assumed count and position
+79,Atomic Strobe 5,Martin Atomic 3000 DMX,strobe,1,497,Demo generic 4ch,4,-10.50,6.50,2.50,Strobes,1 fixture,assumed count and position
+80,Atomic Strobe 6,Martin Atomic 3000 DMX,strobe,1,501,Demo generic 4ch,4,10.50,6.50,2.50,Strobes,1 fixture,assumed count and position
+81,Atomic Strobe 7,Martin Atomic 3000 DMX,strobe,1,505,Demo generic 4ch,4,-8.00,6.50,7.50,Strobes,1 fixture,assumed count and position
+82,Atomic Strobe 8,Martin Atomic 3000 DMX,strobe,1,509,Demo generic 4ch,4,8.00,6.50,7.50,Strobes,1 fixture,assumed count and position
+83,Dome Rim 1,Color Kinetics ColorBlast 12,par,2,1,Demo generic 12ch,12,3.34,7.00,-12.46,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+84,Dome Rim 2,Color Kinetics ColorBlast 12,par,2,13,Demo generic 12ch,12,9.12,7.00,-9.12,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+85,Dome Rim 3,Color Kinetics ColorBlast 12,par,2,25,Demo generic 12ch,12,12.46,7.00,-3.34,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+86,Dome Rim 4,Color Kinetics ColorBlast 12,par,2,37,Demo generic 12ch,12,12.46,7.00,3.34,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+87,Dome Rim 5,Color Kinetics ColorBlast 12,par,2,49,Demo generic 12ch,12,9.12,7.00,9.12,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+88,Dome Rim 6,Color Kinetics ColorBlast 12,par,2,61,Demo generic 12ch,12,3.34,7.00,12.46,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+89,Dome Rim 7,Color Kinetics ColorBlast 12,par,2,73,Demo generic 12ch,12,-3.34,7.00,12.46,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+90,Dome Rim 8,Color Kinetics ColorBlast 12,par,2,85,Demo generic 12ch,12,-9.12,7.00,9.12,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+91,Dome Rim 9,Color Kinetics ColorBlast 12,par,2,97,Demo generic 12ch,12,-12.46,7.00,3.34,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+92,Dome Rim 10,Color Kinetics ColorBlast 12,par,2,109,Demo generic 12ch,12,-12.46,7.00,-3.34,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+93,Dome Rim 11,Color Kinetics ColorBlast 12,par,2,121,Demo generic 12ch,12,-9.12,7.00,-9.12,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+94,Dome Rim 12,Color Kinetics ColorBlast 12,par,2,133,Demo generic 12ch,12,-3.34,7.00,-12.46,Dome Rim,about 25 floods,sourced: about 300 floods; segment count assumed
+95,Tri Par 1,Elation Opti Tri Par,par,2,145,Demo generic 12ch,12,-12.60,0.30,-6.00,Wall Pars,1 fixture,assumed count and position
+96,Tri Par 2,Elation Opti Tri Par,par,2,157,Demo generic 12ch,12,-12.60,0.30,0.00,Wall Pars,1 fixture,assumed count and position
+97,Tri Par 3,Elation Opti Tri Par,par,2,169,Demo generic 12ch,12,-12.60,0.30,6.00,Wall Pars,1 fixture,assumed count and position
+98,Tri Par 4,Elation Opti Tri Par,par,2,181,Demo generic 12ch,12,12.60,0.30,-6.00,Wall Pars,1 fixture,assumed count and position
+99,Tri Par 5,Elation Opti Tri Par,par,2,193,Demo generic 12ch,12,12.60,0.30,0.00,Wall Pars,1 fixture,assumed count and position
+100,Tri Par 6,Elation Opti Tri Par,par,2,205,Demo generic 12ch,12,12.60,0.30,6.00,Wall Pars,1 fixture,assumed count and position
+101,Tri Par 7,Elation Opti Tri Par,par,2,217,Demo generic 12ch,12,-4.00,0.30,12.60,Staircase Pars,1 fixture,assumed count and position
+102,Tri Par 8,Elation Opti Tri Par,par,2,229,Demo generic 12ch,12,4.00,0.30,12.60,Staircase Pars,1 fixture,assumed count and position

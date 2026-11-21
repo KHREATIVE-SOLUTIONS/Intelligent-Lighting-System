@@ -41,7 +41,7 @@ from app.schemas.audio import engine_energy, programme_level
 logger = logging.getLogger(__name__)
 
 # Venue preset the show falls back to when no rig has been patched yet.
-DEMO_VENUE_PRESET = "pro_beam_room"
+DEMO_VENUE_PRESET = "liv_miami_approx"
 
 
 async def _load_active_rig_manager():

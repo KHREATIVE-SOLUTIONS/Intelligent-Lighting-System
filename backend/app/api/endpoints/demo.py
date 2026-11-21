@@ -14,7 +14,7 @@ from ...services.effects.fixture_groups import canonical_channel_name
 
 router = APIRouter()
 
-DEFAULT_DEMO_PRESET = "pro_beam_room"
+DEFAULT_DEMO_PRESET = "liv_miami_approx"
 
 
 def _live_rig(http_request: Optional[Request]) -> Optional[dict]:
