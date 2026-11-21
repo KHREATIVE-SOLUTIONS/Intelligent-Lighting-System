@@ -92,7 +92,23 @@ rig, it is patched as the modern LED fixture of the same job:
 | iColor Cove MX, ColorBlast 12 (RGB) | Generic 12-channel RGBW+A+UV cells on DMX | The originals are fed through Color Kinetics power/data supplies, which this system does not model |
 | Opti Tri Par, DLED 60 strip (RGB) | Generic 12-channel RGBW+A+UV par / bar | Same footprint as every other static fixture in the demo rigs |
 
-Every fixture therefore uses this system's generic demo channel map for its
+If this room is ever patched in the database instead of run as a demo preset,
+the bundled fixture library (`data/fixtures/bundled/`) has a current profile
+of the same type for each job. These are stand-ins picked by fixture type, not
+what the venue uses:
+
+| Job | Bundled profile | Library type |
+| --- | --- | --- |
+| Dance-floor and mezzanine spots | Elation Platinum FWD | spot |
+| Dome centre washes | Elation Fuze Wash 500 | wash |
+| Pars, dome rim floods | Elation SixPar 200 | led_par |
+| Strips, dome spoke cells | Chauvet DJ COLORband PiX-M USB | led_bar |
+| Strobes | Martin RUSH Strobe CW | strobe |
+
+Their channel counts differ from the demo footprints, so the addresses in the
+patch sheet would have to be redone.
+
+Every fixture in the preset therefore uses this system's generic demo channel map for its
 type. None uses the source fixture's real DMX personality, so the addresses in
 the patch sheet would not drive the real fixtures even if the positions were
 right.
