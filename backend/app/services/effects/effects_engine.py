@@ -1290,7 +1290,11 @@ class EffectsEngine:
             self._rebuild_style_amp = style_amp
             self._rebuild_look_speed = look_speed
             self._rebuild_look_amp = look_amp
-            self._rebuild_strobe_mode = live_strobe.mode_of(look)
+            # Only a look made for the drop names a rate for the drop's strobe.
+            # Without a phrase grid a look taken in the chorus can still be
+            # running when the drop lands.
+            self._rebuild_strobe_mode = (
+                live_strobe.mode_of(look) if look is not None and "drop" in look.sections else "none")
             self._rebuild_dimmer_prev = self._rebuild_dimmer
             # Slowed, by doubling, so no beam cycles faster than the limit at
             # this tempo. Like the movement's fit below it is made when the
@@ -1387,8 +1391,8 @@ class EffectsEngine:
         drop_strobe_target_freq = 22.0 if energy > 0.65 else 18.0
         # The look's strobe mode (live_strobe) may name a slower, musical rate
         # for this strobe, and nothing else: it is used only if it is below
-        # the renderer's own, it goes through the same clamp on the next line,
-        # and the window and every switch stay where they were. It is taken
+        # the renderer's own, it goes through the same clamp as the renderer's
+        # own, and the window and every switch stay where they were. It is taken
         # once, when a strobe window opens, and held for that window: the
         # flash grid is `time x hz`, so a rate that followed the tempo frame
         # by frame would slide the grid and add flashes.
@@ -1398,16 +1402,31 @@ class EffectsEngine:
             if bool(getattr(self.config, "look_strobe_modes", True)):
                 self._rebuild_strobe_mode_hz = live_strobe.mode_hz(
                     self._rebuild_strobe_mode, clock_bpm, self._strobe_grid_hz(1.0e9, strobe_duty))
-        if self._rebuild_strobe_mode_hz is not None and self.time < self._rebuild_drop_until:
-            drop_strobe_target_freq = min(drop_strobe_target_freq, self._rebuild_strobe_mode_hz)
         drop_strobe_freq = self._strobe_grid_hz(drop_strobe_target_freq, strobe_duty)
+        drop_strobe_clamped = drop_strobe_freq < drop_strobe_target_freq
+        # A slower grid at the same duty would be a longer flash: a flash is
+        # `duty / hz` seconds, so once a beat at the venue's duty is the whole
+        # rig at full white for a sixth of a second. The duty is cut by as
+        # much as the rate is, so every flash is as long as the renderer's own
+        # and the light a window puts out can only fall. Both numbers only go
+        # down, so `hz + duty` stays under the cap.
+        drop_strobe_duty = strobe_duty
+        if (
+            self._rebuild_strobe_mode_hz is not None
+            and drop_strobe_freq > 0.0
+            and self.time < self._rebuild_drop_until
+        ):
+            slowed = self._strobe_grid_hz(self._rebuild_strobe_mode_hz, strobe_duty)
+            if 0.0 < slowed < drop_strobe_freq:
+                drop_strobe_duty = strobe_duty * slowed / drop_strobe_freq
+                drop_strobe_freq = slowed
         drop_strobe_on = (
             strobe_enabled_runtime
             and drop_strobe_freq > 0.0
             and section == "drop"
             and self.time < self._rebuild_drop_until
         )
-        if drop_strobe_freq < drop_strobe_target_freq:
+        if drop_strobe_clamped:
             self._record_safety_event(
                 "strobe_frequency_clamped",
                 {
@@ -1419,7 +1438,7 @@ class EffectsEngine:
                 throttle_s=1.0,
                 throttle_key="strobe_frequency_clamped_drop",
             )
-        drop_strobe_flash = drop_strobe_on and ((self.time * drop_strobe_freq) % 1.0) < strobe_duty
+        drop_strobe_flash = drop_strobe_on and ((self.time * drop_strobe_freq) % 1.0) < drop_strobe_duty
 
         # Snare strobe: very short fast white bursts on bright/transient hits.
         # `high` and `flux` are measured against the programme's own level, so a brushed
@@ -1534,6 +1553,13 @@ class EffectsEngine:
             dimmer_rate = chase_steps_per_beat * min(chase_heads, len(chase_order)) / len(chase_order)
         else:
             dimmer_rate = 0.0
+        # Once held back, the clock stays that far off the beat, so a swap no
+        # longer lands on it. It is put back on the beat clock at the first
+        # moment no beam is lit from it - the drop, or silence - where the
+        # step cannot be seen. A crossing in progress ends with it.
+        if self._rebuild_dimmer_clock.behind != 0.0 and (drop_look or energy <= 0.0):
+            self._rebuild_dimmer_clock.reset()
+            self._rebuild_dimmer_prev = None
         dimmer_beats = self._rebuild_dimmer_clock.advance(beats, delta_time, dimmer_rate)
         if new_look:
             self._rebuild_dimmer_changed_beats = dimmer_beats

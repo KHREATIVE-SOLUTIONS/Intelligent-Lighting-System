@@ -143,6 +143,47 @@ def test_no_mode_at_any_tempo_flashes_more_than_the_limit_or_more_than_the_strob
         assert engine.config.strobe_hz_cap == cap and engine.config.strobe_enabled is True
 
 
+def _longest_and_white(frames):
+    """The longest run of flash frames, and how many frames were a flash at all."""
+    longest = run = white = 0
+    for flash, _, _ in frames:
+        run = run + 1 if flash else 0
+        longest = max(longest, run)
+        white += 1 if flash else 0
+    return longest, white
+
+
+@pytest.mark.parametrize("cap", [3.0, 24.0])
+@pytest.mark.parametrize("mode", MUSICAL)
+def test_a_slower_strobe_is_not_a_longer_flash_or_more_white_light(mode, cap):
+    """A flash lasts duty / rate. Slowed at the same duty, a snare_locked drop
+    held the rig at full white for 24 frames at a time, where the renderer's
+    own strobe holds it for 2 (limit 24) to 8 (limit 3)."""
+    for bpm in TEMPOS:
+        _, frames, _ = _night(mode, bpm, cap)
+        _, own, _ = _night(mode, bpm, cap, modes_on=False)
+        longest, white = _longest_and_white(frames)
+        own_longest, own_white = _longest_and_white(own)
+        # A frame either way is where the sixtieths of a second fall on the grid.
+        assert 0 < longest <= own_longest + 1, (mode, bpm, cap, longest, own_longest)
+        assert white <= own_white, (mode, bpm, cap, white, own_white)
+
+
+def test_only_a_look_made_for_the_drop_names_the_drops_strobe_rate():
+    """Without a phrase grid a chorus look can still be running when the drop lands."""
+    chorus_look = next(look for look in LOOK_LIBRARY if "drop" not in look.sections)
+    engine = EffectsEngine(EffectsConfig(fps=60.0, auto_mode=True, strobe_enabled=True, strobe_hz_cap=24.0,
+                                         accessibility_mode="performance", look_seed=7))
+    manager, _ = create_venue_rig("club_night")
+    engine.set_fixture_manager(manager)
+    look = dataclasses.replace(chorus_look, strobe_mode="beat_pulse")
+    engine._look_library.choose = lambda **_: look
+    named = []
+    _run(engine, ["chorus", "drop"], frames_each=FRAMES,
+         each_frame=lambda e: named.append((e._rebuild_strobe_mode, e._rebuild_strobe_mode_hz)))
+    assert set(named) == {("none", None)}
+
+
 def test_a_beat_pulse_drop_flashes_about_once_a_beat_not_as_fast_as_the_venue_allows():
     _, frames, _ = _night("beat_pulse", bpm=120.0, cap=24.0)
     _, own, _ = _night("beat_pulse", bpm=120.0, cap=24.0, modes_on=False)

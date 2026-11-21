@@ -190,8 +190,9 @@ class PhaseClock:
     clock runs faster than `MAX_CYCLES_PER_S` allows for the look in front of
     it - the tempo estimate doubled mid-phrase, the clock was moved forward -
     this advances at the limit and no further, and stays that far behind
-    rather than catching up. When the beat clock is moved back, this holds
-    still. So a beam's level is a continuous function of a phase that never
+    rather than catching up (the engine puts it back on the beat with
+    `reset` at a moment no beam is lit from it). When the beat clock is moved
+    back, this holds still. So a beam's level is a continuous function of a phase that never
     moves faster than the limit, whatever the tempo tracker does.
     """
 
@@ -203,7 +204,13 @@ class PhaseClock:
     def phase(self) -> float:
         return self._phase or 0.0
 
+    @property
+    def behind(self) -> float:
+        """Beats this is off the beat clock by. 0.0 until it has had to hold."""
+        return self._behind
+
     def reset(self) -> None:
+        """Forget the phase: the next `advance` starts again on the beat clock."""
         self._phase = None
         self._behind = 0.0
 

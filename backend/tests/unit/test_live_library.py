@@ -484,13 +484,14 @@ def _busiest_beam(levels, beams, window=120, rise_at=0.7, fall_at=0.3):
 _MOST_RISES = int(2.0 * LD.MAX_CYCLES_PER_S) + 1
 
 
-def _fast_night(monkeypatch, bpm, look_dimmer_effects=True, tempo_of=None, seed=5, style=None):
+def _fast_night(monkeypatch, bpm, look_dimmer_effects=True, tempo_of=None, seed=5, style=None, fill=0.0,
+                plan=None):
     """A night at a fast tempo, with no fill, so every chase is at full contrast.
 
     Returns the engine, the dimmer levels, the looks as fitted, and the
     largest pan and tilt step any head was sent in one frame.
     """
-    monkeypatch.setattr(LD, "FILL", 0.0)
+    monkeypatch.setattr(LD, "FILL", fill)
     engine = _engine(seed=seed, look_dimmer_effects=look_dimmer_effects)
     if style:
         engine._club_style = style
@@ -511,8 +512,26 @@ def _fast_night(monkeypatch, bpm, look_dimmer_effects=True, tempo_of=None, seed=
                 last[f.id] = (f.pan, f.tilt)
 
     engine._clock_period = 60.0 / (tempo_of(0) if tempo_of else bpm)
-    _, levels = _run(engine, FAST_PLAN, frames_each=300, bpm=bpm, each_frame=hold)
+    _, levels = _run(engine, plan or FAST_PLAN, frames_each=300, bpm=bpm, each_frame=hold)
     return engine, levels, seen, steps
+
+
+def test_the_limit_holds_with_the_fill_as_it_is_shipped(monkeypatch):
+    """The other tests here take the fill away for contrast. This is the engine as it runs."""
+    engine, levels, seen, _ = _fast_night(monkeypatch, 240.0, style="dnb", fill=LD.FILL)
+    assert _busiest_beam(levels, _beam_columns(engine)) <= _MOST_RISES
+    assert seen
+
+
+def test_a_dimmer_clock_that_was_held_back_is_put_on_the_beat_again_in_the_drop(monkeypatch):
+    """Held back, it is off the beat by a fraction and a swap no longer lands on it.
+    The drop lights no beam from it, so that is where it is put right, unseen."""
+    monkeypatch.setattr(LD, "fit_to_tempo", lambda look, bpm: look)       # so the clock has to hold
+    engine, _, _, _ = _fast_night(monkeypatch, 320.0, plan=["chorus", "buildup"])
+    assert engine._rebuild_dimmer_clock.behind > 0.0
+    _run(engine, ["drop"], frames_each=5, bpm=320.0)
+    assert engine._rebuild_dimmer_clock.behind == 0.0
+    assert engine._rebuild_dimmer_clock.phase == pytest.approx(engine._clock_beats)
 
 
 @pytest.mark.parametrize("bpm", [190.0, 240.0])

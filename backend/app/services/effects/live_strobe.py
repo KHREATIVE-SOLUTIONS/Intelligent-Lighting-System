@@ -22,8 +22,16 @@ of its usual one. That is all.
   `strobe_hz_cap`), and that clamp decides. This module does not read or
   write the cap, the duty, or whether strobing is on.
 
+* It never makes a flash longer. A flash lasts duty / rate, so a slower grid
+  at the same duty would hold the rig at full white for longer: once a beat
+  at a duty of a third is a sixth of a second. The renderer cuts the duty by
+  as much as the rate, so each flash is as long as its own strobe's and the
+  white light in a window can only fall. (Measured before that was done:
+  24 frames of full white at a time against the renderer's 2 to 8.)
+
 So a mode can make a drop's strobe slower and musical - once a beat instead
-of as fast as the venue allows - and can do nothing else.
+of as fast as the venue allows - and can do nothing else. Only a look made
+for the drop is listened to.
 
 **The speed limit.** A rate that the venue's limit leaves no room for is
 halved until it fits: eighth notes become beats, beats become every other
