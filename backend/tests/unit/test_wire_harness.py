@@ -198,6 +198,9 @@ def soak_rows(n=480, **overrides):
             "gap_ms_max": 54.0, "seq_breaks": 0, "stray_channels": 0, "unpatched_universes": [],
             "malformed_packets": 0, "feed_reconnects": 0, "send_errors": 0,
             "rss_mb": 350.0 + (minute % 3),
+            "rig_flash_worst_1s": 1.0, "artnet_target": "127.0.0.1",
+            "blackout": {"ok": True} if minute == 1 or minute % 10 == 0 else None,
+            "master": {"ok": True} if minute == 1 or minute % 10 == 0 else None,
         }
         for key, value in overrides.items():
             row[key] = value(minute) if callable(value) else value
@@ -248,6 +251,117 @@ def test_too_few_samples_cannot_claim_flat_memory():
     assert not verdict["passed"]
 
 
+def test_a_clean_short_run_is_a_smoke_and_says_so():
+    verdict = soak.evaluate(soak_rows(n=2), expected_minutes=2)
+    assert verdict["outcome"] == "smoke" and verdict["unjudged"] == ["memory_flat"]
+    assert not verdict["passed"]
+    assert "Not a G1 pass" in soak.headline(verdict)
+
+
+def test_a_short_run_with_a_fault_is_a_failure_not_a_smoke():
+    verdict = soak.evaluate(soak_rows(n=2, gap_ms_max=140.0), expected_minutes=2)
+    assert verdict["outcome"] == "fail"
+
+
+def test_an_hour_that_passes_is_not_called_the_g1_soak():
+    verdict = soak.evaluate(soak_rows(n=60), expected_minutes=60)
+    assert verdict["outcome"] == "pass"
+    assert "not the G1 soak" in soak.headline(verdict)
+    assert "not the G1 soak" not in soak.headline(soak.evaluate(soak_rows(), expected_minutes=480))
+
+
+def test_a_soak_is_an_hour_by_default_and_never_over_eight():
+    assert soak.resolve_minutes() == 60
+    assert soak.resolve_minutes(hours=8) == 480
+    assert soak.resolve_minutes(minutes=2) == 2
+    for bad in ({"hours": 8.5}, {"minutes": 481}, {"minutes": 0}, {"hours": 0}, {"minutes": -5}):
+        with pytest.raises(ValueError):
+            soak.resolve_minutes(**bad)
+
+
+def test_light_through_a_blackout_fails_the_soak():
+    leak = soak.judge_blackout(200, 200, last_lit_after_ack=0.025, peak_late=0.4,
+                               first_light=0.03, lit_before=True)
+    assert not leak["ok"]
+    rows = soak_rows(blackout=lambda m: leak if m == 20 else ({"ok": True} if m % 10 == 0 else None))
+    verdict = soak.evaluate(rows, expected_minutes=480)
+    assert failed(verdict) == ["blackout"]
+    assert "minute 20" in verdict["checks"]["blackout"]["detail"]
+
+
+def test_a_blackout_is_judged_dark_on_the_next_frame_and_back_afterwards():
+    assert soak.judge_blackout(200, 200, 0.025, 0.0, 0.03, True)["ok"]
+    assert not soak.judge_blackout(200, 200, 0.4, 0.0, 0.03, True)["ok"]     # slow to go dark
+    assert not soak.judge_blackout(200, 200, 0.025, 0.0, None, True)["ok"]   # never came back
+    assert not soak.judge_blackout(500, 200, 0.0, 0.0, 0.03, True)["ok"]
+    # A rig that was dark anyway cannot be blamed for staying dark.
+    assert soak.judge_blackout(200, 200, 0.0, 0.0, None, False)["ok"]
+
+
+def test_a_fixture_brighter_than_the_grand_master_fails_the_soak():
+    assert soak.judge_master(200, 0.3, 0.31)["ok"]
+    over = soak.judge_master(200, 0.3, 0.8)
+    assert not over["ok"]
+    assert not soak.judge_master(200, 0.3, None)["ok"]
+    verdict = soak.evaluate(soak_rows(master=lambda m: over if m == 1 else None), expected_minutes=480)
+    assert failed(verdict) == ["master"]
+
+
+def test_controls_that_were_never_tried_have_not_passed():
+    verdict = soak.evaluate(soak_rows(blackout=None, master=None), expected_minutes=480)
+    assert failed(verdict) == ["blackout", "master"]
+    assert verdict["checks"]["blackout"]["passed"] is None
+
+
+def test_a_strobing_rig_fails_the_soak():
+    verdict = soak.evaluate(soak_rows(rig_flash_worst_1s=lambda m: 6.0 if m == 44 else 1.0),
+                            expected_minutes=480)
+    assert failed(verdict) == ["flash_rate"]
+    assert "minute 44" in verdict["checks"]["flash_rate"]["detail"]
+
+
+def test_the_largest_channel_jump_is_found_and_pan_is_told_apart():
+    frames = np.zeros((4, 512), dtype=np.uint8)
+    frames[:, 0] = [0, 255, 0, 255]      # dimmer, flashing
+    frames[:, 1] = [10, 12, 90, 91]      # pan coarse, thrown 78 steps in one frame
+    frames[:, 2] = [0, 200, 0, 200]      # pan fine: wraps all the time, not a jump
+    patch = [{"universe": 0, "address": 1, "channels": [
+        {"offset": 0, "type": "dimmer", "is_fine": False},
+        {"offset": 1, "type": "pan", "is_fine": False},
+        {"offset": 2, "type": "pan", "is_fine": True},
+    ]}]
+    window = {0: (np.arange(4) / 40.0, frames, np.arange(1, 5))}
+    assert soak.channel_jumps(window, patch) == {"any": 255, "pan_tilt": 78}
+    assert soak.channel_jumps({}, patch) == {"any": 0, "pan_tilt": 0}
+
+
+def test_the_markdown_report_carries_every_figure_asked_for():
+    rows = soak_rows(n=60, channel_jump_max=255, pan_tilt_jump_max=9, flash_violations=0,
+                     fixtures_flashing_over_limit=0, tracks_played=lambda m: m // 2)
+    report = {"requested_minutes": 60, "template": "Small Club", "captured_on": "127.0.0.1:16454",
+              "packets_captured": 144000, "backend_log_error_lines": 0, "error": None,
+              "verdict": soak.evaluate(rows, expected_minutes=60), "rows": rows}
+    text = soak.format_markdown(report)
+    for wanted in ("SOAK PASS over 60 minutes", "Frame rate", "Longest gap", "Largest channel jump",
+                   "Flash rate", "Blackout | held in 7 of 7", "Grand master | held in 7 of 7",
+                   "0 send errors", "127.0.0.1:16454"):
+        assert wanted in text, wanted
+
+
+def test_the_harness_refuses_to_send_art_net_off_this_machine(tmp_path):
+    cfg = H.WireConfig.create(tmp_path, http_port=1, art_port=1)
+    for target in ("255.255.255.255", "192.168.1.50", "2.255.255.255", "0.0.0.0", "localhost"):
+        with pytest.raises(ValueError):
+            H.Server(cfg, "refused", extra_env={"ARTNET_IP": target})
+    assert not list(tmp_path.glob("server_*.log")), "nothing may start before the check"
+    assert H.is_loopback("127.0.0.1") and H.is_loopback("::1")
+
+
+def test_a_backend_that_reports_a_lan_target_fails_the_soak():
+    verdict = soak.evaluate(soak_rows(artnet_target="192.168.1.50"), expected_minutes=480)
+    assert failed(verdict) == ["wire_integrity"]
+
+
 @pytest.mark.parametrize("fault", [
     {"send_errors": 2}, {"stray_channels": 1}, {"unpatched_universes": [5]},
     {"malformed_packets": 1}, {"seq_breaks": 1},
@@ -263,6 +377,24 @@ def test_a_backend_that_died_fails_the_soak():
     verdict = soak.evaluate(rows, expected_minutes=480)
     assert verdict["checks"]["backend_alive"]["passed"] is False
     assert not verdict["passed"]
+
+
+def minute_window(first, last, universe=0):
+    return {universe: (np.array([first, last]), None, None)}
+
+
+def test_a_stall_across_a_minute_boundary_is_measured():
+    last_seen: dict = {}
+    assert soak.boundary_gap_ms(last_seen, minute_window(0.0, 59.99)) is None
+    # Last frame of minute 1 at 59.99 s, first of minute 2 at 60.18 s.
+    assert soak.boundary_gap_ms(last_seen, minute_window(60.18, 119.99)) == pytest.approx(190.0)
+    assert soak.boundary_gap_ms(last_seen, minute_window(120.015, 179.99)) == pytest.approx(25.0)
+
+
+def test_a_universe_that_stops_is_charged_for_its_silence():
+    last_seen = {0: 59.99, 1: 59.99}
+    gap = soak.boundary_gap_ms(last_seen, minute_window(60.015, 119.99, universe=0))
+    assert gap == pytest.approx(60000.0)
 
 
 def test_no_rows_is_a_failure_not_a_pass():

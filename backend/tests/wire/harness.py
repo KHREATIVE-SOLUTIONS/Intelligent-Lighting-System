@@ -13,6 +13,7 @@ several runs can share one machine.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import re
@@ -126,6 +127,7 @@ class Capture:
         self.port = port
         self.packets: list = []   # (t, universe, seq, length, payload), in arrival order
         self.bad: Counter = Counter()
+        self.lengths: Counter = Counter()   # DMX slot count -> packets
         self.total = 0            # ArtDmx packets ever seen, including pruned ones
         self.stop = False
         self._lock = threading.Lock()
@@ -181,6 +183,7 @@ class Capture:
                 with self._lock:
                     t = t_remote - self.clock_offset if self._synced else t_remote
                     self.packets.append((t,) + parsed)
+                    self.lengths[parsed[2]] += 1
                     self.total += 1
 
     @staticmethod
@@ -246,11 +249,25 @@ class Capture:
 # --------------------------------------------------------------------------
 # Backend process
 # --------------------------------------------------------------------------
+def is_loopback(address: str) -> bool:
+    """True only for a literal loopback IP address. A name is not trusted to be one."""
+    try:
+        return ipaddress.ip_address(str(address).strip()).is_loopback
+    except ValueError:
+        return False
+
+
 class Server:
     """One boot of the backend, pointed at the run's database and capture port."""
 
     def __init__(self, cfg: WireConfig, tag: str, extra_env: Optional[dict] = None) -> None:
         self.cfg = cfg
+        # This harness must never light a real rig. The backend's own default is
+        # limited broadcast, so the destination is fixed here and may only be
+        # overridden with another loopback address.
+        target = (extra_env or {}).get("ARTNET_IP", "127.0.0.1")
+        if not is_loopback(target):
+            raise ValueError(f"the wire harness sends Art-Net to loopback only, not {target!r}")
         self.log_path = cfg.out / f"server_{tag}.log"
         self.log = open(self.log_path, "w", encoding="utf-8", errors="replace")
         env = dict(os.environ)

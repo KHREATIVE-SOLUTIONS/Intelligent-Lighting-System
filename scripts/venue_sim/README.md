@@ -30,22 +30,71 @@ pytest tests/wire --wire --wire-out ./wire    # keep logs and measurements in ./
 
 ## The soak
 
+Run from the repository root, with the backend's Python environment:
+
 ```bash
-python scripts/venue_sim/venue_soak.py backend <out_dir> --hours 8
-python scripts/venue_sim/venue_soak.py backend <out_dir> --minutes 30
-python scripts/venue_sim/venue_soak.py backend --evaluate <out_dir>/soak_rows.jsonl --expect-minutes 480
+python scripts/venue_sim/venue_soak.py backend .wire_out/soak_1h                 # one hour, the default
+python scripts/venue_sim/venue_soak.py backend .wire_out/soak_8h --hours 8      # eight hours, the G1 soak
+python scripts/venue_sim/venue_soak.py backend .wire_out/soak_smoke --minutes 2 # smoke, for CI
+python scripts/venue_sim/venue_soak.py backend --evaluate .wire_out/soak_8h/soak_rows.jsonl --expect-minutes 480
 ```
 
-One line a minute, then a verdict. The pass line is G1's: memory flat, 40 fps every
-minute, no gap between frames over 100 ms; plus no send errors, no channel outside
-the patch, no malformed packet and no break in the Art-Net sequence. The numbers are
-`SoakLimits` in `backend/tests/wire/soak.py`. "Flat" means the last quarter of the run
-is within 20 MB or 5% (whichever is larger) of the first quarter after a ten-minute
-warm-up.
+The length is `--hours` or `--minutes`: one hour if neither is given, eight hours
+(480 minutes) at most.
 
-Each minute is appended to `soak_rows.jsonl` as it is measured, so an interrupted run
-keeps what it saw. The exit code is 0 only for a complete run that passed. Needs
-`psutil`.
+**Run the one-hour and eight-hour soaks outside market hours.** The soak takes about
+a fifth of one core and 550 MB for its whole length, and its frame-gap figures are
+only fair on a machine that is otherwise quiet: anything else busy on the box shows
+up as gaps that are not the backend's. Start it in the evening or at the weekend and
+read the report in the morning. The two-minute smoke can run at any time.
+
+### What it writes
+
+Everything goes to the output directory you name. Use a folder under `.wire_out/`,
+which git ignores; do not write into `scripts/venue_sim/reports/`, which is tracked.
+
+| File | What it is |
+|---|---|
+| `soak_report.md` | One page: the verdict, each check, and the figures below |
+| `soak_report.json` | The same, with every minute's row and the limits used |
+| `soak_rows.jsonl` | One line a minute, appended as it is measured, so an interrupted run keeps what it saw |
+| `server_soak.log`, `data/` | The backend's console log and its throwaway database |
+
+### What it measures
+
+Each minute, from the Art-Net captured on `127.0.0.1`:
+
+- **Frame rate** and **gaps** between frames (99th percentile and longest, including
+  a stall that straddles two minutes).
+- **Largest channel jump** between two consecutive frames, on any channel and on
+  coarse pan and tilt. Reported, not judged: there is no agreed limit yet.
+- **Flash rate**: the most whole-rig flashes in any one second, and how many single
+  fixtures went over three a second.
+- **Blackout and grand master**: in the first minute and every tenth after it the
+  soak triggers a three-second blackout and a four-second grand master of 0.3 while
+  the music plays. Blackout must be dark within 75 ms of the reply, stay dark, and
+  come back; no fixture may exceed the grand master.
+- **Errors**: send errors, malformed packets, breaks in the Art-Net sequence, channels
+  outside the patch, audio reconnects, error lines in the backend log.
+- Memory, threads and CPU of the backend's process tree.
+
+### The verdict
+
+The pass line is G1's: memory flat, 40 fps every minute, no gap between frames over
+100 ms; plus no send errors, no channel outside the patch, no malformed packet, no
+break in the Art-Net sequence, no more than three whole-rig flashes in a second, and
+every blackout and grand-master probe held. The numbers are `SoakLimits` and the
+constants at the top of `backend/tests/wire/soak.py`. "Flat" means the last quarter of
+the run is within 20 MB or 5% (whichever is larger) of the first quarter after a
+ten-minute warm-up.
+
+| Headline | Meaning | Exit code |
+|---|---|---|
+| `SOAK PASS` | Every check passed. Only a 480-minute pass is the G1 soak; a shorter one says so | 0 |
+| `SOAK SMOKE OK` | Nothing measured was wrong, but the run was too short (under 8 minutes) to judge memory | 0 |
+| `SOAK FAIL` | A check failed, or the run did not reach its length | 1 |
+
+Needs `psutil`.
 
 ## Audit scripts
 
@@ -55,7 +104,7 @@ python scripts/venue_sim/venue_sim.py <backend_dir> <output_dir>
 
 | Script | What it measures |
 |---|---|
-| `venue_sim.py` | Fresh install, auth probes, music, silence, feed loss, graceful stop, reboot, hard kill. Also binds the library for the others, which `import venue_sim as V`. |
+| `venue_sim.py` | Fresh install, auth probes, music, silence, feed loss, graceful stop, reboot, hard kill. Also binds the library for the others, which `import venue_sim as V`. Re-run on the new library on 2026-11-20; the others were checked by name against it, not re-run. |
 | `venue_sim2.py` | Blackout (three routes), grand master, section and movement timelines, quiet track, DJ mix. |
 | `venue_sim3.py` | The same drop three times in one boot. |
 | `venue_sim4.py` | Token-only safety holes: fail-open profile, manual-mode LFO strobe, universe created by a GET, writers under blackout, demo preset over a live rig. |
@@ -71,12 +120,18 @@ tier, which holds only what works.
 - HTTP and Art-Net each take a free loopback port per run, so nothing reaches the
   network, nothing collides with a normal backend on 8000 and 6454, and several
   checkouts can run at once.
+- The backend is started with `ARTNET_IP=127.0.0.1` and the receiver binds
+  `127.0.0.1` only. The harness refuses to start a backend aimed anywhere else
+  (broadcast, a LAN address, a host name), the wire tier asserts the backend's own
+  report of its target, and the soak fails if that report ever names another address.
+- The backend sends Art-Net only. There is no sACN sender in it to capture.
 - `<output_dir>` receives the database, backend logs and reports. It is safe to delete.
 - Packets are received and time-stamped by a small process of their own
   (`backend/tests/wire/capture_proc.py`). Stamped inside the harness process, arrival
   times also measured the harness's own pauses: the same backend read 129-194 ms worst
-  gaps that way and 34 ms with the separate receiver. Gap figures in the 2026-11-17
-  reports (104 ms, 112 ms) were taken the old way and overstate the backend.
+  gaps that way and 34 ms with the separate receiver, on the same day and machine.
+  The gap figures in the 2026-11-17 reports (104 ms, 112 ms) were taken the old way;
+  that they were the same artefact is inferred, not re-measured.
 - The old "sequence skips" figure counted the Art-Net sequence wrapping from 255 to 1
   as a skip. `seq_breaks` counts only a frame that did not follow its predecessor.
 
@@ -89,4 +144,5 @@ tier, which holds only what works.
   shutter with the dimmer up would still count as lit.
 - Not yet run on Linux or in CI.
 
-`reports/` holds the outputs from the 2026-11-17 audit run and later soaks.
+`reports/` holds the outputs from the 2026-11-17 audit run. New runs belong in
+`.wire_out/`, not there.

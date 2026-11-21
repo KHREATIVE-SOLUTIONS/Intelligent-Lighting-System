@@ -76,7 +76,9 @@ def read_patch(rig_id: int) -> list:
 def analyse(cap, patch: list, name: str, t0: float, t1: float,
             beats: np.ndarray | None = None, extra: dict | None = None) -> dict:
     """As H.analyse, and keeps the level traces in <out_dir>/cap_<name>.npz."""
-    time.sleep(0.25)    # let the capture process hand over the window's last packets
+    # Only a window that has just closed needs a moment for the capture process to
+    # hand over its last packets; an older one is already complete.
+    time.sleep(min(0.25, max(0.0, t1 + 0.25 - time.perf_counter())))
     return H.analyse(cap, patch, t0, t1, beats=beats, extra=extra, save_to=OUT / f"cap_{name}.npz")
 
 

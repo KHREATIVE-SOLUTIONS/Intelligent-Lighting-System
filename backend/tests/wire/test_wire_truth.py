@@ -90,6 +90,7 @@ def test_every_packet_is_valid_artnet(m):
     """Audit: correct header, version 14, 512-slot frames; 0 malformed in ~8,000."""
     assert m["total_packets"] > 3000
     assert m["capture_anomalies"] == {}, m["capture_anomalies"]
+    assert m["packets_by_slot_count"] == {"512": m["total_packets"]}, m["packets_by_slot_count"]
 
 
 def test_sequence_numbers_run_1_to_255_without_a_break(m):
@@ -97,6 +98,13 @@ def test_sequence_numbers_run_1_to_255_without_a_break(m):
     for uni in _universes(m["music"]):
         assert uni["seq_min"] == 1 and uni["seq_max"] == 255, uni
         assert uni["seq_breaks"] == 0, uni
+
+
+def test_art_net_goes_to_loopback_and_is_not_broadcast(m):
+    """The harness's own safety line: this tier must never reach a real rig."""
+    detail = m["feed_lost"]["health"]["dmx_detail"]
+    assert detail["target_ip"] == "127.0.0.1", detail
+    assert detail["broadcast"] is False, detail
 
 
 # ---- Frame rate ------------------------------------------------------------

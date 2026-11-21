@@ -224,5 +224,6 @@ async def run_lifecycle(cfg: H.WireConfig, template: str = "Small Club") -> dict
         cap.close()
         m["capture_anomalies"] = dict(cap.bad)
         m["total_packets"] = cap.total
+        m["packets_by_slot_count"] = {str(n): count for n, count in cap.lengths.items()}
         (cfg.out / "wire_truth.json").write_text(json.dumps(m, indent=1, default=str))
     return m
