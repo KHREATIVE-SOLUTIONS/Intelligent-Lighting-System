@@ -593,6 +593,7 @@ async def lifespan(app: FastAPI):
                         lambda: capture.start(
                             loop=loop,
                             device_name=remembered["device_name"] if remembered["running"] else None,
+                            device_hostapi=remembered.get("hostapi") if remembered["running"] else None,
                             keep_trying=True,
                         ),
                     )

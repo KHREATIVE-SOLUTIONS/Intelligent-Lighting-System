@@ -604,6 +604,9 @@ Not recommended for a venue. This is the shortest honest path on `da3569a`.
 5. Build the rig. Universes are 0-based: a console's "universe 1" is 0 here.
 6. **Restart the backend** so the rig goes live (A3).
 7. Audio: play the music on this laptop and pick its loopback device (A2).
+   *Since this was written, line inputs are accepted on Windows: a USB interface
+   or mixer line-in can be picked instead. See "Choosing the audio input" in the
+   README.*
 8. Check the health bar. It cannot tell you whether the node is listening.
 9. Leave Autopilot on. Manual mode has no controls in this UI and gives no drop.
 10. Keep a hand on Blackout. Press it before closing anything.
