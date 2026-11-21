@@ -373,6 +373,10 @@ async def lifespan(app: FastAPI):
                         lighting_data['genre'] = pro_state.get('genre')
                         lighting_data['section'] = pro_state.get('section')
                         lighting_data['section_intensity'] = pro_state.get('section_intensity')
+                        # The look library's current look and the movement
+                        # performing it, for a UI that wants to name it.
+                        lighting_data['look'] = pro_state.get('look')
+                        lighting_data['look_movement'] = pro_state.get('look_movement')
                         lighting_data['pro_effects'] = {
                             'strobeMode': pro_state.get('pro_strobe_active', False) and 'beat_sync' or 'off',
                             'chaseType': 'off',

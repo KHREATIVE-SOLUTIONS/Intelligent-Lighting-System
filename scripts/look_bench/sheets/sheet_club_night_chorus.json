@@ -1,0 +1,178 @@
+{
+ "rig": "club_night",
+ "section": "chorus",
+ "movers": 16,
+ "focus": [
+  0.0,
+  0.0,
+  1.75
+ ],
+ "looks": {
+  "centre_fly_fan": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": null,
+   "max_lean_deg": 59.9,
+   "max_pan_deg": 70.7,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 106,
+   "tilt_rate_deg_s": 24,
+   "too_fast": false
+  },
+  "centre_tilt_unison": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": null,
+   "max_lean_deg": 67.5,
+   "max_pan_deg": 70.7,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 0,
+   "tilt_rate_deg_s": 42,
+   "too_fast": false
+  },
+  "columns_circle_unison": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.0,
+   "max_lean_deg": 29.2,
+   "max_pan_deg": 28.0,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 94,
+   "tilt_rate_deg_s": 27,
+   "too_fast": false
+  },
+  "columns_fly_fan": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.0,
+   "max_lean_deg": 35.8,
+   "max_pan_deg": 56.3,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 47,
+   "tilt_rate_deg_s": 12,
+   "too_fast": false
+  },
+  "columns_sweep_ripple": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.332,
+   "max_lean_deg": 21.8,
+   "max_pan_deg": 28.0,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 94,
+   "tilt_rate_deg_s": 0,
+   "too_fast": false
+  },
+  "columns_sweep_unison": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.0,
+   "max_lean_deg": 21.8,
+   "max_pan_deg": 28.0,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 94,
+   "tilt_rate_deg_s": 0,
+   "too_fast": false
+  },
+  "columns_tilt_ripple": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.0,
+   "max_lean_deg": 29.2,
+   "max_pan_deg": 0.0,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 0,
+   "tilt_rate_deg_s": 27,
+   "too_fast": false
+  },
+  "columns_tilt_rows": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.0,
+   "max_lean_deg": 29.2,
+   "max_pan_deg": 0.0,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 0,
+   "tilt_rate_deg_s": 27,
+   "too_fast": false
+  },
+  "cross_circle_rows": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.028,
+   "max_lean_deg": 68.0,
+   "max_pan_deg": 87.3,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 94,
+   "tilt_rate_deg_s": 42,
+   "too_fast": false
+  },
+  "cross_hold": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.0,
+   "max_lean_deg": 61.3,
+   "max_pan_deg": 77.4,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 0,
+   "tilt_rate_deg_s": 0,
+   "too_fast": false
+  },
+  "cross_tilt_unison": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.0,
+   "max_lean_deg": 68.0,
+   "max_pan_deg": 77.4,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 0,
+   "tilt_rate_deg_s": 42,
+   "too_fast": false
+  },
+  "fan_circle_ripple": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.142,
+   "max_lean_deg": 45.3,
+   "max_pan_deg": 81.7,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 94,
+   "tilt_rate_deg_s": 38,
+   "too_fast": false
+  },
+  "fan_sweep_rows": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.0,
+   "max_lean_deg": 36.0,
+   "max_pan_deg": 80.5,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 94,
+   "tilt_rate_deg_s": 3,
+   "too_fast": false
+  },
+  "fan_sweep_unison": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.0,
+   "max_lean_deg": 36.0,
+   "max_pan_deg": 80.5,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 94,
+   "tilt_rate_deg_s": 3,
+   "too_fast": false
+  },
+  "fan_tilt_unison": {
+   "mirror_error_m": 0.0,
+   "mirror_pairs": 8,
+   "uneven_spacing": 0.0,
+   "max_lean_deg": 45.3,
+   "max_pan_deg": 56.3,
+   "landings_outside_room": 0,
+   "pan_rate_deg_s": 0,
+   "tilt_rate_deg_s": 38,
+   "too_fast": false
+  }
+ },
+ "picture": "scripts\\look_bench\\sheets\\sheet_club_night_chorus.png"
+}
