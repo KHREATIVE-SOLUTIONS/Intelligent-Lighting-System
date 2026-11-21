@@ -82,17 +82,43 @@ For local development (login off, hot reload, database on 127.0.0.1:5432):
 cp docker-compose.override.example.yml docker-compose.override.yml
 ```
 
+## Start everything
+
+One command starts the backend and the operator UI, waits until both answer,
+and prints the operator URL. Ctrl+C stops both. It needs no internet.
+
+```bash
+python start.py          # or start.bat on Windows, sh start.sh on macOS/Linux
+```
+
+| Option | What it does |
+|--------|--------------|
+| `--check` | Preflight only: Python and packages, UI packages, free ports, writable data folder. Lists every problem with the command that fixes it; exits non-zero if there is one. |
+| `--dry-run` | Prints the exact commands a start would run, then exits. |
+| `--backend-port N` / `--ui-port N` | Ports (default 8000 and 5173). The UI is pointed at the backend port you give. |
+| `--no-ui` | Backend only. |
+| `--ui-mode dev\|preview` | By default the built app in `frontend/dist` is served if it exists, otherwise the Vite dev server. |
+| `--host 0.0.0.0` | Listen on the network so a tablet can open the UI (default is this machine only). |
+| `--audio` | Also feed this machine's audio to the backend (`--device "Main Out"`, `--rig-id N`). Otherwise pick the audio device in the UI. |
+| `--open` | Open the operator screen in a browser. |
+
+The first time, install the packages (this is the one step that needs
+internet): see Development below, or run `scripts\run_dev.bat` on Windows.
+The launcher never installs anything and never sets the output target:
+`ARTNET_IP` comes from `backend/.env` or the environment, and `--check` shows
+which address is in effect. If the UI stops, the backend keeps running.
+
 ## Installing at a Venue
 
 Pick one of three ways, by machine:
 
-- **Windows or macOS (recommended): run natively.** Install the backend
-  (see Development below), then `python start.py`. It starts the backend and
-  visualizer, captures audio from the box, signs its own audio feed in, and
-  drives the active rig. Without a `.env` it keeps its database in
-  `backend/data/lighting.db`. For an unattended start, pass the audio device:
-  `python start.py --device "Main Out" --no-browser` (or set
-  `ILS_AUDIO_DEVICE`). A failed start stops everything it started.
+- **Windows or macOS (recommended): run natively.** Install the backend and
+  UI packages (see Development below), then `python start.py` (see Start
+  everything above). Without a `.env` it keeps its database in
+  `backend/data/lighting.db`. To capture audio from the box and sign the feed
+  in without anyone at the keyboard, add the audio feed and name the device:
+  `python start.py --audio --device "Main Out"` (or set `ILS_AUDIO_DEVICE`).
+  A failed start stops everything it started.
 - **Linux: Docker with the venue file.** It puts the backend on the host
   network, so Art-Net broadcast reaches the lights, and gives it the box's
   sound card:
@@ -109,22 +135,27 @@ Pick one of three ways, by machine:
 
 Patch the venue's rig in the app and activate it. Until then, the built-in
 demo rig drives the visualizer but nothing is sent to the network.
-`ILS_RIG_ID` pins start.py, the visualizer or the capture script to one rig;
+`ILS_RIG_ID` pins the audio feed (`start.py --audio`), the visualizer or the capture script to one rig;
 otherwise they follow the active rig.
 
 ## Development
 
+Install once:
+
 ```bash
 # Backend
 cd backend
-python -m venv venv && source venv/bin/activate
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
 
 # Frontend
 cd frontend
-npm install && npm run dev
+npm install
 ```
+
+Then `python start.py` from the project root. To run the two halves by hand
+(hot reload on the backend): `uvicorn app.main:app --reload` in `backend`,
+`npm run dev` in `frontend`.
 
 ## Versioning
 
