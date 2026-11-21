@@ -22,6 +22,7 @@ from app.schemas.rig import (
     RigCreate, RigUpdate, RigResponse, RigListResponse,
     RigFixtureCreate, RigFixtureUpdate, RigFixtureResponse,
     PAN_TILT_FLAGS,
+    apply_is_inverted_alias,
 )
 from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
 from app.services.rig.rig_detector import RigDetector, DemoRigGenerator, PatternGenerator
@@ -396,6 +397,10 @@ async def batch_update_fixtures(
         # back off a light, so this one field cannot skip its empty values.
         if "zone" in item:
             rf.zone = _validated_zone(item["zone"])
+
+        # A client that still sends is_inverted, and omits tilt_invert, is
+        # asking for a hung-inverted unit: mid-tilt toward the floor.
+        apply_is_inverted_alias(item)
 
         # Booleans, so False is a value to store and only null is skipped.
         for flag in PAN_TILT_FLAGS:

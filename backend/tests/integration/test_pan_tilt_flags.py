@@ -354,3 +354,108 @@ async def test_a_flag_set_on_an_upgraded_rig_reaches_the_engine(old_rig_db):
     assert left_pan == 44904
     assert abs(right_pan - left_pan) <= 1
     assert frame[2:4] == frame[22:24] == [90, 19]
+
+
+# ---------------------------------------------------------------------------
+# Retire is_inverted: copy it onto tilt_invert, delete no user data (Q20)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def inverted_legacy_db():
+    """A database at revision 006 with mixed is_inverted / hang-flag rows."""
+    tmpdir = tempfile.mkdtemp(prefix="ils-is-inverted-migration-")
+    path = Path(tmpdir) / "inverted_legacy.db"
+    _alembic(path, "006")
+
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "INSERT INTO fixtures (id, manufacturer, model, fixture_type) "
+            "VALUES (1, 'Test', 'Inverted Legacy Mover', 'MOVING_HEAD')"
+        )
+        connection.execute(
+            "INSERT INTO rigs (id, name, stage_width, stage_depth, stage_height) "
+            "VALUES (1, 'Legacy Inverted Flag', 10.0, 8.0, 6.0)"
+        )
+        rows = (
+            # id, address, is_inverted, pan_invert, tilt_invert, pan_tilt_swap
+            (1, 1, 1, 0, 0, 0),    # should gain tilt_invert
+            (2, 21, 1, 0, 1, 0),   # tilt already set; leave it, keep is_inverted
+            (3, 41, 1, 1, 0, 0),   # map tilt, keep pan_invert
+            (4, 61, 0, 0, 0, 0),   # untouched
+            (5, 81, 1, 0, 0, 1),   # map tilt, keep swap
+        )
+        for rf_id, address, inverted, pan, tilt, swap in rows:
+            connection.execute(
+                "INSERT INTO rig_fixtures "
+                "(id, rig_id, fixture_id, name, universe, dmx_address, "
+                " position_x, position_y, position_z, is_active, "
+                " is_inverted, pan_invert, tilt_invert, pan_tilt_swap) "
+                "VALUES (?, 1, 1, ?, 0, ?, 0.0, 5.0, 0.0, 1, ?, ?, ?, ?)",
+                (rf_id, f"Head {rf_id}", address, inverted, pan, tilt, swap),
+            )
+        connection.commit()
+        assert "is_inverted" in _columns(connection, "rig_fixtures")
+    finally:
+        connection.close()
+
+    yield path
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_is_inverted_is_copied_onto_tilt_invert_and_never_dropped(inverted_legacy_db):
+    connection = sqlite3.connect(inverted_legacy_db)
+    try:
+        before = connection.execute(
+            "SELECT id, is_inverted, pan_invert, tilt_invert, pan_tilt_swap "
+            "FROM rig_fixtures ORDER BY id"
+        ).fetchall()
+        assert before == [
+            (1, 1, 0, 0, 0),
+            (2, 1, 0, 1, 0),
+            (3, 1, 1, 0, 0),
+            (4, 0, 0, 0, 0),
+            (5, 1, 0, 0, 1),
+        ]
+    finally:
+        connection.close()
+
+    _alembic(inverted_legacy_db, "head")
+
+    connection = sqlite3.connect(inverted_legacy_db)
+    try:
+        assert "is_inverted" in _columns(connection, "rig_fixtures"), (
+            "the retirement migration dropped is_inverted"
+        )
+        after = connection.execute(
+            "SELECT id, is_inverted, pan_invert, tilt_invert, pan_tilt_swap "
+            "FROM rig_fixtures ORDER BY id"
+        ).fetchall()
+        assert after == [
+            (1, 1, 0, 1, 0),
+            (2, 1, 0, 1, 0),
+            (3, 1, 1, 1, 0),
+            (4, 0, 0, 0, 0),
+            (5, 1, 0, 1, 1),
+        ]
+    finally:
+        connection.close()
+
+    # Running it again must be harmless.
+    _alembic(inverted_legacy_db, "head")
+
+    connection = sqlite3.connect(inverted_legacy_db)
+    try:
+        again = connection.execute(
+            "SELECT id, is_inverted, pan_invert, tilt_invert, pan_tilt_swap "
+            "FROM rig_fixtures ORDER BY id"
+        ).fetchall()
+        assert again == [
+            (1, 1, 0, 1, 0),
+            (2, 1, 0, 1, 0),
+            (3, 1, 1, 1, 0),
+            (4, 0, 0, 0, 0),
+            (5, 1, 0, 1, 1),
+        ]
+    finally:
+        connection.close()
