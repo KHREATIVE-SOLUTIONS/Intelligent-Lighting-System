@@ -524,7 +524,8 @@ clock places each audio block inside its frame by the wall clock.
    frame and is ignored; the look would choose its effect. Must keep "silence is dark"
    and the level contracts. **Built 2026-11-21 for the beams outside the drop, see
    below.**
-2. Strobe mode per look, through the accent governor only, never around it.
+2. Strobe mode per look, through the accent governor only, never around it. **Built
+   2026-11-21 for the drop strobe's rate only, see below.**
 3. Colour treatment per look (saturation and contrast), which belongs with I3.
 4. Fixture-group isolation: a look that uses only the back truss, or only the washes.
 5. Predrop looks, once the drop predictor's false alarms are measured.
@@ -648,6 +649,81 @@ contrast and a chorus 30% dimmer on the bench.
 - Move in black, listed beside this stage in 7D, is not built.
 - No one has looked at this in the 3D view. The tilt depth and the fill are numbers
   to judge by eye.
+
+#### The dimmer speed limit and stage 2 (strobe modes), built 2026-11-21
+
+**Verification.** Same gap as above: the project venv could not be run from the
+worktree. Unit and musical tests on the system Python: **901 passed, none failed**
+(846 before this part). The database and API tests still need running with the
+project's interpreter.
+
+**A speed limit for dimmer chases.** Stage 1 lit the beams as the look says and put no
+limit on how fast. A chase of half a beat, which the library has, took each head from
+dark to bright 4.3 times a second at 128 BPM. No beam now cycles more than
+`live_dimmer.MAX_CYCLES_PER_S` (2.5) times a second, and it is kept twice, as
+movement's limit is:
+
+- `fit_to_tempo` slows a look when it is taken, by doubling its beats, so it stays on
+  the grid. This is the musical answer and it trusts the tempo.
+- `PhaseClock` does not. It is the beat clock as the dimmer sees it: exactly the beat
+  clock while that is within the limit, and no faster than the limit when the tempo
+  estimate doubles, runs away or jumps. It also governs the renderer's own chase,
+  which lights the beams when looks are off or none fits.
+- A swap of alternate heads never crosses in under 50 ms (it was 30 ms at 240 BPM).
+
+| Busiest beam, dark-to-bright per second | Before | After |
+|---|---|---|
+| Half-beat chase, 128 BPM | 4.3 | 2.1 (one beat) |
+| One-beat chase, 174 BPM | 2.9 | 1.45 (two beats) |
+| Any look, 240 BPM, tempo fit removed | up to 8 | 2.5 |
+| The renderer's own chase, 320 BPM (a doubled estimate) | 3.6 | 2.4 |
+
+Measured on the dimmer levels and the pan and tilt steps the engine sets, at 190, 240
+and 320 BPM, with the tempo doubling under a look, and with the fit taken away. The
+movement fit is also made again when the rig changes under a look.
+
+*Outside the limit, said plainly.* The renderer's chase breathes with the beat by 11%
+either way, and under a look's fill that reaches the dim beams as a ripple of about a
+fifth of full, at the beat's rate: 4 a second at 240 BPM. It is a ripple and not a
+dark-to-bright cycle, it was there before, and it is not limited. The own chase also
+turns round every two bars, which is a step and not a rate.
+
+**Stage 2: strobe modes, as far as is safe today.** There is no single output stage
+yet: G2's flash limiter on total rig luminance is still to be built. The limit that
+exists is the renderer's own clamp (`_strobe_grid_hz`, the venue's `strobe_hz_cap`)
+with the accent governor deciding whether strobing is on. A look's strobe mode goes
+through exactly that and round nothing. `live_strobe` lets a drop look's mode name a
+rate for the renderer's own drop strobe, and:
+
+- it is used only if it is lower than the renderer's own rate;
+- it is handed to the same clamp, which decides;
+- it opens no window and writes no switch or limit;
+- it is taken once per strobe window, because the flash grid is time times rate and a
+  rate that followed the tempo would slide the grid and add flashes;
+- a rate the limit has no room for is halved until it fits, so eighth notes become
+  beats and beats become every other beat.
+
+`EffectsConfig.look_strobe_modes` turns it off, which is frame for frame the strobe
+as it was. Under the general-audience limit of 3 a second a `beat_pulse` drop at 128
+BPM flashes 2.1 times a second instead of 2.6; under a limit of 24 it flashes 2.1
+times a second instead of 18.
+
+Tested on what the engine sets, for every musical mode, at 100 to 240 BPM, under
+limits of 3 and 24: never more flashes in any second than the limit, never a flash
+outside the renderer's own window, none at all with strobing off by any of its
+switches. One thing a test corrected: a lower rate is not always fewer flashes by
+count. Where the grid falls when the window opens can add one (150 BPM under a limit
+of 3: nine against eight over two drops).
+
+**Not performed.**
+
+- `kick_locked`, `snare_locked` and `drum_hits` run at the rate those hits would have
+  on a four-on-the-floor grid. No detector here can tell the drums apart.
+- The rate is the beat's; the flashes are not placed on the beat.
+- `buildup_accel`, the blinder modes, and any strobe mode on a look outside the drop
+  need a window the renderer does not have. `fast_synth`, `random_burst` and `none`
+  are the renderer's own strobe.
+- Not looked at in the 3D view, and the wire harness was not re-run.
 
 The design, as proposed:
 
