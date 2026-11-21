@@ -214,9 +214,7 @@ async def get_look_spec(request: Request):
 async def start_effects():
     """Start the effects engine."""
     engine = get_effects_engine()
-    if not engine.running:
-        import asyncio
-        asyncio.create_task(engine.run())
+    engine.start_loop()
     return {"status": "started"}
 
 

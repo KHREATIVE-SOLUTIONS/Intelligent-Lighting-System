@@ -329,7 +329,7 @@ async def lifespan(app: FastAPI):
         await _boot_rig(app)
 
         # Start the effects engine async loop (BUG-016 fix: store task reference)
-        app.state.effects_engine_task = asyncio.create_task(app.state.effects_engine.run())
+        app.state.effects_engine_task = app.state.effects_engine.start_loop()
 
         # Start a WebSocket broadcast task that pushes DMX state to all connected clients at ~30fps
         # This is needed because server-side audio capture bypasses the WebSocket input path
