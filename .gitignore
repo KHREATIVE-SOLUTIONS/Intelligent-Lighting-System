@@ -76,6 +76,9 @@ backend/data/models/efficientat/
 # Genre night checks: logs and audio clips from real gigs stay on the box.
 genre_check/
 
+# Wire-tier and soak output (databases, backend logs, captures, reports)
+.wire_out/
+
 # Temporary files
 *.tmp
 *.temp
