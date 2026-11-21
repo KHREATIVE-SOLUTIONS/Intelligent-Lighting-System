@@ -70,6 +70,17 @@ The `peaks/s` figures in `2026-11-17_before` and `2026-11-17_after_moves` (7 and
 were produced by an earlier peak counter that counted a held level two or three
 times. Under the current counter both read 3. Everything else in those files stands.
 
+## Drop bench
+
+`drop_bench.py` asks one question of the same machinery: how often is the drop caught,
+and how often is one invented? It plays 12 single plays, 4 drops back to back, 16
+plays with no drop and 8 held-out builds, and prints hits, misses and false drops. See
+`docs/DROP_DETECTION_BENCH.md`.
+
+```bash
+backend/venv/Scripts/python scripts/look_bench/drop_bench.py
+```
+
 ## Limits
 
 - Synthetic tracks are drums over thin pads. Colour-to-mood and structure on real music

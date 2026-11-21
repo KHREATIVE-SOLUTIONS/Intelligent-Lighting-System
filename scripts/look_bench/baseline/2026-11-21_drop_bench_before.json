@@ -1,0 +1,372 @@
+{
+ "single": [
+  {
+   "play": "cold",
+   "tracks": [
+    "ibd"
+   ],
+   "caught": true,
+   "late_ms": 716,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "cold, -6 dB",
+   "tracks": [
+    "ibd@-6"
+   ],
+   "caught": true,
+   "late_ms": 716,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "cold, +6 dB",
+   "tracks": [
+    "ibd@6"
+   ],
+   "caught": true,
+   "late_ms": 100,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "cold, -12 dB",
+   "tracks": [
+    "ibd@-12"
+   ],
+   "caught": true,
+   "late_ms": 716,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "after 14 s dense",
+   "tracks": [
+    "dense:14",
+    "ibd"
+   ],
+   "caught": false,
+   "late_ms": null,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "after 30 s dense",
+   "tracks": [
+    "dense:30",
+    "ibd"
+   ],
+   "caught": false,
+   "late_ms": null,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "after 14 s dense, -6 dB",
+   "tracks": [
+    "dense:14@-6",
+    "ibd@-6"
+   ],
+   "caught": false,
+   "late_ms": null,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "after 14 s dense at +6 dB",
+   "tracks": [
+    "dense:14@6",
+    "ibd"
+   ],
+   "caught": true,
+   "late_ms": 588,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "after a drop",
+   "tracks": [
+    "ibd",
+    "ibd"
+   ],
+   "caught": true,
+   "late_ms": 95,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "after a drop and 30 s dense",
+   "tracks": [
+    "ibd",
+    "dense:30",
+    "ibd"
+   ],
+   "caught": true,
+   "late_ms": 108,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "after a DJ mix",
+   "tracks": [
+    "mix",
+    "ibd"
+   ],
+   "caught": true,
+   "late_ms": 105,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "after a quiet track",
+   "tracks": [
+    "quiet",
+    "ibd"
+   ],
+   "caught": true,
+   "late_ms": 803,
+   "false_drops_at_s": []
+  }
+ ],
+ "back_to_back": {
+  "tracks": [
+   "soakmix",
+   "ibd",
+   "soakmix",
+   "ibd",
+   "soakmix",
+   "ibd",
+   "soakmix",
+   "ibd"
+  ],
+  "drops": [
+   {
+    "true_s": 92.55,
+    "caught": false,
+    "late_ms": null
+   },
+   {
+    "true_s": 209.06,
+    "caught": true,
+    "late_ms": 102
+   },
+   {
+    "true_s": 325.58,
+    "caught": false,
+    "late_ms": null
+   },
+   {
+    "true_s": 442.1,
+    "caught": true,
+    "late_ms": 100
+   }
+  ],
+  "false_drops_at_s": []
+ },
+ "no_drop": [
+  {
+   "play": "dense 60 s",
+   "tracks": [
+    "dense:60"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "quiet",
+   "tracks": [
+    "quiet"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "DJ mix",
+   "tracks": [
+    "mix"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "song",
+   "tracks": [
+    "song"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "click",
+   "tracks": [
+    "click"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "build that never drops",
+   "tracks": [
+    "nodrop"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "build, small hit, breakdown",
+   "tracks": [
+    "falseimpact"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "dense then quiet then dense",
+   "tracks": [
+    "dense:20",
+    "quiet",
+    "dense:20"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "quiet then dense",
+   "tracks": [
+    "quiet",
+    "dense:30"
+   ],
+   "false_drops_at_s": [
+    24.72
+   ]
+  },
+  {
+   "play": "dense at +6 dB then dense",
+   "tracks": [
+    "dense:20@6",
+    "dense:20"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "dense at -12 dB then dense",
+   "tracks": [
+    "dense:20@-12",
+    "dense:30"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "dense then song",
+   "tracks": [
+    "dense:20",
+    "song"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "dense then DJ mix",
+   "tracks": [
+    "dense:20",
+    "mix"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "dense then click",
+   "tracks": [
+    "dense:14",
+    "click"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "dense then build that never drops",
+   "tracks": [
+    "dense:14",
+    "nodrop"
+   ],
+   "false_drops_at_s": []
+  },
+  {
+   "play": "dense then build, small hit, breakdown",
+   "tracks": [
+    "dense:14",
+    "falseimpact"
+   ],
+   "false_drops_at_s": []
+  }
+ ],
+ "other_builds": [
+  {
+   "play": "140 BPM, 16-bar build, cold",
+   "tracks": [
+    "ibdv:140:16"
+   ],
+   "caught": true,
+   "late_ms": 340,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "140 BPM, 16-bar build, after dense",
+   "tracks": [
+    "dense:20",
+    "ibdv:140:16"
+   ],
+   "caught": true,
+   "late_ms": 71,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "100 BPM, 8-bar build, cold",
+   "tracks": [
+    "ibdv:100:8"
+   ],
+   "caught": true,
+   "late_ms": 433,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "100 BPM, 8-bar build, after dense",
+   "tracks": [
+    "dense:20",
+    "ibdv:100:8"
+   ],
+   "caught": false,
+   "late_ms": null,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "128 BPM, 4-bar build, cold",
+   "tracks": [
+    "ibdv:128:4"
+   ],
+   "caught": true,
+   "late_ms": 733,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "128 BPM, 4-bar build, after dense",
+   "tracks": [
+    "dense:20",
+    "ibdv:128:4"
+   ],
+   "caught": false,
+   "late_ms": null,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "174 BPM, 16-bar build, after a DJ mix",
+   "tracks": [
+    "mix",
+    "ibdv:174:16"
+   ],
+   "caught": true,
+   "late_ms": 301,
+   "false_drops_at_s": []
+  },
+  {
+   "play": "120 BPM, 8-bar build, after song",
+   "tracks": [
+    "song",
+    "ibdv:120:8"
+   ],
+   "caught": true,
+   "late_ms": 528,
+   "false_drops_at_s": []
+  }
+ ],
+ "totals": {
+  "single_caught": 9,
+  "single_plays": 12,
+  "back_to_back_caught": 2,
+  "back_to_back_drops": 4,
+  "false_drops_in_drop_plays": 0,
+  "false_drops_in_no_drop_material": 1,
+  "other_builds_caught": 6,
+  "other_builds_plays": 8,
+  "false_drops_in_other_builds": 0
+ }
+}

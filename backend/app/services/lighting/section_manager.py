@@ -180,6 +180,38 @@ class StreamingSectionDetector:
     # floor normalises to exactly 0.5 whatever its level, so it never clears it.
     _DROP_MIN_PROGRAMME = 0.60
 
+    # The second way into a drop: the low end coming back at the top of a build.
+    #
+    # Every gate above weighs the moment against `_centre`, half a minute of
+    # whatever was playing. After a loud record that centre is still high when
+    # the next drop lands, the drop is no longer unusual, and it is refused:
+    # measured on the drop track after 14 s of dense music, the fast z-score
+    # peaked at 1.24 against the 1.4 it needs. This path asks the build itself
+    # instead, so it gives the same answer whatever came before.
+    #
+    # A build is the level standing above where it was a few seconds ago
+    # (`_level` over `_lag`, a ratio, so the fader does not move it) for at
+    # least `_RELEASE_MIN_BUILD_S`. The release is the bass share jumping above
+    # its own last few seconds (`_bass_mid` over `_bass_slow`); bass arrives
+    # here as a share of the spectrum, so that is level free as well. The order
+    # matters: the climb has to be that old on the frame the bass comes back.
+    # A hard cut from a quiet record into a loud one jumps both at once, has no
+    # build behind it, and is refused. Then the level has to hold, because a
+    # build that hits once and falls into a breakdown also gets its bass back.
+    _TAU_BASS_MID = 0.5         # about a beat: rides over single kicks
+    _TAU_BASS_SLOW = 4.0        # the low end of the last couple of bars
+    _RELEASE_CLIMB = 1.15       # level over lagged level that counts as climbing
+    _RELEASE_MIN_BUILD_S = 4.0  # two bars at 120 BPM
+    _RELEASE_MIN_JUMP = 0.20    # bass share above its own recent past
+    _RELEASE_WINDOW_S = 1.5     # how long after the jump a beat may commit it
+    _RELEASE_MIN_HOLD = 0.5     # fast level over smoothed level at the commit
+    # The loudness gate is `_DROP_MIN_PROGRAMME`, unchanged, but asked of half a
+    # beat of programme rather than of one frame. The analyser's beat event is
+    # an analysis block late, which puts it in the trough between two kicks:
+    # in the middle of a drop the instantaneous value there read 0.58 to 0.61
+    # against the 0.60 gate, with 0.84 on the kicks either side.
+    _TAU_PROGRAMME = 0.3
+
     # Rise is in deviation units, not in level units: the level saturates on any
     # real build and a saturated level has no slope left to read a build from.
     # It is averaged because a steady groove swings the level once a bar, and an
@@ -220,6 +252,9 @@ class StreamingSectionDetector:
         self._flux_level = 0.0
         self._flux_centre = 0.0
         self._flux_dev = 0.0
+        self._bass_mid = 0.0
+        self._bass_slow = 0.0
+        self._programme: Optional[float] = None
 
         self._decision = SectionDecision()
 
@@ -234,6 +269,9 @@ class StreamingSectionDetector:
         self._z_high_since: Optional[float] = None
         self._drop_until = t - 1e6
         self._last_drop_time = t - 1e6
+        self._climb_since: Optional[float] = None
+        self._release_above = False
+        self._release_at: Optional[float] = None
 
     @property
     def section(self) -> str:
@@ -340,6 +378,7 @@ class StreamingSectionDetector:
             self._level = self._fast = self._centre = self._lag = energy
             self._bass_level = self._bass_fast = self._bass_centre = bass
             self._flux_level = self._flux_centre = flux
+            self._bass_mid = self._bass_slow = bass
             self._rise_fast = self._rise_slow = 0.0
 
         dt = self._finite(delta_time, 0.0) if delta_time is not None else (t - self._last_time)
@@ -352,6 +391,8 @@ class StreamingSectionDetector:
         self._bass_level += (bass - self._bass_level) * self._alpha(dt, self._TAU_LEVEL)
         self._bass_fast += (bass - self._bass_fast) * self._alpha(dt, self._TAU_FAST)
         self._flux_level += (flux - self._flux_level) * self._alpha(dt, self._TAU_LEVEL)
+        self._bass_mid += (bass - self._bass_mid) * self._alpha(dt, self._TAU_BASS_MID)
+        self._bass_slow += (bass - self._bass_slow) * self._alpha(dt, self._TAU_BASS_SLOW)
 
         scale = max(self._ABS_DEV_FLOOR, self._MIN_REL_DEV * self._centre, self._dev)
         warm = (t - self._start_time) >= self._WARMUP_S
@@ -441,18 +482,67 @@ class StreamingSectionDetector:
             or self._finite(programme_level, 1.0) >= self._DROP_MIN_PROGRAMME
         )
 
-        drop_impact = (
+        # Build and release, measured against the build rather than the centre.
+        # `_lag` is pinned to `_level` through warm-up, so nothing climbs there.
+        climbing = (
+            warm
+            and self._level > self._SILENCE_LEVEL
+            and self._level >= self._RELEASE_CLIMB * self._lag
+        )
+        if not climbing:
+            self._climb_since = None
+        elif self._climb_since is None:
+            self._climb_since = t
+        bass_jump = self._bass_mid - self._bass_slow
+        above = bass_jump >= self._RELEASE_MIN_JUMP
+        if above and not self._release_above:
+            # Decided once, on the frame the bass comes back: a climb that only
+            # starts with the jump is a cut between records, not a build.
+            built = (
+                self._climb_since is not None
+                and (t - self._climb_since) >= self._RELEASE_MIN_BUILD_S
+            )
+            self._release_at = t if built else None
+        self._release_above = above
+        if self._release_at is not None and (t - self._release_at) > self._RELEASE_WINDOW_S:
+            self._release_at = None
+
+        if programme_level is None:
+            self._programme = None
+            loud_on_average = True
+        else:
+            programme = self._finite(programme_level, 1.0)
+            if self._programme is None:
+                self._programme = programme
+            self._programme += (programme - self._programme) * self._alpha(dt, self._TAU_PROGRAMME)
+            loud_on_average = self._programme >= self._DROP_MIN_PROGRAMME
+
+        can_drop = (
             warm
             and beat_event
             and current in self._DROP_FROM
+            and (t - self._last_drop_time) >= self._DROP_REFRACTORY_S
+        )
+        centre_impact = (
+            can_drop
+            and loud_enough
+            and (t - self._section_since) >= self._IMPACT_MIN_HOLD_S
             and lvl >= self._DROP_MIN_LEVEL
             and bfast >= self._DROP_MIN_BASS
             and fast_z >= self._DROP_MIN_FAST_Z
             and self._rise_fast >= self._DROP_MIN_RISE
-            and loud_enough
-            and (t - self._last_drop_time) >= self._DROP_REFRACTORY_S
-            and (t - self._section_since) >= self._IMPACT_MIN_HOLD_S
         )
+        # No section hold here. After a loud record the build is often only
+        # named `buildup` as the drop lands, and waiting out that hold spent
+        # most of the release window. The refractory still stops a re-trigger.
+        release_impact = (
+            can_drop
+            and loud_on_average
+            and self._release_at is not None
+            and bass_jump > 0.0
+            and self._fast >= self._RELEASE_MIN_HOLD * self._level
+        )
+        drop_impact = centre_impact or release_impact
 
         if self._centre <= self._SILENCE_LEVEL and self._level <= self._SILENCE_LEVEL:
             target = "breakdown"
@@ -530,6 +620,7 @@ class StreamingSectionDetector:
         if section == "drop":
             self._last_drop_time = t
             self._drop_until = t + self._DROP_HOLD_S
+            self._release_at = None
         return True
 
     def debug(self) -> Dict[str, float | str | bool]:
