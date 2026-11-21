@@ -43,6 +43,7 @@ from . import live_library
 from . import live_looks
 from . import live_moves
 from . import live_roles
+from . import live_strobe
 from ..lighting.section_templates import get_section_template
 from ..lighting.fixture_capabilities import get_capability_profile_for_fixture
 from ..lighting.movement_patterns import PRO_MOVEMENT_PRESETS
@@ -137,6 +138,11 @@ class EffectsConfig:
     # (live_dimmer). Off, every look is lit by the renderer's one chase, as it
     # was before; that is also what a look is measured against.
     look_dimmer_effects: bool = True
+    # Whether a look's strobe mode may slow the drop strobe to a musical rate
+    # (live_strobe). It can only ever lower the rate asked for, inside the
+    # window the renderer already strobes in, under `strobe_hz_cap` as before.
+    # Off, every drop strobes at the renderer's own rate.
+    look_strobe_modes: bool = True
     camera_mode: bool = False
     major_change_min_bars: int = 2
 
@@ -584,6 +590,11 @@ class EffectsEngine:
         # The beat clock as the dimmer shapes see it: it never runs a beam
         # faster than live_dimmer.MAX_CYCLES_PER_S, whatever the tempo does.
         self._rebuild_dimmer_clock = live_dimmer.PhaseClock()
+        # The running look's strobe mode; the rate it named for the drop
+        # strobe, held for one strobe window; and which window that was.
+        self._rebuild_strobe_mode: str = "none"
+        self._rebuild_strobe_mode_hz: Optional[float] = None
+        self._rebuild_strobe_window: float = -999.0
         # Where each head was last sent, so the next frame can only ask for a
         # move a fixture can make. Keyed by fixture id.
         self._rebuild_head_pos: Dict[str, Tuple[float, float]] = {}
@@ -1279,6 +1290,7 @@ class EffectsEngine:
             self._rebuild_style_amp = style_amp
             self._rebuild_look_speed = look_speed
             self._rebuild_look_amp = look_amp
+            self._rebuild_strobe_mode = live_strobe.mode_of(look)
             self._rebuild_dimmer_prev = self._rebuild_dimmer
             # Slowed, by doubling, so no beam cycles faster than the limit at
             # this tempo. Like the movement's fit below it is made when the
@@ -1373,6 +1385,21 @@ class EffectsEngine:
         strobe_enabled_runtime = bool(self.config.strobe_enabled) and strobe_allowed_by_policy
         strobe_duty = max(0.15, min(float(self.config.strobe_max_duty_cycle), 0.75))
         drop_strobe_target_freq = 22.0 if energy > 0.65 else 18.0
+        # The look's strobe mode (live_strobe) may name a slower, musical rate
+        # for this strobe, and nothing else: it is used only if it is below
+        # the renderer's own, it goes through the same clamp on the next line,
+        # and the window and every switch stay where they were. It is taken
+        # once, when a strobe window opens, and held for that window: the
+        # flash grid is `time x hz`, so a rate that followed the tempo frame
+        # by frame would slide the grid and add flashes.
+        if section == "drop" and self._rebuild_strobe_window != self._rebuild_drop_until:
+            self._rebuild_strobe_window = self._rebuild_drop_until
+            self._rebuild_strobe_mode_hz = None
+            if bool(getattr(self.config, "look_strobe_modes", True)):
+                self._rebuild_strobe_mode_hz = live_strobe.mode_hz(
+                    self._rebuild_strobe_mode, clock_bpm, self._strobe_grid_hz(1.0e9, strobe_duty))
+        if self._rebuild_strobe_mode_hz is not None and self.time < self._rebuild_drop_until:
+            drop_strobe_target_freq = min(drop_strobe_target_freq, self._rebuild_strobe_mode_hz)
         drop_strobe_freq = self._strobe_grid_hz(drop_strobe_target_freq, strobe_duty)
         drop_strobe_on = (
             strobe_enabled_runtime

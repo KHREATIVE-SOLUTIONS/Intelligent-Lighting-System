@@ -16,17 +16,22 @@ renderer can perform today.
 
 **Performed now:** which look, its movement (mapped onto `live_looks`), its
 speed and size (the speed fitted to the tempo so no head is outrun, see
-`live_looks.speed_fit`), and its dimmer effect and chase style on the beams
-(`live_dimmer`), outside the drop.
+`live_looks.speed_fit`), its dimmer effect and chase style on the beams
+(`live_dimmer`), outside the drop and never faster than a beam may safely
+cycle, and, for a drop look, the rate its strobe mode names for the
+renderer's own drop strobe (`live_strobe`).
 
 **Not performed yet, and deliberately:** the look's bump, base level and
-chase brightness, strobe mode, blinder, colour treatment and fixture-group
-isolation, and any dimmer effect inside the drop. Those change brightness and
-flashing, which is where the safety limits and the drop contract live, so
-each will come in on its own with the bench watching. Until then a look's
-name promises more than it delivers:
-"drop_strobe_eighth" moves like itself but does not strobe on eighth notes,
-and should not until the accent governor is the one doing it.
+chase brightness, blinder, colour treatment and fixture-group isolation, any
+dimmer effect inside the drop, and any strobe mode outside it. Those change
+brightness and flashing, which is where the safety limits and the drop
+contract live, so each will come in on its own with the bench watching. A
+look's name can still promise more than it delivers: "drop_strobe_eighth"
+strobes at the rate of eighth notes only where the venue's flash limit has
+room for them, and at the rate of beats, or every other beat, where it does
+not. A strobe mode can slow the drop strobe and can do nothing else: the
+window, the switch and the limit stay with the renderer and the accent
+governor.
 
 **What the selector is told about the music:**
 
