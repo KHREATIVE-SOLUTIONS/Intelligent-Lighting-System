@@ -46,8 +46,14 @@
         {"channel_number": 25, "channel_type": "focus", "name": "Focus", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 26, "channel_type": "focus", "name": "Focus Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 25},
         {"channel_number": 27, "channel_type": "effect", "name": "Effect Wheel", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 28, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 29, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 28, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Closed (assumed)", "min_value": 0, "max_value": 0},
+          {"name": "Strobe slow->fast (assumed)", "min_value": 1, "max_value": 254},
+          {"name": "Open (assumed)", "min_value": 255, "max_value": 255}
+        ]},
+        {"channel_number": 29, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Intensity 0->100% (assumed)", "min_value": 0, "max_value": 255}
+        ]},
         {"channel_number": 30, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 29}
       ]
     }
