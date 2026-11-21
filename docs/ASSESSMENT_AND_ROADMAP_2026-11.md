@@ -368,7 +368,8 @@ the new `club_night` preset: 12 movers on two trusses, 4 moving washes, 8 LED ba
 |---|---|---|---|
 | I0 | Look bench and a reference club rig | Reproduces the wire | Done |
 | I1 | Movement a designer would program: symmetric tilts, tilt ripples, mirrored circles, figure-eights, fan sweeps, fly-outs. Whole-bar cycles. A glide, not a jump, between looks. | Mirror symmetry −0.3…+0.4 → **+1.0**. Biggest lit step 51–53° → **4°**. Pan travel 46–68° → **57–84°**. | First pass done |
-| I1b | Looks built from a starting position plus a motion, aimed at points in the room so they are uniform on any rig (design below) | A look sheet per look per rig: symmetry 1.0, even spacing, every beam inside the room | Proposed |
+| I1b | Looks built from a starting position plus a motion, aimed at points in the room so they are uniform on any rig (design below) | A look sheet per look per rig: mirror error 0, every beam inside the room, nothing faster than a head can turn. **All 44 generated movements pass on all seven demo rigs.** | First pass done |
+| I1c | The look library chooses the look: 67 designed looks tagged by section, mood, energy and audio character, picked by weighted random, never one of the last four (detail below) | A run of four tracks: **22 looks in 21 changes, 18 of them different, none following itself.** Levels, colour, flashes, sections and drops identical to before. | Stage 1 done: the look's movement, speed and size. Its dimmer, chase, strobe and colour parts are not performed yet. |
 | I2 | Fixture roles: washes as the bed, bars and pars with their own patterns, strobes kept for the drop | Family correlation 0.99 → **0.85–0.97**. Strobes glowing all night → **dark outside the drop**. Hue variety 0.11–0.36 → **0.26–0.82**. Spread inside the bars 0 → **0.03**. | First pass done |
 | I3 | Colour to mood and energy: stop the collapse to one pale colour, contrast between sections, re-gate the white wash | Saturation 0.19–0.33 → 0.6 or more. A palette change must change the picture. | |
 | I4 | Level and dynamics: follow programme loudness with a floor per section; attack and release; a build that ramps | Verse level ~1% → visible. Steady groove 0.13 → higher. The five expected-failure tests. | |
@@ -377,7 +378,9 @@ the new `club_night` preset: 12 movers on two trusses, 4 moving washes, 8 LED ba
 
 **What I1 changed.** Each moving head now knows where it sits on its truss, so pan is
 mirrored about the centre line and tilt is shared. Movements take 4, 8 or 16 beats
-instead of about two, cover more distance, and finish on a bar line. The engine never
+instead of about two, cover more distance, and finish on a bar line. (Since I1c a
+library look runs at its own speed, and 54 of the 67 use a factor such as 0.75 or 1.3,
+so those no longer cycle in whole bars. They still start on the phrase line.) The engine never
 asks a head for more than 240°/s of pan or 180°/s of tilt, so a change of look is a
 glide. Sections, levels, flashes and drop detection are numerically unchanged.
 
@@ -403,7 +406,127 @@ Two things the tests and the bench caught while doing it:
 chooser, and it draws whichever demo rig the engine is running. The backend refuses to
 apply a demo rig while a patched rig is live, which closes safety hole B4.
 
-### I1b — proposed: looks from a position plus a motion
+### I1b — looks from a position plus a motion (first pass built)
+
+**Built.** `backend/app/services/effects/live_looks.py` replaces the angle-based
+patterns. Four positions (all centre, columns, fan, cross), five motions (hold, tilt,
+sweep, circle, and a fly-out that crosses from one position to another), three phase
+modes (unison, ripple from the centre outward, truss against truss). Every sensible
+combination is generated: 44 movements. An aim function turns each head's target point
+into pan and tilt from where it hangs, including which way its body is turned.
+
+**Judged.** `scripts/look_bench/look_sheet.py` draws every movement from above and from
+the front for any rig. All 44 pass on all seven demo rigs, from 4 heads to 52: mirror
+error zero, every beam inside the room, lean under 68 degrees, and nothing faster than a
+head can turn. On the bench, levels, colour, flashes, sections and drops are identical
+to before; only movement changed.
+
+**What the sheet caught on the way.** The first fly-out moved the target point across
+the floor, which dragged it past the foot of each head and asked for 340 to 620 degrees
+of pan a second. It now crosses in pan and tilt, the way a console crossfades two
+position palettes, over two cycles.
+
+**A gap found and closed.** The engine did not know which way a fixture's body is
+turned (`rotation_y`), although rigs built from templates set it and the 3D view draws
+it. Aiming would have been right on demo rigs and wrong on patched ones. It is passed
+through now.
+
+**Not built yet.** More positions (out over the crowd, to the booth, split left and
+right). A side-to-side sweep with every beam moving together rather than mirrored.
+Per-fixture invert for a head hung the other way up, which still needs the bench.
+
+### I1c — the look library, brought back (stage 1 built)
+
+**What it is.** `backend/app/services/effects/look_library.py` holds 67 designed looks
+with names like `predrop_freeze`, `drop_fast_chase` and `moonlight_drift`. Each is
+tagged with the sections it suits, its moods, an energy range and the kinds of audio it
+fits, and carries a movement, a speed and size, a dimmer effect, a chase style, a strobe
+mode and a colour treatment. Its selector keeps only the looks that fit the section and
+energy, drops the last four it used, weights the rest by mood and audio character, and
+picks by weighted random. That is what stopped a night repeating itself. It was written
+for an earlier engine and nothing on the live path imported it.
+
+**What is connected now.** `backend/app/services/effects/live_library.py` is the join.
+On every new section and every new phrase the engine asks the library's own selector
+for a look and performs its movement at the look's speed and size. Each of the
+library's fifteen movements has a place in the generated vocabulary (its `fly_out` is
+centre opening to a fan, its `ballyhoo` is crossed circles truss against truss, and so
+on). A club style makes the looks that move its way two and a half times likelier and
+rules nothing out, so a style never shrinks the choice. The look running is reported to
+the UI's data stream as `look` and `look_movement`; nothing draws it yet.
+
+**What the selector is told about the music, and what it is not.**
+
+| Input | Source | Honest? |
+|---|---|---|
+| Section | The engine's own detector | Yes |
+| Energy | The section's place on the library's scale, moved by how loud the moment is against the track's own level | Yes. Raw energy follows playback level and would have offered breakdown looks in a quiet drop. |
+| Mood | Valence and arousal | Rough. Mood is only a bonus weight, so a wrong mood cannot pick a wrong look. |
+| Audio character | Heavy bass, sparse, full, percussive, an impact | Only these five. The library also knows vocal-heavy, synth-lead, drum-breakdown, riser and snare-roll; nothing in the engine can detect those reliably, so they are never claimed. |
+| Musical fingerprint | Not supplied | The modules that produced it were measured in August and could not tell apart the things they described. |
+
+**Not performed yet, on purpose.** A look's dimmer effect, chase style, bump, base
+level, strobe mode, blinder, colour treatment and fixture-group isolation. Those change
+brightness and flashing, which is where the safety limits and the drop contract live.
+So today a look's name promises more than it delivers: `drop_strobe_eighth` moves like
+itself and does not strobe on eighth notes. A test pins this: two different nights are
+frame for frame as bright as each other. The library's `predrop` looks are also held
+back, because a wrongly predicted drop must stay invisible.
+
+**Measured.** Four tracks back to back on the club rig: 22 looks run in 21 changes, 18
+of them different, none following itself. Levels, colour, flashes, sections and drops
+identical to the run before.
+
+**Two things that are not as good as they were, stated plainly.**
+
+- *The heads tilt less, and on some music pan less.* Median travel on the four bench
+  tracks, in degrees:
+
+  | | Pan | Tilt |
+  |---|---|---|
+  | I1 movement (what is on GitHub) | 84, 70, 76, 57 | 65, 48, 70, 48 |
+  | I1b with nine looks in rotation | 160, 129, 135, 144 | 41, 46, 43, 45 |
+  | I1c with the library choosing | 68, 97, 128, 131 | 25, 24, 46, 35 |
+
+  Two causes. A look stretches its throw toward a point in the room instead of swinging
+  through a set angle, which is fewer degrees of tilt. And the library is uneven: many
+  of its looks keep pan still and move in tilt (`symmetric_fan`, `cascade`,
+  `tilt_wave`), many run at less than full size, and its `snap_look` is mapped to a
+  held cross. Which of our movements each of the library's fifteen maps to is a choice,
+  in `MOVEMENT_TO_LOOK`, and so is how deep a tilt goes (`TILT_DEPTH`). Both can be
+  made bolder, and should be judged by eye in the 3D view.
+- *A few looks are too fast for a head at high tempo.* Every look at its own speed and
+  size is within what a head can do up to 174 BPM (238 degrees a second of pan against
+  a limit of 240). At 190 BPM the quickest sweep asks for 260, and under the fastest
+  club style up to 373. The slew limit holds the head back, so the fixture is safe and
+  the look flattens. An expected-failure test records it.
+
+**Proved the tests can fail.** Fifteen deliberate breakages, each caught by a named
+test: the selector forgetting its history, the running look handed back, a movement
+mapped to nothing, the engine ignoring the look's movement, speed or section, a look's
+size leaking into brightness, the seed ignored, the club style doing nothing or ruling
+looks out, and others.
+
+**Found on the way.** Two earlier tests set the section by writing it into the engine,
+which the detector overwrote on the next frame, so they passed without ever leaving the
+verse. They now hold the section the way the operator's Drop button does, and still
+pass. And an offline run is only repeatable on the virtual clock, because the beat
+clock places each audio block inside its frame by the wall clock.
+
+**Next stages, each on its own with the bench watching.**
+
+0. Fit a look's speed to the tempo when it is taken, so nothing outruns a head at any
+   BPM or club style, and review the movement mapping for travel.
+1. Dimmer effect and chase style per look. The engine's dimmer layer already runs every
+   frame and is ignored; the look would choose its effect. Must keep "silence is dark"
+   and the level contracts.
+2. Strobe mode per look, through the accent governor only, never around it.
+3. Colour treatment per look (saturation and contrast), which belongs with I3.
+4. Fixture-group isolation: a look that uses only the back truss, or only the washes.
+5. Predrop looks, once the drop predictor's false alarms are measured.
+6. More audio characters, as and when a detector is shown to be right.
+
+The design, as proposed:
 
 Your point: a movement only looks good if the starting position is good, and the
 starting position has to be uniform and symmetric on whatever rig is in front of it.
@@ -455,6 +578,52 @@ previs and the engine now agree with each other; a real rig needs the bench test
 **What Track I needs from you:** three to five real tracks you have the right to use,
 as WAV or FLAC. The repository has only synthetic drums over thin pads, and colour to
 mood cannot be judged on those.
+
+---
+
+## 7D. Built and not connected (checked 2026-11-17)
+
+The live show is drawn by one function, `_update_fixtures_rebuild`, and the engine
+returns as soon as it has run. Everything below was written for earlier engines and is
+never imported, or runs every frame with its answer thrown away, or is used only by the
+older renderer further down the same function, which the automatic show never reaches.
+The look library was one of these until I1c. Imports and call sites were checked in the
+code.
+
+**Worth connecting. Each matters for a venue.**
+
+| System | What it does | State today | Why it matters | Where it belongs |
+|---|---|---|---|---|
+| Key lighting (`lighting/key_lighting.py`) | Keeps the DJ, a singer or a stage zone lit to a minimum whatever the show is doing | Fully plumbed: rigs store the zones, the wizard and templates assign fixtures, the loader hands them to the engine. Only the older renderer asks for the answer; the live one does not. | An operator can mark the booth lights today and nothing happens. In a breakdown or a blackout the DJ goes dark. | G2, with a decision on what it does in silence and under blackout |
+| Move in black (`_apply_mib_transition`, config `mib_enabled`) | Dims a head while it travels a long way, and brings it back when it arrives | Written and switched on in config. Applied only by the older renderer. | The library changes look every phrase, and a big change is a lit glide across the room. A designer hides that. It changes brightness, so it needs the bench. | I1c, beside the dimmer stage |
+| Dimmer effects (`effects/dimmer_effects.py`) | Chases, pulses, waves and bumps across fixtures | Updated every frame. The renderer ignores it and uses its own single chase. | It is what each library look's dimmer effect and chase style name. Without it every look is lit the same way. | I1c stage 1 |
+| Strobe controller (`effects/strobe_controller.py`) | Strobe modes: on the beat, eighths, bursts, build | Updated every frame, ignored | It is what each library look's strobe mode names. It must run through the accent governor, never beside it. | I1c stage 2 |
+| Fixture capabilities (`lighting/fixture_capabilities.py`) | Says what each fixture can do: colour wheel or mixing, gobos, prism, zoom | Consulted only by the older renderer | A real beam usually has a colour wheel, not red, green and blue. Roles, gobos and colour all need it on a real rig. | C1, before the first real rig |
+| Gobo engine (`effects/gobo_engine.py`) | Chooses gobos, rotation and prism to the music | Never imported | Gobos in the show and in the 3D view. Needs each fixture's real value ranges first. | I6 |
+| The library's `predrop` and `ethereal` looks | Freeze, close-down and suspense looks for the bars before a drop | In the library. The engine has no such section, so never asks for them. | They are the suspense looks. The drop predictor knows when one is coming. | I1c stage 5, after false alarms are measured |
+
+**The idea matters; the code was measured and is not good enough.** These were meant
+to feed the look library its audio character and its musical fingerprint. Each would
+have to be rebuilt one detector at a time and proven on real tracks.
+
+| System | Was meant to tell the show | Finding |
+|---|---|---|
+| `audio/audio_intelligence.py`, `spectral_intelligence.py`, `musical_intelligence.py` | Vocal-heavy, synth lead, riser, sparse or full, and the fingerprint | Never imported. Measured in August: could not tell apart the things they named. |
+| `audio/drum_intelligence.py` | Kick, snare, hats, fills, drum breakdowns | Never imported. Could not separate drums. |
+| `audio/vocal_analyzer.py` | When someone is singing | Never imported. Needs rework. |
+| `audio/structure_predictor.py` | What section comes next | Never imported. The drop predictor in the section manager does the part that is used. |
+
+**Leave parked or retire.**
+
+| System | Why |
+|---|---|
+| `audio/section_detector.py` | Rejected in the bake-off: it called a metronome a drop 54% of the time. |
+| `effects/decision_engine.py` (1,235 lines) | Runs every frame and drives layers nobody reads. Its anti-fatigue idea (vary intensity across a night) is worth lifting into I4. |
+| `lighting/beam_look_scheduler.py`, `beam_scene_state_machine.py`, `beam_pattern_library.py`, `lighting/movement_patterns.py`, `effects/movement_patterns.py` | Three earlier movement systems. Replaced by positions, motions and the look library. Candidates for removal once the library has run a night. |
+| `effects/lfo_engine.py` | A console-style effects engine with its own API. For operators programming by hand, not for the automatic show. |
+| `lighting/section_templates.py` | Applied every frame to settings the renderer does not read. |
+| `show_engine/show_generator.py`, `lighting/ald_mapper.py`, the video and training pipeline | Offline show generation and training data. On the cut list. |
+| `ml/genre_classifier.py`, `ml/music_structure.py`, the club genre model, MERT | Behind a flag or without trained weights. |
 
 ---
 

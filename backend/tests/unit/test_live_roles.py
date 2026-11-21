@@ -77,13 +77,15 @@ def test_mirrored_fixtures_get_opposite_places():
 
 
 def _run(engine, frames, section):
-    engine._rebuild_section = section
+    # Held the way an operator's button holds it: the detector publishes its
+    # own section every frame, and would overwrite one simply written here.
+    engine._force_section(section, 1e9)
     out = []
     for i in range(frames):
         engine.update_audio(energy=0.6, bass=0.5, mid=0.3, high=0.2, is_beat=(i % 28 == 0),
                             beat_number=i // 28, bpm=128.0)
         engine.update(delta_time=1.0 / 60.0)
-        engine._rebuild_section = section
+        assert engine._rebuild_section == section
         out.append({f.id: (f.dimmer, f.red, f.green, f.blue) for f in engine.fixtures.fixtures.values()})
     return out
 

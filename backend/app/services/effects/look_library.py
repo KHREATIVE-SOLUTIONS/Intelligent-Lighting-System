@@ -1373,18 +1373,21 @@ class LookSelector:
     6. RNG weighted selection from scored candidates
     """
 
-    def __init__(self):
+    def __init__(self, seed: Optional[int] = 42):
         self._current_look: Optional[LookPreset] = None
         self._look_hold_until_bar: int = 0
         self._look_history: list = []  # last N looks (avoid immediate repeats)
         self._history_size: int = 4
-        self._rng = random.Random()
-        self._rng.seed(42)
+        # A fixed seed replays the same show from the same music, which is how
+        # a change is compared before and after. None seeds from the system, so
+        # no two nights are alike.
+        self._rng = random.Random(seed)
 
     def select_look(self, section: str, energy: float, mood: str,
                     bar_clock: int, force_new: bool = False,
                     audio_characters: List[str] = None,
-                    musical_fingerprint=None) -> Optional[LookPreset]:
+                    musical_fingerprint=None,
+                    lean=None) -> Optional[LookPreset]:
         """Select a look from the library matching current criteria.
 
         Args:
@@ -1395,6 +1398,9 @@ class LookSelector:
             force_new: Force selection of a new look
             audio_characters: Current audio character tags from AudioIntelligence
             musical_fingerprint: MusicalFingerprint from MusicalIntelligence (NEW)
+            lean: optional function of a LookPreset returning a weight
+                multiplier. It makes some looks likelier without removing any,
+                so it never shrinks what there is to choose between
 
         Returns:
             LookPreset if a new look was selected, None if holding current
@@ -1440,6 +1446,8 @@ class LookSelector:
 
             # Combined weight: fingerprint is primary, mood/char are bonuses
             weight = look.weight * fingerprint_score * mood_bonus * char_bonus
+            if lean is not None:
+                weight *= max(0.0, float(lean(look)))
             candidates.append((look, weight))
 
         if not candidates:
