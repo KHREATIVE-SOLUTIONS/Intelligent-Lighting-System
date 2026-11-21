@@ -369,7 +369,7 @@ the new `club_night` preset: 12 movers on two trusses, 4 moving washes, 8 LED ba
 | I0 | Look bench and a reference club rig | Reproduces the wire | Done |
 | I1 | Movement a designer would program: symmetric tilts, tilt ripples, mirrored circles, figure-eights, fan sweeps, fly-outs. Whole-bar cycles. A glide, not a jump, between looks. | Mirror symmetry −0.3…+0.4 → **+1.0**. Biggest lit step 51–53° → **4°**. Pan travel 46–68° → **57–84°**. | First pass done |
 | I1b | Looks built from a starting position plus a motion, aimed at points in the room so they are uniform on any rig (design below) | A look sheet per look per rig: mirror error 0, every beam inside the room, nothing faster than a head can turn. **All 44 generated movements pass on all seven demo rigs.** | First pass done |
-| I1c | The look library chooses the look: 67 designed looks tagged by section, mood, energy and audio character, picked by weighted random, never one of the last four (detail below) | A run of four tracks: **22 looks in 21 changes, 18 of them different, none following itself.** Levels, colour, flashes, sections and drops identical to before. | Stage 1 done: the look's movement, speed and size. Its dimmer, chase, strobe and colour parts are not performed yet. |
+| I1c | The look library chooses the look: 67 designed looks tagged by section, mood, energy and audio character, picked by weighted random, never one of the last four (detail below) | A run of four tracks: **22 looks in 21 changes, 18 of them different, none following itself.** Levels, colour, flashes, sections and drops identical to before. | Movement, speed and size done. Next stages 0 and 1 built 2026-11-21 (below): speed fitted to the tempo, deeper tilt, and the look's dimmer effect and chase style on the beams outside the drop. Strobe, bumps, level and colour are not performed yet. |
 | I2 | Fixture roles: washes as the bed, bars and pars with their own patterns, strobes kept for the drop | Family correlation 0.99 → **0.85–0.97**. Strobes glowing all night → **dark outside the drop**. Hue variety 0.11–0.36 → **0.26–0.82**. Spread inside the bars 0 → **0.03**. | First pass done |
 | I3 | Colour to mood and energy: stop the collapse to one pale colour, contrast between sections, re-gate the white wash | Saturation 0.19–0.33 → 0.6 or more. A palette change must change the picture. | |
 | I4 | Level and dynamics: follow programme loudness with a floor per section; attack and release; a build that ramps | Verse level ~1% → visible. Steady groove 0.13 → higher. The five expected-failure tests. | |
@@ -493,13 +493,15 @@ identical to the run before.
   of its looks keep pan still and move in tilt (`symmetric_fan`, `cascade`,
   `tilt_wave`), many run at less than full size, and its `snap_look` is mapped to a
   held cross. Which of our movements each of the library's fifteen maps to is a choice,
-  in `MOVEMENT_TO_LOOK`, and so is how deep a tilt goes (`TILT_DEPTH`). Both can be
-  made bolder, and should be judged by eye in the 3D view.
+  in `MOVEMENT_TO_LOOK`, and so is how deep a tilt goes (`TILT_DEPTH` then, `TILT_DEG`
+  since 2026-11-21, when tilt was deepened; see stages 0 and 1 below). Both should be
+  judged by eye in the 3D view.
 - *A few looks are too fast for a head at high tempo.* Every look at its own speed and
   size is within what a head can do up to 174 BPM (238 degrees a second of pan against
   a limit of 240). At 190 BPM the quickest sweep asks for 260, and under the fastest
   club style up to 373. The slew limit holds the head back, so the fixture is safe and
-  the look flattens. An expected-failure test records it.
+  the look flattens. An expected-failure test recorded it. Closed on 2026-11-21 by
+  fitting each look's speed to the tempo (stage 0 below).
 
 **Proved the tests can fail.** Fifteen deliberate breakages, each caught by a named
 test: the selector forgetting its history, the running look handed back, a movement
@@ -516,15 +518,212 @@ clock places each audio block inside its frame by the wall clock.
 **Next stages, each on its own with the bench watching.**
 
 0. Fit a look's speed to the tempo when it is taken, so nothing outruns a head at any
-   BPM or club style, and review the movement mapping for travel.
+   BPM or club style, and review the movement mapping for travel. **Built 2026-11-21,
+   see below.**
 1. Dimmer effect and chase style per look. The engine's dimmer layer already runs every
    frame and is ignored; the look would choose its effect. Must keep "silence is dark"
-   and the level contracts.
-2. Strobe mode per look, through the accent governor only, never around it.
+   and the level contracts. **Built 2026-11-21 for the beams outside the drop, see
+   below.**
+2. Strobe mode per look, through the accent governor only, never around it. **Built
+   2026-11-21 for the drop strobe's rate only, see below.**
 3. Colour treatment per look (saturation and contrast), which belongs with I3.
 4. Fixture-group isolation: a look that uses only the back truss, or only the washes.
 5. Predrop looks, once the drop predictor's false alarms are measured.
 6. More audio characters, as and when a detector is shown to be right.
+
+#### Stages 0 and 1, built 2026-11-21 (branch `grok/look-library-stage2`)
+
+**Verification gap, stated first.** The full backend suite could not be run with the
+project's own interpreter in the sessions that built this (the worktree has no venv
+and the main checkout's was refused). What was run, on the system Python, before and
+after: the musical contract tests and all unit tests, **802 passed before, 846 after,
+none failed**, and one expected failure fewer (6 to 5) because the speed test below
+now passes. The database and API tests (297 of them) need `pytest-asyncio`, which that
+Python lacks; they errored identically before and after and so prove nothing either
+way. Run `cd backend; venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider`
+before merging. The wire harness was not re-run; the bench figures are for comparing
+runs.
+
+**Stage 0: speed fitted to the tempo.** A look's angle depends only on beats times
+speed, so how fast it turns a head is exactly proportional to speed times BPM.
+`live_looks.speed_fit` measures the fastest pan and tilt of the look on the rig in
+front of it, at the section's size and the club style's size, and returns what to
+multiply the speed by so both stay inside 95% of what a head can do (240 and 180
+degrees a second). It is applied when the look is taken, from the beat clock's own
+tempo, and never mid-look, because changing speed would jump the heads. It only ever
+slows. At 128 BPM with no club style it changes nothing for any of the 67 looks. The
+UI's data stream carries it as `look_speed_fit`.
+
+| Quickest pan any look asks for, club rig | Before | After |
+|---|---|---|
+| 128 BPM, no style | 175°/s | 175°/s (untouched) |
+| 190 BPM, no style | 260°/s | 228°/s |
+| 174 BPM, fastest and biggest club style | up to 373°/s | 228°/s |
+
+The expected-failure test is now an ordinary passing test, at 190 and 240 BPM, under
+the fastest style, on three rigs, with a companion test that fails if the looks stop
+needing the fit.
+
+**Stage 0: the travel review.** Tilt was the weak half. A tilt stretched the throw by
+a share of its length, which on a truss resting 22 degrees off vertical is 16 degrees
+of travel. The April engine these looks were designed on swung tilt 20 to 55 degrees.
+A tilt is now set in degrees (`TILT_DEG` 18 either way at chorus size, never more than
+`TILT_MAX_DEG` 24, leaning out to `TILT_OUT_LEAN_DEG` 50 or as far as the old stretch
+went, whichever is further), so it is the same swing on every rig.
+
+| Per movement, chorus size, club rig, degrees of tilt | Before | After |
+|---|---|---|
+| `slow_breathe` | 23 | 27 |
+| `cross_tilt`, `ballyhoo` | 21 | 27 |
+| `symmetric_fan`, `figure_eight_wide` | 19 | 33 |
+| `tilt_wave`, `cascade`, `symmetric_circle` | 16 | 32 |
+
+| Bench, median travel on the four tracks | Pan | Tilt |
+|---|---|---|
+| Before | 68, 97, 128, 131 | 25, 24, 46, 35 |
+| After | 68, 97, 128, 131 | 37, 37, 51, 40 |
+
+Still short of the 48 to 70 degrees of the I1 movement on two tracks. The look sheet
+caught two versions on the way. With the outward limit at 66 degrees the outer beams
+of a fan landed past the walls on five of seven rigs. With a flat limit of 50, beams
+that already lean near it (all centre, a cross) travelled less than before. As built,
+all fifteen movements are clean on all seven rigs at chorus and at drop size, and
+none tilts less than it did.
+
+**The mapping itself was left alone, on purpose.** Five of the library's fifteen
+movements still keep pan still (`slow_breathe`, `tilt_wave`, `cascade`,
+`symmetric_fan`, `cross_tilt`: 22 looks), and `snap_look` is still a held cross. In
+the April engine `cascade` and `symmetric_fan` moved in pan as well, and `snap_look`
+stepped between four positions on the bar. Remapping them changes what three club
+styles lean toward, and is a choice to make by eye in the 3D view. A held cross is
+also a better look than it was, now that a chase can run over it.
+
+**Stage 1: a look's dimmer effect and chase style.** The code that performed these was
+found in the April engine (commit `fada2e3`) and carried over to
+`backend/app/services/effects/live_dimmer.py`, onto the beat clock and each head's
+place on its truss. All seven effects the library names are performed: `static`,
+`chase` (forward, bounce, centre out, at the look's own speed and width), `circular`,
+`ramp`, `odd_even`, `kick_clap` and `left_right_kick`. `EffectsConfig.look_dimmer_effects`
+turns it off, which gives the single chase back.
+
+Where it applies: the beams, in verse, buildup, chorus and breakdown. Not in the drop,
+not during a snare accent, and not on washes, bars, pars or strobes.
+
+The rule is the one fixture roles use, redistribute and never add. On every frame the
+beams' total under a look is exactly what the single chase gave them, and no beam is
+above the moment's energy. A look that lights few heads is filled from underneath to
+reach that total (`FILL`, 1.0); set to 0 it is the shape alone on black, with more
+contrast and a chorus 30% dimmer on the bench.
+
+| Bench, four tracks, club rig | Before | After |
+|---|---|---|
+| Rig mean level per track | 0.111, 0.089, 0.115, 0.069 | 0.111, 0.090, 0.115, 0.069 |
+| Level 8 s before and after each drop | 0.093 → 0.427, 0.087 → 0.428 | the same |
+| Brightness swings in the worst second | 3, 0, 3, 0 | 3, 0, 3, 0 |
+| White flashes | 4, 0, 5, 0 | 4, 0, 5, 0 |
+| Looks run, changes, distinct, repeats | 22, 21, 18, 0 | the same looks |
+
+**Three things tried and changed, each caught by a test or the bench.**
+
+- Alternate heads counted from the centre outward, so left and right would match. On a
+  truss of six that makes halves of four and two, and the rig's total blinked on every
+  beat. Alternate heads are neighbours now, as in April, and the halves are equal.
+- The shape alone, with no fill: the chorus fell from 0.089 to 0.062.
+- A ceiling at the low point of the chase's beat-by-beat breath: smoother, but the
+  release of a mispredicted drop's dip became the largest rise in the build, which
+  `test_a_prediction_that_never_confirms_returns_the_rig_to_the_build_level` forbids.
+
+**Not performed, said plainly.**
+
+- **Inside the drop no look's dimmer effect runs.** 27 of the 67 looks are drop looks.
+  The drop is one sustained level by contract and that was not touched.
+- `kick_clap` and `left_right_kick` were written to follow real kick and snare hits.
+  The drum detector was measured and cannot separate drums, so they run the April
+  engine's own fallback, a swap on every beat. `kick_clap` is therefore `odd_even`
+  the other way round.
+- How bright a look is (`base_dimmer`, `chase_intensity`), bumps, strobe and blinder
+  modes, colour and fixture groups. Level belongs with I4.
+- `dimmer_effects.py` (`DimmerEngine`) is still not used. It runs in Hz on the wall
+  clock with unseeded randomness, and none of its effect names are ones the library
+  asks for.
+- Move in black, listed beside this stage in 7D, is not built.
+- No one has looked at this in the 3D view. The tilt depth and the fill are numbers
+  to judge by eye.
+
+#### The dimmer speed limit and stage 2 (strobe modes), built 2026-11-21
+
+**Verification.** Same gap as above: the project venv could not be run from the
+worktree. Unit and musical tests on the system Python: **901 passed, none failed**
+(846 before this part). The database and API tests still need running with the
+project's interpreter.
+
+**A speed limit for dimmer chases.** Stage 1 lit the beams as the look says and put no
+limit on how fast. A chase of half a beat, which the library has, took each head from
+dark to bright 4.3 times a second at 128 BPM. No beam now cycles more than
+`live_dimmer.MAX_CYCLES_PER_S` (2.5) times a second, and it is kept twice, as
+movement's limit is:
+
+- `fit_to_tempo` slows a look when it is taken, by doubling its beats, so it stays on
+  the grid. This is the musical answer and it trusts the tempo.
+- `PhaseClock` does not. It is the beat clock as the dimmer sees it: exactly the beat
+  clock while that is within the limit, and no faster than the limit when the tempo
+  estimate doubles, runs away or jumps. It also governs the renderer's own chase,
+  which lights the beams when looks are off or none fits.
+- A swap of alternate heads never crosses in under 50 ms (it was 30 ms at 240 BPM).
+
+| Busiest beam, dark-to-bright per second | Before | After |
+|---|---|---|
+| Half-beat chase, 128 BPM | 4.3 | 2.1 (one beat) |
+| One-beat chase, 174 BPM | 2.9 | 1.45 (two beats) |
+| Any look, 240 BPM, tempo fit removed | up to 8 | 2.5 |
+| The renderer's own chase, 320 BPM (a doubled estimate) | 3.6 | 2.4 |
+
+Measured on the dimmer levels and the pan and tilt steps the engine sets, at 190, 240
+and 320 BPM, with the tempo doubling under a look, and with the fit taken away. The
+movement fit is also made again when the rig changes under a look.
+
+*Outside the limit, said plainly.* The renderer's chase breathes with the beat by 11%
+either way, and under a look's fill that reaches the dim beams as a ripple of about a
+fifth of full, at the beat's rate: 4 a second at 240 BPM. It is a ripple and not a
+dark-to-bright cycle, it was there before, and it is not limited. The own chase also
+turns round every two bars, which is a step and not a rate.
+
+**Stage 2: strobe modes, as far as is safe today.** There is no single output stage
+yet: G2's flash limiter on total rig luminance is still to be built. The limit that
+exists is the renderer's own clamp (`_strobe_grid_hz`, the venue's `strobe_hz_cap`)
+with the accent governor deciding whether strobing is on. A look's strobe mode goes
+through exactly that and round nothing. `live_strobe` lets a drop look's mode name a
+rate for the renderer's own drop strobe, and:
+
+- it is used only if it is lower than the renderer's own rate;
+- it is handed to the same clamp, which decides;
+- it opens no window and writes no switch or limit;
+- it is taken once per strobe window, because the flash grid is time times rate and a
+  rate that followed the tempo would slide the grid and add flashes;
+- a rate the limit has no room for is halved until it fits, so eighth notes become
+  beats and beats become every other beat.
+
+`EffectsConfig.look_strobe_modes` turns it off, which is frame for frame the strobe
+as it was. Under the general-audience limit of 3 a second a `beat_pulse` drop at 128
+BPM flashes 2.1 times a second instead of 2.6; under a limit of 24 it flashes 2.1
+times a second instead of 18.
+
+Tested on what the engine sets, for every musical mode, at 100 to 240 BPM, under
+limits of 3 and 24: never more flashes in any second than the limit, never a flash
+outside the renderer's own window, none at all with strobing off by any of its
+switches. One thing a test corrected: a lower rate is not always fewer flashes by
+count. Where the grid falls when the window opens can add one (150 BPM under a limit
+of 3: nine against eight over two drops).
+
+**Not performed.**
+
+- `kick_locked`, `snare_locked` and `drum_hits` run at the rate those hits would have
+  on a four-on-the-floor grid. No detector here can tell the drums apart.
+- The rate is the beat's; the flashes are not placed on the beat.
+- `buildup_accel`, the blinder modes, and any strobe mode on a look outside the drop
+  need a window the renderer does not have. `fast_synth`, `random_burst` and `none`
+  are the renderer's own strobe.
+- Not looked at in the 3D view, and the wire harness was not re-run.
 
 The design, as proposed:
 
@@ -596,7 +795,7 @@ code.
 |---|---|---|---|---|
 | Key lighting (`lighting/key_lighting.py`) | Keeps the DJ, a singer or a stage zone lit to a minimum whatever the show is doing | Fully plumbed: rigs store the zones, the wizard and templates assign fixtures, the loader hands them to the engine. Only the older renderer asks for the answer; the live one does not. | An operator can mark the booth lights today and nothing happens. In a breakdown or a blackout the DJ goes dark. | G2, with a decision on what it does in silence and under blackout |
 | Move in black (`_apply_mib_transition`, config `mib_enabled`) | Dims a head while it travels a long way, and brings it back when it arrives | Written and switched on in config. Applied only by the older renderer. | The library changes look every phrase, and a big change is a lit glide across the room. A designer hides that. It changes brightness, so it needs the bench. | I1c, beside the dimmer stage |
-| Dimmer effects (`effects/dimmer_effects.py`) | Chases, pulses, waves and bumps across fixtures | Updated every frame. The renderer ignores it and uses its own single chase. | It is what each library look's dimmer effect and chase style name. Without it every look is lit the same way. | I1c stage 1 |
+| Dimmer effects (`effects/dimmer_effects.py`) | Chases, pulses, waves and bumps across fixtures | Updated every frame and still ignored. Checked 2026-11-21: it is not what the library's looks name. Its effects run in Hz on the wall clock and none has a name a look asks for. The code that did perform the looks' effects was in the April engine and is now `effects/live_dimmer.py`. | Nothing depends on it. | Leave parked |
 | Strobe controller (`effects/strobe_controller.py`) | Strobe modes: on the beat, eighths, bursts, build | Updated every frame, ignored | It is what each library look's strobe mode names. It must run through the accent governor, never beside it. | I1c stage 2 |
 | Fixture capabilities (`lighting/fixture_capabilities.py`) | Says what each fixture can do: colour wheel or mixing, gobos, prism, zoom | Consulted only by the older renderer | A real beam usually has a colour wheel, not red, green and blue. Roles, gobos and colour all need it on a real rig. | C1, before the first real rig |
 | Gobo engine (`effects/gobo_engine.py`) | Chooses gobos, rotation and prism to the music | Never imported | Gobos in the show and in the 3D view. Needs each fixture's real value ranges first. | I6 |
