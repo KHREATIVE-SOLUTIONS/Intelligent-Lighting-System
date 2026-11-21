@@ -1,0 +1,3 @@
+# A shell script with Windows line endings does not run. Git on Windows would
+# otherwise check this out as CRLF, and a copied folder would carry that to a Mac.
+/start.sh text eol=lf
