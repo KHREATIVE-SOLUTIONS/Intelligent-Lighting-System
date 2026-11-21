@@ -43,12 +43,20 @@ def _rig() -> FixtureGroupManager:
                   fixture_type="par", pan_range=0.0, tilt_range=0.0)
     for fixture in (strobe, par):
         fixture.range_values = {"strobe": resolve_channel_ranges("strobe", RANGES)}
-        fixture.dimmer = 1.0
-        fixture.red = fixture.green = fixture.blue = 1.0
-        fixture.strobe = 0.0
     manager = FixtureGroupManager()
     manager.add_fixtures([strobe, par])
     return manager
+
+
+def _render_lit(engine: EffectsEngine) -> None:
+    """Every fixture full on and not strobing, rendered and handed over. The
+    state is set right before the frame, as nothing promises it survives a
+    rig swap or a switch being thrown."""
+    for fixture in engine.fixtures.fixtures.values():
+        fixture.dimmer = 1.0
+        fixture.red = fixture.green = fixture.blue = 1.0
+        fixture.strobe = 0.0
+    engine._emit_dmx()
 
 
 async def test_strobes_off_still_zeroes_a_strobe_fixture_whose_resting_value_is_not_zero(
@@ -61,7 +69,7 @@ async def test_strobes_off_still_zeroes_a_strobe_fixture_whose_resting_value_is_
     engine.attach_output_stage(controller.output_stage)
 
     t = 0.0
-    engine._emit_dmx()
+    _render_lit(engine)
     for _ in range(WIRE_FPS):
         controller._transmit_frame(t)
         t += 1.0 / WIRE_FPS
@@ -71,7 +79,7 @@ async def test_strobes_off_still_zeroes_a_strobe_fixture_whose_resting_value_is_
     assert lit[PAR_RED] == 255 and lit[PAR_STROBE] == RESTING
 
     disable_strobes(engine, _strobe_layer_off)
-    engine._emit_dmx()
+    _render_lit(engine)
     asked = list(controller.get_universe(0).data)
     assert asked[STROBE_RATE] == RESTING and asked[STROBE_DIMMER] == 255, (
         "the engine never asked for a nonzero byte; this test proves nothing")
