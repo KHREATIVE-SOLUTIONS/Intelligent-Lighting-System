@@ -39,6 +39,8 @@ aiofiles==23.2.1
 pytest==7.4.4
 pytest-asyncio==0.23.3
 pytest-cov==4.1.0
+# Memory and thread counts for the wire soak (tests/wire/soak.py). BSD-3-Clause.
+psutil==5.9.8
 
 # Development
 black==23.12.1
