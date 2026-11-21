@@ -229,3 +229,132 @@ def test_a_change_of_look_crosses_from_one_shape_to_the_other():
 def test_no_beams_is_nothing_to_light():
     assert LD.beam_places([]) == {}
     assert LD.levels(LD.STATIC, {}, 1.0, 0.5) == {}
+
+
+# ---------------------------------------------------------------------------
+# The speed limit: no beam cycles faster than MAX_CYCLES_PER_S
+# ---------------------------------------------------------------------------
+
+def _swings_per_beat(look, place, beats_long=32.0, step=0.01):
+    """How often a beam really goes from dark to bright, counted from the shape."""
+    values = [LD.share(look, place, k * step) for k in range(int(beats_long / step))]
+    low, high = min(values), max(values)
+    if high - low < 0.2:
+        return 0.0
+    rise, fall = low + 0.7 * (high - low), low + 0.3 * (high - low)
+    lit, rises = values[0] >= rise, 0
+    for value in values:
+        if not lit and value >= rise:
+            lit, rises = True, rises + 1
+        elif lit and value <= fall:
+            lit = False
+    return rises / beats_long
+
+
+def test_the_rate_a_look_is_held_to_is_the_rate_its_busiest_beam_really_cycles_at():
+    """`cycles_per_beat` is what the limit is enforced with, so it must not undercount."""
+    places = LD.beam_places(beams_of("club_night"))
+    moving = 0
+    for look in EVERY_LOOK:
+        said = LD.cycles_per_beat(look)
+        measured = max(_swings_per_beat(look, place) for place in places.values())
+        assert measured <= said + 1.0 / 32.0 + 1e-9, (look, measured, said)
+        if look.effect == "static":
+            assert said == 0.0
+        else:
+            assert said > 0.0
+            moving += 1
+    assert moving >= 20
+    # A bounce passes the middle of the truss on the way out and on the way back.
+    assert LD.cycles_per_beat(LD.DimmerLook(effect="chase", direction="bounce", beats=2.0)) == 1.0
+    assert LD.cycles_per_beat(LD.DimmerLook(effect="chase", direction="forward", beats=2.0)) == 0.5
+    assert LD.cycles_per_beat(LD.DimmerLook(effect="odd_even")) == 0.5
+
+
+@pytest.mark.parametrize("bpm", [60.0, 100.0, 128.0, 150.0, 174.0, 190.0, 240.0, 300.0])
+def test_fitted_to_the_tempo_no_look_cycles_a_beam_faster_than_the_limit(bpm):
+    for look in EVERY_LOOK + [LD.DimmerLook(effect="chase", beats=0.25), LD.DimmerLook(effect="odd_even")]:
+        fitted = LD.fit_to_tempo(look, bpm)
+        assert LD.cycles_per_beat(fitted) * bpm / 60.0 <= LD.MAX_CYCLES_PER_S * LD.RATE_HEADROOM + 1e-9
+        # Slowed by doubling, so it stays on the grid; never quickened; the picture kept.
+        stretch = fitted.beats / look.beats
+        assert stretch >= 1.0 and stretch == 2.0 ** round(__import__("math").log2(stretch))
+        assert fitted.swap_beats == look.swap_beats * stretch
+        assert (fitted.effect, fitted.direction, fitted.width) == (look.effect, look.direction, look.width)
+        # And only as far as it must: half as slow would have been too fast.
+        if stretch > 1.0:
+            assert LD.cycles_per_beat(look) / (stretch / 2.0) * bpm / 60.0 > LD.MAX_CYCLES_PER_S * LD.RATE_HEADROOM
+
+
+def test_the_fit_leaves_an_ordinary_look_alone_and_halves_one_that_is_too_fast():
+    once_a_beat = LD.DimmerLook(effect="chase", beats=1.0)
+    assert LD.fit_to_tempo(once_a_beat, 128.0) is once_a_beat          # 2.1 a second
+    twice_a_beat = LD.DimmerLook(effect="chase", beats=0.5)            # 4.3 a second at 128
+    assert LD.fit_to_tempo(twice_a_beat, 128.0).beats == 1.0
+    assert LD.fit_to_tempo(once_a_beat, 174.0).beats == 2.0            # 2.9 a second
+    swap = LD.DimmerLook(effect="odd_even")
+    assert LD.fit_to_tempo(swap, 128.0) is swap
+    assert LD.fit_to_tempo(swap, 240.0).swap_beats == 1.0              # 2 a second: still inside
+    assert LD.fit_to_tempo(swap, 320.0).swap_beats == 2.0
+    assert LD.fit_to_tempo(LD.STATIC, 999.0) is LD.STATIC
+    # Some of the library does need it at 128 BPM, or the fit has nothing to do.
+    assert any(LD.fit_to_tempo(look, 128.0) != look for look in EVERY_LOOK)
+
+
+@pytest.mark.parametrize("bpm", [100.0, 128.0, 174.0, 240.0, 300.0])
+def test_a_swap_never_crosses_in_less_than_three_frames(bpm):
+    places = LD.beam_places(beams_of("club_night"))
+    first = next(iter(places.values()))
+    for effect in ("odd_even", "kick_clap", "left_right_kick"):
+        look = LD.fit_to_tempo(LD.DimmerLook(effect=effect), bpm)
+        assert look.edge_beats * 60.0 / bpm >= min(LD.MIN_EDGE_S, look.swap_beats * 30.0 / bpm) - 1e-9
+        frame = bpm / 60.0 / 60.0                                       # beats in one frame at 60 fps
+        steps = [abs(LD.share(look, first, (k + 1) * frame) - LD.share(look, first, k * frame))
+                 for k in range(600)]
+        assert 0.0 < max(steps) <= (1.0 / 60.0) / LD.MIN_EDGE_S + 1e-9, (effect, bpm, max(steps))
+        # The halves still sum to one all the way across, and still swap fully.
+        totals = [sum(LD.share(look, p, k * frame) for p in places.values()) for k in range(600)]
+        assert max(totals) - min(totals) < 1e-9
+        assert LD.share(look, first, look.swap_beats * 0.5) in (0.0, 1.0)
+
+
+def test_the_dimmer_clock_is_the_beat_clock_while_that_is_within_the_limit():
+    clock = LD.PhaseClock()
+    rate = LD.cycles_per_beat(LD.DimmerLook(effect="chase", beats=1.0))
+    beats = 7.25
+    for _ in range(600):
+        beats += 128.0 / 60.0 / 60.0
+        assert clock.advance(beats, 1.0 / 60.0, rate) == beats          # exactly, not nearly
+    # Nothing cycling is nothing to limit.
+    assert clock.advance(beats + 500.0, 1.0 / 60.0, 0.0) == beats + 500.0
+
+
+def test_the_dimmer_clock_never_runs_a_beam_faster_than_the_limit_whatever_the_beat_clock_does():
+    look = LD.DimmerLook(effect="chase", beats=1.0)
+    rate = LD.cycles_per_beat(look)
+    most = LD.MAX_CYCLES_PER_S / rate / 60.0                            # beats in one frame, at the limit
+    clock = LD.PhaseClock()
+    beats, last = 0.0, clock.advance(0.0, 1.0 / 60.0, rate)
+    plan = ([128.0] * 120 + [256.0] * 120          # the tempo estimate doubles mid-look
+            + [999.0] * 60 + [128.0] * 120)        # and runs away, and comes back
+    for n, bpm in enumerate(plan):
+        beats += bpm / 60.0 / 60.0
+        if n == 300:
+            beats += 37.0                           # the clock is moved forward
+        if n == 360:
+            beats -= 12.0                           # and back
+        now = clock.advance(beats, 1.0 / 60.0, rate)
+        assert 0.0 <= now - last <= most + 1e-12, (n, now - last)
+        last = now
+    # It lost ground while held and does not sprint to make it up.
+    assert last < beats
+    # Back within the limit it runs at the beat clock's own rate again.
+    before = clock.advance(beats, 1.0 / 60.0, rate)
+    after = clock.advance(beats + 0.01, 1.0 / 60.0, rate)
+    assert after - before == pytest.approx(0.01)
+    # Nonsense is ignored rather than followed.
+    assert clock.advance(float("nan"), 1.0 / 60.0, rate) == after
+    assert clock.advance(float("inf"), 1.0 / 60.0, rate) == after
+    assert 0.0 <= clock.advance(beats + 0.02, -5.0, rate) - after <= most + 1e-12
+    clock.reset()
+    assert clock.advance(3.0, 1.0 / 60.0, rate) == 3.0

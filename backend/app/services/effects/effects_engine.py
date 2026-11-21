@@ -581,6 +581,9 @@ class EffectsEngine:
         self._rebuild_dimmer: Optional[live_dimmer.DimmerLook] = None
         self._rebuild_dimmer_prev: Optional[live_dimmer.DimmerLook] = None
         self._rebuild_dimmer_changed_beats: float = 0.0
+        # The beat clock as the dimmer shapes see it: it never runs a beam
+        # faster than live_dimmer.MAX_CYCLES_PER_S, whatever the tempo does.
+        self._rebuild_dimmer_clock = live_dimmer.PhaseClock()
         # Where each head was last sent, so the next frame can only ask for a
         # move a fixture can make. Keyed by fixture id.
         self._rebuild_head_pos: Dict[str, Tuple[float, float]] = {}
@@ -651,7 +654,7 @@ class EffectsEngine:
         # every look at ordinary tempos. Fitted when a look is taken, and
         # again if the section changes under it.
         self._rebuild_speed_fit = 1.0
-        self._rebuild_fit_key: Optional[Tuple[str, str]] = None
+        self._rebuild_fit_key: Optional[tuple] = None
 
         # Fixture phase choreography controls
         self._leader_follower_enabled: bool = True
@@ -1243,6 +1246,9 @@ class EffectsEngine:
         style_speed = float(style_look["speed"]) if style_look else 1.0
         style_amp = float(style_look["amp"]) if style_look else 1.0
         phrase = self._phrase_index()
+        # The beat clock's own tempo, the one that advances `beats`.
+        clock_period = float(self._clock_period or 0.0)
+        clock_bpm = (60.0 / clock_period) if clock_period > 0.0 else bpm
         new_look = False
         if phrase is None:
             # No phrase grid without a locked clock: a new look every few bars.
@@ -1274,23 +1280,27 @@ class EffectsEngine:
             self._rebuild_look_speed = look_speed
             self._rebuild_look_amp = look_amp
             self._rebuild_dimmer_prev = self._rebuild_dimmer
-            self._rebuild_dimmer = live_dimmer.dimmer_of(look) if look is not None else None
-            self._rebuild_dimmer_changed_beats = beats
+            # Slowed, by doubling, so no beam cycles faster than the limit at
+            # this tempo. Like the movement's fit below it is made when the
+            # look is taken: a chase's length scales a beat-locked phase.
+            self._rebuild_dimmer = (
+                live_dimmer.fit_to_tempo(live_dimmer.dimmer_of(look), clock_bpm) if look is not None else None)
         pattern = self._rebuild_look_movement
 
         # Fit the look's speed to the tempo, so nothing outruns a head at any
         # BPM or under any club style. Done when the look is taken, not every
         # frame: speed scales a beat-locked phase, so changing it mid-look
         # would jump the heads. The tempo is the beat clock's own, the one
-        # that advances `beats`, not the figure clamped for display.
-        if new_look or self._rebuild_fit_key != (pattern, section):
-            self._rebuild_fit_key = (pattern, section)
-            period = float(self._clock_period or 0.0)
+        # that advances `beats`, not the figure clamped for display. Fitted
+        # again if the section or the rig changes under the look.
+        fit_key = (pattern, section, look_rig.heads)
+        if new_look or self._rebuild_fit_key != fit_key:
+            self._rebuild_fit_key = fit_key
             self._rebuild_speed_fit = live_looks.speed_fit(
                 pattern, look_rig, motion,
                 speed=self._rebuild_style_speed * self._rebuild_look_speed,
                 amp=self._rebuild_style_amp * self._rebuild_look_amp,
-                bpm=(60.0 / period) if period > 0.0 else bpm,
+                bpm=clock_bpm,
                 max_pan_deg_per_s=live_moves.MAX_PAN_DEG_PER_S,
                 max_tilt_deg_per_s=live_moves.MAX_TILT_DEG_PER_S,
             )
@@ -1477,11 +1487,37 @@ class EffectsEngine:
             white_accent = max(0.0, min(0.40, white_accent))
 
         chase_active = section in {"verse", "buildup", "chorus"}
+        looks_light_beams = (
+            self._rebuild_dimmer is not None and bool(getattr(self.config, "look_dimmer_effects", True)))
+
+        # The dimmer's own clock. The fit made when the look was taken trusts
+        # the tempo; this does not. It follows the beat clock exactly while no
+        # beam would be cycled faster than live_dimmer.MAX_CYCLES_PER_S, and
+        # holds to that when the beat clock runs away or jumps. Whichever is
+        # lighting the beams sets the rate it is held to: the look's shape
+        # (and the one it is crossing from), or the renderer's own chase,
+        # where each beam is passed by one of `chase_heads` every
+        # `chase_len / chase_heads` steps. Advanced on every frame, drop
+        # included, so it is still on the grid when the beams are handed back.
+        if looks_light_beams:
+            dimmer_rate = live_dimmer.cycles_per_beat(self._rebuild_dimmer)
+            if self._rebuild_dimmer_prev is not None:
+                dimmer_rate = max(dimmer_rate, live_dimmer.cycles_per_beat(self._rebuild_dimmer_prev))
+        elif chase_active and chase_order:
+            dimmer_rate = chase_steps_per_beat * min(chase_heads, len(chase_order)) / len(chase_order)
+        else:
+            dimmer_rate = 0.0
+        dimmer_beats = self._rebuild_dimmer_clock.advance(beats, delta_time, dimmer_rate)
+        if new_look:
+            self._rebuild_dimmer_changed_beats = dimmer_beats
+        elif dimmer_beats - self._rebuild_dimmer_changed_beats >= live_dimmer.CROSSFADE_BEATS:
+            self._rebuild_dimmer_prev = None    # crossed; the old shape no longer counts
+
         chase_head = -1
         chase_dir = 1
         if chase_active and chase_order:
             chase_len = len(chase_order)
-            chase_tick = int(math.floor(beats * chase_steps_per_beat))
+            chase_tick = int(math.floor(dimmer_beats * chase_steps_per_beat))
             # Reverse direction every 2 bars for a busker-style sweep/bounce feel.
             chase_dir = -1 if (bar_clock % 4) >= 2 else 1
             chase_head = chase_tick % chase_len if chase_dir > 0 else (chase_len - 1 - (chase_tick % chase_len))
@@ -1515,9 +1551,8 @@ class EffectsEngine:
         beam_levels: Dict[str, float] = {}
         dimmer_look = self._rebuild_dimmer
         if (
-            dimmer_look is not None
+            looks_light_beams
             and chase_order
-            and bool(getattr(self.config, "look_dimmer_effects", True))
             and not drop_look
             and not snare_strobe_on
         ):
@@ -1528,12 +1563,9 @@ class EffectsEngine:
                 ceiling = own_chase_bump * sum(
                     _own_chase_peak(k) for k in range(len(chase_order))) / len(chase_order)
             if ceiling is not None:
-                if beats < self._rebuild_dimmer_changed_beats:
-                    # The beat clock was moved back; do not hold the old shape for it.
-                    self._rebuild_dimmer_changed_beats = beats - live_dimmer.CROSSFADE_BEATS
                 beam_levels = live_dimmer.crossfaded(
                     dimmer_look, self._rebuild_dimmer_prev, live_dimmer.beam_places(chase_order),
-                    beats, self._rebuild_dimmer_changed_beats, ceiling,
+                    dimmer_beats, self._rebuild_dimmer_changed_beats, ceiling,
                 )
 
         snapshot = []

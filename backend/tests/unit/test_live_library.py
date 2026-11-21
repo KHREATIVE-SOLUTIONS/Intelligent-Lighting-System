@@ -441,5 +441,159 @@ def test_the_engine_lights_the_beams_as_the_chosen_look_says():
     engine = _engine(seed=4)
     _run(engine, ["verse"], frames_each=200)
     look = LB.look_named(engine._rebuild_active_pattern)
-    assert engine._rebuild_dimmer == LD.dimmer_of(look)
+    # At the tempo the look was taken at: its own shape, slowed only if it had to be.
+    assert engine._rebuild_dimmer == LD.fit_to_tempo(LD.dimmer_of(look), 60.0 / engine._clock_period)
     assert engine._rebuild_dimmer.effect == look.dimmer_effect
+
+
+# ---------------------------------------------------------------------------
+# The speed limit, measured on what the engine sends
+# ---------------------------------------------------------------------------
+
+FAST_PLAN = ["verse", "chorus", "buildup", "chorus", "verse", "buildup"]
+
+
+def _busiest_beam(levels, beams, window=120, rise_at=0.7, fall_at=0.3):
+    """The most times any one beam goes from dark to bright in two seconds.
+
+    Counted from the dimmer levels the engine set, frame by frame: a rise is
+    the level coming up through 70% of that beam's range after being under
+    30% of it. A ripple that does not cross both is not a flash.
+    """
+    worst = 0
+    for k in beams:
+        series = [frame[k] for frame in levels]
+        low, high = min(series), max(series)
+        if high - low < 0.05:
+            continue
+        rise, fall = low + rise_at * (high - low), low + fall_at * (high - low)
+        lit, rises = series[0] >= rise, []
+        for n, value in enumerate(series):
+            if not lit and value >= rise:
+                lit = True
+                rises.append(n)
+            elif lit and value <= fall:
+                lit = False
+        for i, start in enumerate(rises):
+            worst = max(worst, sum(1 for n in rises[i:] if n < start + window))
+    return worst
+
+
+# At the limit a beam rises at most this often in a two-second window: one at
+# the start of it and then one every 1 / MAX_CYCLES_PER_S seconds.
+_MOST_RISES = int(2.0 * LD.MAX_CYCLES_PER_S) + 1
+
+
+def _fast_night(monkeypatch, bpm, look_dimmer_effects=True, tempo_of=None, seed=5, style=None):
+    """A night at a fast tempo, with no fill, so every chase is at full contrast.
+
+    Returns the engine, the dimmer levels, the looks as fitted, and the
+    largest pan and tilt step any head was sent in one frame.
+    """
+    monkeypatch.setattr(LD, "FILL", 0.0)
+    engine = _engine(seed=seed, look_dimmer_effects=look_dimmer_effects)
+    if style:
+        engine._club_style = style
+    seen, steps, last, frame = [], [0.0, 0.0], {}, [0]
+
+    def hold(e):
+        # Stepped by hand the beat clock never locks, so it is held at the tempo.
+        frame[0] += 1
+        e._clock_period = 60.0 / (tempo_of(frame[0]) if tempo_of else bpm)
+        if e._rebuild_dimmer is not None and e._rebuild_dimmer not in seen:
+            seen.append(e._rebuild_dimmer)
+        for f in e.fixtures.fixtures.values():
+            if "pan" in f.channels:
+                was = last.get(f.id)
+                if was is not None:
+                    steps[0] = max(steps[0], abs(f.pan - was[0]))
+                    steps[1] = max(steps[1], abs(f.tilt - was[1]))
+                last[f.id] = (f.pan, f.tilt)
+
+    engine._clock_period = 60.0 / (tempo_of(0) if tempo_of else bpm)
+    _, levels = _run(engine, FAST_PLAN, frames_each=300, bpm=bpm, each_frame=hold)
+    return engine, levels, seen, steps
+
+
+@pytest.mark.parametrize("bpm", [190.0, 240.0])
+def test_at_a_fast_tempo_no_beam_is_chased_and_no_head_is_turned_faster_than_the_limit(bpm, monkeypatch):
+    engine, levels, seen, steps = _fast_night(monkeypatch, bpm, style="dnb")
+    assert _busiest_beam(levels, _beam_columns(engine)) <= _MOST_RISES
+    # The looks were slowed to do it, each to within the limit at this tempo.
+    assert any(look.beats > 1.0 and LD.cycles_per_beat(look) * bpm / 60.0 > LD.MAX_CYCLES_PER_S / 2.0
+               for look in seen), seen
+    for look in seen:
+        assert LD.cycles_per_beat(look) * bpm / 60.0 <= LD.MAX_CYCLES_PER_S, look
+    # And the heads: no frame asks one for more than it can turn in a sixtieth of a second.
+    assert steps[0] <= live_moves.MAX_PAN_DEG_PER_S / 60.0 + 1e-6
+    assert steps[1] <= live_moves.MAX_TILT_DEG_PER_S / 60.0 + 1e-6
+    assert steps[0] > 0.5, "and they were moving"
+
+
+def test_the_limit_holds_when_the_tempo_doubles_under_a_look(monkeypatch):
+    """A look fitted at 120 BPM, and the beat clock then running at 240 and at 480."""
+    def tempo_of(n):
+        return (120.0, 240.0, 120.0, 480.0)[(n // 45) % 4]
+
+    engine, levels, seen, steps = _fast_night(monkeypatch, 120.0, tempo_of=tempo_of)
+    assert _busiest_beam(levels, _beam_columns(engine)) <= _MOST_RISES
+    assert steps[0] <= live_moves.MAX_PAN_DEG_PER_S / 60.0 + 1e-6
+    assert steps[1] <= live_moves.MAX_TILT_DEG_PER_S / 60.0 + 1e-6
+
+
+def test_the_dimmer_clock_alone_holds_the_limit_if_the_fit_is_wrong(monkeypatch):
+    """The fit trusts the tempo. With it taken away entirely the clock still holds."""
+    monkeypatch.setattr(LD, "fit_to_tempo", lambda look, bpm: look)
+    engine, levels, seen, _ = _fast_night(monkeypatch, 240.0)
+    assert any(LD.cycles_per_beat(look) * 4.0 > LD.MAX_CYCLES_PER_S for look in seen), "nothing was too fast"
+    assert _busiest_beam(levels, _beam_columns(engine)) <= _MOST_RISES
+
+
+def _own_chase_rate(monkeypatch, bpm):
+    """How often a second the renderer's own chase passes its busiest beam, over a whole night.
+
+    Its heads have tails, so a beam between two of them only falls to about
+    half: a pass is counted from 60% to 80% of the beam's range. Counted over
+    the whole run, because the chase also turns round every two bars, which
+    is a step of its own and not a matter of how fast it runs.
+    """
+    engine, levels, _, _ = _fast_night(monkeypatch, bpm, look_dimmer_effects=False)
+    passes = _busiest_beam(levels, _beam_columns(engine), window=10 ** 9, rise_at=0.8, fall_at=0.6)
+    return passes * 60.0 / len(levels)
+
+
+def test_the_renderers_own_chase_is_held_to_the_same_limit(monkeypatch):
+    """With the looks' dimmer effects off, or no look to take, the one chase lights the beams.
+
+    It passes a beam 2.4 times a second in a chorus at 240 BPM and 3 in a
+    build, so it is only just over. At 320 - a tempo estimate that doubled -
+    it would be 4."""
+    assert _own_chase_rate(monkeypatch, 320.0) <= LD.MAX_CYCLES_PER_S * 1.02
+
+
+def test_without_the_limit_a_fast_tempo_does_chase_the_beams_too_fast(monkeypatch):
+    """What the limit is for. If this stops being true the tests above prove nothing."""
+    monkeypatch.setattr(LD, "MAX_CYCLES_PER_S", 1000.0)
+    engine, levels, _, _ = _fast_night(monkeypatch, 240.0)
+    assert _busiest_beam(levels, _beam_columns(engine)) > _MOST_RISES
+    assert _own_chase_rate(monkeypatch, 320.0) > 2.5 * 1.2
+
+
+def test_at_an_ordinary_tempo_the_limit_changes_nothing_the_one_chase_does(monkeypatch):
+    """128 BPM with the looks' dimmer effects off: frame for frame what it was with no limit at all."""
+    _, with_limit = _run(_engine(seed=1, look_dimmer_effects=False), PLAN)
+    monkeypatch.setattr(LD, "MAX_CYCLES_PER_S", 1000.0)
+    _, without = _run(_engine(seed=1, look_dimmer_effects=False), PLAN)
+    assert with_limit == without
+
+
+def test_a_look_is_fitted_again_when_the_rig_changes_under_it():
+    engine = _engine(seed=4)
+    _run(engine, ["chorus"], frames_each=30)
+    key = engine._rebuild_fit_key
+    manager, _ = create_venue_rig("pro_beam_room")
+    engine.set_fixture_manager(manager)
+    engine._rebuild_pattern_hold_until_bar = 10 ** 9      # no new look: the same one, on a new rig
+    engine.update(delta_time=1.0 / 60.0)
+    assert engine._rebuild_fit_key != key
+    assert len(engine._rebuild_fit_key[2]) != len(key[2])

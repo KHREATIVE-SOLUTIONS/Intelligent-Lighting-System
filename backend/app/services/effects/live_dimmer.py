@@ -44,6 +44,15 @@ nothing here can make a section brighter or add a flash. Alternating effects cro
 with the two halves always summing to one, so the rig's total does not blink
 when they swap.
 
+**The speed limit.** However fast the music or the look, no beam is taken
+from dark to bright and back more than `MAX_CYCLES_PER_S` times a second. It
+is kept twice, as movement's is. `fit_to_tempo` slows a look when it is taken,
+by doubling its beats so it stays on the grid; that is the musical answer, and
+it trusts the tempo. `PhaseClock` does not: it is the beat clock as the shapes
+see it, and it will not advance further in a frame than the limit allows,
+whatever the beat clock does - speed up, double, or jump. An alternating
+effect's crossing is also never shorter than `MIN_EDGE_S`.
+
 Effects that open from the centre (``center_out``) and ``static`` light left
 and right alike. The others are meant not to: a spot travels from one end to
 the other, sides take turns, neighbours alternate.
@@ -75,6 +84,21 @@ FILL = 1.0
 # beats, so the phrase line is a change of picture and not a jump in level.
 CROSSFADE_BEATS = 2.0
 
+# The most times a second any one beam may go from dark to bright and back.
+# Under the three flashes a second that photosensitivity guidance draws its
+# line at, with room to spare, and for every beam rather than for the rig's
+# total: a chase leaves the total alone and can still flicker each head. At
+# 128 BPM a chase passing once a beat is 2.1 a second and is left alone; one
+# passing every half beat was 4.3 and is slowed to once a beat.
+MAX_CYCLES_PER_S = 2.5
+# A look is fitted when it is taken and then runs for a phrase. This much is
+# kept back for the tempo drifting upward meanwhile, so the fit, and not the
+# hard limit in `PhaseClock`, is what normally holds.
+RATE_HEADROOM = 0.95
+# An alternating effect never crosses in less than this, whatever the tempo:
+# three frames at 60 fps. `EDGE_BEATS` alone is 30 ms at 240 BPM.
+MIN_EDGE_S = 0.05
+
 
 @dataclass(frozen=True)
 class BeamPlace:
@@ -96,6 +120,8 @@ class DimmerLook:
     direction: str = "forward"
     beats: float = 4.0     # beats for one pass of a chase
     width: float = 0.22    # width of the chase spot, as a share of the truss
+    swap_beats: float = 1.0        # beats between swaps of an alternating effect
+    edge_beats: float = EDGE_BEATS  # beats an alternating effect takes to cross
 
 
 STATIC = DimmerLook()
@@ -113,6 +139,99 @@ def dimmer_of(look) -> DimmerLook:
         beats=max(0.25, float(getattr(look, "chase_beats", 4.0) or 4.0)),
         width=max(0.05, min(1.0, float(getattr(look, "chase_width", 0.22) or 0.22))),
     )
+
+
+def cycles_per_beat(look: DimmerLook) -> float:
+    """How many times a beat the look takes one beam from dark to bright and back.
+
+    The busiest beam, by the shapes in `share`: a spot passes each head once
+    a pass; a bounce passes the heads in the middle on the way out and again
+    on the way back; a ramp is out and back over twice its beats; alternate
+    heads are lit every other swap. A level rig does not cycle at all.
+    """
+    if look.effect == "chase":
+        return (2.0 if look.direction == "bounce" else 1.0) / look.beats
+    if look.effect in ("circular", "ramp"):
+        return 1.0 / look.beats
+    if look.effect in ("odd_even", "kick_clap", "left_right_kick"):
+        return 1.0 / (2.0 * look.swap_beats)
+    return 0.0
+
+
+def fit_to_tempo(look: DimmerLook, bpm: float) -> DimmerLook:
+    """The look, slowed so no beam cycles faster than the limit at this tempo.
+
+    Slowed by doubling: a chase of half a beat becomes one of a beat, then
+    two, so it still lands on the grid. Never quickened, and at an ordinary
+    tempo most looks come back as they went in. The crossing of an
+    alternating effect is lengthened to `MIN_EDGE_S` where the tempo makes
+    `EDGE_BEATS` shorter than that, and is never more than half a swap.
+    """
+    beats_per_s = max(0.0, float(bpm)) / 60.0
+    allowed = RATE_HEADROOM * MAX_CYCLES_PER_S
+    stretch = 1.0
+    while cycles_per_beat(look) / stretch * beats_per_s > allowed and stretch < 1024.0:
+        stretch *= 2.0
+    swap = look.swap_beats * stretch
+    edge = look.edge_beats
+    if look.effect in ("odd_even", "kick_clap", "left_right_kick"):
+        edge = min(swap / 2.0, max(EDGE_BEATS, MIN_EDGE_S * beats_per_s))
+    if stretch == 1.0 and edge == look.edge_beats:
+        return look
+    return DimmerLook(effect=look.effect, direction=look.direction, beats=look.beats * stretch,
+                      width=look.width, swap_beats=swap, edge_beats=edge)
+
+
+class PhaseClock:
+    """The beat clock as the dimmer shapes see it: never back, never too fast.
+
+    It follows the beat clock exactly while that is within the limit, which
+    is always, for a look fitted to the tempo it is played at. When the beat
+    clock runs faster than `MAX_CYCLES_PER_S` allows for the look in front of
+    it - the tempo estimate doubled mid-phrase, the clock was moved forward -
+    this advances at the limit and no further, and stays that far behind
+    rather than catching up. When the beat clock is moved back, this holds
+    still. So a beam's level is a continuous function of a phase that never
+    moves faster than the limit, whatever the tempo tracker does.
+    """
+
+    def __init__(self) -> None:
+        self._phase: Optional[float] = None
+        self._behind = 0.0
+
+    @property
+    def phase(self) -> float:
+        return self._phase or 0.0
+
+    def reset(self) -> None:
+        self._phase = None
+        self._behind = 0.0
+
+    def advance(self, beats: float, delta_time: float, cycles_per_beat_now: float) -> float:
+        beats = float(beats)
+        if not (-1.0e12 < beats < 1.0e12):
+            return self.phase
+        if self._phase is None:
+            self._phase = beats
+            self._behind = 0.0
+            return self._phase
+        dt = float(delta_time) if delta_time else 0.0
+        if not (0.0 < dt <= 0.25):
+            dt = 1.0 / 60.0
+        want = beats - self._behind
+        step = want - self._phase
+        most = MAX_CYCLES_PER_S * dt / cycles_per_beat_now if cycles_per_beat_now > 0.0 else float("inf")
+        if step < 0.0:
+            step = 0.0
+        elif step > most:
+            step = most
+        else:
+            # Within the limit: exactly the beat clock, less what was lost before.
+            self._phase = want
+            return self._phase
+        self._phase += step
+        self._behind = beats - self._phase
+        return self._phase
 
 
 def beam_places(fixtures: Sequence) -> Dict[str, BeamPlace]:
@@ -159,14 +278,15 @@ def _triangle(phase: float) -> float:
     return 2.0 * phase if phase <= 0.5 else 2.0 - 2.0 * phase
 
 
-def _alternate(beats: float) -> float:
-    """1 through even beats and 0 through odd ones, crossing over `EDGE_BEATS`.
+def _alternate(beats: float, swap_beats: float = 1.0, edge_beats: float = EDGE_BEATS) -> float:
+    """1 through even swaps and 0 through odd ones, crossing over `edge_beats`.
 
-    The crossing is centred on the beat line and is linear, so this and its
+    The crossing is centred on the swap line and is linear, so this and its
     complement always sum to one.
     """
-    x = float(beats) % 2.0
-    half = EDGE_BEATS / 2.0
+    swap = max(1e-6, float(swap_beats))
+    x = (float(beats) / swap) % 2.0
+    half = max(1e-6, min(0.5, float(edge_beats) / swap / 2.0))
     if x < half:
         return 0.5 + x / (2.0 * half)
     if x < 1.0 - half:
@@ -204,13 +324,13 @@ def share(look: DimmerLook, place: BeamPlace, beats: float) -> float:
         where = place.out if look.direction == "center_out" else place.along
         return max(0.0, 1.0 - abs(where - progress) * 3.0)
     if effect == "odd_even":
-        gate = _alternate(beats)
+        gate = _alternate(beats, look.swap_beats, look.edge_beats)
         return gate if place.step == 0 else 1.0 - gate
     if effect == "kick_clap":
-        gate = _alternate(beats)
+        gate = _alternate(beats, look.swap_beats, look.edge_beats)
         return gate if place.step == 1 else 1.0 - gate
     if effect == "left_right_kick":
-        gate = _alternate(beats)
+        gate = _alternate(beats, look.swap_beats, look.edge_beats)
         return gate if place.side < 0 else 1.0 - gate
     return 1.0
 
