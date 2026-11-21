@@ -10,6 +10,7 @@ from typing import Optional, Dict
 from ...schemas.audio import engine_energy, programme_level
 from ...services.demo.demo_simulation import DemoSimulation, DemoConfig
 from ...services.demo.venue_presets import VENUE_PRESETS, VenuePreset, create_venue_rig
+from ...services.lighting.pro_effects import ACCENT_OFF_POLICIES, ACCENT_OFF_VENUES
 from ...services.effects.fixture_groups import canonical_channel_name
 
 router = APIRouter()
@@ -80,6 +81,27 @@ class DemoSpeedRequest(BaseModel):
 
 # === Demo Simulation Endpoints ===
 
+
+def enable_first_demo_accents(engine) -> None:
+    """Turn accents on for the first demo (Q9).
+
+    Accents stay off when the safety policy is no_strobe or the venue mode is
+    theatre / broadcast / corporate. A first demo must run them: lift a
+    no_strobe policy to conservative (the same caps the server starts with)
+    and a venue that forbids accents to club. A performance profile or a
+    concert/club venue is left as it is. The no_strobe switch remains
+    available after the demo; this only sets the demo's starting posture.
+    """
+    if engine is None:
+        return
+    policy = str(getattr(engine.config, "accessibility_mode", "") or "").strip().lower()
+    if policy in ACCENT_OFF_POLICIES:
+        engine.set_safety_profile("conservative")
+    venue = str(getattr(engine.config, "venue_mode", "") or "").strip().lower()
+    if venue in ACCENT_OFF_VENUES:
+        engine.config.venue_mode = "club"
+    engine.set_strobe_layer_enabled(True)
+
 @router.post("/demo/start")
 async def start_demo(request: DemoStartRequest, http_request: Request = None):
     """Start the demo simulation.
@@ -121,7 +143,7 @@ async def start_demo(request: DemoStartRequest, http_request: Request = None):
         _effects_engine.config.auto_mode = True
         _effects_engine.config.movement_enabled = True
         _effects_engine.config.dimmer_enabled = True
-        _effects_engine.set_strobe_layer_enabled(True)
+        enable_first_demo_accents(_effects_engine)
         _effects_engine.config.color_enabled = True
 
         # Set genre
@@ -460,6 +482,7 @@ async def apply_venue_preset(preset_name: str, request: Request = None):
         pass
 
     _effects_engine.config.bpm = preset.default_bpm
+    enable_first_demo_accents(_effects_engine)
     _record_demo_rig(request, preset_name, len(preset.fixtures))
 
     return {
