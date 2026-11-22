@@ -19,7 +19,7 @@ from app.api.endpoints import (
     shows, rigs, fixtures, audio, dmx, websocket, effects, training, lfo,
     fixture_library, rig_patching, fixture_test, wizard, templates,
     rig_import_export, discovery, qr_scanning, demo, auth, rig_identify, genre_check,
-    venue_import, patch_sheet, room_scan,
+    venue_import, patch_sheet, room_scan, room_scan_video,
 )
 from app.core.config import settings
 from app.core.logging_config import configure_logging
@@ -633,6 +633,10 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    # A walkthrough video still being reconstructed: stop COLMAP with the backend.
+    from app.services.room_scan import video as room_video, video_jobs as room_video_jobs
+    await asyncio.to_thread(room_video_jobs.jobs.shutdown)
+    room_video.kill_running_tools()
     if hasattr(app.state, '_audio_start_task') and app.state._audio_start_task:
         app.state._audio_start_task.cancel()
     if hasattr(app.state, 'broadcast_task') and app.state.broadcast_task:
@@ -771,6 +775,7 @@ app.include_router(rig_import_export.router, prefix="/api", tags=["Import/Export
 app.include_router(venue_import.router, prefix="/api", tags=["Import/Export"])
 app.include_router(patch_sheet.router, prefix="/api", tags=["Import/Export"])
 app.include_router(room_scan.router, prefix="/api", tags=["Import/Export"])
+app.include_router(room_scan_video.router, prefix="/api", tags=["Import/Export"])
 app.include_router(discovery.router, prefix="/api", tags=["Discovery"])
 app.include_router(qr_scanning.router, prefix="/api", tags=["QR Scanning"])
 app.include_router(demo.router, prefix="/api", tags=["Demo & Venues"])

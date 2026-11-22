@@ -147,6 +147,17 @@ class Settings(BaseSettings):
     # Turn on to watch the demo in previs software.
     DEMO_RIG_DMX_OUTPUT: bool = False
 
+    # Room from a walkthrough video (docs/ROOM_SCAN.md). All free, local tools
+    # that are looked for and never installed from here.
+    # COLMAP's folder, COLMAP.bat or colmap executable. Empty: look on PATH.
+    COLMAP_PATH: str = ""
+    # The folder holding OpenMVS's DensifyPointCloud and InterfaceCOLMAP, for
+    # a dense cloud where COLMAP's own (CUDA only) cannot run. Empty: look on PATH.
+    OPENMVS_PATH: str = ""
+    ROOM_VIDEO_MAX_MB: int = 500
+    # The whole job is stopped after this long.
+    ROOM_VIDEO_TIMEOUT_MIN: int = 60
+
     # WebSocket
     WS_HEARTBEAT_INTERVAL: int = 30
 

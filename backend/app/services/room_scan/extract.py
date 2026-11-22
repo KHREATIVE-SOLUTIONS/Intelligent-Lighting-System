@@ -785,4 +785,6 @@ def extract_room(mesh: ScanMesh, options: Optional[ScanOptions] = None) -> RoomE
             "No truss or bar was found overhead, so overhead fixtures keep their height unless the "
             "layout had them above the ceiling."
         )
-    return RoomExtraction(shell=shell, assumptions=assumptions + list(mesh.notes), warnings=warnings)
+    return RoomExtraction(
+        shell=shell, assumptions=assumptions + list(mesh.notes), warnings=list(mesh.warnings) + warnings,
+    )

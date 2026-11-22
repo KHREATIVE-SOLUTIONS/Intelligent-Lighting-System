@@ -12,6 +12,10 @@ docs/ROOM_SCAN.md.
     moves   = suggest_positions(fixtures, shell)    # suggest.py
 
 All of it is pure: nothing here touches the database, the engine or a device.
+
+A walkthrough video is turned into a point cloud first (video.py, with free
+tools already on the machine, run as a background job by video_jobs.py), and
+that cloud is then read like any other scan.
 """
 
 from .detect import detect_scan_format, read_scan_file

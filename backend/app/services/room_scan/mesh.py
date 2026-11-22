@@ -45,6 +45,8 @@ class ScanMesh:
     up_axis: Optional[str] = None              # "y" or "z"
     metres_per_unit: Optional[float] = None
     notes: List[str] = field(default_factory=list)
+    # What whoever wrote the file says is doubtful about it (video.py writes these).
+    warnings: List[str] = field(default_factory=list)
     # Things the file names outright (RoomPlan's objects), for the report.
     objects: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -216,6 +218,37 @@ def _ply_header(content: bytes) -> Tuple[str, List[_PlyElement], int]:
     return fmt, elements, end + 1
 
 
+# A PLY this system wrote itself (video.py) says what it knows in header
+# comments, so that survives being downloaded and sent back for a preview.
+PLY_NOTE = "room_scan_note"
+PLY_WARNING = "room_scan_warning"
+PLY_UP_AXIS = "room_scan_up_axis"
+PLY_METRES_PER_UNIT = "room_scan_metres_per_unit"
+
+
+def _ply_comments(content: bytes, mesh: ScanMesh) -> None:
+    """Take this system's own header comments into the mesh. Any other comment is ignored."""
+    marker = content.find(b"end_header")
+    for raw in content[:max(marker, 0)].decode("ascii", errors="replace").splitlines():
+        words = raw.strip().split(None, 2)
+        if len(words) < 3 or words[0] != "comment":
+            continue
+        key, value = words[1], words[2].strip()
+        if key == PLY_NOTE:
+            mesh.notes.append(value)
+        elif key == PLY_WARNING:
+            mesh.warnings.append(value)
+        elif key == PLY_UP_AXIS and value.lower() in ("y", "z"):
+            mesh.up_axis = value.lower()
+        elif key == PLY_METRES_PER_UNIT:
+            try:
+                scale = float(value)
+            except ValueError:
+                continue
+            if 0 < scale < float("inf"):
+                mesh.metres_per_unit = scale
+
+
 def _vertex_columns(element: _PlyElement, table: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """(positions, normals or None) out of a vertex table with named columns."""
     names = [p.name for p in element.properties]
@@ -358,6 +391,7 @@ def parse_ply(content: bytes, source_file: str = "") -> ScanMesh:
         vertices=positions, faces=faces, normals=normals,
         format="ply", source_file=source_file,
     )
+    _ply_comments(content, mesh)
     if faces is None:
         mesh.notes.append("The PLY has no faces: it was read as a point cloud.")
     return _checked(mesh)
