@@ -12,13 +12,18 @@ Conventions, the same as a patched rig:
 - position is metres in stage axes (X across, Y up, -Z upstage), or None.
   A fixture with no position is unplaced. An importer never makes one up.
 - position_source says where a position came from: mvr, ma2, csv or none.
+  "template" is the one source that is not the file: a position worked out by
+  the patch sheet layout generator (app.services.patch_sheet). It is a guess at
+  where the fixture hangs and stays unconfirmed until someone has checked it.
 """
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-POSITION_SOURCES = ("mvr", "ma2", "csv", "none")
-FORMATS = ("csv", "gdtf", "mvr", "ma2")
+POSITION_SOURCES = ("mvr", "ma2", "csv", "none", "template")
+# Positions from these sources were generated, not read: nobody has confirmed them.
+UNCONFIRMED_POSITION_SOURCES = ("template",)
+FORMATS = ("csv", "gdtf", "mvr", "ma2", "xlsx", "pdf", "text", "image")
 
 DMX_UNIVERSE_SIZE = 512
 

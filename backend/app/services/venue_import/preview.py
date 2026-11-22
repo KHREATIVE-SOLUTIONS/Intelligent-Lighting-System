@@ -29,7 +29,7 @@ from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
 from app.services.rig.patching_service import MAX_UNIVERSES
 
 from .matching import match_type, normalise, pick_mode
-from .model import DMX_UNIVERSE_SIZE, ImportedFixture, ParsedVenue
+from .model import DMX_UNIVERSE_SIZE, UNCONFIRMED_POSITION_SOURCES, ImportedFixture, ParsedVenue
 
 # Group names the engine builds for itself (rig_loader.TYPE_GROUP_NAMES plus the
 # combined one). A rig group of the same name is dropped at load.
@@ -83,6 +83,12 @@ class PlannedFixture:
     @property
     def type_label(self) -> str:
         return self.fixture.type_name or NO_TYPE
+
+    @property
+    def position_confirmed(self) -> bool:
+        """The position is the file's own. False for a fixture with none, and
+        for one whose position was generated from a stage template."""
+        return self.position is not None and self.position_source not in UNCONFIRMED_POSITION_SOURCES
 
 
 def _profile_key(name: str) -> str:
@@ -354,6 +360,7 @@ def _fixture_row(plan: PlannedFixture) -> Dict[str, Any]:
         "rotation": _xyz(plan.rotation),
         "position_source": plan.position_source,
         "unplaced": plan.position is None,
+        "position_confirmed": plan.position_confirmed,
         "position_label": fixture.position_label,
         "group_name": fixture.group_name,
         "groups": list(fixture.groups),
@@ -527,6 +534,9 @@ def render_preview(
             "not_importable": len(not_importable),
             "placed": sum(1 for p in plans if p.position is not None),
             "unplaced": sum(1 for p in plans if p.position is None),
+            "unconfirmed_positions": sum(
+                1 for p in plans if p.position is not None and not p.position_confirmed
+            ),
             "switched_off": sum(1 for p in importable if p.switched_off),
             "universes": [{"universe": u, "fixtures": n} for u, n in sorted(universes.items())],
             "groups": sum(1 for g in groups if g["role"] == "group"),

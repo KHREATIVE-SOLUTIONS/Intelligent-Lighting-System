@@ -14,6 +14,9 @@ by hand. Flushes, never commits: the request's session decides that.
 What each rig fixture carries in its tags, since the patch has no column for it:
 
     position_source:mvr|ma2|csv|none    where its position came from
+    position_source:template            generated from a stage template, not read
+    position_unconfirmed                the position is a generated guess; nobody
+                                        has checked it against the room
     unplaced                            it has none; it sits at 0,0,0 until placed
     unmatched_type                      no profile matched; switched off
     address_clash                       shares channels with another; switched off
@@ -42,6 +45,7 @@ from .preview import PlannedFixture
 PLACEHOLDER_MANUFACTURER = "Unmatched import"
 
 TAG_UNPLACED = "unplaced"
+TAG_UNCONFIRMED = "position_unconfirmed"
 TAG_UNMATCHED = "unmatched_type"
 TAG_CLASH = "address_clash"
 
@@ -74,6 +78,8 @@ def fixture_tags(plan: PlannedFixture) -> List[str]:
     tags = [f"position_source:{plan.position_source}"]
     if plan.position is None:
         tags.append(TAG_UNPLACED)
+    elif not plan.position_confirmed:
+        tags.append(TAG_UNCONFIRMED)
     if plan.profile_status == "unmatched":
         tags.append(TAG_UNMATCHED)
     if plan.clashes:
@@ -88,22 +94,29 @@ def fixture_tags(plan: PlannedFixture) -> List[str]:
     return tags
 
 
-def stage_size(plans: List[PlannedFixture], parsed: ParsedVenue) -> Dict[str, float]:
-    """Stage dimensions that hold everything the file placed, or nothing to say.
+def stage_size(
+    plans: List[PlannedFixture],
+    parsed: ParsedVenue,
+    at_least: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    """Stage dimensions that hold everything placed, or nothing to say.
 
     The origin is the centre of the floor, so the width is twice the furthest
-    reach. Measured from the file's own positions; a file that places nothing
-    leaves the rig's defaults alone.
+    reach. Measured from the positions in the plan; a file that places nothing
+    leaves the rig's defaults alone. `at_least` is a stage the result is never
+    smaller than: the template a layout was generated on.
     """
     points = [p.position for p in plans if p.importable and p.position is not None]
     points += [(t["x"], t["y"], t["z"]) for t in parsed.positions]
+    floor = dict(at_least or {})
     if not points:
-        return {}
-    return {
+        return floor
+    size = {
         "stage_width": float(max(1, math.ceil(2 * max(abs(x) for x, _, _ in points)))),
         "stage_depth": float(max(1, math.ceil(2 * max(abs(z) for _, _, z in points)))),
         "stage_height": float(max(1.0, round(max(y for _, y, _ in points), 2))),
     }
+    return {key: max(value, float(floor.get(key, 0.0))) for key, value in size.items()}
 
 
 async def _store_profile(db: AsyncSession, profile: Dict[str, Any]) -> Fixture:
@@ -205,8 +218,13 @@ async def apply_import(
     parsed: ParsedVenue,
     plans: List[PlannedFixture],
     rig_name: Optional[str] = None,
+    stage: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
-    """Create a new, inactive rig from a plan. Returns what was written."""
+    """Create a new, inactive rig from a plan. Returns what was written.
+
+    `stage` is stage_width / stage_depth / stage_height the rig is at least as
+    large as, for a plan laid out on a stage template.
+    """
     importable = [p for p in plans if p.importable]
 
     stored: Dict[int, Fixture] = {}       # id(embedded profile dict) -> library row
@@ -221,7 +239,7 @@ async def apply_import(
         name=name[:255],
         description=f"Imported from {parsed.source_file or 'a file'} ({parsed.format}).",
         universes=[{"universe": u, "protocol": "artnet", "port": 6454} for u in universes],
-        **stage_size(plans, parsed),
+        **stage_size(plans, parsed, at_least=stage),
     )
     rig = Rig(
         **rig_data.model_dump(),
@@ -297,6 +315,9 @@ async def apply_import(
         "fixtures_switched_off": switched_off,
         "fixtures_not_imported": len(plans) - len(importable),
         "unplaced": sum(1 for p in importable if p.position is None),
+        "unconfirmed_positions": sum(
+            1 for p in importable if p.position is not None and not p.position_confirmed
+        ),
         "profiles_created": profiles_created,
         "placeholder_profiles_created": placeholders_created,
     }

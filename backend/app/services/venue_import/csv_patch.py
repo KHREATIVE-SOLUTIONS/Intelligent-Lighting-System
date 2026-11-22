@@ -6,8 +6,10 @@ Reads a patch list saved as CSV, whoever laid it out. Headers are matched by
 meaning, not by position or exact spelling, so "FID", "Fixture ID" and "Chan"
 are one column and "DMX", "Patch" and "Start Address" are another.
 
-CSV only. An .xlsx is not read: no spreadsheet parser is a dependency of this
-system, and the answer to that is "Save As CSV", not a guess at the file.
+parse_csv_patch reads CSV text. parse_patch_rows reads the same sheet when it
+is already rows of cells, which is how app.services.patch_sheet hands over a
+spreadsheet or a table lifted out of a PDF. The venue importer itself still
+takes CSV only and answers an .xlsx with "Save As CSV".
 
 What needs saying about the numbers:
 
@@ -123,31 +125,46 @@ def _metres(text: str) -> Optional[float]:
         return None
 
 
+NO_HEADER = (
+    "No header row was found. A patch list needs a row of column names such as "
+    "Name, Type, Universe, Address (or one Patch column like 2.101)."
+)
+
+
+def find_header_row(rows: Sequence[Sequence[str]]) -> Tuple[int, int]:
+    """(how many cells were recognised, the row index) of the row that reads best as a header.
+
+    The header is the row, among the first few, in which the most cells are
+    recognised.
+    """
+    best = (0, 0)
+    for index, row in enumerate(rows[:HEADER_SEARCH_ROWS]):
+        recognised = len({_FIELD_BY_HEADER[h] for h in map(_normalise, row) if h in _FIELD_BY_HEADER})
+        if recognised > best[0]:
+            best = (recognised, index)
+    return best
+
+
 def _find_header(text: str) -> Tuple[str, int, List[List[str]]]:
     """(delimiter, header row index, every row) for the layout that reads best.
 
-    The header is the row, among the first few that are not comments, in which
-    the most cells are recognised. Trying each delimiter and keeping the best
-    is what lets a semicolon or tab file through without a setting.
+    Lines that start with '#' are comments. Trying each delimiter and keeping
+    the best is what lets a semicolon or tab file through without a setting.
     """
     lines = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
     best: Tuple[int, int, str, List[List[str]]] = (0, 0, ",", [])
     for delimiter in DELIMITERS:
         rows = list(csv.reader(io.StringIO("\n".join(lines)), delimiter=delimiter))
-        for index, row in enumerate(rows[:HEADER_SEARCH_ROWS]):
-            recognised = len({_FIELD_BY_HEADER[h] for h in map(_normalise, row) if h in _FIELD_BY_HEADER})
-            if recognised > best[0]:
-                best = (recognised, index, delimiter, rows)
+        recognised, index = find_header_row(rows)
+        if recognised > best[0]:
+            best = (recognised, index, delimiter, rows)
     recognised, index, delimiter, rows = best
     if recognised < 2:
-        raise VenueImportError(
-            "No header row was found. A patch list needs a row of column names such as "
-            "Name, Type, Universe, Address (or one Patch column like 2.101)."
-        )
+        raise VenueImportError(NO_HEADER)
     return delimiter, index, rows
 
 
-def _columns(header: List[str]) -> Tuple[Dict[str, int], List[str]]:
+def _columns(header: Sequence[str]) -> Tuple[Dict[str, int], List[str]]:
     """Field -> column index (the first column that means it), and what was not understood."""
     columns: Dict[str, int] = {}
     unknown: List[str] = []
@@ -159,6 +176,12 @@ def _columns(header: List[str]) -> Tuple[Dict[str, int], List[str]]:
             continue
         columns.setdefault(field_name, index)
     return columns, unknown
+
+
+def header_columns(header: Sequence[str]) -> Dict[str, int]:
+    """Field -> column index for a header row, for a reader that needs to know
+    which column is which before the rows are parsed."""
+    return _columns(header)[0]
 
 
 def _split_groups(text: str) -> List[str]:
@@ -240,14 +263,47 @@ def parse_csv_patch(
     """Read a CSV patch list. Raises VenueImportError when it has no usable header."""
     text = decode(content)
     delimiter, header_index, rows = _find_header(text)
-    header = rows[header_index]
-    columns, unknown = _columns(header)
 
     parsed = ParsedVenue(format="csv", source_file=source_file)
     if delimiter != ",":
         parsed.assumptions.append(
             f"The file is separated by {'tabs' if delimiter == chr(9) else repr(delimiter)}, not commas."
         )
+    _read_rows(parsed, rows, header_index, universe_base, up_axis)
+    return parsed
+
+
+def parse_patch_rows(
+    rows: Sequence[Sequence[str]],
+    source_file: str = "",
+    format: str = "csv",
+    universe_base: str = "auto",
+    up_axis: str = "y",
+) -> ParsedVenue:
+    """Read a patch list that is already rows of cells: a spreadsheet, a table
+    lifted out of a PDF. Every cell is text. Raises VenueImportError when no
+    row reads as a header.
+    """
+    rows = [[str(c) if c is not None else "" for c in row] for row in rows]
+    recognised, header_index = find_header_row(rows)
+    if recognised < 2:
+        raise VenueImportError(NO_HEADER)
+    parsed = ParsedVenue(format=format, source_file=source_file)
+    _read_rows(parsed, rows, header_index, universe_base, up_axis)
+    return parsed
+
+
+def _read_rows(
+    parsed: ParsedVenue,
+    rows: List[List[str]],
+    header_index: int,
+    universe_base: str,
+    up_axis: str,
+) -> None:
+    """Fill `parsed` from the rows under the header at `header_index`."""
+    header = rows[header_index]
+    columns, unknown = _columns(header)
+
     if unknown:
         parsed.warnings.append("Columns not used: " + ", ".join(unknown) + ".")
     if "address" not in columns:
@@ -370,4 +426,3 @@ def parse_csv_patch(
         parsed.warnings.append(f"{empty} row(s) had nothing to import and were skipped.")
     if not parsed.fixtures:
         parsed.warnings.append("The sheet has a header but no fixture rows.")
-    return parsed
