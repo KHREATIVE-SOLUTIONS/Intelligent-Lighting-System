@@ -12,6 +12,13 @@ coarse/fine collision fix, and its ``active_tests`` registry is shared so the
 existing /test/stop and /test-all/stop endpoints release a walkthrough hold too.
 Those endpoints only cancel, so the hold blacks its own fixture out on
 cancellation rather than trusting whoever cancelled it.
+
+Locate mode (docs/FLASH_AND_TAP.md) is the same walkthrough started with
+``only=unconfirmed``: it walks just the fixtures whose position is a generated
+guess, a row at a time and ends first, offers to space the rest of a row along
+the line between its two tapped ends, and confirms that fit with a slow walk of
+light along the row. Every light it shows goes through the one hold slot on the
+session, so the release paths below cover all of it.
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +41,18 @@ from app.db.database import get_db
 from app.models.fixture import FixtureMode
 from app.models.rig import Rig, RigFixture
 from app.services.fixture_test.fixture_test_service import FixtureTestService
+from app.services.venue_import.apply import (
+    SOURCE_CONFIRMED,
+    SOURCE_ROW_FIT,
+    SOURCE_TAP,
+    SOURCE_TEMPLATE,
+    TAG_CLASH,
+    TAG_UNMATCHED,
+    is_unconfirmed,
+    position_source,
+    with_position_confirmed,
+    with_position_source,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -60,6 +79,38 @@ NO_RESPONSE_TAG = "identify:no-response"
 OUTCOME_PLACED = "placed"
 OUTCOME_KEPT = "kept"
 OUTCOME_NO_RESPONSE = "no_response"
+# "It is where the plan shows it": the drawn position, accepted by a person.
+OUTCOME_CONFIRMED = "confirmed"
+# Spaced between its row's two tapped ends, and the row check passed.
+OUTCOME_FITTED = "fitted"
+# These two leave a fixture with a position somebody stands behind.
+LOCATED_OUTCOMES = (OUTCOME_PLACED, OUTCOME_CONFIRMED)
+
+MODE_ALL = "all"
+MODE_UNCONFIRMED = "unconfirmed"
+
+# The row check walks one steady light along the row. This is how long each
+# fixture stays on before the next takes over: slow enough to follow with a
+# finger, and nowhere near a rate that reads as a flash.
+ROW_CHECK_STEP_S = 1.5
+
+# A row's life in locate mode.
+ROW_ENDS = "ends"            # lighting its first fixture, then its last
+ROW_FIT_OFFER = "fit_offer"  # both ends located; nothing lit; fit the rest?
+ROW_CHECK = "check"          # fitted; the light is walking along the row
+ROW_EACH = "each"            # the rest are being tapped one at a time
+ROW_DONE = "done"
+ROW_PAUSED = (ROW_FIT_OFFER, ROW_CHECK)
+
+# A row is only fitted to a line if the generated positions were one: further
+# than this off the line between its ends (metres, on the plan) and it is a
+# ring or a stack, not a truss.
+STRAIGHT_TOLERANCE_M = 0.15
+MIN_ROW_LENGTH_M = 0.1
+# The two end taps must be this far apart across the stage before their order
+# is read as "the sheet is mirrored" and not as two taps on one spot.
+MIRROR_MIN_SPAN_M = 0.5
+MAX_HEIGHT_M = 100.0
 
 # Channel types whose profile default is the fixture's own "no effect" position.
 # A spot parked on a blackout gobo or a dark colour wheel slot is a light the
@@ -89,6 +140,41 @@ class _Step:
     position_y: float
     position_z: float
     outcome: Optional[str] = None
+    # Whether the fixture's position is still a guess nobody has checked.
+    unconfirmed: bool = False
+    source: Optional[str] = None
+    group: Optional[str] = None
+
+
+@dataclass
+class _Row:
+    """A run of guessed fixtures that hang together, in locate mode.
+
+    Its steps sit together in the session: the first fixture, then the last,
+    then the ones between in address order - so the two taps that pin the row
+    down come before anything else is asked.
+    """
+
+    group: str
+    start: int
+    count: int
+    can_fit: bool
+    fit_blocked_reason: Optional[str] = None
+    stage: str = ROW_ENDS
+    fitted: bool = False
+    # Where the generator drew the two ends, kept to tell a mirrored sheet.
+    guess_first_x: float = 0.0
+    guess_last_x: float = 0.0
+
+    @property
+    def end(self) -> int:
+        return self.start + self.count
+
+    def in_address_order(self, steps: List[_Step]) -> List[_Step]:
+        mine = steps[self.start:self.end]
+        if self.count < 3:
+            return mine
+        return [mine[0], *mine[2:], mine[1]]
 
 
 @dataclass
@@ -101,10 +187,21 @@ class _Session:
     flash_level: int
     steps: List[_Step]
     index: int = 0
+    mode: str = MODE_ALL
+    rows: List[_Row] = field(default_factory=list)
+    # Fixtures that are switched off, so cannot be lit, with the reason.
+    not_located: List[Dict[str, Any]] = field(default_factory=list)
+    mirror_checked: bool = False
+    mirror_offer: bool = False
+    # Index of the first step after the row whose taps raised the offer.
+    mirror_from: int = 0
+    mirrored: bool = False
     last_seen: float = field(default_factory=time.monotonic)
     released: bool = False
     hold_task: Optional[asyncio.Task] = None
     hold_step: Optional[_Step] = None
+    # The fixtures a running row check owns; hold_step is None while it runs.
+    hold_row: List[_Step] = field(default_factory=list)
     watchdog_task: Optional[asyncio.Task] = None
     engine: Any = None
     dmx: Any = None
@@ -124,6 +221,21 @@ class _Session:
     @property
     def current(self) -> Optional[_Step]:
         return None if self.complete else self.steps[self.index]
+
+    @property
+    def current_row(self) -> Optional[_Row]:
+        if self.complete:
+            return None
+        for row in self.rows:
+            if row.start <= self.index < row.end:
+                return row
+        return None
+
+    @property
+    def paused(self) -> bool:
+        """A question about the whole row is open, so no single light is current."""
+        row = self.current_row
+        return row is not None and row.stage in ROW_PAUSED
 
     def touch(self) -> None:
         self.last_seen = time.monotonic()
@@ -294,17 +406,20 @@ async def _hold(service: FixtureTestService, step: _Step) -> None:
 
 
 async def _stop_flash(session: _Session, service: FixtureTestService) -> None:
-    """Cancel the hold and black the fixture out. Safe to call repeatedly."""
-    task, step = session.hold_task, session.hold_step
+    """Cancel the hold and black out what it lit. Safe to call repeatedly."""
+    task = session.hold_task
+    held = [session.hold_step] if session.hold_step is not None else list(session.hold_row)
     session.hold_task = None
     session.hold_step = None
-    if task is None or step is None:
+    session.hold_row = []
+    if task is None or not held:
         return
 
     # Registered under the fixture id, so the existing fixture-test stop endpoints
     # release this hold too; drop the registration only if it is still ours.
-    if service.active_tests.get(step.fixture_id) is task:
-        service.active_tests.pop(step.fixture_id, None)
+    for step in held:
+        if service.active_tests.get(step.fixture_id) is task:
+            service.active_tests.pop(step.fixture_id, None)
     if not task.done():
         task.cancel()
     try:
@@ -316,13 +431,77 @@ async def _stop_flash(session: _Session, service: FixtureTestService) -> None:
 
     # The cancelled task cannot do this itself, and a latched fixture is the one
     # outcome this walkthrough is not allowed to leave behind.
-    await service._zero_fixture(step.universe, step.dmx_address, step.channel_count)
+    for step in held:
+        await service._zero_fixture(step.universe, step.dmx_address, step.channel_count)
+
+
+async def _walk_row(service: FixtureTestService, steps: List[_Step]) -> None:
+    """Light a row one fixture at a time, once, then leave all of it dark.
+
+    One fixture is lit at any moment: each is blacked out before the next comes
+    on, and each stays on for ROW_CHECK_STEP_S. Like _hold, it cleans up after
+    itself however it ends.
+    """
+    current = asyncio.current_task()
+
+    async def _dark() -> None:
+        for step in steps:
+            await service._zero_fixture(step.universe, step.dmx_address, step.channel_count)
+            if service.active_tests.get(step.fixture_id) is current:
+                service.active_tests.pop(step.fixture_id, None)
+
+    try:
+        for step in steps:
+            await service._set_fixture_channels(step.universe, step.dmx_address, step.values)
+            await asyncio.sleep(ROW_CHECK_STEP_S)
+            await service._zero_fixture(step.universe, step.dmx_address, step.channel_count)
+    except asyncio.CancelledError:
+        await _dark()
+        raise
+    except Exception:
+        logger.exception("Row check failed - blacking the row out")
+    await _dark()
+
+
+def _check_order(session: _Session, row: _Row) -> List[_Step]:
+    """The row in the order the check lights it: plan left to plan right.
+
+    A row that runs straight up or down the plan has no left, so it goes in
+    address order.
+    """
+    ordered = row.in_address_order(session.steps)
+    if ordered[-1].position_x - ordered[0].position_x < -MIN_ROW_LENGTH_M:
+        ordered = list(reversed(ordered))
+    return ordered
+
+
+def _check_direction(session: _Session, row: _Row) -> str:
+    ordered = row.in_address_order(session.steps)
+    across = abs(ordered[-1].position_x - ordered[0].position_x)
+    return "left_to_right" if across >= MIN_ROW_LENGTH_M else "address_order"
+
+
+async def _start_row_check(session: _Session, service: FixtureTestService, row: _Row) -> None:
+    """Walk the light along a fitted row. It sits in the session's one hold
+    slot, so every path that releases a flash releases this too."""
+    await _stop_flash(session, service)
+    steps = [step for step in _check_order(session, row) if step.can_flash]
+    if not steps:
+        return
+    for step in steps:
+        await service.stop_test(step.fixture_id)
+    task = asyncio.create_task(_walk_row(service, steps))
+    session.hold_task = task
+    session.hold_row = steps
+    for step in steps:
+        service.active_tests[step.fixture_id] = task
 
 
 async def _start_flash(session: _Session, service: FixtureTestService) -> None:
     await _stop_flash(session, service)
     step = session.current
-    if step is None or not step.can_flash:
+    # While a question about the whole row is open, no single light is lit.
+    if step is None or not step.can_flash or session.paused:
         return
     # Any other test on this fixture would zero it out from under the hold.
     await service.stop_test(step.fixture_id)
@@ -381,6 +560,8 @@ def _step_payload(session: _Session, step: _Step) -> Dict[str, Any]:
         "position_z": step.position_z,
         "can_flash": step.can_flash,
         "blocked_reason": step.blocked_reason,
+        "unconfirmed": step.unconfirmed,
+        "group": step.group,
         "flashing": bool(
             session.hold_step is step
             and session.hold_task is not None
@@ -389,8 +570,54 @@ def _step_payload(session: _Session, step: _Step) -> Dict[str, Any]:
     }
 
 
+def _mirror_candidates(session: _Session) -> List[_Step]:
+    """Steps a mirror would move: unanswered guesses in the rows after the one
+    whose taps raised the offer."""
+    return [
+        step for step in session.steps[session.mirror_from:]
+        if step.outcome is None and step.unconfirmed and step.source == SOURCE_TEMPLATE
+    ]
+
+
+def _row_payload(session: _Session, row: _Row) -> Dict[str, Any]:
+    ordered = row.in_address_order(session.steps)
+    heights = {round(step.position_y, 3) for step in ordered}
+    running = bool(
+        session.hold_row and session.hold_task is not None and not session.hold_task.done()
+    )
+    return {
+        "number": session.rows.index(row) + 1,
+        "of": len(session.rows),
+        "group": row.group,
+        "stage": row.stage,
+        "can_fit": row.can_fit,
+        "fit_blocked_reason": row.fit_blocked_reason,
+        "fitted": row.fitted,
+        "running": running,
+        "direction": _check_direction(session, row),
+        "step_seconds": ROW_CHECK_STEP_S,
+        # One trim height for the row, or None while its fixtures differ.
+        "height": heights.pop() if len(heights) == 1 else None,
+        "fixtures": [
+            {
+                "fixture_id": step.fixture_id,
+                "label": step.label,
+                "position_x": step.position_x,
+                "position_y": step.position_y,
+                "position_z": step.position_z,
+                "unconfirmed": step.unconfirmed,
+                "outcome": step.outcome,
+            }
+            for step in ordered
+        ],
+    }
+
+
 def _session_state(session: _Session) -> Dict[str, Any]:
-    counts = {OUTCOME_PLACED: 0, OUTCOME_KEPT: 0, OUTCOME_NO_RESPONSE: 0}
+    counts = {
+        OUTCOME_PLACED: 0, OUTCOME_KEPT: 0, OUTCOME_NO_RESPONSE: 0,
+        OUTCOME_CONFIRMED: 0, OUTCOME_FITTED: 0,
+    }
     unresponsive: List[Dict[str, Any]] = []
     for step in session.steps:
         if step.outcome in counts:
@@ -404,8 +631,23 @@ def _session_state(session: _Session) -> Dict[str, Any]:
                 "reason": step.blocked_reason or "Did not light when we tested it",
             })
 
-    current = session.current
+    row = session.current_row
+    # While the row itself is the question, no single light is the current one.
+    current = None if session.paused else session.current
+    mirror = _mirror_candidates(session) if session.mirror_offer else []
     return {
+        "mode": session.mode,
+        "row": _row_payload(session, row) if row is not None else None,
+        "rows_total": len(session.rows),
+        "confirmed": counts[OUTCOME_CONFIRMED],
+        "fitted": counts[OUTCOME_FITTED],
+        # Of the lights in this walk, how many still sit on a guess.
+        "still_unconfirmed": sum(1 for step in session.steps if step.unconfirmed),
+        # Switched off, so never lit and never asked about. Counted apart.
+        "not_located": session.not_located,
+        "not_located_count": len(session.not_located),
+        "mirror_offer": {"fixtures": len(mirror)} if mirror else None,
+        "mirrored": session.mirrored,
         "session_id": session.session_id,
         "rig_id": session.rig_id,
         "rig_name": session.rig_name,
@@ -459,6 +701,11 @@ def _claim_step(session: _Session, fixture_id: Optional[int]) -> _Step:
     step = session.current
     if step is None:
         raise HTTPException(status_code=409, detail="This walkthrough has finished.")
+    if session.paused:
+        raise HTTPException(
+            status_code=409,
+            detail="There is a question about the whole row to answer first - nothing was changed.",
+        )
     if fixture_id is not None and fixture_id != step.fixture_id:
         raise HTTPException(
             status_code=409,
@@ -488,6 +735,173 @@ async def _load_rig_fixture(rig_id: int, fixture_id: int, db: AsyncSession) -> R
     if not rf:
         raise HTTPException(status_code=404, detail="Rig fixture not found")
     return rf
+
+
+async def _load_rig_fixtures(rig_id: int, fixture_ids: List[int], db: AsyncSession) -> Dict[int, RigFixture]:
+    if not fixture_ids:
+        return {}
+    result = await db.execute(
+        select(RigFixture).where(RigFixture.rig_id == rig_id, RigFixture.id.in_(fixture_ids))
+    )
+    return {rf.id: rf for rf in result.scalars().all()}
+
+
+def _require_row(session: _Session, stage: str, otherwise: str) -> _Row:
+    row = session.current_row
+    if row is None or row.stage != stage:
+        raise HTTPException(status_code=409, detail=otherwise)
+    return row
+
+
+# ---------------------------------------------------------------------------
+# Rows (locate mode)
+# ---------------------------------------------------------------------------
+
+
+def _continues_row(previous: RigFixture, fixture: RigFixture) -> bool:
+    """Whether `fixture` is the next one along the same row as `previous`.
+
+    A row is one group on consecutive addresses, which is how the layout
+    generator made it. The address test matters: a sheet that named its own
+    group can spread that name over two trusses, and a fixture missing from the
+    middle (switched off, or already measured) leaves a hole the fit would
+    space straight across.
+    """
+    if not previous.group_name or previous.group_name != fixture.group_name:
+        return False
+    footprint = previous.mode.channel_count if previous.mode else 1
+    footprint = max(1, int(footprint or 1))
+    if (fixture.universe or 0) == (previous.universe or 0):
+        gap = fixture.dmx_address - (previous.dmx_address + footprint)
+        return 0 <= gap < footprint
+    if (fixture.universe or 0) == (previous.universe or 0) + 1:
+        # Ran off the end of one universe onto the start of the next.
+        return previous.dmx_address + 2 * footprint - 1 > 512 and fixture.dmx_address <= footprint
+    return False
+
+
+def _fit_blocker(steps: List[_Step]) -> Optional[str]:
+    """Why the fixtures between a row's ends cannot be spaced along a line.
+
+    `steps` is the row in address order, at the positions the generator gave.
+    """
+    if len(steps) < 3:
+        return "A row of one or two lights has nothing between its ends."
+    if not all(step.can_flash for step in steps):
+        return (
+            "A light in this row cannot be turned on from here, so a check of the "
+            "whole row would not cover it. Each light is tapped on its own."
+        )
+    ax, az = steps[0].position_x, steps[0].position_z
+    dx, dz = steps[-1].position_x - ax, steps[-1].position_z - az
+    length_sq = dx * dx + dz * dz
+    not_a_line = (
+        "This row is not drawn as a straight line on the plan (a ring, or lights "
+        "stacked on a tower), so each light is tapped on its own."
+    )
+    if length_sq < MIN_ROW_LENGTH_M ** 2:
+        return not_a_line
+    length = length_sq ** 0.5
+    along_before = 0.0
+    for step in steps[1:-1]:
+        px, pz = step.position_x - ax, step.position_z - az
+        along = (px * dx + pz * dz) / length_sq
+        off = abs(px * dz - pz * dx) / length
+        if off > STRAIGHT_TOLERANCE_M or along <= along_before or along >= 1.0:
+            return not_a_line
+        along_before = along
+    return None
+
+
+def _order_for_locate(
+    fixtures: List[RigFixture], make_step: Callable[[RigFixture], _Step],
+) -> "tuple[List[_Step], List[_Row]]":
+    """Steps and rows for locate mode: a row at a time, each row's ends first."""
+    runs: List[List[RigFixture]] = []
+    for fixture in fixtures:
+        if runs and _continues_row(runs[-1][-1], fixture):
+            runs[-1].append(fixture)
+        else:
+            runs.append([fixture])
+
+    steps: List[_Step] = []
+    rows: List[_Row] = []
+    for run in runs:
+        in_order = [make_step(fixture) for fixture in run]
+        blocker = _fit_blocker(in_order)
+        rows.append(_Row(
+            group=run[0].group_name or in_order[0].label,
+            start=len(steps),
+            count=len(in_order),
+            can_fit=blocker is None,
+            fit_blocked_reason=blocker,
+            guess_first_x=in_order[0].position_x,
+            guess_last_x=in_order[-1].position_x,
+        ))
+        if len(in_order) >= 3:
+            in_order = [in_order[0], in_order[-1], *in_order[1:-1]]
+        steps.extend(in_order)
+    return steps, rows
+
+
+def _switched_off_reason(tags: Optional[List[str]]) -> str:
+    tags = tags or []
+    if TAG_UNMATCHED in tags:
+        return (
+            "No fixture profile matched its type, so it was switched off when the "
+            "sheet was imported and cannot be turned on from here."
+        )
+    if TAG_CLASH in tags:
+        return (
+            "It shares DMX channels with another light, so it was switched off "
+            "when the sheet was imported."
+        )
+    return "It is switched off in the patch."
+
+
+def _after_answer(session: _Session, row: _Row) -> None:
+    """Move a row on once the step just answered has been counted.
+
+    Called with session.index already past that step.
+    """
+    if row.stage == ROW_ENDS and session.index >= row.start + min(2, row.count):
+        first = session.steps[row.start]
+        last = session.steps[row.start + 1] if row.count > 1 else first
+        _look_for_mirror(session, row, first, last)
+        if row.count < 3:
+            row.stage = ROW_DONE
+        elif not row.can_fit:
+            row.stage = ROW_EACH
+        elif first.outcome in LOCATED_OUTCOMES and last.outcome in LOCATED_OUTCOMES:
+            row.stage = ROW_FIT_OFFER
+        else:
+            row.can_fit = False
+            row.fit_blocked_reason = (
+                "Both ends of the row have to be found before the lights between "
+                "them can be spaced, so each one is tapped on its own."
+            )
+            row.stage = ROW_EACH
+    if row.stage == ROW_EACH and session.index >= row.end:
+        row.stage = ROW_DONE
+
+
+def _look_for_mirror(session: _Session, row: _Row, first: _Step, last: _Step) -> None:
+    """Notice, once, that a row's two taps ran the opposite way to its drawing.
+
+    Only two real taps say anything: an end accepted as drawn agrees with the
+    drawing by definition.
+    """
+    if session.mirror_checked or row.count < 2:
+        return
+    if first.outcome != OUTCOME_PLACED or last.outcome != OUTCOME_PLACED:
+        return
+    drawn = row.guess_last_x - row.guess_first_x
+    tapped = last.position_x - first.position_x
+    if abs(drawn) < MIRROR_MIN_SPAN_M or abs(tapped) < MIRROR_MIN_SPAN_M:
+        return
+    session.mirror_checked = True
+    session.mirror_from = row.end
+    session.mirror_offer = (drawn > 0) != (tapped > 0)
 
 
 def _set_no_response_tag(rf: RigFixture, marked: bool) -> None:
@@ -524,6 +938,28 @@ class SkipReason(BaseModel):
     fixture_id: Optional[int] = None
 
 
+class RowFit(BaseModel):
+    """Whether to space the lights between a row's two located ends."""
+
+    accept: bool = True
+
+
+class RowCheck(BaseModel):
+    """Whether the light was seen to run along the row in order."""
+
+    passed: bool
+
+
+class RowHeight(BaseModel):
+    """One trim height, in metres, for every light in the row."""
+
+    height: float = Field(..., ge=0.0, le=MAX_HEIGHT_M)
+
+
+class MirrorAnswer(BaseModel):
+    accept: bool = True
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -532,25 +968,67 @@ class SkipReason(BaseModel):
 @router.post("/rigs/{rig_id}/identify/start")
 async def start_walkthrough(
     rig_id: int,
+    only: Optional[str] = Query(
+        default=None,
+        description="'unconfirmed' walks just the lights whose position is a generated guess, "
+                    "a row at a time (locate mode). Left out, every active light is walked.",
+    ),
     request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Begin the flash-to-identify walkthrough for a rig."""
+    if only not in (None, "", MODE_UNCONFIRMED):
+        raise HTTPException(
+            status_code=400,
+            detail=f"'only' can be '{MODE_UNCONFIRMED}' or left out, not '{only}'.",
+        )
+    locate = only == MODE_UNCONFIRMED
     service = get_test_service(request)
     rig = await _load_rig(rig_id, db)
 
     result = await db.execute(
         select(RigFixture)
-        .where(RigFixture.rig_id == rig_id, RigFixture.is_active == True)  # noqa: E712
+        .where(RigFixture.rig_id == rig_id)
         .options(selectinload(RigFixture.mode).selectinload(FixtureMode.channels))
         .order_by(RigFixture.universe, RigFixture.dmx_address, RigFixture.id)
     )
-    rig_fixtures = result.scalars().all()
+    everything = result.scalars().all()
+    rig_fixtures = [
+        rf for rf in everything
+        if rf.is_active and (not locate or is_unconfirmed(rf.tags))
+    ]
+    # A switched-off fixture drives nothing, so it can never be the one that is
+    # lit. It is reported, with the reason, instead of being left out of the count.
+    not_located = [
+        {
+            "fixture_id": rf.id,
+            "label": rf.name or f"Light at address {rf.dmx_address}",
+            "universe": rf.universe or 0,
+            "dmx_address": rf.dmx_address,
+            "group": rf.group_name,
+            "unconfirmed": is_unconfirmed(rf.tags),
+            "reason": _switched_off_reason(rf.tags),
+        }
+        for rf in everything
+        if not rf.is_active and (not locate or is_unconfirmed(rf.tags))
+    ]
+    # Both refusals come before anything touches the wire: a walkthrough with
+    # nothing to walk must not take the show down to say so.
     if not rig_fixtures:
-        raise HTTPException(
-            status_code=400,
-            detail="This rig has no lights patched yet, so there is nothing to identify.",
-        )
+        if not locate:
+            raise HTTPException(
+                status_code=400,
+                detail="This rig has no lights patched yet, so there is nothing to identify.",
+            )
+        detail = "No light on this rig has a guessed position left to check."
+        if not_located:
+            detail += (
+                f" {len(not_located)} switched-off light(s) still sit on a guessed position "
+                "and cannot be turned on from here: "
+                + ", ".join(entry["label"] for entry in not_located[:8])
+                + ("..." if len(not_located) > 8 else "") + "."
+            )
+        raise HTTPException(status_code=400, detail=detail)
 
     cap = _venue_intensity_cap(request.app.state)
     level = int(round(255 * cap))
@@ -563,9 +1041,10 @@ async def start_walkthrough(
             ),
         )
 
-    steps: List[_Step] = []
-    for position, rf in enumerate(rig_fixtures, start=1):
-        label = rf.name or f"Light {position} (address {rf.dmx_address})"
+    numbers = {rf.id: number for number, rf in enumerate(rig_fixtures, start=1)}
+
+    def make_step(rf: RigFixture) -> _Step:
+        label = rf.name or f"Light {numbers[rf.id]} (address {rf.dmx_address})"
         channels = list(rf.mode.channels) if rf.mode else []
         can_flash = bool(rf.mode) and bool(channels)
         blocked_reason = None
@@ -585,7 +1064,7 @@ async def start_walkthrough(
                 "Set its mode in the patch, then run this again."
             )
 
-        steps.append(_Step(
+        return _Step(
             fixture_id=rf.id,
             label=label,
             universe=rf.universe or 0,
@@ -597,7 +1076,16 @@ async def start_walkthrough(
             position_x=float(rf.position_x or 0.0),
             position_y=float(rf.position_y or 0.0),
             position_z=float(rf.position_z or 0.0),
-        ))
+            unconfirmed=is_unconfirmed(rf.tags),
+            source=position_source(rf.tags),
+            group=rf.group_name,
+        )
+
+    rows: List[_Row] = []
+    if locate:
+        steps, rows = _order_for_locate(rig_fixtures, make_step)
+    else:
+        steps = [make_step(rf) for rf in rig_fixtures]
 
     # One walkthrough at a time: it owns the universes while it runs.
     for existing in list(_sessions.values()):
@@ -611,6 +1099,9 @@ async def start_walkthrough(
         stage_depth=float(rig.stage_depth or 8.0),
         flash_level=level,
         steps=steps,
+        mode=MODE_UNCONFIRMED if locate else MODE_ALL,
+        rows=rows,
+        not_located=not_located,
     )
     _sessions[session.session_id] = session
 
@@ -645,9 +1136,13 @@ async def flash_current(
     fixture_id: Optional[int] = None,
     request: Request = None,
 ):
-    """Light the current fixture again."""
+    """Light the current fixture again, or walk the row again during a row check."""
     session = _require_session(rig_id, session_id)
     async with _session_lock(session):
+        row = session.current_row
+        if row is not None and row.stage == ROW_CHECK:
+            await _start_row_check(session, get_test_service(request), row)
+            return _session_state(session)
         step = _claim_step(session, fixture_id)
         if not step.can_flash:
             raise HTTPException(status_code=409, detail=step.blocked_reason)
@@ -658,7 +1153,10 @@ async def flash_current(
 async def _advance(session: _Session, service: FixtureTestService) -> None:
     """Move to the next light. Callers hold the session lock and have already
     claimed the step they are answering, so this can only run once per step."""
+    row = session.current_row
     session.index += 1
+    if row is not None:
+        _after_answer(session, row)
     if session.complete:
         await _release(session, service)
     else:
@@ -689,11 +1187,14 @@ async def record_position(
         rf.position_x = x
         rf.position_z = z
         rf.position_y = y
+        # A tap is a person saying where the light is: the guess flag comes off.
+        rf.tags = with_position_source(rf.tags, SOURCE_TAP, confirmed=True)
         # It lit up and the owner pointed at it, so any earlier "never lit" mark is stale.
         _set_no_response_tag(rf, False)
         await db.commit()
 
         step.position_x, step.position_y, step.position_z = x, y, z
+        step.unconfirmed, step.source = False, SOURCE_TAP
         step.outcome = OUTCOME_PLACED
         await _advance(session, get_test_service(request))
         return _session_state(session)
@@ -743,12 +1244,225 @@ async def keep_and_advance(
     fixture_id: Optional[int] = None,
     request: Request = None,
 ):
-    """Leave this fixture where it already is and move to the next one."""
+    """Leave this fixture where it already is and move to the next one.
+
+    This says nothing about whether the position is right, so a guessed
+    position stays a guess. "It is where the plan shows it" is /confirm.
+    """
     session = _require_session(rig_id, session_id)
     async with _session_lock(session):
         step = _claim_step(session, fixture_id)
         step.outcome = OUTCOME_KEPT
         await _advance(session, get_test_service(request))
+        return _session_state(session)
+
+
+@router.post("/rigs/{rig_id}/identify/{session_id}/confirm")
+async def confirm_as_drawn(
+    rig_id: int,
+    session_id: str,
+    fixture_id: Optional[int] = None,
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """ "It is where the plan shows it": accept the drawn position, then move on."""
+    session = _require_session(rig_id, session_id)
+    async with _session_lock(session):
+        step = _claim_step(session, fixture_id)
+
+        rf = await _load_rig_fixture(rig_id, step.fixture_id, db)
+        # A measured position keeps saying where it was measured from; only a
+        # guess changes hands.
+        if is_unconfirmed(rf.tags):
+            rf.tags = with_position_source(rf.tags, SOURCE_CONFIRMED, confirmed=True)
+            step.source = SOURCE_CONFIRMED
+        if step.can_flash:
+            _set_no_response_tag(rf, False)
+        await db.commit()
+
+        step.unconfirmed = False
+        step.outcome = OUTCOME_CONFIRMED
+        await _advance(session, get_test_service(request))
+        return _session_state(session)
+
+
+@router.post("/rigs/{rig_id}/identify/{session_id}/fit-row")
+async def fit_row(
+    rig_id: int,
+    session_id: str,
+    body: Optional[RowFit] = None,
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Space the lights between a row's two located ends along the line joining them.
+
+    The fitted lights stay unconfirmed: the fit is arithmetic, and it is the
+    row check that says the arithmetic matches the truss. Declining drops back
+    to tapping each light.
+    """
+    session = _require_session(rig_id, session_id)
+    async with _session_lock(session):
+        row = _require_row(
+            session, ROW_FIT_OFFER,
+            "There is no row waiting to be spaced right now - nothing was changed.",
+        )
+        service = get_test_service(request)
+        if body is not None and not body.accept:
+            row.stage = ROW_EACH
+            await _start_flash(session, service)
+            return _session_state(session)
+
+        ordered = row.in_address_order(session.steps)
+        first, last = ordered[0], ordered[-1]
+        between = ordered[1:-1]
+        spans = len(ordered) - 1
+        rows = await _load_rig_fixtures(rig_id, [step.fixture_id for step in between], db)
+        placed = []
+        for number, step in enumerate(between, start=1):
+            rf = rows.get(step.fixture_id)
+            if rf is None:
+                raise HTTPException(status_code=404, detail="Rig fixture not found")
+            share = number / spans
+            x = round(first.position_x + (last.position_x - first.position_x) * share, 3)
+            z = round(first.position_z + (last.position_z - first.position_z) * share, 3)
+            # X and Z only. Height is the row's trim, set once on the row.
+            rf.position_x, rf.position_z = x, z
+            rf.tags = with_position_source(rf.tags, SOURCE_ROW_FIT, confirmed=False)
+            placed.append((step, x, z))
+        await db.commit()
+
+        for step, x, z in placed:
+            step.position_x, step.position_z = x, z
+            step.source, step.unconfirmed = SOURCE_ROW_FIT, True
+        row.fitted = True
+        row.stage = ROW_CHECK
+        await _start_row_check(session, service, row)
+        return _session_state(session)
+
+
+@router.post("/rigs/{rig_id}/identify/{session_id}/row-check")
+async def answer_row_check(
+    rig_id: int,
+    session_id: str,
+    body: RowCheck,
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Record whether the light ran along the fitted row in order.
+
+    Yes confirms every fitted light in the row at once. No leaves them as
+    guesses and goes back to tapping them one at a time.
+    """
+    session = _require_session(rig_id, session_id)
+    async with _session_lock(session):
+        row = _require_row(
+            session, ROW_CHECK,
+            "There is no row being checked right now - nothing was changed.",
+        )
+        service = get_test_service(request)
+        await _stop_flash(session, service)
+
+        if not body.passed:
+            row.stage = ROW_EACH
+            await _start_flash(session, service)
+            return _session_state(session)
+
+        between = session.steps[row.start + 2:row.end]
+        rows = await _load_rig_fixtures(rig_id, [step.fixture_id for step in between], db)
+        for step in between:
+            rf = rows.get(step.fixture_id)
+            if rf is not None:
+                rf.tags = with_position_confirmed(rf.tags)
+                # Every light in a fitted row can be lit, and was just seen lit.
+                _set_no_response_tag(rf, False)
+        await db.commit()
+
+        for step in between:
+            step.unconfirmed = False
+            step.outcome = OUTCOME_FITTED
+        row.stage = ROW_DONE
+        session.index = row.end
+        if session.complete:
+            await _release(session, service)
+        else:
+            await _start_flash(session, service)
+        return _session_state(session)
+
+
+@router.post("/rigs/{rig_id}/identify/{session_id}/row-height")
+async def set_row_height(
+    rig_id: int,
+    session_id: str,
+    body: RowHeight,
+    db: AsyncSession = Depends(get_db),
+):
+    """Give the row being located one trim height.
+
+    Height is a property of the truss, so it is set once for the row. It moves
+    nothing on the plan and confirms nothing.
+    """
+    session = _require_session(rig_id, session_id)
+    async with _session_lock(session):
+        row = session.current_row
+        if row is None:
+            raise HTTPException(
+                status_code=409,
+                detail="There is no row being located right now - nothing was changed.",
+            )
+        mine = session.steps[row.start:row.end]
+        height = round(float(body.height), 3)
+        rows = await _load_rig_fixtures(rig_id, [step.fixture_id for step in mine], db)
+        for rf in rows.values():
+            rf.position_y = height
+        await db.commit()
+        for step in mine:
+            step.position_y = height
+        return _session_state(session)
+
+
+@router.post("/rigs/{rig_id}/identify/{session_id}/mirror")
+async def answer_mirror_offer(
+    rig_id: int,
+    session_id: str,
+    body: Optional[MirrorAnswer] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Flip the guessed positions that are left about the stage's centre line.
+
+    Offered when a row's two taps ran the opposite way to its drawing: the
+    sheet's left is the plan's right. Only positions that are still template
+    guesses in rows not yet reached are moved; anything tapped, confirmed,
+    fitted or measured stays where it is.
+    """
+    session = _require_session(rig_id, session_id)
+    async with _session_lock(session):
+        if not session.mirror_offer:
+            raise HTTPException(
+                status_code=409,
+                detail="There is no mirror offer open right now - nothing was changed.",
+            )
+        session.mirror_offer = False
+        if body is not None and not body.accept:
+            return _session_state(session)
+
+        steps = _mirror_candidates(session)
+        walked = {step.fixture_id for step in session.steps}
+        result = await db.execute(select(RigFixture).where(RigFixture.rig_id == rig_id))
+        by_id = {rf.id: rf for rf in result.scalars().all()}
+        moved: List[RigFixture] = [by_id[s.fixture_id] for s in steps if s.fixture_id in by_id]
+        # The switched-off lights were drawn on the same mirrored guess.
+        moved += [
+            rf for rf in by_id.values()
+            if rf.id not in walked and not rf.is_active
+            and is_unconfirmed(rf.tags) and position_source(rf.tags) == SOURCE_TEMPLATE
+        ]
+        for rf in moved:
+            rf.position_x = -float(rf.position_x or 0.0)
+        await db.commit()
+
+        for step in steps:
+            step.position_x = -step.position_x
+        session.mirrored = True
         return _session_state(session)
 
 

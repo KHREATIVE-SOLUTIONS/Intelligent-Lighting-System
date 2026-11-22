@@ -17,7 +17,11 @@ What each rig fixture carries in its tags, since the patch has no column for it:
     position_source:template            generated from a stage template, not read
     position_unconfirmed                the position is a generated guess; nobody
                                         has checked it against the room
-    unplaced                            it has none; it sits at 0,0,0 until placed
+    position_source:tap                 a person tapped where it is (flash-and-tap)
+    position_source:confirmed           a person said the drawn position is right
+    position_source:row_fit             spaced along the line between its row's two
+                                        tapped ends; unconfirmed until the row check
+    unplaced                           it has none; it sits at 0,0,0 until placed
     unmatched_type                      no profile matched; switched off
     address_clash                       shares channels with another; switched off
     group:<name>                        a group beyond the one in group_name
@@ -48,6 +52,47 @@ TAG_UNPLACED = "unplaced"
 TAG_UNCONFIRMED = "position_unconfirmed"
 TAG_UNMATCHED = "unmatched_type"
 TAG_CLASH = "address_clash"
+
+POSITION_SOURCE_PREFIX = "position_source:"
+SOURCE_TEMPLATE = "template"
+SOURCE_TAP = "tap"
+SOURCE_CONFIRMED = "confirmed"
+SOURCE_ROW_FIT = "row_fit"
+
+
+def position_source(tags: Optional[List[str]]) -> Optional[str]:
+    """Where a rig fixture's tags say its position came from, if they say."""
+    for tag in tags or []:
+        if isinstance(tag, str) and tag.startswith(POSITION_SOURCE_PREFIX):
+            return tag[len(POSITION_SOURCE_PREFIX):]
+    return None
+
+
+def is_unconfirmed(tags: Optional[List[str]]) -> bool:
+    return TAG_UNCONFIRMED in (tags or [])
+
+
+def with_position_source(tags: Optional[List[str]], source: str, confirmed: bool) -> List[str]:
+    """The tags of a fixture whose position now comes from `source`.
+
+    Returns a new list: the tags column is plain JSON, so a change made in
+    place is never written back. A fixture given a position is no longer
+    unplaced, whoever gave it.
+    """
+    kept = [
+        tag for tag in (tags or [])
+        if not (isinstance(tag, str) and tag.startswith(POSITION_SOURCE_PREFIX))
+        and tag not in (TAG_UNCONFIRMED, TAG_UNPLACED)
+    ]
+    out = [f"{POSITION_SOURCE_PREFIX}{source}", *kept]
+    if not confirmed:
+        out.append(TAG_UNCONFIRMED)
+    return out
+
+
+def with_position_confirmed(tags: Optional[List[str]]) -> List[str]:
+    """The same tags with the unconfirmed flag off and the source left alone."""
+    return [tag for tag in (tags or []) if tag != TAG_UNCONFIRMED]
 
 
 def library_entry(fixture: Fixture) -> Dict[str, Any]:

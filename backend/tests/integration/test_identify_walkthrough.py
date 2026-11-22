@@ -30,6 +30,11 @@ IDENTIFY_PATHS = [
     ("POST", "/api/rigs/1/identify/abc/position"),
     ("POST", "/api/rigs/1/identify/abc/skip"),
     ("POST", "/api/rigs/1/identify/abc/advance"),
+    ("POST", "/api/rigs/1/identify/abc/confirm"),
+    ("POST", "/api/rigs/1/identify/abc/fit-row"),
+    ("POST", "/api/rigs/1/identify/abc/row-check"),
+    ("POST", "/api/rigs/1/identify/abc/row-height"),
+    ("POST", "/api/rigs/1/identify/abc/mirror"),
     ("POST", "/api/rigs/1/identify/abc/end"),
 ]
 
