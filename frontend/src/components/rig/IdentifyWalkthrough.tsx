@@ -14,6 +14,7 @@ import {
   ListItem,
   ListItemText,
   Stack,
+  TextField,
   Typography,
 } from '@mui/material';
 import {
@@ -35,6 +36,11 @@ interface IdentifyWalkthroughProps {
   stageDepth?: number;
   /** Fires once the walkthrough finishes, so the caller can reload its fixtures. */
   onFinished?: (summary: IdentifySession) => void;
+  /**
+   * How many lights sit on a generated guess (the position_unconfirmed tag).
+   * Above zero, the intro offers to check just those, a row at a time.
+   */
+  unconfirmedCount?: number;
 }
 
 type Phase = 'intro' | 'working' | 'step' | 'done';
@@ -63,7 +69,9 @@ export default function IdentifyWalkthrough({
   stageWidth,
   stageDepth,
   onFinished,
+  unconfirmedCount = 0,
 }: IdentifyWalkthroughProps) {
+  const [heightInput, setHeightInput] = useState('');
   const [phase, setPhase] = useState<Phase>('intro');
   const [session, setSession] = useState<IdentifySession | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -194,12 +202,19 @@ export default function IdentifyWalkthrough({
     onClose();
   }, [onClose, rigId]);
 
-  const start = async () => {
+  // The height box follows the row: a new row shows its own trim.
+  const rowNumber = session?.row?.number ?? null;
+  const rowHeight = session?.row?.height ?? null;
+  useEffect(() => {
+    setHeightInput(rowHeight === null ? '' : String(rowHeight));
+  }, [rowNumber, rowHeight]);
+
+  const start = async (only?: 'unconfirmed') => {
     setError(null);
     setPlaced([]);
     setPhase('working');
     try {
-      applyState(await identifyApi.start(rigId));
+      applyState(await identifyApi.start(rigId, only));
     } catch (err) {
       setPhase('intro');
       setError(messageOf(err, 'Could not start the walkthrough.'));
@@ -222,6 +237,7 @@ export default function IdentifyWalkthrough({
   };
 
   const step = session?.current ?? null;
+  const row = session?.row ?? null;
 
   const handlePlanClick = (event: React.MouseEvent<SVGSVGElement>) => {
     if (!session || !step || !svgRef.current) return;
@@ -245,7 +261,7 @@ export default function IdentifyWalkthrough({
     );
   };
 
-  const renderPlan = () => {
+  const renderPlan = (tappable = true) => {
     const lines = [];
     for (let x = 0; x <= width + 0.001; x += 1) {
       lines.push(
@@ -280,8 +296,12 @@ export default function IdentifyWalkthrough({
           ref={svgRef}
           viewBox={`0 0 ${viewWidth} ${viewDepth}`}
           width="100%"
-          style={{ display: 'block', cursor: 'crosshair', touchAction: 'manipulation' }}
-          onClick={handlePlanClick}
+          style={{
+            display: 'block',
+            cursor: tappable ? 'crosshair' : 'default',
+            touchAction: 'manipulation',
+          }}
+          onClick={tappable ? handlePlanClick : undefined}
         >
           <rect
             x={PLAN_PADDING}
@@ -311,6 +331,46 @@ export default function IdentifyWalkthrough({
           >
             WHERE THE AUDIENCE STANDS
           </text>
+
+          {/* The row being located, as the plan currently has it. */}
+          {row && row.fixtures.length > 1 && (
+            <line
+              x1={row.fixtures[0].position_x + width / 2 + PLAN_PADDING}
+              y1={row.fixtures[0].position_z + depth / 2 + PLAN_PADDING}
+              x2={row.fixtures[row.fixtures.length - 1].position_x + width / 2 + PLAN_PADDING}
+              y2={row.fixtures[row.fixtures.length - 1].position_z + depth / 2 + PLAN_PADDING}
+              stroke="#5c7cba"
+              strokeWidth={0.04}
+              strokeDasharray="0.15 0.15"
+              opacity={row.can_fit ? 0.9 : 0}
+            />
+          )}
+          {row?.fixtures.map((entry) => (
+            <circle
+              key={`row-${entry.fixture_id}`}
+              cx={entry.position_x + width / 2 + PLAN_PADDING}
+              cy={entry.position_z + depth / 2 + PLAN_PADDING}
+              r={0.12}
+              fill={entry.unconfirmed ? '#181a2e' : '#4caf50'}
+              stroke={entry.unconfirmed ? '#ffb74d' : '#4caf50'}
+              strokeWidth={0.04}
+            />
+          ))}
+
+          {/* Where the plan has the light that is on now. "It is where the plan
+              shows it" has to have something to point at. */}
+          {step && (
+            <g
+              transform={`translate(${step.position_x + width / 2 + PLAN_PADDING}, ${
+                step.position_z + depth / 2 + PLAN_PADDING
+              })`}
+            >
+              <circle r={0.3} fill="none" stroke="#ffd54f" strokeWidth={0.06} />
+              <text y={-0.45} textAnchor="middle" fill="#ffd54f" fontSize={0.24}>
+                {step.unconfirmed ? 'our guess' : 'on the plan'}
+              </text>
+            </g>
+          )}
 
           {placed.map((mark, index) => (
             <g
@@ -342,16 +402,220 @@ export default function IdentifyWalkthrough({
         tap "I can't see it" and we will make a note of it: that usually means it is unplugged or
         set to the wrong address.
       </Typography>
+      {unconfirmedCount > 0 && (
+        <Alert severity="info">
+          {unconfirmedCount} light{unconfirmedCount === 1 ? ' sits' : 's sit'} where we guessed{' '}
+          {unconfirmedCount === 1 ? 'it' : 'they'} would be when the patch sheet was imported. You
+          can check just those: a row at a time, the two ends first, and we space the lights in
+          between for you.
+        </Alert>
+      )}
       {error && <Alert severity="error">{error}</Alert>}
     </Stack>
   );
 
+  const renderMirrorOffer = () => {
+    if (!session?.mirror_offer) return null;
+    const count = session.mirror_offer.fixtures;
+    return (
+      <Alert
+        severity="info"
+        action={
+          <Stack direction="row" spacing={0.5}>
+            <Button
+              size="small"
+              color="inherit"
+              disabled={busy}
+              onClick={() =>
+                runStep(
+                  () => identifyApi.mirror(rigId, session.session_id, true),
+                  'Could not flip the plan.'
+                )
+              }
+            >
+              Flip them
+            </Button>
+            <Button
+              size="small"
+              color="inherit"
+              disabled={busy}
+              onClick={() =>
+                runStep(
+                  () => identifyApi.mirror(rigId, session.session_id, false),
+                  'Could not record that.'
+                )
+              }
+            >
+              Leave them
+            </Button>
+          </Stack>
+        }
+      >
+        Those two taps ran right to left, but we drew that row left to right. The sheet's left may
+        be the plan's right. Flip the {count} guessed position{count === 1 ? '' : 's'} still to
+        check?
+      </Alert>
+    );
+  };
+
+  const renderRowHeader = () => {
+    if (!session || !row) return null;
+    const parsed = Number(heightInput);
+    const usable = heightInput.trim() !== '' && Number.isFinite(parsed) && parsed >= 0 && parsed <= 100;
+    return (
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+        <Typography variant="body2" sx={{ flexGrow: 1 }}>
+          Row {row.number} of {row.of}: <strong>{row.group}</strong> ({row.fixtures.length} light
+          {row.fixtures.length === 1 ? '' : 's'})
+        </Typography>
+        <TextField
+          size="small"
+          type="number"
+          label="Row height (m)"
+          value={heightInput}
+          onChange={(event) => setHeightInput(event.target.value)}
+          inputProps={{ min: 0, max: 100, step: 0.1 }}
+          sx={{ width: 140 }}
+        />
+        <Button
+          size="small"
+          disabled={busy || !usable || parsed === row.height}
+          onClick={() =>
+            runStep(
+              () => identifyApi.rowHeight(rigId, session.session_id, parsed),
+              'Could not save that height.'
+            )
+          }
+        >
+          Set
+        </Button>
+      </Stack>
+    );
+  };
+
+  const renderFitOffer = () => {
+    if (!session || !row) return null;
+    const between = row.fixtures.length - 2;
+    return (
+      <Stack spacing={2}>
+        {renderRowHeader()}
+        {renderMirrorOffer()}
+        <Typography variant="h6">
+          Both ends of this row are found. Space the {between} light{between === 1 ? '' : 's'} in
+          between evenly along the line joining them?
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          No light is on right now. If you say yes, we will then light the row one at a time so you
+          can see that it runs in order. Nothing counts as checked until you have seen that.
+        </Typography>
+        {renderPlan(false)}
+        {error && <Alert severity="error">{error}</Alert>}
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+          <Button
+            variant="contained"
+            disabled={busy}
+            onClick={() =>
+              runStep(
+                () => identifyApi.fitRow(rigId, session.session_id, true),
+                'Could not space that row.'
+              )
+            }
+          >
+            Yes, space them
+          </Button>
+          <Button
+            variant="outlined"
+            disabled={busy}
+            onClick={() =>
+              runStep(
+                () => identifyApi.fitRow(rigId, session.session_id, false),
+                'Could not record that.'
+              )
+            }
+          >
+            No, I will tap each one
+          </Button>
+        </Stack>
+      </Stack>
+    );
+  };
+
+  const renderRowCheck = () => {
+    if (!session || !row) return null;
+    const how =
+      row.direction === 'left_to_right'
+        ? 'from the left of this plan to the right'
+        : 'from one end of the row to the other';
+    return (
+      <Stack spacing={2}>
+        {renderRowHeader()}
+        {renderMirrorOffer()}
+        <Typography variant="h6">Watch the row. Did the light move along it in order?</Typography>
+        <Typography variant="body2" color="text.secondary">
+          One light at a time comes on, {how}, each for about {row.step_seconds} seconds, then the
+          row goes dark. If it skipped about or went the wrong way, say no and you can tap each
+          light yourself.
+        </Typography>
+        {renderPlan(false)}
+        {error && <Alert severity="error">{error}</Alert>}
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+          <Button
+            variant="contained"
+            disabled={busy}
+            onClick={() =>
+              runStep(
+                () => identifyApi.rowCheck(rigId, session.session_id, true),
+                'Could not record that.'
+              )
+            }
+          >
+            Yes, it ran in order
+          </Button>
+          <Button
+            variant="outlined"
+            color="warning"
+            disabled={busy}
+            onClick={() =>
+              runStep(
+                () => identifyApi.rowCheck(rigId, session.session_id, false),
+                'Could not record that.'
+              )
+            }
+          >
+            No, it did not
+          </Button>
+          <Button
+            variant="text"
+            startIcon={<FlashIcon />}
+            disabled={busy}
+            onClick={() =>
+              runStep(
+                () => identifyApi.flash(rigId, session.session_id),
+                'Could not run the row again.'
+              )
+            }
+          >
+            Run it again
+          </Button>
+        </Stack>
+      </Stack>
+    );
+  };
+
   const renderStep = () => {
-    if (!session || !step) return null;
+    if (!session) return null;
+    if (row?.stage === 'fit_offer') return renderFitOffer();
+    if (row?.stage === 'check') return renderRowCheck();
+    if (!step) return null;
     const progress = (session.step_number / Math.max(1, session.total)) * 100;
 
     return (
       <Stack spacing={2}>
+        {renderRowHeader()}
+        {renderMirrorOffer()}
+        {row && row.stage === 'each' && row.fit_blocked_reason && (
+          <Alert severity="info">{row.fit_blocked_reason}</Alert>
+        )}
         <Box>
           <Stack direction="row" alignItems="center" justifyContent="space-between" mb={0.5}>
             <Typography variant="subtitle1" fontWeight="bold">
@@ -419,12 +683,12 @@ export default function IdentifyWalkthrough({
             disabled={busy}
             onClick={() =>
               runStep(
-                () => identifyApi.keep(rigId, session.session_id, step.fixture_id),
+                () => identifyApi.confirm(rigId, session.session_id, step.fixture_id),
                 'Could not move to the next light.'
               )
             }
           >
-            It is already in the right place
+            It is where the plan shows it
           </Button>
         </Stack>
       </Stack>
@@ -438,9 +702,41 @@ export default function IdentifyWalkthrough({
         <Stack direction="row" spacing={1} alignItems="center">
           <DoneIcon color="success" />
           <Typography variant="h6">
-            {session.placed} of {session.total} lights placed
+            {session.placed + session.confirmed + session.fitted} of {session.total} lights located
           </Typography>
         </Stack>
+
+        <Typography variant="body2" color="text.secondary">
+          {session.placed} tapped, {session.confirmed} agreed as drawn, {session.fitted} spaced along
+          a row and checked.
+        </Typography>
+
+        {session.still_unconfirmed > 0 && (
+          <Alert severity="info">
+            {session.still_unconfirmed} light{session.still_unconfirmed === 1 ? ' is' : 's are'}{' '}
+            still on a guessed position. Run this again to check{' '}
+            {session.still_unconfirmed === 1 ? 'it' : 'them'}.
+          </Alert>
+        )}
+
+        {session.not_located_count > 0 && (
+          <Alert severity="warning">
+            {session.not_located_count} light{session.not_located_count === 1 ? ' is' : 's are'}{' '}
+            switched off in the patch, so we could not turn{' '}
+            {session.not_located_count === 1 ? 'it' : 'them'} on to find{' '}
+            {session.not_located_count === 1 ? 'it' : 'them'}:
+            <List dense disablePadding>
+              {session.not_located.map((entry) => (
+                <ListItem key={entry.fixture_id} disableGutters>
+                  <ListItemText
+                    primary={entry.label}
+                    secondary={`Universe ${entry.universe}, address ${entry.dmx_address} - ${entry.reason}`}
+                  />
+                </ListItem>
+              ))}
+            </List>
+          </Alert>
+        )}
 
         {session.no_response > 0 ? (
           <Alert severity="warning">
@@ -449,7 +745,7 @@ export default function IdentifyWalkthrough({
             cheaper to find this now than during a show.
           </Alert>
         ) : (
-          <Alert severity="success">Every light responded. Your plan matches the room.</Alert>
+          <Alert severity="success">Every light we turned on responded.</Alert>
         )}
 
         {session.unresponsive.length > 0 && (
@@ -485,9 +781,15 @@ export default function IdentifyWalkthrough({
       </DialogContent>
       <DialogActions>
         <Button onClick={finish}>{phase === 'done' ? 'Close' : 'Stop'}</Button>
+        {phase === 'intro' && unconfirmedCount > 0 && (
+          <Button onClick={() => void start()}>Go through every light</Button>
+        )}
         {phase === 'intro' && (
-          <Button variant="contained" onClick={start}>
-            Start
+          <Button
+            variant="contained"
+            onClick={() => void start(unconfirmedCount > 0 ? 'unconfirmed' : undefined)}
+          >
+            {unconfirmedCount > 0 ? `Check the ${unconfirmedCount} guessed` : 'Start'}
           </Button>
         )}
       </DialogActions>

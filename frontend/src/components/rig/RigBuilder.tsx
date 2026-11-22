@@ -439,6 +439,11 @@ export default function RigBuilder() {
         open={identifyOpen}
         stageWidth={rig.stage_width}
         stageDepth={rig.stage_depth}
+        unconfirmedCount={
+          rig.fixtures.filter(
+            (f) => f.is_active !== false && (f.tags ?? []).includes('position_unconfirmed')
+          ).length
+        }
         onClose={() => setIdentifyOpen(false)}
         onFinished={() => { void fetchRig(); }}
       />

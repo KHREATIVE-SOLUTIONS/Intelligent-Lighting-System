@@ -403,6 +403,50 @@ export interface IdentifyStep {
   can_flash: boolean;
   blocked_reason: string | null;
   flashing: boolean;
+  /** True while the position is a generated guess nobody has checked. */
+  unconfirmed: boolean;
+  group: string | null;
+}
+
+/** A row's life in locate mode; see rig_identify.py. */
+export type IdentifyRowStage = 'ends' | 'fit_offer' | 'check' | 'each' | 'done';
+
+export interface IdentifyRowFixture {
+  fixture_id: number;
+  label: string;
+  position_x: number;
+  position_y: number;
+  position_z: number;
+  unconfirmed: boolean;
+  outcome: string | null;
+}
+
+export interface IdentifyRow {
+  number: number;
+  of: number;
+  group: string;
+  stage: IdentifyRowStage;
+  can_fit: boolean;
+  fit_blocked_reason: string | null;
+  fitted: boolean;
+  /** The row check is walking the light along the row right now. */
+  running: boolean;
+  direction: 'left_to_right' | 'address_order';
+  step_seconds: number;
+  /** One trim height for the row, or null while its lights differ. */
+  height: number | null;
+  /** In address order. */
+  fixtures: IdentifyRowFixture[];
+}
+
+export interface IdentifyNotLocated {
+  fixture_id: number;
+  label: string;
+  universe: number;
+  dmx_address: number;
+  group: string | null;
+  unconfirmed: boolean;
+  reason: string;
 }
 
 export interface IdentifyUnresponsive {
@@ -430,14 +474,67 @@ export interface IdentifySession {
   unresponsive: IdentifyUnresponsive[];
   heartbeat_timeout_s: number;
   flash_max_s: number;
+  /** 'unconfirmed' is locate mode: only the guessed positions, a row at a time. */
+  mode: 'all' | 'unconfirmed';
+  /** The row being located. `current` is null while its stage is fit_offer or check. */
+  row: IdentifyRow | null;
+  rows_total: number;
+  confirmed: number;
+  fitted: number;
+  still_unconfirmed: number;
+  /** Switched off, so never lit and never asked about. */
+  not_located: IdentifyNotLocated[];
+  not_located_count: number;
+  mirror_offer: { fixtures: number } | null;
+  mirrored: boolean;
 }
 
 const identifyPath = (rigId: number, sessionId?: string) =>
   sessionId ? `/rigs/${rigId}/identify/${sessionId}` : `/rigs/${rigId}/identify`;
 
 export const identifyApi = {
-  start: async (rigId: number): Promise<IdentifySession> => {
-    const response = await api.post(`${identifyPath(rigId)}/start`);
+  start: async (rigId: number, only?: 'unconfirmed'): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId)}/start`, null, {
+      params: only ? { only } : undefined,
+    });
+    return response.data;
+  },
+
+  /** "It is where the plan shows it": accept the drawn position and move on. */
+  confirm: async (
+    rigId: number,
+    sessionId: string,
+    fixtureId?: number
+  ): Promise<IdentifySession> => {
+    const response = await api.post(
+      `${identifyPath(rigId, sessionId)}/confirm`,
+      null,
+      { params: fixtureId === undefined ? undefined : { fixture_id: fixtureId } }
+    );
+    return response.data;
+  },
+
+  /** Space the lights between a row's two located ends, or decline and tap each. */
+  fitRow: async (rigId: number, sessionId: string, accept: boolean): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/fit-row`, { accept });
+    return response.data;
+  },
+
+  /** Whether the light was seen to run along the fitted row in order. */
+  rowCheck: async (rigId: number, sessionId: string, passed: boolean): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/row-check`, { passed });
+    return response.data;
+  },
+
+  /** One trim height, in metres, for the row being located. */
+  rowHeight: async (rigId: number, sessionId: string, height: number): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/row-height`, { height });
+    return response.data;
+  },
+
+  /** Flip the guesses that are left about the centre line, or dismiss the offer. */
+  mirror: async (rigId: number, sessionId: string, accept: boolean): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/mirror`, { accept });
     return response.data;
   },
 

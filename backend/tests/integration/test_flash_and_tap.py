@@ -495,6 +495,54 @@ async def test_one_group_name_over_a_gap_in_the_addresses_is_two_rows(
     assert state["row"]["number"] == 2 and state["current"]["fixture_id"] == ids["Back 1"]
 
 
+async def test_the_festival_sheet_comes_out_as_its_seven_rows_each_one_a_line(
+    client: AsyncClient, db_session
+):
+    """The rows locate mode finds have to be the rows the layout generator
+    made, including the one that runs off the end of a universe. This reads the
+    rig a real import wrote; whether its types matched a profile does not
+    matter here, so each light is taken as one that can be lit."""
+    from pathlib import Path
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from app.api.endpoints import rig_identify as identify_module
+    from app.models.rig import RigFixture
+    from app.services.demo import patch_sheet_samples
+
+    sample = Path(__file__).resolve().parent.parent / "fixtures" / "import" / patch_sheet_samples.FESTIVAL_FILE
+    response = await client.post(
+        "/api/import/patch-sheet", params={"apply": "true"},
+        files={"file": (sample.name, sample.read_bytes(), "application/octet-stream")},
+    )
+    assert response.status_code == 200, response.text
+    rig_id = response.json()["applied"]["rig_id"]
+
+    result = await db_session.execute(
+        select(RigFixture).where(RigFixture.rig_id == rig_id)
+        .options(selectinload(RigFixture.mode))
+        .order_by(RigFixture.universe, RigFixture.dmx_address, RigFixture.id)
+    )
+    fixtures = result.scalars().all()
+    assert len(fixtures) == 84
+
+    def make_step(rf):
+        return identify_module._Step(
+            fixture_id=rf.id, label=rf.name, universe=rf.universe, dmx_address=rf.dmx_address,
+            channel_count=rf.mode.channel_count if rf.mode else 1, values={}, can_flash=True,
+            blocked_reason=None, position_x=rf.position_x, position_y=rf.position_y,
+            position_z=rf.position_z, unconfirmed=True, source="template", group=rf.group_name,
+        )
+
+    steps, rows = identify_module._order_for_locate(fixtures, make_step)
+
+    assert sorted(row.count for row in rows) == sorted([16, 12, 16, 8, 8, 12, 12])
+    assert [row.fit_blocked_reason for row in rows] == [None] * 7
+    assert len(steps) == 84
+    assert sum(min(2, row.count) for row in rows) == 14, "84 fixtures should be 14 taps"
+
+
 # ---------------------------------------------------------------------------
 # Height and mirrored sheets
 # ---------------------------------------------------------------------------
