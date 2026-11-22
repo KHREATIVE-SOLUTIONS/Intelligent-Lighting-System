@@ -1,8 +1,8 @@
-import { memo, useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import { memo, useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import type { MutableRefObject } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Box, IconButton, Typography, Card, CardContent, ButtonGroup, Button, MenuItem, TextField, Tooltip,
+  Alert, Box, IconButton, Typography, Card, CardContent, ButtonGroup, Button, MenuItem, TextField, Tooltip,
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
@@ -47,6 +47,14 @@ import {
 } from './previs/poolLight';
 import type { CameraMode, FixtureMount } from './previs/layout';
 import { RigTruss } from './previs/Truss';
+import { FixtureDragLayer } from './previs/FixtureDragLayer';
+import type { DragHandle } from './previs/FixtureDragLayer';
+import {
+  nudgePosition, positionLimits, positionText, snapLines, withFixturePosition, withSavedFixture,
+} from './previs/fixtureDrag';
+import type { Point3 } from './previs/fixtureDrag';
+import RoomScanUndoButton from './RoomScanUndoButton';
+import { undoCount, undoResultText } from '../../utils/roomScan';
 
 type BeamDebugSnapshot = {
   fixtureId: number;
@@ -858,6 +866,7 @@ function Scene({
   beatClock,
   feed,
   debug,
+  move,
 }: {
   rig: Rig;
   debugBuffer: MutableRefObject<Record<number, BeamDebugSnapshot>>;
@@ -870,6 +879,13 @@ function Scene({
   feed: MutableRefObject<OutputFeed>;
   /** Whether the beam debug table is open. */
   debug: boolean;
+  /** Move fixtures mode: which fixture is selected and what a drag does. Null with the mode off. */
+  move: {
+    selectedId: number | null;
+    snap: boolean;
+    onSelect: (id: number) => void;
+    onMove: (id: number, to: Point3) => void;
+  } | null;
 }) {
   const keyLightingZones = useDMXStore((state) => state.proLighting.keyLightingZones);
 
@@ -928,6 +944,26 @@ function Scene({
     [rig, venue]
   );
 
+  // Move fixtures mode: something to grab on every fixture, drawn where the
+  // fixture is drawn (one on a stand is lifted, like its guess marker).
+  const moving = move !== null;
+  const handles = useMemo<DragHandle[]>(
+    () => (moving ? (rig.fixtures || []).map((fixture) => {
+      const mount = venue.mounts.get(fixture.id);
+      return {
+        id: fixture.id,
+        x: fixture.position_x,
+        y: fixture.position_y,
+        z: fixture.position_z,
+        lift: mount?.type === 'stand' ? mount.lift : 0,
+        unconfirmed: isPositionUnconfirmed(fixture),
+      };
+    }) : []),
+    [rig, venue, moving]
+  );
+  const dragLimits = useMemo(() => positionLimits(rig), [rig]);
+  const dragSnapLines = useMemo(() => snapLines(rig.room_shell), [rig.room_shell]);
+
   const camera = useMemo(() => cameraPreset(cameraMode, venue.layout), [cameraMode, venue.layout]);
   const longestThrow = useMemo(() => roomSpan(venue.layout), [venue.layout]);
   // With the venue hidden no walls are drawn, so none stops a beam.
@@ -948,7 +984,10 @@ function Scene({
   return (
     <>
       <PerspectiveCamera key={`cam-${cameraMode}`} makeDefault position={camera.position} fov={camera.fov} />
+      {/* makeDefault: a fixture drag switches the camera off through the
+          scene's default controls, and without it there are none to find. */}
       <OrbitControls
+        makeDefault
         enablePan
         enableZoom
         enableRotate
@@ -1014,6 +1053,18 @@ function Scene({
 
       {/* Positions that are a guess, marked as one */}
       <GuessMarkers points={guesses} />
+
+      {/* Move fixtures mode: pick one up and put it down somewhere else */}
+      {move && (
+        <FixtureDragLayer
+          handles={handles}
+          selectedId={move.selectedId}
+          limits={dragLimits}
+          snapLines={move.snap && dragSnapLines.length > 0 ? dragSnapLines : null}
+          onSelect={move.onSelect}
+          onMove={move.onMove}
+        />
+      )}
 
       {/* Exponential fog for haze effect */}
       <fogExp2 attach="fog" args={['#05070a', 0.006]} />
@@ -1359,6 +1410,111 @@ export default function RigVisualizer() {
     }
   };
 
+  // --- Move fixtures mode (a rig stored in the database only) ---------------
+  // Drag a fixture in the view, or nudge the selected one with the keys; each
+  // move is saved through the position route, which confirms the position, so
+  // the fixture stops being drawn as a guess. Stored positions only: no DMX.
+  const [moveMode, setMoveMode] = useState(false);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [snapOn, setSnapOn] = useState(true);
+  const [moveNotice, setMoveNotice] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const rigRef = useRef<Rig | null>(null);
+  rigRef.current = rig;
+  // The newest save of each fixture. An older answer that lands late is dropped.
+  const saveSeq = useRef<Record<number, number>>({});
+
+  useEffect(() => {
+    setMoveMode(false);
+    setSelectedId(null);
+    setMoveNotice(null);
+  }, [id]);
+
+  // Read the rig again without the loading flag, which would swap the page
+  // for a line of text and throw the canvas away.
+  const refreshRig = useCallback(async () => {
+    if (!id) return;
+    try {
+      const data = await rigsApi.get(Number(id));
+      if (rigRef.current && rigRef.current.id !== data.id) return;
+      setRig(data);
+    } catch {
+      setMoveNotice({ severity: 'error', text: 'The rig could not be read again. Reload the page to see it as stored.' });
+    }
+  }, [id]);
+
+  const moveFixture = useCallback(async (fixtureId: number, to: Point3) => {
+    const current = rigRef.current;
+    const fixture = current?.fixtures?.find((item) => item.id === fixtureId);
+    if (!id || !current || !fixture) return;
+    const rigId = current.id;
+    const label = fixture.name || `Fixture ${fixtureId}`;
+    const before: Point3 = { x: fixture.position_x, y: fixture.position_y, z: fixture.position_z };
+    const seq = (saveSeq.current[fixtureId] ?? 0) + 1;
+    saveSeq.current[fixtureId] = seq;
+    const newest = () => saveSeq.current[fixtureId] === seq && rigRef.current?.id === rigId;
+    // Drawn where it was put straight away; the server's answer follows.
+    setRig((drawn) => (drawn ? withFixturePosition(drawn, fixtureId, to) : drawn));
+    try {
+      const saved = await rigsApi.setFixturePosition(rigId, fixtureId, to);
+      if (!newest()) return;
+      setRig((drawn) => (drawn ? withSavedFixture(drawn, saved) : drawn));
+      setMoveNotice({
+        severity: 'success',
+        text: `${label} moved to ${positionText({
+          x: saved.position_x, y: saved.position_y, z: saved.position_z,
+        })}. Its position is confirmed.`,
+      });
+    } catch (error) {
+      if (!newest()) return;
+      setRig((drawn) => (drawn ? withFixturePosition(drawn, fixtureId, before) : drawn));
+      const detail = (error as any)?.response?.data?.detail;
+      setMoveNotice({
+        severity: 'error',
+        text: typeof detail === 'string' && detail.trim()
+          ? detail
+          : `${label} could not be saved and was put back where it was.`,
+      });
+    }
+  }, [id]);
+
+  // Arrow keys move the selected fixture on the plan, Page Up and Page Down
+  // change its height; Shift takes a metre at a time.
+  useEffect(() => {
+    if (!moveMode || selectedId === null) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const current = rigRef.current;
+      const fixture = current?.fixtures?.find((item) => item.id === selectedId);
+      if (!current || !fixture) return;
+      const next = nudgePosition(
+        { x: fixture.position_x, y: fixture.position_y, z: fixture.position_z },
+        event.key,
+        event.shiftKey,
+        positionLimits(current),
+      );
+      if (!next) return;
+      event.preventDefault();
+      void moveFixture(selectedId, next);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [moveMode, selectedId, moveFixture]);
+
+  const sceneMove = useMemo(
+    () => (moveMode && !isDemo
+      ? {
+          selectedId,
+          snap: snapOn,
+          onSelect: setSelectedId,
+          onMove: (fixtureId: number, to: Point3) => { void moveFixture(fixtureId, to); },
+        }
+      : null),
+    [moveMode, isDemo, selectedId, snapOn, moveFixture]
+  );
+  const canSnap = useMemo(() => snapLines(rig?.room_shell).length > 0, [rig?.room_shell]);
+
   if (loading) {
     return <Typography>Loading visualizer...</Typography>;
   }
@@ -1450,7 +1606,54 @@ export default function RigVisualizer() {
         ) : (
           <ConsoleExportButton target={{ rigId: rig.id }} />
         )}
+        {!isDemo && (
+          <ButtonGroup size="small" variant="outlined">
+            <Tooltip
+              describeChild
+              title="Drag a fixture to where it really is. Shift-drag changes its height. Saving confirms the position."
+            >
+              <Button
+                variant={moveMode ? 'contained' : 'outlined'}
+                aria-pressed={moveMode}
+                onClick={() => setMoveMode((on) => !on)}
+              >
+                Move fixtures
+              </Button>
+            </Tooltip>
+            {moveMode && canSnap && (
+              <Tooltip
+                describeChild
+                title="Snap a dragged fixture to the nearest scanned truss line or stage edge. Hold Alt to let go of it for one drag."
+              >
+                <Button
+                  variant={snapOn ? 'contained' : 'outlined'}
+                  aria-pressed={snapOn}
+                  onClick={() => setSnapOn((on) => !on)}
+                >
+                  Snap
+                </Button>
+              </Tooltip>
+            )}
+          </ButtonGroup>
+        )}
+        {!isDemo && (
+          <RoomScanUndoButton
+            rigId={rig.id}
+            moves={undoCount(rig)}
+            size="small"
+            onDone={(result) => {
+              setMoveNotice({ severity: result.skipped > 0 ? 'info' : 'success', text: undoResultText(result) });
+              void refreshRig();
+            }}
+          />
+        )}
       </Box>
+
+      {moveNotice && (
+        <Alert severity={moveNotice.severity} onClose={() => setMoveNotice(null)} sx={{ mb: 1, py: 0 }}>
+          {moveNotice.text}
+        </Alert>
+      )}
 
       {/* Audio Device Chooser */}
       <Box sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
@@ -1483,6 +1686,7 @@ export default function RigVisualizer() {
             beatClock={beatClock}
             feed={outputFeed}
             debug={showDebug}
+            move={sceneMove}
           />
         </Canvas>
       </Box>
@@ -1497,7 +1701,10 @@ export default function RigVisualizer() {
             <Typography variant="body2">
               Stage: {rig.stage_width}m x {rig.stage_depth}m x {rig.stage_height}m |
               Fixtures: {rig.fixtures?.length || 0} |
-              Use mouse to rotate, scroll to zoom, right-click to pan
+              {moveMode
+                ? 'Drag a fixture to move it along the floor plan, Shift-drag for height, Alt to skip the snap, Esc to cancel. '
+                  + 'Arrow keys and Page Up/Down nudge the selected fixture (Shift: 1 m).'
+                : 'Use mouse to rotate, scroll to zoom, right-click to pan'}
             </Typography>
             <EffectsReadout />
           </Box>
