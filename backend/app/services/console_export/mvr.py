@@ -40,6 +40,7 @@ lets an application keep what the format has no element for.
 from typing import Dict, List, Tuple
 from xml.sax.saxutils import escape, quoteattr
 
+from app.services.fixture_library.mvr_parser import EXPORT_PROVIDER
 from app.services.fixture_library.stage_axes import (
     matrix_to_columns,
     stage_rotation_matrix,
@@ -52,7 +53,8 @@ from .ma2 import _comment, display_name, layers
 from .model import ExportFixture, ExportRig, stable_uuid
 
 SCENE_FILE = "GeneralSceneDescription.xml"
-PROVIDER = "Intelligent Lighting System"
+# One spelling, shared with the reader that looks for it on the way back in.
+PROVIDER = EXPORT_PROVIDER
 PROVIDER_VERSION = "console export 1"
 USER_DATA_VERSION = "1"
 

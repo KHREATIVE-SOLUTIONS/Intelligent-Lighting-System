@@ -21,6 +21,8 @@ What is read from the scene (MVR 1.4 - 1.6, DIN SPEC 15801):
   with the universe counted from 1. Universes come back 0-based.
 - AUXData Class and Position, resolved to their names.
 - Truss objects, as named positions.
+- From this system's own export only: the UserData list of fixtures whose
+  position is unconfirmed, as `position_unconfirmed` on each fixture.
 """
 
 import io
@@ -41,6 +43,10 @@ MAX_EMBEDDED_GDTF = 500
 MAX_EMBEDDED_GDTF_BYTES = 64 * 1024 * 1024
 
 SCENE_FILE = "generalscenedescription.xml"
+
+# The provider name this system's own MVR export writes, on the scene and on
+# its UserData block. console_export.mvr writes it; _unconfirmed_uuids reads it.
+EXPORT_PROVIDER = "Intelligent Lighting System"
 
 _NUMBER = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 _GROUP = re.compile(r"\{([^{}]*)\}")
@@ -242,6 +248,26 @@ class _Scene:
         self.fixtures.append(entry)
 
 
+def _unconfirmed_uuids(root: ElementTree.Element) -> set:
+    """Fixture uuids this system's own export marked "position unconfirmed".
+
+    MVR has no element for "this position is a guess", so the export keeps the
+    list in UserData under its own provider name. Reading it back keeps a guess
+    a guess: without this, exporting a rig and importing the file again would
+    turn every unchecked position into one that looks checked.
+    """
+    found = set()
+    for data in root.iter("Data"):
+        if (data.get("provider") or "").strip() != EXPORT_PROVIDER:
+            continue
+        for holder in data.iter("UnconfirmedPositions"):
+            for member in holder.iter("Member"):
+                uuid = (member.get("fixture") or "").strip()
+                if uuid:
+                    found.add(uuid)
+    return found
+
+
 def parse_scene_xml(xml_content: bytes) -> Dict[str, Any]:
     """Parse a GeneralSceneDescription.xml on its own.
 
@@ -295,6 +321,10 @@ def parse_scene_xml(xml_content: bytes) -> Dict[str, Any]:
         own, declared = walker._own(layer, layer_name or "Layer")
         base = own if own is not None else _ORIGIN
         walker.walk(layer, base, own is not None, layer_name, (), "")
+
+    unconfirmed = _unconfirmed_uuids(root)
+    for fixture in walker.fixtures:
+        fixture["position_unconfirmed"] = bool(fixture["has_position"]) and fixture["uuid"] in unconfirmed
 
     result["fixtures"] = walker.fixtures
     result["trusses"] = walker.trusses

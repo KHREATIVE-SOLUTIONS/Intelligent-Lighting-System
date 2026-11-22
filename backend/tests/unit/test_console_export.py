@@ -279,6 +279,26 @@ class TestMvrExport:
         assert "Guessed" + UNCONFIRMED_SUFFIX in {el.get("name") for el in named.iter("Fixture")}
         assert "Heading" in {el.get("name") for el in named.iter("Fixture")}
 
+    def test_a_guess_is_still_a_guess_after_export_and_import(self):
+        """Out and back in must not turn an unchecked position into a checked one."""
+        from app.services.venue_import.model import UNCONFIRMED_POSITION_SOURCES
+
+        parsed = read_venue_file("awkward.mvr", mvr_bytes(awkward_rig()))
+        sources = {f.name: f.position_source for f in parsed.fixtures}
+
+        assert sources["Guessed"] in UNCONFIRMED_POSITION_SOURCES
+        assert sources["Heading"] == "mvr"
+        assert sources["Unplaced & unnumbered"] == "none"
+        guessed = next(f for f in parsed.fixtures if f.name == "Guessed")
+        assert any("unconfirmed" in note for note in guessed.notes)
+
+    def test_another_programs_user_data_marks_nothing(self):
+        scene = mvr_scene(awkward_rig()).replace(
+            '<Data provider="Intelligent Lighting System"', '<Data provider="Some Other Tool"'
+        )
+        parsed = read_venue_file("other.xml", scene.encode("utf-8"))
+        assert {f.position_source for f in parsed.fixtures} == {"mvr", "none"}
+
     def test_every_group_is_in_the_user_data(self):
         rig = liv()
         scene = ElementTree.fromstring(mvr_scene(rig))

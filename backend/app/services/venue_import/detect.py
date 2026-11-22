@@ -137,6 +137,11 @@ def _from_mvr(data: Dict[str, Any], source_file: str) -> ParsedVenue:
             notes.append(
                 f"has {len(extra)} more address(es) on other DMX breaks; only the first is patched"
             )
+        # Only this system's own export says this. The position was a generated
+        # guess when it was written out, and it comes back as one.
+        guessed = placed and bool(item.get("position_unconfirmed"))
+        if guessed:
+            notes.append("its position was marked unconfirmed when this file was exported")
         parsed.fixtures.append(ImportedFixture(
             name=item.get("name", ""),
             fixture_id=item.get("fixture_id", ""),
@@ -150,7 +155,7 @@ def _from_mvr(data: Dict[str, Any], source_file: str) -> ParsedVenue:
             extra_addresses=extra,
             position=(item["position_x"], item["position_y"], item["position_z"]) if placed else None,
             rotation=(item["rotation_x"], item["rotation_y"], item["rotation_z"]) if placed else None,
-            position_source="mvr" if placed else "none",
+            position_source="template" if guessed else "mvr" if placed else "none",
             position_label=item.get("position_name", ""),
             group_name=group_name,
             groups=[n for n in names[1:] if n != group_name],

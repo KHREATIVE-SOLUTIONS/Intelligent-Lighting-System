@@ -140,6 +140,17 @@ class TestRigConsoleExport:
         back = next(f for f in parsed.fixtures if f.name == "Impression Wash 1")
         assert back.position is not None
 
+        # Imported again, it is still a guess and every other fixture is not.
+        preview = await client.post(
+            "/api/import/venue",
+            files={"file": ("again.mvr", mvr.content, "application/octet-stream")},
+        )
+        assert preview.status_code == 200, preview.text
+        confirmed = {row["name"]: row["position_confirmed"] for row in preview.json()["fixtures"]}
+        assert confirmed["Impression Wash 1"] is False
+        assert confirmed["Impression Wash 2"] is True
+        assert sum(1 for value in confirmed.values() if value is False) == 1
+
         script = (await client.get(f"/api/rigs/{rig_id}/export/ma2-macro")).text
         assert '"Position unconfirmed"' in script
         assert f"Fixture {guess.fixture_number}" in script.splitlines()
