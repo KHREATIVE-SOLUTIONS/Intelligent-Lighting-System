@@ -200,7 +200,8 @@ def read_address(text: str, universe: Optional[int], notes: List[str]) -> Tuple[
         return universe, None
 
     combined = _COMBINED_ADDRESS.match(text)
-    if combined:
+    # "613.0" is a spreadsheet's whole number, not universe 613 channel 0.
+    if combined and not (text.count(".") == 1 and int(combined.group(2)) == 0):
         cell_universe, address = int(combined.group(1)), int(combined.group(2))
         if cell_universe < 1 or not 1 <= address <= DMX_UNIVERSE_SIZE:
             notes.append(f"address '{text}' is not a universe from 1 and a channel from 1 to 512")

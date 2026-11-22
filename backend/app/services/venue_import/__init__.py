@@ -9,8 +9,6 @@ written, and can then create a new rig from it.
     parsed  = read_venue_file(filename, content)        # detect.py, pure
     preview = build_preview(parsed, library_entries)    # preview.py, pure
     result  = await apply_import(db, parsed, ...)       # apply.py, writes a new rig
-
-See docs/VENUE_IMPORT.md.
 """
 
 from .detect import detect_format, read_venue_file

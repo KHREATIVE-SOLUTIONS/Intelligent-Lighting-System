@@ -104,8 +104,9 @@ def _parse_address(text: str) -> Optional[Tuple[int, int]]:
     if not text:
         return None
     try:
-        if "." in text:
-            universe_text, address_text = text.split(".", 1)
+        if "." in text or "/" in text:
+            # "2.101" is the specification's form; "2/101" is how people write it.
+            universe_text, address_text = re.split(r"[./]", text, maxsplit=1)
             universe, address = int(universe_text), int(address_text)
             if universe < 1 or not 1 <= address <= DMX_UNIVERSE_SIZE:
                 return None

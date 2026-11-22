@@ -66,6 +66,9 @@ def _grandma_patch(fixture_el) -> Optional[tuple]:
         address_attr = _attr(patch, "Address", "address")
         if address_attr:
             address = int(address_attr)
+            if not universe_attr and address > 512:
+                # No universe beside it and past 512: an absolute address.
+                return (address - 1) // 512, (address - 1) % 512 + 1
             universe = int(universe_attr) if universe_attr else 1
             return max(0, universe - 1), max(1, min(512, address))
 
@@ -73,8 +76,8 @@ def _grandma_patch(fixture_el) -> Optional[tuple]:
         text = (address_el.text or "").strip() if address_el is not None else ""
         if not text:
             return None
-        if "." in text:
-            universe_text, address_text = text.split(".", 1)
+        if "." in text or "/" in text:
+            universe_text, address_text = text.replace("/", ".").split(".", 1)
             return max(0, int(universe_text) - 1), max(1, min(512, int(address_text)))
         absolute = int(text)
         if absolute < 1:
