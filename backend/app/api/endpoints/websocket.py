@@ -302,6 +302,76 @@ def collect_dmx_frames(fixtures) -> Dict[int, List[int]]:
     return {int(u): frame for u, frame in frames.items()}
 
 
+def collect_output_frames(engine) -> Dict[int, List[int]]:
+    """The frames the engine hands to its DMX output: universe -> 512 values.
+
+    Rendered with the engine's own output master, exactly as `_emit_dmx` does,
+    so the grand master and a latched blackout are in them. This is what the
+    3D view draws. `collect_dmx_frames` renders at full and would show a lit
+    rig through a blackout.
+
+    Read-only: it renders from fixture state and touches neither the DMX
+    controller nor the wire.
+    """
+    fixtures = engine.fixtures
+    master = getattr(engine, 'output_master', 1.0)
+    get_frames = getattr(fixtures, 'get_dmx_frames', None)
+    frames = None
+    if callable(get_frames):
+        try:
+            frames = get_frames(master=master)
+        except TypeError:
+            # A stand-in rig with no master argument.
+            frames = get_frames()
+    if not frames:
+        frames = {}
+        for universe in fixture_universes(fixtures) or [0]:
+            try:
+                frames[universe] = fixtures.get_dmx_frame(universe=universe, master=master)
+            except TypeError:
+                frames[universe] = fixtures.get_dmx_frame(universe=universe)
+    return {int(u): frame for u, frame in frames.items()}
+
+
+# Says whether the engine's frames are reaching the DMX controller. Set by the
+# application at startup; None until then, and in tests that build no app.
+_wire_probe = None
+
+
+def set_wire_probe(probe) -> None:
+    """Register a no-argument callable that is true while engine output reaches the wire."""
+    global _wire_probe
+    _wire_probe = probe
+
+
+def engine_output_on_wire(app_state, engine) -> bool:
+    """True while the engine's frames are being handed to a DMX controller.
+
+    False for a demo rig held off the wire, with no controller, and while the
+    identify walkthrough has taken the show off the output.
+    """
+    if engine is None or getattr(app_state, 'dmx_controller', None) is None:
+        return False
+    if getattr(app_state, 'dmx_output_held', False):
+        return False
+    return getattr(engine, '_dmx_callback', None) is not None
+
+
+def output_status(engine) -> Dict[str, Any]:
+    """What stands between the look and the frames sent with it, for the 3D view."""
+    on_wire = None
+    if _wire_probe is not None:
+        try:
+            on_wire = bool(_wire_probe())
+        except Exception:
+            on_wire = None
+    return {
+        'master': float(getattr(engine, 'grand_master', 1.0)),
+        'blackout': bool(getattr(engine, 'blackout_active', False)),
+        'on_wire': on_wire,
+    }
+
+
 def primary_dmx_universe(frames: Dict[int, List[int]]) -> int:
     """The universe whose frame stands in for the rig in single-universe payloads."""
     if 0 in frames or not frames:
@@ -461,8 +531,9 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         ml_data=ml_data,
     )
 
-    # Get the current DMX frames (already updated by effects engine loop)
-    dmx_frames = collect_dmx_frames(effects_engine.fixtures)
+    # The frames the engine outputs (already updated by the effects engine
+    # loop), grand master and blackout applied: what the 3D view draws.
+    dmx_frames = collect_output_frames(effects_engine)
     primary_universe = primary_dmx_universe(dmx_frames)
     dmx_frame = dmx_frames.get(primary_universe, [0] * 512)
 
@@ -500,10 +571,12 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
                 is_beat=is_beat,
                 beat_position=beat_position
             )
-            # Record lighting state
+            # Record lighting state. Training data is the look at full, as it
+            # always was: an operator's master or blackout is not part of it.
+            look_frames = collect_dmx_frames(effects_engine.fixtures)
             recorder.record_lighting(
                 fixtures=fixture_states,
-                dmx_frame=dmx_frame
+                dmx_frame=look_frames.get(primary_dmx_universe(look_frames), [0] * 512)
             )
     except Exception:
         pass  # Don't let recording errors affect main pipeline
@@ -529,6 +602,7 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         'dmx_frame': dmx_frame,
         'dmx_universe': primary_universe,
         'dmx_frames': serialize_dmx_frames(dmx_frames),
+        'output': output_status(effects_engine),
         'fixtures': fixture_states,
         'state': 'auto' if effects_engine.config.auto_mode else 'manual',
         'movement': active_lfo,  # Show active LFO effect

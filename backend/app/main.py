@@ -328,9 +328,13 @@ async def lifespan(app: FastAPI):
         # This is needed because server-side audio capture bypasses the WebSocket input path
         async def _broadcast_lighting_state():
             from app.api.endpoints.websocket import (
-                manager, convert_numpy_types, collect_dmx_frames,
-                primary_dmx_universe, serialize_dmx_frames,
+                manager, convert_numpy_types, collect_output_frames,
+                engine_output_on_wire, output_status,
+                primary_dmx_universe, serialize_dmx_frames, set_wire_probe,
             )
+            # Both payload builders (this loop and the audio socket) report
+            # whether the frames they send are reaching the DMX controller.
+            set_wire_probe(lambda: engine_output_on_wire(app.state, app.state.effects_engine))
             from app.services.lighting.look_spec import build_lighting_look_spec
             from datetime import datetime
             frame_count = 0
@@ -341,8 +345,9 @@ async def lifespan(app: FastAPI):
                     if ee is None:
                         continue
 
-                    # Build a DMX frame per universe the rig occupies
-                    dmx_frames = collect_dmx_frames(ee.fixtures)
+                    # The frame per universe the engine outputs, grand master
+                    # and blackout applied: the 3D view draws these.
+                    dmx_frames = collect_output_frames(ee)
                     primary_universe = primary_dmx_universe(dmx_frames)
                     dmx_frame = dmx_frames.get(primary_universe, [0] * 512)
                     fixture_states = ee.get_fixture_state_snapshot()
@@ -365,6 +370,7 @@ async def lifespan(app: FastAPI):
                         'dmx_frame': dmx_frame,
                         'dmx_universe': primary_universe,
                         'dmx_frames': serialize_dmx_frames(dmx_frames),
+                        'output': output_status(ee),
                         'fixtures': fixture_states,
                         'state': 'auto',
                         'movement': 'auto',

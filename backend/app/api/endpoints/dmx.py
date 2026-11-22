@@ -99,6 +99,33 @@ async def disconnect_dmx(request: Request):
     return {"status": "disconnected"}
 
 
+@router.get("/output-frames")
+async def get_output_frames(request: Request):
+    """The frames the show engine outputs right now, for the 3D preview.
+
+    One 512-value frame per universe the rig occupies, rendered with the
+    grand master and any latched blackout, as the engine hands them to the
+    DMX output. `on_wire` says whether they are reaching the DMX controller:
+    false for a demo rig held off the wire and while the identify walkthrough
+    has the output.
+
+    Read-only. It renders from the engine's fixture state and never touches
+    the DMX controller, so asking cannot create a universe or send a packet.
+    The same frames go out on the /ws/audio socket as `lighting.dmx_frames`.
+    """
+    from app.api.endpoints.websocket import (
+        collect_output_frames, engine_output_on_wire, output_status, serialize_dmx_frames,
+    )
+
+    engine = getattr(request.app.state, "effects_engine", None)
+    if engine is None:
+        return {"frames": {}, "master": None, "blackout": False, "on_wire": False}
+
+    status = output_status(engine)
+    status["on_wire"] = engine_output_on_wire(request.app.state, engine)
+    return {"frames": serialize_dmx_frames(collect_output_frames(engine)), **status}
+
+
 @router.get("/universe/{universe}", response_model=DMXUniverse)
 async def get_universe(
     universe: int,
