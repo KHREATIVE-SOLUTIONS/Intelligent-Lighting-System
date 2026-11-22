@@ -1,0 +1,87 @@
+# Example festival main stage - console patch list, no position information
+# EXAMPLE DATA. Authored for the Intelligent Lighting System's patch sheet importer. Not a real festival's patch and not a manufacturer's fixture list.
+FID,Label,Fixture Type,Mode,Footprint,Patch
+101,Spot 1,ILS Demo Demo Spot 16ch,16ch,16,1.1
+102,Spot 2,ILS Demo Demo Spot 16ch,16ch,16,1.17
+103,Spot 3,ILS Demo Demo Spot 16ch,16ch,16,1.33
+104,Spot 4,ILS Demo Demo Spot 16ch,16ch,16,1.49
+105,Spot 5,ILS Demo Demo Spot 16ch,16ch,16,1.65
+106,Spot 6,ILS Demo Demo Spot 16ch,16ch,16,1.81
+107,Spot 7,ILS Demo Demo Spot 16ch,16ch,16,1.97
+108,Spot 8,ILS Demo Demo Spot 16ch,16ch,16,1.113
+109,Spot 9,ILS Demo Demo Spot 16ch,16ch,16,1.129
+110,Spot 10,ILS Demo Demo Spot 16ch,16ch,16,1.145
+111,Spot 11,ILS Demo Demo Spot 16ch,16ch,16,1.161
+112,Spot 12,ILS Demo Demo Spot 16ch,16ch,16,1.177
+113,Spot 13,ILS Demo Demo Spot 16ch,16ch,16,1.193
+114,Spot 14,ILS Demo Demo Spot 16ch,16ch,16,1.209
+115,Spot 15,ILS Demo Demo Spot 16ch,16ch,16,1.225
+116,Spot 16,ILS Demo Demo Spot 16ch,16ch,16,1.241
+201,Wash 1,ILS Demo Demo Wash 14ch,14ch,14,1.257
+202,Wash 2,ILS Demo Demo Wash 14ch,14ch,14,1.271
+203,Wash 3,ILS Demo Demo Wash 14ch,14ch,14,1.285
+204,Wash 4,ILS Demo Demo Wash 14ch,14ch,14,1.299
+205,Wash 5,ILS Demo Demo Wash 14ch,14ch,14,1.313
+206,Wash 6,ILS Demo Demo Wash 14ch,14ch,14,1.327
+207,Wash 7,ILS Demo Demo Wash 14ch,14ch,14,1.341
+208,Wash 8,ILS Demo Demo Wash 14ch,14ch,14,1.355
+209,Wash 9,ILS Demo Demo Wash 14ch,14ch,14,1.369
+210,Wash 10,ILS Demo Demo Wash 14ch,14ch,14,1.383
+211,Wash 11,ILS Demo Demo Wash 14ch,14ch,14,1.397
+212,Wash 12,ILS Demo Demo Wash 14ch,14ch,14,1.411
+301,Compact Spot 1,ILS Demo Demo Compact Spot 12ch,12ch,12,2.1
+302,Compact Spot 2,ILS Demo Demo Compact Spot 12ch,12ch,12,2.13
+303,Compact Spot 3,ILS Demo Demo Compact Spot 12ch,12ch,12,2.25
+304,Compact Spot 4,ILS Demo Demo Compact Spot 12ch,12ch,12,2.37
+305,Compact Spot 5,ILS Demo Demo Compact Spot 12ch,12ch,12,2.49
+306,Compact Spot 6,ILS Demo Demo Compact Spot 12ch,12ch,12,2.61
+307,Compact Spot 7,ILS Demo Demo Compact Spot 12ch,12ch,12,2.73
+308,Compact Spot 8,ILS Demo Demo Compact Spot 12ch,12ch,12,2.85
+309,Compact Spot 9,ILS Demo Demo Compact Spot 12ch,12ch,12,2.97
+310,Compact Spot 10,ILS Demo Demo Compact Spot 12ch,12ch,12,2.109
+311,Compact Spot 11,ILS Demo Demo Compact Spot 12ch,12ch,12,2.121
+312,Compact Spot 12,ILS Demo Demo Compact Spot 12ch,12ch,12,2.133
+313,Compact Spot 13,ILS Demo Demo Compact Spot 12ch,12ch,12,2.145
+314,Compact Spot 14,ILS Demo Demo Compact Spot 12ch,12ch,12,2.157
+315,Compact Spot 15,ILS Demo Demo Compact Spot 12ch,12ch,12,2.169
+316,Compact Spot 16,ILS Demo Demo Compact Spot 12ch,12ch,12,2.181
+401,Strobe 1,ILS Demo Demo Strobe 4ch,4ch,4,2.201
+402,Strobe 2,ILS Demo Demo Strobe 4ch,4ch,4,2.205
+403,Strobe 3,ILS Demo Demo Strobe 4ch,4ch,4,2.209
+404,Strobe 4,ILS Demo Demo Strobe 4ch,4ch,4,2.213
+405,Strobe 5,ILS Demo Demo Strobe 4ch,4ch,4,2.217
+406,Strobe 6,ILS Demo Demo Strobe 4ch,4ch,4,2.221
+407,Strobe 7,ILS Demo Demo Strobe 4ch,4ch,4,2.225
+408,Strobe 8,ILS Demo Demo Strobe 4ch,4ch,4,2.229
+501,Blinder 1,ILS Demo Demo Blinder 2ch,2ch,2,2.301
+502,Blinder 2,ILS Demo Demo Blinder 2ch,2ch,2,2.303
+503,Blinder 3,ILS Demo Demo Blinder 2ch,2ch,2,2.305
+504,Blinder 4,ILS Demo Demo Blinder 2ch,2ch,2,2.307
+505,Blinder 5,ILS Demo Demo Blinder 2ch,2ch,2,2.309
+506,Blinder 6,ILS Demo Demo Blinder 2ch,2ch,2,2.311
+507,Blinder 7,ILS Demo Demo Blinder 2ch,2ch,2,2.313
+508,Blinder 8,ILS Demo Demo Blinder 2ch,2ch,2,2.315
+601,LED Bar 1,ILS Demo Demo LED Bar 8ch,8ch,8,3.1
+602,LED Bar 2,ILS Demo Demo LED Bar 8ch,8ch,8,3.9
+603,LED Bar 3,ILS Demo Demo LED Bar 8ch,8ch,8,3.17
+604,LED Bar 4,ILS Demo Demo LED Bar 8ch,8ch,8,3.25
+605,LED Bar 5,ILS Demo Demo LED Bar 8ch,8ch,8,3.33
+606,LED Bar 6,ILS Demo Demo LED Bar 8ch,8ch,8,3.41
+607,LED Bar 7,ILS Demo Demo LED Bar 8ch,8ch,8,3.49
+608,LED Bar 8,ILS Demo Demo LED Bar 8ch,8ch,8,3.57
+609,LED Bar 9,ILS Demo Demo LED Bar 8ch,8ch,8,3.65
+610,LED Bar 10,ILS Demo Demo LED Bar 8ch,8ch,8,3.73
+611,LED Bar 11,ILS Demo Demo LED Bar 8ch,8ch,8,3.81
+612,LED Bar 12,ILS Demo Demo LED Bar 8ch,8ch,8,3.89
+701,Back Wash 1,ILS Demo Demo Wash 14ch,14ch,14,3.401
+702,Back Wash 2,ILS Demo Demo Wash 14ch,14ch,14,3.415
+703,Back Wash 3,ILS Demo Demo Wash 14ch,14ch,14,3.429
+704,Back Wash 4,ILS Demo Demo Wash 14ch,14ch,14,3.443
+705,Back Wash 5,ILS Demo Demo Wash 14ch,14ch,14,3.457
+706,Back Wash 6,ILS Demo Demo Wash 14ch,14ch,14,3.471
+707,Back Wash 7,ILS Demo Demo Wash 14ch,14ch,14,3.485
+708,Back Wash 8,ILS Demo Demo Wash 14ch,14ch,14,3.499
+709,Back Wash 9,ILS Demo Demo Wash 14ch,14ch,14,4.1
+710,Back Wash 10,ILS Demo Demo Wash 14ch,14ch,14,4.15
+711,Back Wash 11,ILS Demo Demo Wash 14ch,14ch,14,4.29
+712,Back Wash 12,ILS Demo Demo Wash 14ch,14ch,14,4.43
