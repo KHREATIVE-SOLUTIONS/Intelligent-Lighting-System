@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
 
+from . import console_export
 from ...schemas.audio import engine_energy, programme_level
 from ...services.demo.demo_simulation import DemoSimulation, DemoConfig
 from ...services.demo.venue_presets import VENUE_PRESETS, VenuePreset, create_venue_rig
@@ -422,6 +423,55 @@ async def get_demo_rig(preset: Optional[str] = None, request: Request = None):
         # the 3D view; a database rig has no such field.
         "room_shell": venue.room.to_dict() if venue.room else None,
     }
+
+
+# === Demo rig back to a console: grandMA2 and MVR. See docs/CONSOLE_EXPORT.md. ===
+
+def _export_preset(preset_name: str):
+    """A demo preset as every console export reads it, or a 404.
+
+    Built from the same FixtureSpec list /demo/rig serves to the 3D view and
+    create_venue_rig hands to the engine.
+    """
+    from ...services.console_export.model import from_preset
+
+    venue = VENUE_PRESETS.get(preset_name)
+    if venue is None:
+        raise HTTPException(404, f"Venue preset not found: {preset_name}. "
+                            f"Available: {list(VENUE_PRESETS.keys())}")
+    return from_preset(venue)
+
+
+@router.get("/venues/presets/{preset_name}/export/console-summary")
+async def export_preset_console_summary(preset_name: str):
+    """What a console export of this demo preset holds, and what it leaves out."""
+    return console_export.summary(_export_preset(preset_name))
+
+
+@router.get("/venues/presets/{preset_name}/export/ma2-xml")
+async def export_preset_ma2_xml(preset_name: str, mark_names: bool = console_export.MARK_NAMES):
+    """Export a demo preset as a grandMA2 fixture layer XML."""
+    return console_export.ma2_xml_response(_export_preset(preset_name), mark_names)
+
+
+@router.get("/venues/presets/{preset_name}/export/ma2-macro")
+async def export_preset_ma2_macro(
+    preset_name: str,
+    first_group: int = console_export.FIRST_GROUP,
+    include: str = console_export.INCLUDE,
+    notes: bool = console_export.NOTES,
+    mark_names: bool = console_export.MARK_NAMES,
+):
+    """Export a demo preset's patch, labels and groups as grandMA2 command-line text."""
+    return console_export.ma2_script_response(
+        _export_preset(preset_name), first_group, include, notes, mark_names
+    )
+
+
+@router.get("/venues/presets/{preset_name}/export/mvr")
+async def export_preset_mvr(preset_name: str, mark_names: bool = console_export.MARK_NAMES):
+    """Export a demo preset as an MVR for MA3D or Capture."""
+    return console_export.mvr_response(_export_preset(preset_name), mark_names)
 
 
 @router.post("/venues/presets/{preset_name}/apply")
