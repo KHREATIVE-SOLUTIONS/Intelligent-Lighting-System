@@ -58,14 +58,23 @@ button and no fixture writes a row for it while it is closed.
 `frontend/src/__tests__/previsPreview.test.ts` covers the room shell geometry,
 `hangBeam` against three.js's own rotation, and the output feed. The beam state
 mapping and the backend's output frames have their own tests
-(`previs.test.ts`, `backend/tests/unit/test_preview_output_frames.py`).
+(`beamState.test.ts`, `backend/tests/unit/test_preview_output_frames.py`).
 
 ## What is left
 
 - **Not seen in a browser this round.** The code type-checks, the unit tests
   pass and the bundle builds; nobody has yet looked at the LIV dome, a leaning
-  fixture or the amber markers on screen. See the memory note on previs view
-  verification for how (headless Edge over CDP, feed audio first).
+  fixture or the amber markers on screen. The in-app browser pane stops WebGL
+  when hidden, so check in a real or headless browser against a running
+  backend, and feed it audio before judging the beams.
+- **Per-axis invert has no writer.** The rig stores one `is_inverted` flag,
+  which the view reads as pan invert. The `pan_invert` and `tilt_invert` tags
+  are honoured when present, but nothing in the backend or the rig editor sets
+  them yet, and the engine itself inverts nothing. Tilt invert therefore needs
+  the tag added by hand until the patch has a proper field for it.
+- **A rig switch shows the old rig's frames for one message.** The feed is not
+  cleared when the rig changes (`clearOutputFeed` exists and is not yet
+  called); the next message, about 30 ms later, replaces them.
 - **Scenery does not stop a beam.** Beams land on the floor, the four walls
   and the flat ceiling height. They pass through the dome, the balcony, the
   risers and the LED walls.
