@@ -164,6 +164,15 @@ def _find_header(text: str) -> Tuple[str, int, List[List[str]]]:
     return delimiter, index, rows
 
 
+def separator_of(text: str) -> Optional[str]:
+    """The character that separates the cells of a patch list in `text`, or
+    None when it does not read as separated values at all."""
+    try:
+        return _find_header(text)[0]
+    except VenueImportError:
+        return None
+
+
 def _columns(header: Sequence[str]) -> Tuple[Dict[str, int], List[str]]:
     """Field -> column index (the first column that means it), and what was not understood."""
     columns: Dict[str, int] = {}
