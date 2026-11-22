@@ -18,6 +18,7 @@ import {
   WbIncandescent as IdentifyIcon,
   ViewInAr as View3DIcon,
   GridOn as GridIcon,
+  MeetingRoom as RoomScanIcon,
 } from '@mui/icons-material';
 import type { SnapMode } from '../../stores/rigEditorStore';
 
@@ -36,6 +37,10 @@ interface RigEditorToolbarProps {
   onAutoPatch: () => void;
   onTestAll: () => void;
   onIdentify: () => void;
+  /** Opens the room scan dialog. The button is left out when this is. */
+  onRoomScan?: () => void;
+  /** Whether a scanned room is already stored on the rig. */
+  hasRoom?: boolean;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -63,6 +68,8 @@ export default function RigEditorToolbar({
   onAutoPatch,
   onTestAll,
   onIdentify,
+  onRoomScan,
+  hasRoom = false,
   onUndo,
   onRedo,
   canUndo,
@@ -162,6 +169,19 @@ export default function RigEditorToolbar({
           Identify Lights
         </Button>
       </Tooltip>
+      {onRoomScan && (
+        <Tooltip
+          title={
+            hasRoom
+              ? 'This rig has a scanned room stored. Read another scan, or remove it'
+              : 'Read a phone scan of the room: walls, stage, truss. You see the suggestion before anything is stored'
+          }
+        >
+          <Button size="small" startIcon={<RoomScanIcon />} onClick={onRoomScan}>
+            Room Scan
+          </Button>
+        </Tooltip>
+      )}
       <Button size="small" variant="contained" startIcon={<SaveIcon />} onClick={onSave}>
         Save
       </Button>

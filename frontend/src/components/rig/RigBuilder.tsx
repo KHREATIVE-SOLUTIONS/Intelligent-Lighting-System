@@ -11,6 +11,7 @@ import StageView2D from './StageView2D';
 import PatchTable from './PatchTable';
 import FixtureProperties from './FixtureProperties';
 import IdentifyWalkthrough from './IdentifyWalkthrough';
+import RoomScanDialog from './RoomScanDialog';
 import type { Rig, RigFixture, Fixture, PatchConflict } from '../../types';
 
 /** Long enough that a drag is one request, short enough to feel immediate. */
@@ -37,6 +38,7 @@ export default function RigBuilder() {
   const [saveState, setSaveState] = useState<PositionSaveState>('idle');
   const [notice, setNotice] = useState<{ severity: 'error' | 'success'; text: string } | null>(null);
   const [identifyOpen, setIdentifyOpen] = useState(false);
+  const [roomScanOpen, setRoomScanOpen] = useState(false);
 
   const {
     viewMode, snapMode, gridSize, selectedFixtureIds,
@@ -171,6 +173,13 @@ export default function RigBuilder() {
     // here has to land first or the two would fight over the same fixtures.
     await flushPositions();
     setIdentifyOpen(true);
+  };
+
+  const handleRoomScan = async () => {
+    // Applying a scan moves unconfirmed fixtures on the server. A drag still
+    // waiting to be written would land after it and put one of them back.
+    await flushPositions();
+    setRoomScanOpen(true);
   };
 
   const handleFixtureClick = (fixtureId: number, multi: boolean) => {
@@ -375,6 +384,8 @@ export default function RigBuilder() {
         onAutoPatch={handleAutoPatch}
         onTestAll={handleTestAll}
         onIdentify={() => { void handleIdentify(); }}
+        onRoomScan={() => { void handleRoomScan(); }}
+        hasRoom={rig.room_shell?.source === 'scan'}
         onUndo={handleUndo}
         onRedo={handleRedo}
         canUndo={undoStack.length > 0}
@@ -450,6 +461,25 @@ export default function RigBuilder() {
           void fetchRig();
         }}
         onFinished={() => { void fetchRig(); }}
+      />
+
+      {/* A scan that is applied moves fixtures and stores a room on the server:
+          the positions on screen are stale, and so is any undo step that would
+          write the old ones back. */}
+      <RoomScanDialog
+        open={roomScanOpen}
+        rigId={rig.id}
+        rigName={rig.name}
+        hasRoom={rig.room_shell?.source === 'scan'}
+        onClose={() => setRoomScanOpen(false)}
+        onChanged={() => {
+          clearHistory();
+          void fetchRig();
+        }}
+        onView3D={() => {
+          setRoomScanOpen(false);
+          navigate(`/rigs/${rig.id}/visualizer`);
+        }}
       />
 
       <Snackbar

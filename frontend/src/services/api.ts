@@ -35,6 +35,8 @@ import type {
   ConsoleExportSummary,
   ConsoleExportTarget,
 } from '../utils/consoleExport';
+import { roomScanParams, roomScanPath, roomShellPath } from '../utils/roomScan';
+import type { RoomScanOptions, RoomScanPreview } from '../utils/roomScan';
 
 const API_BASE_URL = '/api';
 
@@ -1371,6 +1373,46 @@ export const importExportApi = {
 
 // Back to the console: grandMA2 and MVR, for a database rig or a demo preset.
 // Fetched through `api` so the operator's session token goes with the request.
+/**
+ * Room scan (docs/ROOM_SCAN.md). The file is sent for the preview and again to
+ * apply: the server keeps nothing between the two, so what is applied is what
+ * that file says, read with those options.
+ */
+export const roomScanApi = {
+  /** Reads the scan against the rig and writes nothing. */
+  preview: async (rigId: number, file: File, options: RoomScanOptions): Promise<RoomScanPreview> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.post(roomScanPath(rigId), formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params: roomScanParams(options),
+    });
+    return response.data;
+  },
+
+  /** Stores the suggested room on the rig and, when asked, moves its unconfirmed template guesses. */
+  apply: async (
+    rigId: number,
+    file: File,
+    options: RoomScanOptions,
+    moveFixtures: boolean,
+  ): Promise<RoomScanPreview> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.post(roomScanPath(rigId), formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params: roomScanParams(options, { moveFixtures }),
+    });
+    return response.data;
+  },
+
+  /** Takes the stored room off the rig. Fixtures stay where they are. */
+  remove: async (rigId: number): Promise<{ rig_id: number; removed: boolean }> => {
+    const response = await api.delete(roomShellPath(rigId));
+    return response.data;
+  },
+};
+
 export const consoleExportApi = {
   summary: async (target: ConsoleExportTarget): Promise<ConsoleExportSummary> => {
     const response = await api.get(consoleSummaryPath(target));

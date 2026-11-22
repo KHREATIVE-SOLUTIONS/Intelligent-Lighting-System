@@ -116,7 +116,8 @@ export interface Rig {
   fixtures: RigFixture[];
   /**
    * The room round the rig, where the rig describes one: scenery for the 3D
-   * view. Only a demo venue preset carries it; a database rig has none.
+   * view. A demo venue preset carries one it was written with; a database rig
+   * has one once a room scan has been applied to it (docs/ROOM_SCAN.md).
    */
   room_shell?: RoomShell | null;
 }
@@ -132,6 +133,29 @@ export interface RoomShellBox {
   height: number;
   base_height?: number;
   name?: string;
+  basis?: string;
+  /** From a room scan: what its size suggests it is ('stage', 'riser' or 'booth'). */
+  kind?: string;
+  /** True for anything a scan found: nobody has checked it against the room. */
+  suggested?: boolean;
+}
+
+/** A truss or bar a room scan found overhead, as a line on the plan at a height. */
+export interface RoomShellLine {
+  name?: string;
+  x1: number;
+  z1: number;
+  x2: number;
+  z2: number;
+  /** Height of its underside: where a fixture hangs from. */
+  height: number;
+  top?: number;
+  length?: number;
+  /** Its width across the line. */
+  across?: number;
+  /** Which way it runs: 'x' is across the room, 'z' is upstage to downstage. */
+  axis?: string;
+  suggested?: boolean;
   basis?: string;
 }
 
@@ -169,6 +193,33 @@ export interface RoomShell {
   dj_booth?: RoomShellBox | null;
   rear_stage?: RoomShellBox | null;
   led_walls?: RoomShellBox[] | null;
+
+  // --- What a room scan writes (backend/app/services/room_scan/extract.py) ---
+  /** 'scan' when the shell was read from a phone scan of the room. */
+  source?: string;
+  /** True for a scanned shell: every part of it is a suggestion. */
+  suggested?: boolean;
+  /** The room's own box: wall to wall, floor to ceiling, centred on the origin. */
+  room?: { width: number; depth: number; height: number; suggested?: boolean; basis?: string } | null;
+  /** Raised areas: a stage, a riser, a booth. */
+  risers?: RoomShellBox[] | null;
+  /** Trusses and bars found overhead. */
+  truss_lines?: RoomShellLine[] | null;
+  hanging_bands?: Array<{ height: number; top?: number; lines?: number; suggested?: boolean; basis?: string }> | null;
+  /** How the scan was read: file, units, up axis, turns. */
+  scan?: {
+    file?: string | null;
+    format?: string;
+    points?: number;
+    triangles?: number;
+    point_cloud?: boolean;
+    units?: string;
+    up_axis?: string;
+    wall_turn_deg?: number;
+    quarter_turns?: number;
+    walls_found?: number;
+    other_overhead_objects?: number;
+  } | null;
 }
 
 export interface UniverseConfig {

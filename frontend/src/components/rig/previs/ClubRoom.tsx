@@ -170,8 +170,14 @@ export const ClubRoom = memo(function ClubRoom({
   layout,
   ceiling = true,
   danceFloor = true,
+  dressing = true,
 }: {
   layout: ClubLayout;
+  /**
+   * The bar counter, door and exit sign the view makes up for the rear wall.
+   * Off for a scanned room: its walls are real, and the scan found no bar there.
+   */
+  dressing?: boolean;
   /** Off when the rig's own room shell supplies the ceiling (a dome). */
   ceiling?: boolean;
   /** Off when the rig's own room shell supplies the dance floor. */
@@ -260,9 +266,9 @@ export const ClubRoom = memo(function ClubRoom({
       </group>
       <group ref={houseRef} position={[0, 0, layout.houseZ]} rotation={[0, Math.PI, 0]}>
         <mesh geometry={built.crossWall} material={mattMaterial} receiveShadow dispose={null} />
-        <mesh geometry={built.house.solid} material={mattMaterial} receiveShadow dispose={null} />
-        <mesh geometry={built.house.glow} material={glowMaterial} dispose={null} />
-        {exitTexture && (
+        {dressing && <mesh geometry={built.house.solid} material={mattMaterial} receiveShadow dispose={null} />}
+        {dressing && <mesh geometry={built.house.glow} material={glowMaterial} dispose={null} />}
+        {dressing && exitTexture && (
           <mesh position={[doorX, 2.42, 0.05]}>
             <planeGeometry args={[0.56, 0.21]} />
             <meshBasicMaterial map={exitTexture} toneMapped={false} />

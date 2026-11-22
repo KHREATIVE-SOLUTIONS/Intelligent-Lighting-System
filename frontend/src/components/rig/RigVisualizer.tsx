@@ -34,7 +34,7 @@ import { GuessMarkers } from './previs/GuessMarkers';
 import type { GuessPoint } from './previs/GuessMarkers';
 import { createOutputFeed, ingestOutput, summariseFeed } from './previs/outputFeed';
 import type { FeedSummary, OutputFeed } from './previs/outputFeed';
-import { usableDisc, usableDome } from './previs/roomShell';
+import { scannedRoom, usableDisc, usableDome } from './previs/roomShell';
 import { RoomShellView } from './previs/RoomShellView';
 import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
 import {
@@ -897,6 +897,8 @@ function Scene({
           hasPanTilt: described.isMovingHead,
         };
       }),
+      // A scanned room has walls and a ceiling of its own.
+      scannedRoom(rig.room_shell),
     ),
     [rig]
   );
@@ -906,6 +908,11 @@ function Scene({
   const shell = rig.room_shell ?? null;
   const shellDome = usableDome(shell?.dome);
   const shellDisc = usableDisc(shell?.dance_floor);
+  // A room read from a scan is drawn as the scan found it. The booth, the
+  // speaker stacks, the square dance floor and the crowd are the view's own
+  // invention for a room it knows nothing about, and would stand through the
+  // stage and risers the scan did find, so they are left out of that room.
+  const scanned = scannedRoom(shell) !== null;
 
   // Fixtures whose position nobody has confirmed: drawn where the guess puts
   // them, and marked so that is plain.
@@ -959,10 +966,10 @@ function Scene({
       <BeatClockTicker clock={beatClock} />
       {showVenue ? (
         <>
-          <ClubRoom layout={venue.layout} ceiling={!shellDome} danceFloor={!shellDisc} />
-          {shell && <RoomShellView shell={shell} layout={venue.layout} />}
-          <DJBooth layout={venue.layout} clock={beatClock} />
-          <Crowd layout={venue.layout} count={quality.crowdCount} clock={beatClock} />
+          <ClubRoom layout={venue.layout} ceiling={!shellDome} danceFloor={!shellDisc && !scanned} dressing={!scanned} />
+          {shell && <RoomShellView shell={shell} layout={venue.layout} trussRows={venue.trussRows} />}
+          {!scanned && <DJBooth layout={venue.layout} clock={beatClock} />}
+          {!scanned && <Crowd layout={venue.layout} count={quality.crowdCount} clock={beatClock} />}
         </>
       ) : (
         <Stage width={rig.stage_width} depth={rig.stage_depth} />

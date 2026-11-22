@@ -118,13 +118,35 @@ const DESK_DEPTH = 0.55;
 const SPEAKER_WIDTH = 0.95;
 const SPEAKER_DEPTH = 0.8;
 
+/**
+ * The room's own box, where it is known: wall to wall and floor to ceiling,
+ * centred on the origin. A room scan gives one (`room_shell.room`).
+ */
+export type KnownRoom = { width: number; depth: number; height: number };
+
+/** True for a room whose three sizes are real numbers a room could have. */
+export function usableRoom(room: Partial<KnownRoom> | null | undefined): room is KnownRoom {
+  return Boolean(room)
+    && [room!.width, room!.depth, room!.height].every((v) => typeof v === 'number' && Number.isFinite(v))
+    && room!.width! >= 1 && room!.depth! >= 1 && room!.height! >= 1.5;
+}
+
+/**
+ * `room`, when given, is the room as measured: the walls and the ceiling go
+ * where it says instead of being worked out from the stage box. The stage box
+ * itself is left as it is, because the mounts and the cameras read it. As with
+ * the stage box, a wall still moves out for a fixture patched beyond it, so a
+ * fixture is never drawn outside the room.
+ */
 export function buildVenue(
   stage: { width: number; depth: number; height: number },
   fixtures: LayoutFixture[],
+  room?: KnownRoom | null,
 ): Venue {
   const width = Math.max(2, Number(stage.width) || 10);
   const depth = Math.max(2, Number(stage.depth) || 8);
   const height = Math.max(2, Number(stage.height) || 4);
+  const known = usableRoom(room) ? room : null;
 
   const usable = fixtures.filter(
     (f) => Number.isFinite(f.x) && Number.isFinite(f.y) && Number.isFinite(f.z),
@@ -135,10 +157,14 @@ export function buildVenue(
   const reachX = usable.reduce((m, f) => Math.max(m, Math.abs(f.x)), 0);
   const minZ = usable.reduce((m, f) => Math.min(m, f.z), 0);
   const maxZ = usable.reduce((m, f) => Math.max(m, f.z), 0);
-  const wallX = Math.max(width / 2, reachX + 0.15);
-  const backZ = Math.min(-depth / 2, minZ - 0.15);
-  const stageFrontZ = Math.max(depth / 2, maxZ + 0.3);
-  const houseZ = stageFrontZ + clamp(depth * 0.35, 2.5, 6);
+  const wallX = Math.max((known ? known.width : width) / 2, reachX + 0.15);
+  const backZ = Math.min(-(known ? known.depth : depth) / 2, minZ - 0.15);
+  // With no room known, the house is made up: the stage box, then some floor
+  // for the audience. A known room ends at its own rear wall.
+  const stageFrontZ = known
+    ? Math.max(known.depth / 2, maxZ + 0.15) - 0.3
+    : Math.max(depth / 2, maxZ + 0.3);
+  const houseZ = known ? stageFrontZ + 0.3 : stageFrontZ + clamp(depth * 0.35, 2.5, 6);
 
   // Booth: a low riser against the upstage wall with the desk at its front
   // edge, leaving the DJ the strip between desk and wall.
@@ -156,6 +182,10 @@ export function buildVenue(
 
   // --- How each fixture is held up -----------------------------------------
   const mounts = new Map<number, FixtureMount>();
+  // What "high enough to hang" is measured against: the trim height the rig
+  // was laid out to, or the real ceiling once the room is known. A rig drawn
+  // on an 8 m template and then fitted under a 3.5 m truss still hangs.
+  const trim = known ? Math.min(height, known.height) : height;
   const trussMembers: Array<{ fixture: LayoutFixture; clampY: number }> = [];
   const ceilingMembers: Array<{ fixture: LayoutFixture; clampY: number }> = [];
 
@@ -197,13 +227,13 @@ export function buildVenue(
       continue;
     }
 
-    if (!fixture.hasPanTilt && fixture.y > height + CEILING_MOUNT_ABOVE) {
+    if (!fixture.hasPanTilt && fixture.y > trim + CEILING_MOUNT_ABOVE) {
       // Its pipe is measured once the ceiling height is known, below.
       ceilingMembers.push({ fixture, clampY: fixture.y + spec.hangHeight });
       continue;
     }
 
-    if (fixture.y < height * 0.45) {
+    if (fixture.y < trim * 0.45) {
       // Too low for a truss and not on a wall: on a stand, aimed as patched.
       mounts.set(fixture.id, {
         type: 'stand',
@@ -257,8 +287,11 @@ export function buildVenue(
   const trussTop = trussRows.reduce((m, r) => Math.max(m, r.chordY + TRUSS_SECTION + TRUSS_CHORD_RADIUS), 0);
   const highest = usable.reduce((m, f) => Math.max(m, f.y), 0);
   // `stage_height` is the trim height the fixtures hang at, so the ceiling
-  // sits above it with room for the truss.
-  const ceilingY = Math.max(height + 0.9, trussTop + 0.45, highest + 0.6);
+  // sits above it with room for the truss. A known room has its own ceiling,
+  // which only goes up for a fixture or a truss patched above it.
+  const ceilingY = known
+    ? Math.max(known.height, trussTop + 0.05, highest + 0.3)
+    : Math.max(height + 0.9, trussTop + 0.45, highest + 0.6);
 
   for (const member of ceilingMembers) {
     mounts.set(member.fixture.id, { type: 'ceiling', drop: Math.max(0, ceilingY - member.clampY) });

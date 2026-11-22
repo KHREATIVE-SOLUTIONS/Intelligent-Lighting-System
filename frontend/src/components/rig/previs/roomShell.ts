@@ -1,6 +1,8 @@
 /**
  * The room a rig says it stands in: a dome, a round dance floor, a balcony,
- * risers and LED walls, built from the rig's `room_shell`.
+ * risers and LED walls, built from the rig's `room_shell`. A shell read from a
+ * room scan says other things (the room's own box, raised areas, overhead
+ * lines); those are at the end of this file.
  *
  * Scenery only, as the shell's own definition says: nothing here stops a beam.
  * Every shape is made in code from the numbers in the shell, so there are no
@@ -10,8 +12,10 @@
  * 0 is -Z (the booth), 90 is +X and 180 is +Z.
  */
 import * as THREE from 'three';
-import type { RoomShell, RoomShellBox } from '../../../types';
+import type { RoomShell, RoomShellBox, RoomShellLine } from '../../../types';
 import { box, merge, paint, place, strut, tubeY } from './geometryKit';
+import { usableRoom } from './layout';
+import type { KnownRoom, TrussRow } from './layout';
 
 type Dome = NonNullable<RoomShell['dome']>;
 type Disc = NonNullable<RoomShell['dance_floor']>;
@@ -250,4 +254,74 @@ export function boothAlreadyDrawn(
     && Math.abs(front - drawn.fasciaZ) <= tolerance
     && Math.abs(back - drawn.backZ) <= tolerance
     && Math.abs(shellBooth.width - drawn.width) <= tolerance * 2;
+}
+
+// ---------------------------------------------------------------------------
+// A scanned room (docs/ROOM_SCAN.md): its own box, its raised areas and the
+// trusses or bars found overhead. All of it is a suggestion.
+// ---------------------------------------------------------------------------
+
+/** A truss or bar a scan found, drawn as a plain bar: nobody has said what it is. */
+const SCAN_LINE = '#737a87';
+
+/**
+ * The room's own box, when the shell was read from a scan and says one. A demo
+ * preset's shell has none: its room is still worked out from the stage box.
+ */
+export function scannedRoom(shell: RoomShell | null | undefined): KnownRoom | null {
+  if (!shell || shell.source !== 'scan') return null;
+  const room = shell.room;
+  if (!usableRoom(room)) return null;
+  return { width: room.width, depth: room.depth, height: room.height };
+}
+
+/** The raised areas a scan found that can be drawn: stage, risers, booth. */
+export function scanRisers(shell: RoomShell | null | undefined): RoomShellBox[] {
+  return (shell?.risers ?? []).filter(usableBox);
+}
+
+export function usableLine(line: RoomShellLine | null | undefined): line is RoomShellLine {
+  return Boolean(line) && finite(line!.x1, line!.z1, line!.x2, line!.z2, line!.height)
+    && line!.height > 0
+    && Math.hypot(line!.x2 - line!.x1, line!.z2 - line!.z1) > 0.2;
+}
+
+/** Whether a line runs across the room (along X) rather than up and down it. */
+function runsAcross(line: RoomShellLine): boolean {
+  return Math.abs(line.x2 - line.x1) >= Math.abs(line.z2 - line.z1);
+}
+
+/**
+ * Whether the truss the view already hangs over a row of fixtures is this
+ * line. Once a scan's suggestion is applied the fixtures hang under the line
+ * it found, and the view builds a truss over them: drawing the scan's bar as
+ * well would put two trusses in one place.
+ */
+export function lineAlreadyDrawn(line: RoomShellLine, rows: TrussRow[], tolerance = 0.6): boolean {
+  if (!runsAcross(line)) return false;
+  const xMin = Math.min(line.x1, line.x2);
+  const xMax = Math.max(line.x1, line.x2);
+  const z = (line.z1 + line.z2) / 2;
+  return rows.some((row) =>
+    Math.abs(row.z - z) <= tolerance
+    && row.xMin <= xMax && row.xMax >= xMin
+    // The chord is above the fixtures, which hang at the line's underside.
+    && row.chordY >= line.height - 0.3 && row.chordY <= line.height + 1.5);
+}
+
+/** The overhead lines a scan found, as plain bars at their own height. Null when there are none. */
+export function buildOverheadLines(lines: RoomShellLine[]): THREE.BufferGeometry | null {
+  const parts: THREE.BufferGeometry[] = [];
+  for (const line of lines) {
+    const length = Math.hypot(line.x2 - line.x1, line.z2 - line.z1);
+    const across = Math.min(1.2, Math.max(0.05, typeof line.across === 'number' && finite(line.across) ? line.across : 0.3));
+    const top = typeof line.top === 'number' && finite(line.top) && line.top > line.height ? line.top : line.height + 0.3;
+    const thickness = Math.max(0.05, top - line.height);
+    const centre: [number, number, number] = [
+      (line.x1 + line.x2) / 2, line.height + thickness / 2, (line.z1 + line.z2) / 2,
+    ];
+    const bar = runsAcross(line) ? box(length, thickness, across) : box(across, thickness, length);
+    parts.push(paint(place(bar, centre), SCAN_LINE));
+  }
+  return parts.length ? merge(parts) : null;
 }
