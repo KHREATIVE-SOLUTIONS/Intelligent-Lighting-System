@@ -34,7 +34,7 @@ import { GuessMarkers } from './previs/GuessMarkers';
 import type { GuessPoint } from './previs/GuessMarkers';
 import { createOutputFeed, ingestOutput, summariseFeed } from './previs/outputFeed';
 import type { FeedSummary, OutputFeed } from './previs/outputFeed';
-import { scannedRoom, usableDisc, usableDome } from './previs/roomShell';
+import { roomOutline, scanHangers, scannedRoom, usableDisc, usableDome } from './previs/roomShell';
 import { RoomShellView } from './previs/RoomShellView';
 import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
 import {
@@ -915,6 +915,8 @@ function Scene({
       }),
       // A scanned room has walls and a ceiling of its own.
       scannedRoom(rig.room_shell),
+      // And may have truss the view's own cannot stand in for: at an angle, or a ring.
+      scanHangers(rig.room_shell),
     ),
     [rig]
   );
@@ -929,6 +931,9 @@ function Scene({
   // invention for a room it knows nothing about, and would stand through the
   // stage and risers the scan did find, so they are left out of that room.
   const scanned = scannedRoom(shell) !== null;
+  // One that is not a box has its floor, walls and ceiling drawn along its
+  // outline (RoomShellView), in place of the club room's box.
+  const outlined = useMemo(() => roomOutline(shell) !== null, [shell]);
 
   // Fixtures whose position nobody has confirmed: drawn where the guess puts
   // them, and marked so that is plain.
@@ -1005,7 +1010,13 @@ function Scene({
       <BeatClockTicker clock={beatClock} />
       {showVenue ? (
         <>
-          <ClubRoom layout={venue.layout} ceiling={!shellDome} danceFloor={!shellDisc && !scanned} dressing={!scanned} />
+          <ClubRoom
+            layout={venue.layout}
+            ceiling={!shellDome}
+            danceFloor={!shellDisc && !scanned}
+            dressing={!scanned}
+            shell={!outlined}
+          />
           {shell && <RoomShellView shell={shell} layout={venue.layout} trussRows={venue.trussRows} />}
           {!scanned && <DJBooth layout={venue.layout} clock={beatClock} />}
           {!scanned && <Crowd layout={venue.layout} count={quality.crowdCount} clock={beatClock} />}

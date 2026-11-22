@@ -53,6 +53,10 @@ export interface RoomScanPreview {
     height: number;
     raised_areas: number;
     overhead_lines: number;
+    /** Rings of truss found overhead. Absent from an older server's answer. */
+    overhead_rings?: number;
+    /** 4 for a box; the number of outline segments for a room that is not one. */
+    walls?: number;
     hanging_heights: number[];
     units: string;
     up_axis: string;
@@ -156,7 +160,27 @@ export function roomSizeText(preview: RoomScanPreview): string {
   return `${metres(width)} wide, ${metres(depth)} deep, ${metres(height)} high`;
 }
 
-/** One line per thing the scan found, in the order the room is built: raised areas, then overhead. */
+/**
+ * Which way an overhead line runs, in words, read from its two ends: a shell
+ * stored before headings were written has nothing else to go by. Within two
+ * degrees of the room's own axes it runs along them.
+ */
+export function lineRunText(line: { x1: number; z1: number; x2: number; z2: number; axis?: string }): string {
+  const runX = Math.abs(line.x2 - line.x1);
+  const runZ = Math.abs(line.z2 - line.z1);
+  if (!(runX > 0 || runZ > 0)) {
+    return line.axis === 'z' ? 'running upstage to downstage' : 'running across the room';
+  }
+  const degrees = (Math.atan2(runZ, runX) * 180) / Math.PI;
+  if (degrees <= 2) return 'running across the room';
+  if (degrees >= 88) return 'running upstage to downstage';
+  return `running at ${Math.round(degrees)} degrees to the room`;
+}
+
+/**
+ * One line per thing the scan found, in the order the room is built: the
+ * walls when the room is not a box, raised areas, then overhead.
+ */
 export function foundLines(preview: RoomScanPreview): string[] {
   const shell = preview.room_shell;
   const lines: string[] = [];
@@ -170,10 +194,20 @@ export function foundLines(preview: RoomScanPreview): string[] {
     const length = typeof line.length === 'number' ? line.length : Math.hypot(line.x2 - line.x1, line.z2 - line.z1);
     lines.push(
       `${line.name ?? 'Overhead line'}: ${metres(length)} long, underside ${line.height.toFixed(2)} m up, `
-      + `${line.axis === 'z' ? 'running upstage to downstage' : 'running across the room'}`,
+      + lineRunText(line),
+    );
+  }
+  for (const ring of shell.truss_rings ?? []) {
+    lines.push(
+      `${ring.name ?? 'Overhead ring'}: a ring ${metres(ring.radius * 2)} across, `
+      + `underside ${ring.height.toFixed(2)} m up`,
     );
   }
   if (lines.length === 0) lines.push('No stage, riser, booth, truss or bar was found: only the floor, walls and ceiling.');
+  const corners = shell.room?.outline?.length ?? 0;
+  if (corners >= 3) {
+    lines.unshift(`The room is not a box: its floor outline has ${corners} walls. The size above is the box round it.`);
+  }
   return lines;
 }
 

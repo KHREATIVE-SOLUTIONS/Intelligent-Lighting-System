@@ -12,10 +12,10 @@
  * 0 is -Z (the booth), 90 is +X and 180 is +Z.
  */
 import * as THREE from 'three';
-import type { RoomShell, RoomShellBox, RoomShellLine } from '../../../types';
+import type { RoomShell, RoomShellBox, RoomShellLine, RoomShellRing } from '../../../types';
 import { box, merge, paint, place, strut, tubeY } from './geometryKit';
 import { usableRoom } from './layout';
-import type { KnownRoom, TrussRow } from './layout';
+import type { Hanger, KnownRoom, TrussRow } from './layout';
 
 type Dome = NonNullable<RoomShell['dome']>;
 type Disc = NonNullable<RoomShell['dance_floor']>;
@@ -286,16 +286,51 @@ export function usableLine(line: RoomShellLine | null | undefined): line is Room
     && Math.hypot(line!.x2 - line!.x1, line!.z2 - line!.z1) > 0.2;
 }
 
-/** Whether a line runs across the room (along X) rather than up and down it. */
-function runsAcross(line: RoomShellLine): boolean {
-  return Math.abs(line.x2 - line.x1) >= Math.abs(line.z2 - line.z1);
+/** A line within this of straight across the room is one the view's own truss can stand in for. */
+const ACROSS_WITHIN_DEG = 2;
+
+/**
+ * Whether a line runs straight across the room (along X), read from its two
+ * ends: a shell stored before headings were written says nothing else.
+ */
+export function runsAcross(line: RoomShellLine): boolean {
+  return Math.abs(line.z2 - line.z1) <= Math.abs(line.x2 - line.x1) * Math.tan(ACROSS_WITHIN_DEG * DEG);
+}
+
+export function usableRing(ring: RoomShellRing | null | undefined): ring is RoomShellRing {
+  return Boolean(ring) && finite(ring!.center_x, ring!.center_z, ring!.radius, ring!.height)
+    && ring!.radius > 0.2 && ring!.height > 0;
+}
+
+/** The rings of truss a scan found that can be drawn. */
+export function scanRings(shell: RoomShell | null | undefined): RoomShellRing[] {
+  return (shell?.truss_rings ?? []).filter(usableRing);
+}
+
+/**
+ * The trusses of a scanned room that the view's own truss cannot stand in
+ * for: lines that do not run straight across the room, and rings. Fixtures
+ * hang from these as the room has them (`buildVenue`'s `hangers`).
+ */
+export function scanHangers(shell: RoomShell | null | undefined): Hanger[] {
+  if (!shell || shell.source !== 'scan') return [];
+  const hangers: Hanger[] = [];
+  for (const line of (shell.truss_lines ?? []).filter(usableLine)) {
+    if (runsAcross(line)) continue;
+    hangers.push({ kind: 'line', x1: line.x1, z1: line.z1, x2: line.x2, z2: line.z2, height: line.height });
+  }
+  for (const ring of scanRings(shell)) {
+    hangers.push({ kind: 'ring', centerX: ring.center_x, centerZ: ring.center_z, radius: ring.radius, height: ring.height });
+  }
+  return hangers;
 }
 
 /**
  * Whether the truss the view already hangs over a row of fixtures is this
  * line. Once a scan's suggestion is applied the fixtures hang under the line
  * it found, and the view builds a truss over them: drawing the scan's bar as
- * well would put two trusses in one place.
+ * well would put two trusses in one place. The view's truss only runs
+ * straight across the room, so a line at any other heading is never it.
  */
 export function lineAlreadyDrawn(line: RoomShellLine, rows: TrussRow[], tolerance = 0.6): boolean {
   if (!runsAcross(line)) return false;
@@ -309,19 +344,157 @@ export function lineAlreadyDrawn(line: RoomShellLine, rows: TrussRow[], toleranc
     && row.chordY >= line.height - 0.3 && row.chordY <= line.height + 1.5);
 }
 
-/** The overhead lines a scan found, as plain bars at their own height. Null when there are none. */
+/** How wide and how thick to draw a scanned truss: what the scan measured, or 0.3 m of each. */
+function barSection(shape: { height: number; top?: number; across?: number }): { across: number; thickness: number } {
+  const across = Math.min(1.2, Math.max(0.05, typeof shape.across === 'number' && finite(shape.across) ? shape.across : 0.3));
+  const top = typeof shape.top === 'number' && finite(shape.top) && shape.top > shape.height ? shape.top : shape.height + 0.3;
+  return { across, thickness: Math.max(0.05, top - shape.height) };
+}
+
+/**
+ * The overhead lines a scan found, as plain bars at their own height, each
+ * turned to the heading it runs at on the plan. Null when there are none.
+ */
 export function buildOverheadLines(lines: RoomShellLine[]): THREE.BufferGeometry | null {
   const parts: THREE.BufferGeometry[] = [];
   for (const line of lines) {
     const length = Math.hypot(line.x2 - line.x1, line.z2 - line.z1);
-    const across = Math.min(1.2, Math.max(0.05, typeof line.across === 'number' && finite(line.across) ? line.across : 0.3));
-    const top = typeof line.top === 'number' && finite(line.top) && line.top > line.height ? line.top : line.height + 0.3;
-    const thickness = Math.max(0.05, top - line.height);
+    const { across, thickness } = barSection(line);
     const centre: [number, number, number] = [
       (line.x1 + line.x2) / 2, line.height + thickness / 2, (line.z1 + line.z2) / 2,
     ];
-    const bar = runsAcross(line) ? box(length, thickness, across) : box(across, thickness, length);
-    parts.push(paint(place(bar, centre), SCAN_LINE));
+    // The bar is made along X. A turn of `a` about Y takes +X to (cos a, -sin a)
+    // on the plan, so a line heading towards +Z needs the turn the other way.
+    const turn = -Math.atan2(line.z2 - line.z1, line.x2 - line.x1);
+    parts.push(paint(place(box(length, thickness, across), centre, [0, turn, 0]), SCAN_LINE));
   }
   return parts.length ? merge(parts) : null;
+}
+
+/** The rings of truss a scan found, as plain flat rings at their own height. Null when there are none. */
+export function buildTrussRings(rings: RoomShellRing[]): THREE.BufferGeometry | null {
+  const parts: THREE.BufferGeometry[] = [];
+  for (const ring of rings) {
+    const { across, thickness } = barSection(ring);
+    const half = Math.min(across / 2, ring.radius * 0.9);
+    const segments = Math.max(32, Math.min(96, Math.round(ring.radius * 16)));
+    parts.push(paint(
+      place(
+        tubeY(ring.radius + half, ring.radius - half, thickness, segments),
+        [ring.center_x, ring.height + thickness / 2, ring.center_z],
+      ),
+      SCAN_LINE,
+    ));
+  }
+  return parts.length ? merge(parts) : null;
+}
+
+// ---------------------------------------------------------------------------
+// A scanned room that is not a box: its floor outline, and the walls along it.
+// ---------------------------------------------------------------------------
+
+export type OutlinePoint = { x: number; z: number };
+
+/** One wall of a room's outline, as the view stands it up. */
+export type OutlineWall = {
+  x1: number;
+  z1: number;
+  x2: number;
+  z2: number;
+  length: number;
+  midX: number;
+  midZ: number;
+  /** Unit vector on the plan pointing into the room. */
+  inX: number;
+  inZ: number;
+  /** The turn about Y that faces a wall modelled looking down +Z into the room. */
+  yaw: number;
+};
+
+/** Twice-signed area the usual way, on the plan: positive for corners in clockwise order seen from above. */
+export function outlineArea(outline: OutlinePoint[]): number {
+  let twice = 0;
+  for (let i = 0; i < outline.length; i += 1) {
+    const a = outline[i];
+    const b = outline[(i + 1) % outline.length];
+    twice += a.x * b.z - b.x * a.z;
+  }
+  return twice / 2;
+}
+
+/**
+ * The floor outline of a scanned room that is not a box, corners in order, or
+ * null: for a box room, a shell stored before outlines were read, any shell
+ * that is not a scan, and an outline that is not one (too few corners, a
+ * number missing, no area).
+ */
+export function roomOutline(shell: RoomShell | null | undefined): OutlinePoint[] | null {
+  if (!shell || shell.source !== 'scan') return null;
+  const room = shell.room;
+  if (!room || !usableRoom(room)) return null;
+  const raw = room.outline;
+  if (!Array.isArray(raw) || raw.length < 3) return null;
+  if (!raw.every((point) => point && finite(point.x, point.z))) return null;
+  const outline = raw.map((point) => ({ x: point.x, z: point.z }));
+  if (!(Math.abs(outlineArea(outline)) >= 1)) return null;
+  return outline;
+}
+
+/**
+ * The walls of an outline: one per pair of neighbouring corners, the last
+ * corner joined back to the first, each knowing which side of it the room is
+ * on. The corners may come in either order round the room.
+ */
+export function outlineWalls(outline: OutlinePoint[]): OutlineWall[] {
+  const clockwise = outlineArea(outline) > 0;
+  const walls: OutlineWall[] = [];
+  for (let i = 0; i < outline.length; i += 1) {
+    const a = outline[i];
+    const b = outline[(i + 1) % outline.length];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const length = Math.hypot(dx, dz);
+    if (!(length > 0.01)) continue;
+    // With the corners clockwise seen from above, the room is on the side (-dz, dx).
+    const sign = clockwise ? 1 : -1;
+    const inX = (-dz / length) * sign + 0;
+    const inZ = (dx / length) * sign + 0;
+    walls.push({
+      x1: a.x, z1: a.z, x2: b.x, z2: b.z, length,
+      midX: (a.x + b.x) / 2, midZ: (a.z + b.z) / 2,
+      inX, inZ,
+      // A turn of `a` about Y takes +Z to (sin a, cos a) on the plan.
+      yaw: Math.atan2(inX, inZ),
+    });
+  }
+  return walls;
+}
+
+/** Whether a point on the plan is on the room's side of a wall: a camera there sees the wall's face. */
+export function onRoomSide(wall: OutlineWall, x: number, z: number): boolean {
+  return (x - wall.midX) * wall.inX + (z - wall.midZ) * wall.inZ > 0;
+}
+
+/** Whether a point on the plan is inside an outline. */
+export function insideOutline(outline: OutlinePoint[], x: number, z: number): boolean {
+  let inside = false;
+  for (let i = 0; i < outline.length; i += 1) {
+    const a = outline[i];
+    const b = outline[(i + 1) % outline.length];
+    if ((a.z > z) !== (b.z > z) && x < a.x + ((z - a.z) * (b.x - a.x)) / (b.z - a.z)) inside = !inside;
+  }
+  return inside;
+}
+
+/** The floor or the ceiling of an outlined room: the outline itself, flat, at height `y`. */
+export function buildOutlineFlat(outline: OutlinePoint[], y: number, color: THREE.ColorRepresentation): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  outline.forEach((point, index) => {
+    if (index === 0) shape.moveTo(point.x, point.z);
+    else shape.lineTo(point.x, point.z);
+  });
+  shape.closePath();
+  // Drawn in XY, laid flat: the shape's Y becomes the room's Z.
+  const flat = new THREE.ShapeGeometry(shape).rotateX(Math.PI / 2);
+  return merge([paint(place(flat, [0, y, 0]), color)]);
 }

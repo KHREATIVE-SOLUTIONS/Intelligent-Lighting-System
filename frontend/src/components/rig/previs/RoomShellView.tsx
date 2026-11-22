@@ -1,7 +1,8 @@
 /**
  * Draws the room a rig describes in its `room_shell`: dome, round dance
  * floor, balcony, risers and LED walls, and for a scanned room its raised
- * areas and the trusses or bars found overhead.
+ * areas, the trusses, bars and rings found overhead, and, where the room is
+ * not a box, the floor, walls and ceiling along its outline.
  *
  * It stands inside the club room the view already builds (floor and walls),
  * and takes the place of that room's flat ceiling and square dance floor. As
@@ -14,6 +15,7 @@ import * as THREE from 'three';
 import type { RoomShell } from '../../../types';
 import type { ClubLayout, TrussRow } from './layout';
 import { glossMaterial, glowMaterial, mattMaterial } from './materials';
+import { buildWall } from './ClubRoom';
 import {
   boothAlreadyDrawn,
   buildBalcony,
@@ -21,9 +23,15 @@ import {
   buildDome,
   buildDomeSurround,
   buildLedWalls,
+  buildOutlineFlat,
   buildOverheadLines,
   buildRisers,
+  buildTrussRings,
   lineAlreadyDrawn,
+  onRoomSide,
+  outlineWalls,
+  roomOutline,
+  scanRings,
   scanRisers,
   underDome,
   usableBalcony,
@@ -32,9 +40,76 @@ import {
   usableDome,
   usableLine,
 } from './roomShell';
+import type { OutlinePoint } from './roomShell';
 
 /** One array for "no truss", so a caller that passes none does not rebuild the room each render. */
 const NO_ROWS: TrussRow[] = [];
+
+/** The club room's own floor and ceiling colours (ClubRoom.tsx), so an outlined room matches a box one. */
+const OUTLINE_FLOOR = '#3c3d45';
+const OUTLINE_CEILING = '#2a2b31';
+
+/**
+ * A scanned room that is not a box: a floor and a ceiling cut to its outline
+ * and one wall along each segment of it. It takes the place of the club room's
+ * box (`ClubRoom` with `shell` off). As there, each wall is drawn only while
+ * the camera is on the room's side of it, so a camera outside looks in.
+ */
+const OutlineRoom = memo(function OutlineRoom({
+  outline,
+  height,
+  ceiling,
+}: {
+  outline: OutlinePoint[];
+  height: number;
+  /** Off when the shell supplies the ceiling itself (a dome). */
+  ceiling: boolean;
+}) {
+  const wallRefs = useRef<Array<THREE.Group | null>>([]);
+  const ceilingRef = useRef<THREE.Mesh>(null);
+
+  const built = useMemo(() => {
+    const walls = outlineWalls(outline);
+    return {
+      walls,
+      panels: walls.map((wall) => buildWall(wall.length, height)),
+      floor: buildOutlineFlat(outline, 0, OUTLINE_FLOOR),
+      ceiling: buildOutlineFlat(outline, height, OUTLINE_CEILING),
+    };
+  }, [outline, height]);
+
+  useEffect(() => () => {
+    built.panels.forEach((panel) => panel.dispose());
+    built.floor.dispose();
+    built.ceiling.dispose();
+  }, [built]);
+
+  useFrame(({ camera }) => {
+    const p = camera.position;
+    built.walls.forEach((wall, index) => {
+      const group = wallRefs.current[index];
+      if (group) group.visible = onRoomSide(wall, p.x, p.z);
+    });
+    if (ceilingRef.current) ceilingRef.current.visible = p.y < height;
+  });
+
+  return (
+    <group>
+      <mesh geometry={built.floor} material={mattMaterial} receiveShadow dispose={null} />
+      {built.walls.map((wall, index) => (
+        <group
+          key={`${index}-${wall.x1}-${wall.z1}-${wall.x2}-${wall.z2}`}
+          ref={(node) => { wallRefs.current[index] = node; }}
+          position={[wall.midX, 0, wall.midZ]}
+          rotation={[0, wall.yaw, 0]}
+        >
+          <mesh geometry={built.panels[index]} material={mattMaterial} receiveShadow dispose={null} />
+        </group>
+      ))}
+      {ceiling && <mesh ref={ceilingRef} geometry={built.ceiling} material={mattMaterial} dispose={null} />}
+    </group>
+  );
+});
 
 export const RoomShellView = memo(function RoomShellView({
   shell,
@@ -48,6 +123,8 @@ export const RoomShellView = memo(function RoomShellView({
 }) {
   const domeRef = useRef<THREE.Group>(null);
   const dome = usableDome(shell.dome) ? shell.dome : null;
+  // A scanned room that is not a box: its floor, walls and ceiling follow its outline.
+  const outline = useMemo(() => roomOutline(shell), [shell]);
 
   const built = useMemo(() => {
     // A scanned room's raised areas (stage, risers, booth) are all drawn as
@@ -73,12 +150,14 @@ export const RoomShellView = memo(function RoomShellView({
       balcony: usableBalcony(shell.balcony) ? buildBalcony(shell.balcony) : null,
       risers: buildRisers(risers),
       overhead: buildOverheadLines(overhead),
+      rings: shell.source === 'scan' ? buildTrussRings(scanRings(shell)) : null,
       walls: buildLedWalls((shell.led_walls ?? []).filter(usableBox)),
     };
   }, [shell, dome, layout, trussRows]);
 
   useEffect(() => () => {
     built.overhead?.dispose();
+    built.rings?.dispose();
     built.dome?.dispose();
     built.surround?.dispose();
     built.disc?.dispose();
@@ -106,6 +185,8 @@ export const RoomShellView = memo(function RoomShellView({
       {built.balcony && <mesh geometry={built.balcony} material={mattMaterial} receiveShadow dispose={null} />}
       {built.risers && <mesh geometry={built.risers} material={mattMaterial} receiveShadow dispose={null} />}
       {built.overhead && <mesh geometry={built.overhead} material={mattMaterial} dispose={null} />}
+      {built.rings && <mesh geometry={built.rings} material={mattMaterial} dispose={null} />}
+      {outline && <OutlineRoom outline={outline} height={layout.ceilingY} ceiling={!dome} />}
       {built.walls && (
         <>
           <mesh geometry={built.walls.frames} material={mattMaterial} dispose={null} />

@@ -124,7 +124,10 @@ export function dragStep(state: DragState, ray: Ray, heightMode: boolean): DragS
 // Snapping to what a room scan found
 // ---------------------------------------------------------------------------
 
-/** A line on the plan at a height: a truss or bar, or one edge of a stage, riser or booth. */
+/**
+ * Something on the plan at a height that a fixture snaps onto: a truss or bar
+ * at any heading, one edge of a stage, riser or booth, or a ring of truss.
+ */
 export type SnapLine = {
   x1: number;
   z1: number;
@@ -134,9 +137,15 @@ export type SnapLine = {
   height: number;
   kind: 'truss' | 'edge';
   name: string;
+  /** Set for a ring of truss: the circle to snap onto. The two ends are then its centre and are not read. */
+  ring?: { centerX: number; centerZ: number; radius: number };
 };
 
-/** Every line a fixture can snap to in a scanned room. Empty for any other room. */
+/**
+ * Everything a fixture can snap to in a scanned room: its truss lines at
+ * whatever heading they run, its rings of truss, and the edges of its raised
+ * areas. Empty for any other room.
+ */
 export function snapLines(shell: RoomShell | null | undefined): SnapLine[] {
   if (!shell || shell.source !== 'scan') return [];
   const lines: SnapLine[] = [];
@@ -145,6 +154,15 @@ export function snapLines(shell: RoomShell | null | undefined): SnapLine[] {
     lines.push({
       x1: line.x1, z1: line.z1, x2: line.x2, z2: line.z2,
       height: line.height, kind: 'truss', name: line.name || `Overhead line ${index + 1}`,
+    });
+  });
+  (shell.truss_rings ?? []).forEach((ring, index) => {
+    if (!ring || ![ring.center_x, ring.center_z, ring.radius, ring.height].every(finite)) return;
+    if (!(ring.radius > 0)) return;
+    lines.push({
+      x1: ring.center_x, z1: ring.center_z, x2: ring.center_x, z2: ring.center_z,
+      height: ring.height, kind: 'truss', name: ring.name || `Overhead ring ${index + 1}`,
+      ring: { centerX: ring.center_x, centerZ: ring.center_z, radius: ring.radius },
     });
   });
   (shell.risers ?? []).forEach((box, index) => {
@@ -184,6 +202,26 @@ export function nearestOnSegment(
   return { x: px, z: pz, distance: Math.hypot(x - px, z - pz) };
 }
 
+/**
+ * The nearest point to (x, z) on a circle: straight out from, or in towards,
+ * its centre. Null at the centre itself, which is as near one side as another.
+ */
+export function nearestOnRing(
+  x: number, z: number, ring: { centerX: number; centerZ: number; radius: number },
+): { x: number; z: number; distance: number } | null {
+  const dx = x - ring.centerX;
+  const dz = z - ring.centerZ;
+  const out = Math.hypot(dx, dz);
+  if (!(out > 1e-6)) return null;
+  const scale = ring.radius / out;
+  return { x: ring.centerX + dx * scale, z: ring.centerZ + dz * scale, distance: Math.abs(out - ring.radius) };
+}
+
+/** The nearest point to (x, z) on a snap target, whichever shape it is. */
+export function nearestOnTarget(x: number, z: number, target: SnapLine): { x: number; z: number; distance: number } | null {
+  return target.ring ? nearestOnRing(x, z, target.ring) : nearestOnSegment(x, z, target);
+}
+
 export type Snapped = Point3 & {
   /** The line it snapped onto, or null when it is where it was put. */
   snappedTo: SnapLine | null;
@@ -206,8 +244,8 @@ export function snapToLines(
   let best: { x: number; z: number; distance: number; line: SnapLine } | null = null;
   for (const line of lines) {
     if (Math.abs(point.y - line.height) > heightWindow) continue;
-    const near = nearestOnSegment(point.x, point.z, line);
-    if (near.distance > radius) continue;
+    const near = nearestOnTarget(point.x, point.z, line);
+    if (!near || near.distance > radius) continue;
     // A truss wins a tie with an edge: it is what a fixture hangs from.
     if (!best || near.distance < best.distance - 1e-9
       || (Math.abs(near.distance - best.distance) <= 1e-9 && line.kind === 'truss' && best.line.kind !== 'truss')) {

@@ -170,8 +170,30 @@ export interface RoomShellLine {
   length?: number;
   /** Its width across the line. */
   across?: number;
-  /** Which way it runs: 'x' is across the room, 'z' is upstage to downstage. */
+  /**
+   * Which way it runs: 'x' is across the room, 'z' is upstage to downstage,
+   * 'angled' is anything else. A reader should go by the line's two ends, which
+   * every stored shell has; this and `heading_deg` are for wording.
+   */
   axis?: string;
+  /** Degrees clockwise from across the room, seen from above: 0 runs across, 90 upstage to downstage. */
+  heading_deg?: number;
+  suggested?: boolean;
+  basis?: string;
+}
+
+/** A ring of truss a room scan found overhead: a circle on the plan at a height. */
+export interface RoomShellRing {
+  name?: string;
+  center_x: number;
+  center_z: number;
+  /** To the middle of the truss. */
+  radius: number;
+  /** Height of its underside: where a fixture hangs from. */
+  height: number;
+  top?: number;
+  /** Its width across the ring, inside edge to outside edge. */
+  across?: number;
   suggested?: boolean;
   basis?: string;
 }
@@ -216,13 +238,30 @@ export interface RoomShell {
   source?: string;
   /** True for a scanned shell: every part of it is a suggestion. */
   suggested?: boolean;
-  /** The room's own box: wall to wall, floor to ceiling, centred on the origin. */
-  room?: { width: number; depth: number; height: number; suggested?: boolean; basis?: string } | null;
+  /**
+   * The room's own box: wall to wall, floor to ceiling, centred on the origin.
+   * A room that is not a box also carries `outline`: the corners of its floor
+   * in order, clockwise seen from above, the last joined back to the first.
+   * Its walls are the segments between them, and width and depth are then the
+   * box round the outline. A shell with no outline is a box.
+   */
+  room?: {
+    width: number;
+    depth: number;
+    height: number;
+    outline?: Array<{ x: number; z: number }> | null;
+    suggested?: boolean;
+    basis?: string;
+  } | null;
   /** Raised areas: a stage, a riser, a booth. */
   risers?: RoomShellBox[] | null;
-  /** Trusses and bars found overhead. */
+  /** Trusses and bars found overhead, at any heading on the plan. */
   truss_lines?: RoomShellLine[] | null;
-  hanging_bands?: Array<{ height: number; top?: number; lines?: number; suggested?: boolean; basis?: string }> | null;
+  /** Rings of truss found overhead. Absent from a shell stored before rings were read. */
+  truss_rings?: RoomShellRing[] | null;
+  hanging_bands?: Array<{
+    height: number; top?: number; lines?: number; rings?: number; suggested?: boolean; basis?: string;
+  }> | null;
   /** How the scan was read: file, units, up axis, turns. */
   scan?: {
     file?: string | null;

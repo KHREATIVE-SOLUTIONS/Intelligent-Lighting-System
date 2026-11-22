@@ -132,16 +132,57 @@ export function usableRoom(room: Partial<KnownRoom> | null | undefined): room is
 }
 
 /**
+ * A truss the room itself has, which the view draws from the room and not
+ * from the fixtures under it: a line at an angle on the plan, or a ring. A
+ * room scan finds these (`room_shell.truss_lines`, `room_shell.truss_rings`).
+ * `height` is its underside, where a fixture hangs from.
+ */
+export type Hanger =
+  | { kind: 'line'; x1: number; z1: number; x2: number; z2: number; height: number }
+  | { kind: 'ring'; centerX: number; centerZ: number; radius: number; height: number };
+
+/** How far off a hanger's line on the plan, and off its height, a fixture still hangs from it. */
+export const HANGER_REACH = 0.3;
+export const HANGER_HEIGHT_WINDOW = 0.6;
+
+/** How far a point on the plan is from a hanger's line or circle. */
+export function hangerDistance(hanger: Hanger, x: number, z: number): number {
+  if (hanger.kind === 'ring') {
+    return Math.abs(Math.hypot(x - hanger.centerX, z - hanger.centerZ) - hanger.radius);
+  }
+  const dx = hanger.x2 - hanger.x1;
+  const dz = hanger.z2 - hanger.z1;
+  const lengthSq = dx * dx + dz * dz;
+  const along = lengthSq > 0
+    ? Math.max(0, Math.min(1, ((x - hanger.x1) * dx + (z - hanger.z1) * dz) / lengthSq))
+    : 0;
+  return Math.hypot(x - (hanger.x1 + along * dx), z - (hanger.z1 + along * dz));
+}
+
+/** Whether a fixture hangs from one of the room's own trusses. */
+export function hangsFrom(hangers: Hanger[], fixture: { x: number; y: number; z: number }): boolean {
+  return hangers.some((hanger) =>
+    Math.abs(fixture.y - hanger.height) <= HANGER_HEIGHT_WINDOW
+    && hangerDistance(hanger, fixture.x, fixture.z) <= HANGER_REACH);
+}
+
+/**
  * `room`, when given, is the room as measured: the walls and the ceiling go
  * where it says instead of being worked out from the stage box. The stage box
  * itself is left as it is, because the mounts and the cameras read it. As with
  * the stage box, a wall still moves out for a fixture patched beyond it, so a
  * fixture is never drawn outside the room.
+ *
+ * `hangers` are trusses the room has that do not run across it. A fixture
+ * hanging from one is clamped to it and gets no truss of the view's own: the
+ * view's truss only ever runs across the room, and would otherwise hang a
+ * short stub of it over every fixture round a ring.
  */
 export function buildVenue(
   stage: { width: number; depth: number; height: number },
   fixtures: LayoutFixture[],
   room?: KnownRoom | null,
+  hangers: Hanger[] = [],
 ): Venue {
   const width = Math.max(2, Number(stage.width) || 10);
   const depth = Math.max(2, Number(stage.depth) || 8);
@@ -224,6 +265,12 @@ export function buildVenue(
         dirZ: nearest.dirZ,
         reach: Math.max(0.02, nearest.reach),
       });
+      continue;
+    }
+
+    if (hangers.length > 0 && hangsFrom(hangers, fixture)) {
+      // On the room's own truss, which is drawn from the room.
+      mounts.set(fixture.id, { type: 'truss', drop: 0 });
       continue;
     }
 

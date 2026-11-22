@@ -43,7 +43,7 @@ function panel(width: number, height: number): THREE.BufferGeometry {
  * on x = 0. Panels in two close shades with a pilaster on every other seam,
  * so a plain dark surface still shows its depth and its scale.
  */
-function buildWall(length: number, height: number): THREE.BufferGeometry {
+export function buildWall(length: number, height: number): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [
     paint(place(panel(length, height), [0, height / 2, 0]), WALL_SEAM),
     paint(place(box(length, 0.28, 0.04), [0, 0.14, 0.02]), SKIRTING),
@@ -171,8 +171,15 @@ export const ClubRoom = memo(function ClubRoom({
   ceiling = true,
   danceFloor = true,
   dressing = true,
+  shell = true,
 }: {
   layout: ClubLayout;
+  /**
+   * The room's own box: its floor, four walls and flat ceiling. Off for a
+   * scanned room that is not a box, whose floor, walls and ceiling follow its
+   * outline and are drawn from the room shell. The house lights stay.
+   */
+  shell?: boolean;
   /**
    * The bar counter, door and exit sign the view makes up for the rear wall.
    * Off for a scanned room: its walls are real, and the scan found no bar there.
@@ -253,7 +260,7 @@ export const ClubRoom = memo(function ClubRoom({
         decay={2}
       />
 
-      <mesh geometry={built.floor} material={mattMaterial} receiveShadow dispose={null} />
+      {shell && <mesh geometry={built.floor} material={mattMaterial} receiveShadow dispose={null} />}
       {danceFloor && (
         <>
           <mesh geometry={built.dance.tiles} material={glossMaterial} receiveShadow dispose={null} />
@@ -261,28 +268,32 @@ export const ClubRoom = memo(function ClubRoom({
         </>
       )}
 
-      <group ref={backRef} position={[0, 0, layout.backZ]}>
-        <mesh geometry={built.crossWall} material={mattMaterial} receiveShadow dispose={null} />
-      </group>
-      <group ref={houseRef} position={[0, 0, layout.houseZ]} rotation={[0, Math.PI, 0]}>
-        <mesh geometry={built.crossWall} material={mattMaterial} receiveShadow dispose={null} />
-        {dressing && <mesh geometry={built.house.solid} material={mattMaterial} receiveShadow dispose={null} />}
-        {dressing && <mesh geometry={built.house.glow} material={glowMaterial} dispose={null} />}
-        {dressing && exitTexture && (
-          <mesh position={[doorX, 2.42, 0.05]}>
-            <planeGeometry args={[0.56, 0.21]} />
-            <meshBasicMaterial map={exitTexture} toneMapped={false} />
-          </mesh>
-        )}
-      </group>
-      <group ref={leftRef} position={[-layout.wallX, 0, midZ]} rotation={[0, Math.PI / 2, 0]}>
-        <mesh geometry={built.sideWall} material={mattMaterial} receiveShadow dispose={null} />
-      </group>
-      <group ref={rightRef} position={[layout.wallX, 0, midZ]} rotation={[0, -Math.PI / 2, 0]}>
-        <mesh geometry={built.sideWall} material={mattMaterial} receiveShadow dispose={null} />
-      </group>
+      {shell && (
+        <>
+          <group ref={backRef} position={[0, 0, layout.backZ]}>
+            <mesh geometry={built.crossWall} material={mattMaterial} receiveShadow dispose={null} />
+          </group>
+          <group ref={houseRef} position={[0, 0, layout.houseZ]} rotation={[0, Math.PI, 0]}>
+            <mesh geometry={built.crossWall} material={mattMaterial} receiveShadow dispose={null} />
+            {dressing && <mesh geometry={built.house.solid} material={mattMaterial} receiveShadow dispose={null} />}
+            {dressing && <mesh geometry={built.house.glow} material={glowMaterial} dispose={null} />}
+            {dressing && exitTexture && (
+              <mesh position={[doorX, 2.42, 0.05]}>
+                <planeGeometry args={[0.56, 0.21]} />
+                <meshBasicMaterial map={exitTexture} toneMapped={false} />
+              </mesh>
+            )}
+          </group>
+          <group ref={leftRef} position={[-layout.wallX, 0, midZ]} rotation={[0, Math.PI / 2, 0]}>
+            <mesh geometry={built.sideWall} material={mattMaterial} receiveShadow dispose={null} />
+          </group>
+          <group ref={rightRef} position={[layout.wallX, 0, midZ]} rotation={[0, -Math.PI / 2, 0]}>
+            <mesh geometry={built.sideWall} material={mattMaterial} receiveShadow dispose={null} />
+          </group>
+        </>
+      )}
 
-      {ceiling && (
+      {shell && ceiling && (
         <group ref={ceilingRef} position={[0, layout.ceilingY, 0]}>
           <mesh geometry={built.ceiling} material={mattMaterial} dispose={null} />
         </group>
