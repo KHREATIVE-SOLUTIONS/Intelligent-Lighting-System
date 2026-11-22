@@ -101,7 +101,8 @@ The answer, for both:
 - `warnings`: what looks wrong (a 500 m high room, a sparse scan, missing
   walls, a row longer than the truss it was put under).
 - `fixtures`: `total`, `unconfirmed`, `would_move`, and `moves`: each with
-  `rig_fixture_id`, `name`, `group`, `from`, `to` and `reason`.
+  `rig_fixture_id`, `name`, `group`, `from`, `to`, `reason` and
+  `suggested: true`.
 - `applied`: `null` for a preview. After apply: `room_shell_stored`,
   `fixtures_moved`, `fixtures_still_unconfirmed` and a message.
 

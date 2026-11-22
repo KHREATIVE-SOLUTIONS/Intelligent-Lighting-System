@@ -35,6 +35,8 @@ export interface RoomScanMove {
   from: RoomScanPoint;
   to: RoomScanPoint;
   reason: string;
+  /** Always true: the fixture goes from one guess to a better one, and stays unconfirmed. */
+  suggested?: boolean;
 }
 
 /** The answer to POST /api/rigs/{id}/room-scan, preview or applied. */

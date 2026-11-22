@@ -131,6 +131,8 @@ class TestRoomScanPreview:
         assert moves["Spot 1"]["to"]["y"] == pytest.approx(TRUSS["bottom"], abs=0.1)
         assert moves["Spot 1"]["to"]["z"] == pytest.approx(TRUSS["z"], abs=0.1)
         assert "Overhead line 1" in moves["Spot 1"]["reason"]
+        # A move is a suggestion too, and says so, like every part of the shell.
+        assert all(move["suggested"] is True for move in fixtures["moves"])
 
         # Nothing was written: no shell on the rig, no fixture moved or retagged.
         assert (await client.get(f"/api/rigs/{rig_id}")).json()["room_shell"] is None

@@ -67,6 +67,8 @@ class SuggestedMove:
             "from": point(self.from_position),
             "to": point(self.to_position),
             "reason": self.reason,
+            # Like every part of the shell: a guess moved to a better guess.
+            "suggested": True,
         }
 
 
