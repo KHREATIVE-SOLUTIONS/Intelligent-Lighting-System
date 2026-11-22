@@ -444,7 +444,11 @@ export default function RigBuilder() {
             (f) => f.is_active !== false && (f.tags ?? []).includes('position_unconfirmed')
           ).length
         }
-        onClose={() => setIdentifyOpen(false)}
+        onClose={() => {
+          setIdentifyOpen(false);
+          // A walk stopped partway has still moved and confirmed lights.
+          void fetchRig();
+        }}
         onFinished={() => { void fetchRig(); }}
       />
 

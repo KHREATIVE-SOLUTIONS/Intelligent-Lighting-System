@@ -661,13 +661,15 @@ async def test_a_browser_that_goes_quiet_in_the_middle_of_a_row_check_is_release
 ):
     from app.api.endpoints import rig_identify as identify_module
 
-    monkeypatch.setattr(identify_module, "SESSION_IDLE_TIMEOUT_S", 0.1)
-    monkeypatch.setattr(identify_module, "WATCHDOG_TICK_S", 0.02)
+    # Long enough to outlast the requests that set the row check up, short
+    # enough that the 1.5 s first light of the walk is still on when it fires.
+    monkeypatch.setattr(identify_module, "SESSION_IDLE_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(identify_module, "WATCHDOG_TICK_S", 0.05)
 
     _, _, lights, base = await _into_a_running_row_check(
         client, sample_rig_data, sample_fixture_data, dmx_state
     )
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(1.0)
 
     assert not identify_module._sessions, "the watchdog never reaped the silent session"
     _assert_dark_and_restored(dmx_state, lights)
