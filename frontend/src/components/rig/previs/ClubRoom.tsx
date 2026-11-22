@@ -166,7 +166,17 @@ function makeExitTexture(): THREE.CanvasTexture | null {
   return texture;
 }
 
-export const ClubRoom = memo(function ClubRoom({ layout }: { layout: ClubLayout }) {
+export const ClubRoom = memo(function ClubRoom({
+  layout,
+  ceiling = true,
+  danceFloor = true,
+}: {
+  layout: ClubLayout;
+  /** Off when the rig's own room shell supplies the ceiling (a dome). */
+  ceiling?: boolean;
+  /** Off when the rig's own room shell supplies the dance floor. */
+  danceFloor?: boolean;
+}) {
   const backRef = useRef<THREE.Group>(null);
   const leftRef = useRef<THREE.Group>(null);
   const rightRef = useRef<THREE.Group>(null);
@@ -238,8 +248,12 @@ export const ClubRoom = memo(function ClubRoom({ layout }: { layout: ClubLayout 
       />
 
       <mesh geometry={built.floor} material={mattMaterial} receiveShadow dispose={null} />
-      <mesh geometry={built.dance.tiles} material={glossMaterial} receiveShadow dispose={null} />
-      <mesh geometry={built.dance.glow} material={glowMaterial} dispose={null} />
+      {danceFloor && (
+        <>
+          <mesh geometry={built.dance.tiles} material={glossMaterial} receiveShadow dispose={null} />
+          <mesh geometry={built.dance.glow} material={glowMaterial} dispose={null} />
+        </>
+      )}
 
       <group ref={backRef} position={[0, 0, layout.backZ]}>
         <mesh geometry={built.crossWall} material={mattMaterial} receiveShadow dispose={null} />
@@ -262,9 +276,11 @@ export const ClubRoom = memo(function ClubRoom({ layout }: { layout: ClubLayout 
         <mesh geometry={built.sideWall} material={mattMaterial} receiveShadow dispose={null} />
       </group>
 
-      <group ref={ceilingRef} position={[0, layout.ceilingY, 0]}>
-        <mesh geometry={built.ceiling} material={mattMaterial} dispose={null} />
-      </group>
+      {ceiling && (
+        <group ref={ceilingRef} position={[0, layout.ceilingY, 0]}>
+          <mesh geometry={built.ceiling} material={mattMaterial} dispose={null} />
+        </group>
+      )}
     </group>
   );
 });

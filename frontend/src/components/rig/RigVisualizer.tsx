@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import { memo, useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import type { MutableRefObject } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
@@ -21,14 +21,20 @@ import AudioDeviceChooser from '../common/AudioDeviceChooser';
 import { createBeatClock, ingestAnalysis } from './previs/beatClock';
 import type { BeatClock } from './previs/beatClock';
 import { beamMouth, beamTube, createBeamMaterial, shapeBeam } from './previs/beamShape';
-import type { BeamMouth } from './previs/beamShape';
-import { beamDirection, beamLanding } from './previs/beamThrow';
+import { buildBeamProfile, buildChannelMap, createBeamState, isPositionUnconfirmed, readBeamState } from './previs/beamState';
+import { beamDirection, beamLanding, hangBeam } from './previs/beamThrow';
 import type { BeamRoom, BeamSurface, BeamVector } from './previs/beamThrow';
 import { ClubRoom } from './previs/ClubRoom';
 import { BeatClockTicker, Crowd } from './previs/Crowd';
 import { DJBooth } from './previs/DJBooth';
 import { FixtureHead, FixtureSupport, FixtureYoke } from './previs/FixtureBody';
 import { FIXTURE_SPECS, resolveModelKind } from './previs/fixtureSpecs';
+import { GuessMarkers } from './previs/GuessMarkers';
+import type { GuessPoint } from './previs/GuessMarkers';
+import { createOutputFeed, ingestOutput, summariseFeed } from './previs/outputFeed';
+import type { FeedSummary, OutputFeed } from './previs/outputFeed';
+import { usableDisc, usableDome } from './previs/roomShell';
+import { RoomShellView } from './previs/RoomShellView';
 import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
 import {
   POOL_LIGHT_DECAY,
@@ -55,7 +61,8 @@ type BeamDebugSnapshot = {
   strobeLogical: number;
   strobeChannelValue: number;
   strobeChannelIndex?: number;
-  strobeSource: 'strobe' | 'shutter' | 'fallback';
+  strobeSource: 'strobe' | 'shutter' | 'none';
+  shutter: 'open' | 'closed' | 'strobe';
   zoomLogical: number;
   zoomChannelValue: number;
   zoomChannelIndex?: number;
@@ -64,23 +71,7 @@ type BeamDebugSnapshot = {
   finalSpotAngleDeg: number;
   capabilityWarnings: string[];
   motionSource: string;
-  sourceStaleMs?: number;
 };
-
-type LiveFixtureState = {
-  id: string;
-  dmx_address?: number;
-  universe?: number;
-  pan?: number;
-  tilt?: number;
-  dimmer?: number;
-  r?: number;
-  g?: number;
-  b?: number;
-  _updatedAt?: number;
-};
-
-const BLANK_UNIVERSE: number[] = new Array(512).fill(0);
 
 type QualityMode = 'performance' | 'balanced' | 'ultra';
 
@@ -131,39 +122,6 @@ const FIXTURE_MOTION_PROFILES: Record<string, MotionInertiaProfile> = {
 // UTILITY FUNCTIONS
 // ============================================================================
 
-// Build a channel type -> DMX offset map from the fixture's active mode
-function buildChannelMap(fixture: RigFixture): Record<string, number> {
-  const map: Record<string, number> = {};
-  if (!fixture.fixture?.modes?.length) return map;
-
-  const mode = fixture.mode_id
-    ? fixture.fixture.modes.find((m) => m.id === fixture.mode_id)
-    : fixture.fixture.modes[0];
-
-  if (!mode?.channels) return map;
-
-  const canonicalMap = (raw: string): string => {
-    const key = raw.toLowerCase().replace(/[\s-]+/g, '_');
-    if (key === 'pan' || key === 'pan_coarse' || key === 'pan_16bit' || key === 'pan_course') return 'pan';
-    if (key === 'pan_fine' || key === 'pan_fine_16bit' || key === 'fine_pan') return 'pan_fine';
-    if (key === 'tilt' || key === 'tilt_coarse' || key === 'tilt_16bit' || key === 'tilt_course') return 'tilt';
-    if (key === 'tilt_fine' || key === 'tilt_fine_16bit' || key === 'fine_tilt') return 'tilt_fine';
-    if (key === 'dimmer' || key === 'intensity' || key === 'master_dimmer') return 'dimmer';
-    if (key === 'strobe' || key === 'shutter' || key === 'shutter_strobe') return key.includes('strobe') ? 'strobe' : 'shutter';
-    if (key === 'red' || key === 'green' || key === 'blue' || key === 'white' || key === 'zoom') return key;
-    return key;
-  };
-
-  for (const ch of mode.channels) {
-    const offset = ch.channel_number - 1;
-    const primary = canonicalMap(String(ch.channel_type || ''));
-    if (!(primary in map)) map[primary] = offset;
-    const byName = canonicalMap(String(ch.name || ''));
-    if (!(byName in map)) map[byName] = offset;
-  }
-  return map;
-}
-
 // What kind of fixture this is. Worked out in one place because three things
 // have to agree on it: the control loop, the model that is drawn, and the venue
 // layout that decides how the fixture is mounted.
@@ -189,57 +147,20 @@ const SPOT_TARGET_POSITION: [number, number, number] = [0, -10, 0];
 const FACING_DOWN: [number, number, number] = [0, 0, 0];
 const FACING_UP: [number, number, number] = [Math.PI, 0, 0];
 
-// ============================================================================
-// VOLUMETRIC BEAM COMPONENT
-// ============================================================================
-
-function BeamCone({
-  material,
-  color,
-  intensity,
-  mouth,
-  segments,
-}: {
-  /** Made and shaped by the fixture, in its frame loop, where the head moves. */
-  material: THREE.ShaderMaterial;
-  color: THREE.Color;
-  intensity: number;
-  /** The lit face of the fixture: where the beam starts. */
-  mouth: BeamMouth;
-  segments: number;
-}) {
-  useFrame(() => {
-    material.uniforms.beamColor.value.copy(color);
-    material.uniforms.beamIntensity.value = intensity;
-  });
-
-  const position = useMemo<[number, number, number]>(() => [0, -mouth.offset, 0], [mouth]);
-
-  if (intensity < 0.015) return null;
-
-  // Not culled by three: the tube is shaped in the shader, so its own bounds
-  // (a unit cylinder) say nothing about where the beam is on screen. And not
-  // disposed with the mesh: the mesh comes and goes as the fixture fades in
-  // and out, and the tube and the material outlive it.
-  return (
-    <mesh
-      geometry={beamTube(segments)}
-      material={material}
-      position={position}
-      frustumCulled={false}
-      dispose={null}
-    />
-  );
-}
+/** Below this a beam is not drawn at all. */
+const BEAM_VISIBLE_FROM = 0.015;
 
 // ============================================================================
 // FIXTURE 3D COMPONENT
 // ============================================================================
 
-function Fixture3D({
+// Memoised, and given nothing that changes from frame to frame: everything
+// that moves is written straight to three.js objects in the frame loop. With
+// a hundred and thirty fixtures, one React render of each per frame was most
+// of a frame's time.
+const Fixture3D = memo(function Fixture3D({
   fixture,
-  dmxData,
-  liveBinding,
+  feed,
   fixtureIndex,
   spotCap,
   beamSegments,
@@ -247,11 +168,12 @@ function Fixture3D({
   room,
   longestThrow,
   showLabel,
-  onDebugUpdate,
+  debugBuffer,
+  debug,
 }: {
   fixture: RigFixture;
-  dmxData: number[];
-  liveBinding?: { state?: LiveFixtureState; source: string; staleMs?: number };
+  /** The frames the engine outputs, read in the frame loop. Never written. */
+  feed: MutableRefObject<OutputFeed>;
   fixtureIndex: number;
   spotCap: number;
   beamSegments: number;
@@ -261,13 +183,16 @@ function Fixture3D({
   /** The furthest any beam can travel in this room. */
   longestThrow: number;
   showLabel: boolean;
-  onDebugUpdate?: (snapshot: BeamDebugSnapshot) => void;
+  /** Rows for the beam debug table, written only while it is open. */
+  debugBuffer: MutableRefObject<Record<number, BeamDebugSnapshot>>;
+  debug: boolean;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const headRef = useRef<THREE.Group>(null);
   const yokeRef = useRef<THREE.Group>(null);
   const lensRef = useRef<THREE.Mesh>(null);
   const spotRef = useRef<THREE.SpotLight>(null);
+  const beamRef = useRef<THREE.Mesh>(null);
 
   // What the spot light aims at. A light points at its target's place in the
   // world, and three.js only works that out for an object that is in the
@@ -279,12 +204,13 @@ function Fixture3D({
   // remounted when the quality changes and must get the same target again.
   const [spotTarget] = useState(() => new THREE.Object3D());
 
-  // Memoised: this component re-renders every frame, and walking the channel
-  // list each time was most of what that cost.
-  const channelMap = useMemo(() => buildChannelMap(fixture), [fixture]);
-  const channelMapRef = useRef(channelMap);
-  channelMapRef.current = channelMap;
-  const fallbackWarningRef = useRef<Set<string>>(new Set());
+  // What this fixture does with the values it is sent: its channels, travel,
+  // invert and beam angle, worked out once. The frame loop reads a frame
+  // through it into `beam`, and draws that.
+  const profile = useMemo(() => buildBeamProfile(fixture), [fixture]);
+  const channelMap = profile.channels;
+  const [beam] = useState(() => createBeamState());
+  const universe = Number(fixture.universe) || 0;
 
   // Smoothed values to avoid jitter
   const smoothed = useRef({ intensity: 0, r: 1, g: 1, b: 1 });
@@ -309,7 +235,7 @@ function Fixture3D({
     holdDurationSec: 0,
   });
 
-  const { fixtureType, hasPanTiltChannels, isMovingHead, modelKind } = useMemo(
+  const { fixtureType, isMovingHead, modelKind } = useMemo(
     () => describeFixture(fixture, channelMap),
     [fixture, channelMap]
   );
@@ -320,9 +246,18 @@ function Fixture3D({
   const lightDepth = modelSpec.lensOffset + 0.02;
   const motionProfile = FIXTURE_MOTION_PROFILES[fixtureType] || FIXTURE_MOTION_PROFILES.default;
 
+  // How the rig says the fixture is hung, beyond its yaw: rotation_x and
+  // rotation_z, for one on its side or leaning. Applied to the yoke, the head
+  // and the beam together, inside the yaw.
+  const hangRx = THREE.MathUtils.degToRad(Number(fixture.rotation_x) || 0);
+  const hangRz = THREE.MathUtils.degToRad(Number(fixture.rotation_z) || 0);
+  const leaning = hangRx !== 0 || hangRz !== 0;
+  const hangRotation = useMemo<[number, number, number]>(() => [hangRx, 0, hangRz], [hangRx, hangRz]);
+
   // A fixed-body fixture standing on the floor faces the ceiling: the model,
-  // its beam and its spot light are turned over together, below.
-  const lensUp = mount.type === 'stand' && mount.lensUp;
+  // its beam and its spot light are turned over together, below. That is a
+  // guess from where it stands, so a rotation the rig gives outright wins.
+  const lensUp = mount.type === 'stand' && mount.lensUp && !leaning;
   // A fixture patched lower than its own feet is raised to stand on the floor.
   const standLift = mount.type === 'stand' ? mount.lift : 0;
   // Height of the point the light comes from.
@@ -348,19 +283,9 @@ function Fixture3D({
   );
 
   const [beamColor] = useState(() => new THREE.Color(1, 1, 1));
-  const [beamIntensity, setBeamIntensity] = useState(0);
-
-  const emitFallbackWarning = (key: string, message: string) => {
-    if (fallbackWarningRef.current.has(key)) return;
-    fallbackWarningRef.current.add(key);
-    // Explicit signal that we are using fallback behavior instead of silently no-oping.
-    console.warn(message);
-  };
+  const beamPosition = useMemo<[number, number, number]>(() => [0, -mouth.offset, 0], [mouth]);
 
   useFrame((_, rawDelta) => {
-    const liveState = liveBinding?.state;
-    const baseAddr = fixture.dmx_address - 1;
-    const chMap = channelMapRef.current;
     const delta = Math.min(rawDelta, MAX_STABLE_DELTA);
 
     // Smooth and clamp noisy frame spikes before they enter the control loop.
@@ -368,125 +293,28 @@ function Fixture3D({
     const spikeLimit = Math.max(FIXED_CONTROL_DT * 1.5, stableDeltaEstimate.current * DELTA_SPIKE_FACTOR);
     const stableDelta = Math.min(delta, spikeLimit);
 
-    // Read DMX values
-    const rawDimmer = liveState?.dimmer ?? (
-      chMap.dimmer !== undefined
-        ? (dmxData[baseAddr + chMap.dimmer] || 0) / 255
-        : 1
-    );
-    const rawR = liveState?.r ?? (
-      chMap.red !== undefined
-        ? (dmxData[baseAddr + chMap.red] || 0) / 255
-        : 1
-    );
-    const rawG = liveState?.g ?? (
-      chMap.green !== undefined
-        ? (dmxData[baseAddr + chMap.green] || 0) / 255
-        : 1
-    );
-    const rawB = liveState?.b ?? (
-      chMap.blue !== undefined
-        ? (dmxData[baseAddr + chMap.blue] || 0) / 255
-        : 1
-    );
-    const coarsePan = chMap.pan !== undefined ? dmxData[baseAddr + chMap.pan] || 128 : 128;
-    const finePan = chMap.pan_fine !== undefined ? dmxData[baseAddr + chMap.pan_fine] || 0 : 0;
-    const coarseTilt = chMap.tilt !== undefined ? dmxData[baseAddr + chMap.tilt] || 128 : 128;
-    const fineTilt = chMap.tilt_fine !== undefined ? dmxData[baseAddr + chMap.tilt_fine] || 0 : 0;
-    let strobe = 0;
-    let strobeSource: BeamDebugSnapshot['strobeSource'] = 'fallback';
-    let strobeChannelValue = 0;
-    let strobeChannelIndex: number | undefined;
-    if (chMap.strobe !== undefined) {
-      strobeChannelValue = dmxData[baseAddr + chMap.strobe] || 0;
-      // Many fixtures use low/high values as open/no-strobe and middle bands for strobe rates.
-      // Treat extremes as non-strobe so we do not simulate constant flicker from open shutter values.
-      if (strobeChannelValue <= 8 || strobeChannelValue >= 240) {
-        strobe = 0;
-      } else {
-        strobe = THREE.MathUtils.clamp((strobeChannelValue - 16) / 208, 0, 1);
-      }
-      strobeSource = 'strobe';
-      strobeChannelIndex = chMap.strobe + 1;
-    } else if (chMap.shutter !== undefined) {
-      strobeChannelValue = dmxData[baseAddr + chMap.shutter] || 0;
-      // Typical shutter map:
-      // 0-31 closed, 32-63 open, 64-223 strobe (slow->fast), 224-255 open.
-      if (strobeChannelValue >= 64 && strobeChannelValue <= 223) {
-        strobe = THREE.MathUtils.clamp((strobeChannelValue - 64) / (223 - 64), 0, 1);
-      } else {
-        strobe = 0;
-      }
-      strobeSource = 'shutter';
-      strobeChannelIndex = chMap.shutter + 1;
-      emitFallbackWarning(
-        `strobe-${fixture.id}`,
-        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no strobe channel; deriving strobe from shutter range 64-223.`
-      );
-    } else {
-      strobeSource = 'fallback';
-      emitFallbackWarning(
-        `strobe-${fixture.id}`,
-        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has neither strobe nor shutter channel; forcing strobe to 0.`
-      );
-    }
-
-    let zoom = isSpotLike ? 0.45 : 0.12;
-    let zoomSource: BeamDebugSnapshot['zoomSource'] = 'fallback';
-    let zoomChannelValue = 128;
-    let zoomChannelIndex: number | undefined;
-    if (chMap.zoom !== undefined) {
-      zoomChannelValue = dmxData[baseAddr + chMap.zoom] || 0;
-      zoom = zoomChannelValue / 255;
-      zoomSource = 'zoom';
-      zoomChannelIndex = chMap.zoom + 1;
-    } else if (typeof fixture.fixture?.beam_angle === 'number') {
-      const normalizedBeamAngle = THREE.MathUtils.clamp((fixture.fixture.beam_angle - 5) / 40, 0, 1);
-      zoom = normalizedBeamAngle;
-      zoomChannelValue = Math.round(normalizedBeamAngle * 255);
-      zoomSource = 'beam_angle';
-      emitFallbackWarning(
-        `zoom-${fixture.id}`,
-        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no zoom channel; deriving beam width from fixture beam_angle (${fixture.fixture.beam_angle}°).`
-      );
-    } else {
-      zoomSource = 'fallback';
-      emitFallbackWarning(
-        `zoom-${fixture.id}`,
-        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no zoom or beam_angle definition; defaulting to narrow beam zoom.`
-      );
-    }
-
-    const hasLivePan = Number.isFinite(Number(liveState?.pan));
-    const hasLiveTilt = Number.isFinite(Number(liveState?.tilt));
-    const panNormalizedFromState = hasLivePan
-      ? THREE.MathUtils.clamp((Number(liveState?.pan) + 270) / 540, 0, 1)
-      : undefined;
-    const tiltNormalizedFromState = hasLiveTilt
-      ? THREE.MathUtils.clamp((Number(liveState?.tilt) + 135) / 270, 0, 1)
-      : undefined;
-    const panNormalized = panNormalizedFromState ?? (
-      chMap.pan_fine !== undefined
-        ? ((coarsePan << 8) | finePan) / 65535
-        : coarsePan / 255
-    );
-    const tiltNormalized = tiltNormalizedFromState ?? (
-      chMap.tilt_fine !== undefined
-        ? ((coarseTilt << 8) | fineTilt) / 65535
-        : coarseTilt / 255
-    );
+    // What this fixture is being sent: its own channels out of the frame the
+    // engine outputs for its universe, read through its profile. Nothing else
+    // feeds the picture, so a blackout, the grand master and a closed shutter
+    // show here exactly as they would in the room. With no frame yet the
+    // fixture is dark and its head at centre.
+    readBeamState(profile, feed.current.frames.get(universe), fixture.dmx_address, beam);
+    // A closed shutter, a zero dimmer and a colour mixed to black are all dark.
+    const rawDimmer = beam.lit ? beam.intensity : 0;
+    const strobe = beam.shutter === 'strobe' ? beam.strobeRate : 0;
+    const zoom = beam.zoom;
 
     // Smooth interpolation
     const s = smoothed.current;
     const lerp = Math.min(1, stableDelta * 15);
     s.intensity += (rawDimmer - s.intensity) * lerp;
-    s.r += (rawR - s.r) * lerp;
-    s.g += (rawG - s.g) * lerp;
-    s.b += (rawB - s.b) * lerp;
+    s.r += (beam.r - s.r) * lerp;
+    s.g += (beam.g - s.g) * lerp;
+    s.b += (beam.b - s.b) * lerp;
 
     // Apply strobe effect (rapid intensity modulation)
     let effectiveIntensity = s.intensity;
-    if (strobe > 0.1) {
+    if (strobe > 0) {
       const strobeFreq = 2 + strobe * 20; // 2-22 Hz
       const strobePhase = (performance.now() / 1000 * strobeFreq) % 1;
       effectiveIntensity = strobePhase < 0.5 ? s.intensity : 0;
@@ -509,7 +337,11 @@ function Fixture3D({
     } else {
       beamColor.setRGB(s.r, s.g, s.b);
     }
-    setBeamIntensity(volumetricIntensity);
+    // Written straight to the beam, not through React state: a state change
+    // here re-rendered every fixture on every frame.
+    beamMaterial.uniforms.beamColor.value.copy(beamColor);
+    beamMaterial.uniforms.beamIntensity.value = volumetricIntensity;
+    if (beamRef.current) beamRef.current.visible = volumetricIntensity >= BEAM_VISIBLE_FROM;
 
     // Update lens glow emissive
     if (lensRef.current) {
@@ -541,12 +373,11 @@ function Fixture3D({
 
     // Pan/tilt for moving heads
     if (isMovingHead) {
-      const panRange = fixture.fixture?.pan_range || (hasPanTiltChannels ? 540 : 0);
-      const tiltRange = fixture.fixture?.tilt_range || (hasPanTiltChannels ? 270 : 0);
-      const panRangeRad = THREE.MathUtils.degToRad(panRange);
-      const tiltRangeRad = THREE.MathUtils.degToRad(tiltRange);
-      const targetPan = panNormalized * panRangeRad - (panRangeRad / 2);
-      const targetTilt = tiltNormalized * tiltRangeRad - (tiltRangeRad / 2);
+      const panRangeRad = THREE.MathUtils.degToRad(profile.panRangeDeg);
+      const tiltRangeRad = THREE.MathUtils.degToRad(profile.tiltRangeDeg);
+      // Degrees from centre, the fixture's pan and tilt invert already applied.
+      const targetPan = THREE.MathUtils.degToRad(beam.panDeg);
+      const targetTilt = THREE.MathUtils.degToRad(beam.tiltDeg);
 
       controlAccumulator.current += stableDelta;
       let stepCount = 0;
@@ -666,11 +497,13 @@ function Fixture3D({
       fixture.position_x,
       sourceY,
       fixture.position_z,
-      beamDirection(
-        head ? head.rotation.x : 0,
-        (head ? head.rotation.y : 0) + bodyYawRad,
-        lensUp,
-        beamPointing.current
+      // In the fixture's own frame first, then turned by how it is hung: the
+      // same nest of turns the groups below are drawn with.
+      hangBeam(
+        beamDirection(head ? head.rotation.x : 0, head ? head.rotation.y : 0, lensUp, beamPointing.current),
+        hangRx,
+        hangRz,
+        bodyYawRad
       ),
       room,
       longestThrow,
@@ -692,7 +525,9 @@ function Fixture3D({
     );
     if (spotRef.current) spotRef.current.distance = poolLightRange(reach);
 
-    onDebugUpdate?.({
+    if (!debug) return;
+    const strobeChannel = beam.strobeSource === 'none' ? undefined : channelMap[beam.strobeSource];
+    debugBuffer.current[fixture.id] = {
       fixtureId: fixture.id,
       fixtureLabel: fixture.name || fixture.fixture?.model || `Fixture ${fixture.id}`,
       targetPanDeg,
@@ -704,22 +539,24 @@ function Fixture3D({
       signalConfidence,
       hold,
       strobeLogical: strobe,
-      strobeChannelValue,
-      strobeChannelIndex,
-      strobeSource,
+      strobeChannelValue: beam.strobeValue,
+      strobeChannelIndex: strobeChannel === undefined ? undefined : strobeChannel + 1,
+      strobeSource: beam.strobeSource,
+      shutter: beam.shutter,
       zoomLogical: zoom,
-      zoomChannelValue,
-      zoomChannelIndex,
-      zoomSource,
+      zoomChannelValue: beam.zoomValue,
+      zoomChannelIndex: beam.zoomSource === 'zoom' ? channelMap.zoom + 1 : undefined,
+      zoomSource: beam.zoomSource,
       finalIntensity: effectiveIntensity,
       finalSpotAngleDeg,
       capabilityWarnings: [
-        strobeSource === 'fallback' ? 'missing strobe/shutter capability' : '',
-        zoomSource === 'fallback' ? 'missing zoom/beam_angle capability' : '',
+        beam.strobeSource === 'none' ? 'no strobe or shutter channel' : '',
+        beam.zoomSource === 'fallback' ? 'no zoom channel or beam angle' : '',
+        profile.invert.pan ? 'pan inverted' : '',
+        profile.invert.tilt ? 'tilt inverted' : '',
       ].filter(Boolean),
-      motionSource: liveBinding?.source || 'dmx',
-      sourceStaleMs: liveBinding?.staleMs,
-    });
+      motionSource: beam.hasSignal ? 'output frame' : 'no frame',
+    };
   });
 
   return (
@@ -731,6 +568,9 @@ function Fixture3D({
       {/* What holds it up: base or bracket, and the reach to truss, wall or floor */}
       <FixtureSupport kind={modelKind} mount={mount} bodyYaw={bodyYawRad} />
 
+      {/* How the rig says it is hung, beyond its yaw: on its side, leaning.
+          The support above stays upright; the yoke, head and beam take it. */}
+      <group rotation={hangRotation}>
       {/* Yoke arms: turn with pan, beside the head rather than around it */}
       {isMovingHead && (
         <FixtureYoke ref={yokeRef} kind={modelKind} standing={mount.type === 'stand'} />
@@ -747,13 +587,18 @@ function Fixture3D({
           {/* Housing and the lit lens; the lens material is driven in useFrame */}
           <FixtureHead kind={modelKind} lensRef={lensRef} />
 
-          {/* The beam, from the lit face to where it lands */}
-          <BeamCone
+          {/* The beam, from the lit face to where it lands. Always mounted
+              and shown or hidden in the frame loop. Not culled by three: the
+              tube is shaped in the shader, so its own bounds (a unit
+              cylinder) say nothing about where the beam is on screen. */}
+          <mesh
+            ref={beamRef}
+            geometry={beamTube(beamSegments)}
             material={beamMaterial}
-            color={beamColor}
-            intensity={beamIntensity}
-            mouth={mouth}
-            segments={beamSegments}
+            position={beamPosition}
+            visible={false}
+            frustumCulled={false}
+            dispose={null}
           />
 
           {/* SpotLight for floor color projection (cap count for performance).
@@ -772,7 +617,7 @@ function Fixture3D({
                 position={[0, -lightDepth, 0]}
                 angle={0.3}
                 penumbra={POOL_LIGHT_PENUMBRA}
-                intensity={poolLightIntensity(beamIntensity)}
+                intensity={0}
                 color={beamColor}
                 castShadow={fixtureIndex < 4}
                 shadow-mapSize-width={256}
@@ -784,6 +629,7 @@ function Fixture3D({
             </>
           )}
         </group>
+      </group>
       </group>
 
       {/* Fixture ID label for quick patch/debug identification */}
@@ -814,7 +660,7 @@ function Fixture3D({
       )}
     </group>
   );
-}
+});
 
 // ============================================================================
 // BARE STAGE FLOOR (shown when the venue is hidden)
@@ -1009,6 +855,8 @@ function Scene({
   showVenue,
   showLabels,
   beatClock,
+  feed,
+  debug,
 }: {
   rig: Rig;
   debugBuffer: MutableRefObject<Record<number, BeamDebugSnapshot>>;
@@ -1017,63 +865,12 @@ function Scene({
   showVenue: boolean;
   showLabels: boolean;
   beatClock: MutableRefObject<BeatClock>;
+  /** The frames the engine outputs. The fixtures read it; nothing writes DMX. */
+  feed: MutableRefObject<OutputFeed>;
+  /** Whether the beam debug table is open. */
+  debug: boolean;
 }) {
-  const universes = useDMXStore((state) => state.universes);
   const keyLightingZones = useDMXStore((state) => state.proLighting.keyLightingZones);
-  const fixtureStates = useDMXStore((state) => state.fixtureStates);
-  const liveBindings = useMemo(() => {
-    const now = Date.now();
-    // A DMX address only identifies a fixture within its own universe: a rig with
-    // fixtures at address 1 in universes 0 and 1 has two fixtures sharing an address.
-    const patchKey = (universe: unknown, address: unknown) =>
-      `${Number(universe) || 0}:${Number(address)}`;
-    const byAddress = new Map<string, LiveFixtureState>();
-    const byId = new Map<string, LiveFixtureState>();
-    const allStates: LiveFixtureState[] = [];
-
-    fixtureStates.forEach((value) => {
-      const state = value as LiveFixtureState;
-      allStates.push(state);
-      byId.set(String(state.id), state);
-      const addr = Number(state?.dmx_address);
-      if (Number.isFinite(addr) && addr > 0) byAddress.set(patchKey(state?.universe, addr), state);
-    });
-
-    const rigSorted = [...(rig.fixtures || [])].sort((a, b) => a.dmx_address - b.dmx_address);
-    const stateSorted = [...allStates]
-      .filter((s) => Number.isFinite(Number(s.dmx_address)))
-      .sort((a, b) => Number(a.dmx_address) - Number(b.dmx_address));
-    const ordinalFallback = new Map<number, LiveFixtureState>();
-    const n = Math.min(rigSorted.length, stateSorted.length);
-    for (let i = 0; i < n; i += 1) {
-      ordinalFallback.set(rigSorted[i].id, stateSorted[i]);
-    }
-
-    const bindings = new Map<number, { state?: LiveFixtureState; source: string; staleMs?: number }>();
-    for (const fx of rig.fixtures || []) {
-      let state: LiveFixtureState | undefined;
-      let source = 'dmx';
-
-      if (byAddress.has(patchKey(fx.universe, fx.dmx_address))) {
-        state = byAddress.get(patchKey(fx.universe, fx.dmx_address));
-        source = 'state:dmx_address';
-      } else if (byId.has(String(fx.id))) {
-        state = byId.get(String(fx.id));
-        source = 'state:fixture_id';
-      } else if (fx.name && byId.has(String(fx.name))) {
-        state = byId.get(String(fx.name));
-        source = 'state:name';
-      } else if (ordinalFallback.has(fx.id)) {
-        state = ordinalFallback.get(fx.id);
-        source = 'state:ordinal_fallback';
-      }
-
-      const staleMs = state?._updatedAt ? Math.max(0, now - Number(state._updatedAt)) : undefined;
-      bindings.set(fx.id, { state, source, staleMs });
-    }
-
-    return bindings;
-  }, [fixtureStates, rig]);
 
   // Crowd size rides on the same switch as haze and spot lights; the floor's
   // own capacity caps it for a small room.
@@ -1101,6 +898,26 @@ function Scene({
       }),
     ),
     [rig]
+  );
+
+  // The room the rig describes, where it describes one. It takes the place of
+  // the flat ceiling and the square dance floor the view would otherwise build.
+  const shell = rig.room_shell ?? null;
+  const shellDome = usableDome(shell?.dome);
+  const shellDisc = usableDisc(shell?.dance_floor);
+
+  // Fixtures whose position nobody has confirmed: drawn where the guess puts
+  // them, and marked so that is plain.
+  const guesses = useMemo<GuessPoint[]>(
+    () => (rig.fixtures || []).filter(isPositionUnconfirmed).map((fixture) => {
+      const mount = venue.mounts.get(fixture.id);
+      return {
+        x: fixture.position_x,
+        y: fixture.position_y + (mount?.type === 'stand' ? mount.lift : 0),
+        z: fixture.position_z,
+      };
+    }),
+    [rig, venue]
   );
 
   const camera = useMemo(() => cameraPreset(cameraMode, venue.layout), [cameraMode, venue.layout]);
@@ -1141,7 +958,8 @@ function Scene({
       <BeatClockTicker clock={beatClock} />
       {showVenue ? (
         <>
-          <ClubRoom layout={venue.layout} />
+          <ClubRoom layout={venue.layout} ceiling={!shellDome} danceFloor={!shellDisc} />
+          {shell && <RoomShellView shell={shell} layout={venue.layout} />}
           <DJBooth layout={venue.layout} clock={beatClock} />
           <Crowd layout={venue.layout} count={quality.crowdCount} clock={beatClock} />
         </>
@@ -1173,8 +991,7 @@ function Scene({
         <Fixture3D
           key={fixture.id}
           fixture={fixture}
-          dmxData={universes.get(Number(fixture.universe) || 0) || BLANK_UNIVERSE}
-          liveBinding={liveBindings.get(fixture.id)}
+          feed={feed}
           fixtureIndex={index}
           spotCap={quality.spotCap}
           beamSegments={quality.beamSegments}
@@ -1182,15 +999,53 @@ function Scene({
           room={room}
           longestThrow={longestThrow}
           showLabel={showLabels}
-          onDebugUpdate={(snapshot) => {
-            debugBuffer.current[snapshot.fixtureId] = snapshot;
-          }}
+          debugBuffer={debugBuffer}
+          debug={debug}
         />
       ))}
+
+      {/* Positions that are a guess, marked as one */}
+      <GuessMarkers points={guesses} />
 
       {/* Exponential fog for haze effect */}
       <fogExp2 attach="fog" args={['#05070a', 0.006]} />
     </>
+  );
+}
+
+// What the picture is drawn from, in a line: on the wire, preview only,
+// blackout, or nothing arriving. Polls the feed twice a second and re-renders
+// only when the line changes.
+function FeedReadout({ feed, guessCount }: { feed: MutableRefObject<OutputFeed>; guessCount: number }) {
+  const [summary, setSummary] = useState<FeedSummary>(() => summariseFeed(feed.current, performance.now()));
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const next = summariseFeed(feed.current, performance.now());
+      setSummary((shown) => (shown.kind === next.kind && shown.label === next.label ? shown : next));
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [feed]);
+  const color = summary.kind === 'live'
+    ? 'success.main'
+    : summary.kind === 'stale' || summary.kind === 'blackout'
+      ? 'error.main'
+      : summary.kind === 'none' ? 'text.secondary' : 'warning.main';
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      <Tooltip describeChild title={`${summary.detail} This view only reads the output; it never sends DMX.`}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }} data-testid="previs-feed-status">
+          <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: color }} />
+          <Typography variant="body2">{summary.label}</Typography>
+        </Box>
+      </Tooltip>
+      {guessCount > 0 && (
+        <Tooltip describeChild title="Marked in amber. These were laid out on a template and nobody has confirmed where they really are, so their beams may be drawn in the wrong place.">
+          <Typography variant="body2" sx={{ color: '#ffb74d' }}>
+            {guessCount} position{guessCount === 1 ? '' : 's'} unconfirmed
+          </Typography>
+        </Tooltip>
+      )}
+    </Box>
   );
 }
 
@@ -1301,7 +1156,7 @@ function BeamDebugOverlay({ buffer }: { buffer: MutableRefObject<Record<number, 
                 {' '}| strobe {fmt(row.strobeLogical, 2)} ({row.strobeSource} {row.strobeChannelIndex ? `ch${row.strobeChannelIndex}=${row.strobeChannelValue}` : 'no-channel'})
                 {' '}| zoom {fmt(row.zoomLogical, 2)} ({row.zoomSource} {row.zoomChannelIndex ? `ch${row.zoomChannelIndex}=${row.zoomChannelValue}` : `dmx=${row.zoomChannelValue}`})
                 {' '}| out I {fmt(row.finalIntensity, 2)} angle {fmt(row.finalSpotAngleDeg)}°
-                {' '}| src {row.motionSource}{row.sourceStaleMs !== undefined ? ` (${Math.round(row.sourceStaleMs)}ms)` : ''}
+                {' '}| shutter {row.shutter} | src {row.motionSource}
                 {' '}| {row.hold ? 'HOLD' : 'TRACK'}
                 {row.capabilityWarnings.length > 0 ? ` | WARN: ${row.capabilityWarnings.join(', ')}` : ''}
               </Typography>
@@ -1334,6 +1189,11 @@ export default function RigVisualizer() {
   const showLabels = labelChoice ?? !showVenue;
   // Beat and section for the crowd. A ref, so a message re-renders nothing.
   const beatClock = useRef<BeatClock>(createBeatClock());
+  // The frames the engine outputs, as they arrive. A ref for the same reason;
+  // the fixtures read it in the frame loop. Read-only: nothing here sends DMX.
+  const outputFeed = useRef<OutputFeed>(createOutputFeed());
+  // The beam debug table. Off, no fixture writes a row for it.
+  const [showDebug, setShowDebug] = useState(false);
   const isDemo = !id; // No rig ID = demo mode
   const [demoPresets, setDemoPresets] = useState<DemoPresetSummary[]>([]);
   const [demoPresetError, setDemoPresetError] = useState<string | null>(null);
@@ -1361,6 +1221,7 @@ export default function RigVisualizer() {
       ingestAnalysis(beatClock.current, msg, performance.now());
       if (msg.lighting) {
         const l = msg.lighting;
+        ingestOutput(outputFeed.current, l, performance.now());
         if (l.dmx_frames) {
           Object.entries(l.dmx_frames).forEach(([universe, frame]) => {
             setUniverse(Number(universe) || 0, frame as number[]);
@@ -1563,12 +1424,25 @@ export default function RigVisualizer() {
               IDs
             </Button>
           </Tooltip>
+          <Tooltip describeChild title="Show the beam debug table: what each fixture is sent and how it is drawn">
+            <Button
+              variant={showDebug ? 'contained' : 'outlined'}
+              aria-pressed={showDebug}
+              onClick={() => setShowDebug((on) => !on)}
+            >
+              Debug
+            </Button>
+          </Tooltip>
         </ButtonGroup>
       </Box>
 
       {/* Audio Device Chooser */}
       <Box sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
         <AudioDeviceChooser />
+        <FeedReadout
+          feed={outputFeed}
+          guessCount={(rig.fixtures || []).filter(isPositionUnconfirmed).length}
+        />
         <SectionReadout />
       </Box>
 
@@ -1591,12 +1465,14 @@ export default function RigVisualizer() {
             showVenue={showVenue}
             showLabels={showLabels}
             beatClock={beatClock}
+            feed={outputFeed}
+            debug={showDebug}
           />
         </Canvas>
       </Box>
 
       {/* Beam debug overlay to separate control jitter from render jitter */}
-      <BeamDebugOverlay buffer={beamDebugBuffer} />
+      {showDebug && <BeamDebugOverlay buffer={beamDebugBuffer} />}
 
       {/* Info Panel */}
       <Card sx={{ mt: 2 }}>
