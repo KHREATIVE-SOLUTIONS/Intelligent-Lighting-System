@@ -125,7 +125,68 @@ export function hangBeam(direction: BeamVector, rxRad: number, rzRad: number, ya
 export type BeamRoom = {
   ceilingY: number;
   walls: { xMin: number; xMax: number; zMin: number; zMax: number } | null;
+  /**
+   * The walls of a room that is not a box, each from one corner of its floor
+   * outline to the next. Given (and with `walls` not null), a beam ends on
+   * these and not on the box: so one aimed into the notch of an L stops on
+   * the notch's wall.
+   */
+  outline?: readonly BeamWall[] | null;
 };
+
+/**
+ * One wall of a room that is not a box, on the plan: its two ends, its length
+ * and the unit vector pointing from it into the room. `OutlineWall` in
+ * outline.ts is one.
+ */
+export type BeamWall = {
+  x1: number;
+  z1: number;
+  x2: number;
+  z2: number;
+  length: number;
+  inX: number;
+  inZ: number;
+};
+
+/**
+ * A beam aimed dead at a corner must land on one of the two walls that meet
+ * there, whatever the rounding, so a wall is taken to run this far past each
+ * of its ends.
+ */
+const PAST_WALL_END = 1e-6;
+
+/** Which wall `toOutline` last found, or -1 for none. Read straight after the call. */
+let hitWall = -1;
+
+/**
+ * Distance along a beam on the plan from (x, z) to the first wall of an
+ * outline it goes out through; which wall that is goes in `hitWall`. Infinity
+ * and -1 when it meets none. Only a wall the beam crosses from the room's
+ * side counts, as with the box: a fixture standing outside the room shines in
+ * through the wall in front of it. Unlike the box's walls, which are taken
+ * for planes with no ends, a wall here ends at its corners. Allocates
+ * nothing: it runs for every fixture on every frame.
+ */
+function toOutline(x: number, z: number, headingX: number, headingZ: number, walls: readonly BeamWall[]): number {
+  let nearest = Infinity;
+  hitWall = -1;
+  for (let i = 0; i < walls.length; i += 1) {
+    const wall = walls[i];
+    const closing = headingX * wall.inX + headingZ * wall.inZ;
+    if (!(closing < 0)) continue;
+    const distance = ((wall.x1 - x) * wall.inX + (wall.z1 - z) * wall.inZ) / closing;
+    if (!(distance > 0) || distance >= nearest) continue;
+    // Where it meets the wall's line has to be between the wall's two ends:
+    // in a room with a notch, the line of one wall runs on across the room.
+    const along = ((x + headingX * distance - wall.x1) * (wall.x2 - wall.x1)
+      + (z + headingZ * distance - wall.z1) * (wall.z2 - wall.z1)) / wall.length;
+    if (along < -PAST_WALL_END || along > wall.length + PAST_WALL_END) continue;
+    nearest = distance;
+    hitWall = i;
+  }
+  return nearest;
+}
 
 /** Distance along one axis to the wall a beam is heading for; none if it is heading away from both. */
 function toWall(from: number, heading: number, low: number, high: number): number {
@@ -156,6 +217,7 @@ function surfaceUnder(
   direction: BeamVector,
   reach: number,
   room: BeamRoom,
+  wall: BeamWall | null,
 ): void {
   out.x = 0;
   out.y = 0;
@@ -167,6 +229,16 @@ function surfaceUnder(
   } else if (direction.y > 0 && on(y, direction.y, room.ceilingY)) {
     out.y = 1;
     out.d = room.ceilingY;
+  } else if (room.walls && room.outline) {
+    // A room that is not a box: the wall of its outline the beam went out through.
+    if (wall) {
+      const off = (x + direction.x * reach - wall.x1) * wall.inX + (z + direction.z * reach - wall.z1) * wall.inZ;
+      if (Math.abs(off) < ON_SURFACE) {
+        out.x = wall.inX;
+        out.z = wall.inZ;
+        out.d = wall.x1 * wall.inX + wall.z1 * wall.inZ;
+      }
+    }
   } else if (room.walls) {
     const walls = room.walls;
     const wallX = direction.x > 0 ? walls.xMax : walls.xMin;
@@ -200,7 +272,12 @@ export function beamLanding(
 ): number {
   let reach = beamThrow(y, direction.y, room.ceilingY, longest);
   const walls = room.walls;
-  if (walls) {
+  let wall: BeamWall | null = null;
+  if (walls && room.outline) {
+    // A room that is not a box: its own walls, and not the box round them.
+    reach = Math.min(reach, toOutline(x, z, direction.x, direction.z, room.outline));
+    if (hitWall >= 0) wall = room.outline[hitWall];
+  } else if (walls) {
     reach = Math.min(
       reach,
       toWall(x, direction.x, walls.xMin, walls.xMax),
@@ -208,7 +285,7 @@ export function beamLanding(
     );
   }
   reach = Math.max(SHORTEST_THROW, reach);
-  if (surface) surfaceUnder(surface, x, y, z, direction, reach, room);
+  if (surface) surfaceUnder(surface, x, y, z, direction, reach, room, wall);
   return reach;
 }
 

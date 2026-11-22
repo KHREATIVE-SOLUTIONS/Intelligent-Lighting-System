@@ -911,12 +911,16 @@ function Scene({
           z: fixture.position_z,
           kind: described.modelKind,
           hasPanTilt: described.isMovingHead,
+          // A wall the scan measured does not move out for a position nobody has confirmed.
+          guess: isPositionUnconfirmed(fixture),
         };
       }),
       // A scanned room has walls and a ceiling of its own.
       scannedRoom(rig.room_shell),
       // And may have truss the view's own cannot stand in for: at an angle, or a ring.
       scanHangers(rig.room_shell),
+      // And may not be a box: then its walls are the outline of its floor.
+      roomOutline(rig.room_shell),
     ),
     [rig]
   );
@@ -932,8 +936,9 @@ function Scene({
   // stage and risers the scan did find, so they are left out of that room.
   const scanned = scannedRoom(shell) !== null;
   // One that is not a box has its floor, walls and ceiling drawn along its
-  // outline (RoomShellView), in place of the club room's box.
-  const outlined = useMemo(() => roomOutline(shell) !== null, [shell]);
+  // outline (RoomShellView), in place of the club room's box. The outline is
+  // the venue's: the one the mounts, the beams and the cameras go by too.
+  const outlined = venue.outline !== null;
 
   // Fixtures whose position nobody has confirmed: drawn where the guess puts
   // them, and marked so that is plain.
@@ -969,10 +974,12 @@ function Scene({
   const dragLimits = useMemo(() => positionLimits(rig), [rig]);
   const dragSnapLines = useMemo(() => snapLines(rig.room_shell), [rig.room_shell]);
 
-  const camera = useMemo(() => cameraPreset(cameraMode, venue.layout), [cameraMode, venue.layout]);
+  // In a room that is not a box the cameras stand, and look, inside its outline.
+  const camera = useMemo(() => cameraPreset(cameraMode, venue.layout, venue.outline), [cameraMode, venue]);
   const longestThrow = useMemo(() => roomSpan(venue.layout), [venue.layout]);
-  // With the venue hidden no walls are drawn, so none stops a beam.
-  const room = useMemo(() => beamRoom(venue.layout, showVenue), [venue.layout, showVenue]);
+  // With the venue hidden no walls are drawn, so none stops a beam. In a room
+  // that is not a box a beam ends on the outline's walls, not on the box.
+  const room = useMemo(() => beamRoom(venue.layout, showVenue, venue.outlineWalls), [venue, showVenue]);
 
   // Empty the beam debug buffer when the rig changes. It is keyed by fixture
   // id and nothing ever removed an entry, so after the Demo rig chooser went
@@ -1017,7 +1024,9 @@ function Scene({
             dressing={!scanned}
             shell={!outlined}
           />
-          {shell && <RoomShellView shell={shell} layout={venue.layout} trussRows={venue.trussRows} />}
+          {shell && (
+            <RoomShellView shell={shell} layout={venue.layout} trussRows={venue.trussRows} outline={venue.outline} />
+          )}
           {!scanned && <DJBooth layout={venue.layout} clock={beatClock} />}
           {!scanned && <Crowd layout={venue.layout} count={quality.crowdCount} clock={beatClock} />}
         </>

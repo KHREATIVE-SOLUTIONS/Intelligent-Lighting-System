@@ -13,9 +13,18 @@
  */
 import * as THREE from 'three';
 import type { RoomShell, RoomShellBox, RoomShellLine, RoomShellRing } from '../../../types';
-import { box, merge, paint, place, strut, tubeY } from './geometryKit';
+import { box, cylZ, merge, paint, place, strut, tubeY } from './geometryKit';
 import { usableRoom } from './layout';
 import type { Hanger, KnownRoom, TrussRow } from './layout';
+import { outlineBox, outlineSpansX, outlineSpansZ, spansInBoth } from './outline';
+import type { OutlinePoint } from './outline';
+
+// The outline's own maths has no three.js in it and lives in outline.ts, where
+// the layout, the beams and the drag can read it too.
+export {
+  insideOutline, onRoomSide, outlineArea, outlineWalls, roomOutline,
+} from './outline';
+export type { OutlinePoint, OutlineWall } from './outline';
 
 type Dome = NonNullable<RoomShell['dome']>;
 type Disc = NonNullable<RoomShell['dance_floor']>;
@@ -393,99 +402,6 @@ export function buildTrussRings(rings: RoomShellRing[]): THREE.BufferGeometry | 
 // A scanned room that is not a box: its floor outline, and the walls along it.
 // ---------------------------------------------------------------------------
 
-export type OutlinePoint = { x: number; z: number };
-
-/** One wall of a room's outline, as the view stands it up. */
-export type OutlineWall = {
-  x1: number;
-  z1: number;
-  x2: number;
-  z2: number;
-  length: number;
-  midX: number;
-  midZ: number;
-  /** Unit vector on the plan pointing into the room. */
-  inX: number;
-  inZ: number;
-  /** The turn about Y that faces a wall modelled looking down +Z into the room. */
-  yaw: number;
-};
-
-/** Twice-signed area the usual way, on the plan: positive for corners in clockwise order seen from above. */
-export function outlineArea(outline: OutlinePoint[]): number {
-  let twice = 0;
-  for (let i = 0; i < outline.length; i += 1) {
-    const a = outline[i];
-    const b = outline[(i + 1) % outline.length];
-    twice += a.x * b.z - b.x * a.z;
-  }
-  return twice / 2;
-}
-
-/**
- * The floor outline of a scanned room that is not a box, corners in order, or
- * null: for a box room, a shell stored before outlines were read, any shell
- * that is not a scan, and an outline that is not one (too few corners, a
- * number missing, no area).
- */
-export function roomOutline(shell: RoomShell | null | undefined): OutlinePoint[] | null {
-  if (!shell || shell.source !== 'scan') return null;
-  const room = shell.room;
-  if (!room || !usableRoom(room)) return null;
-  const raw = room.outline;
-  if (!Array.isArray(raw) || raw.length < 3) return null;
-  if (!raw.every((point) => point && finite(point.x, point.z))) return null;
-  const outline = raw.map((point) => ({ x: point.x, z: point.z }));
-  if (!(Math.abs(outlineArea(outline)) >= 1)) return null;
-  return outline;
-}
-
-/**
- * The walls of an outline: one per pair of neighbouring corners, the last
- * corner joined back to the first, each knowing which side of it the room is
- * on. The corners may come in either order round the room.
- */
-export function outlineWalls(outline: OutlinePoint[]): OutlineWall[] {
-  const clockwise = outlineArea(outline) > 0;
-  const walls: OutlineWall[] = [];
-  for (let i = 0; i < outline.length; i += 1) {
-    const a = outline[i];
-    const b = outline[(i + 1) % outline.length];
-    const dx = b.x - a.x;
-    const dz = b.z - a.z;
-    const length = Math.hypot(dx, dz);
-    if (!(length > 0.01)) continue;
-    // With the corners clockwise seen from above, the room is on the side (-dz, dx).
-    const sign = clockwise ? 1 : -1;
-    const inX = (-dz / length) * sign + 0;
-    const inZ = (dx / length) * sign + 0;
-    walls.push({
-      x1: a.x, z1: a.z, x2: b.x, z2: b.z, length,
-      midX: (a.x + b.x) / 2, midZ: (a.z + b.z) / 2,
-      inX, inZ,
-      // A turn of `a` about Y takes +Z to (sin a, cos a) on the plan.
-      yaw: Math.atan2(inX, inZ),
-    });
-  }
-  return walls;
-}
-
-/** Whether a point on the plan is on the room's side of a wall: a camera there sees the wall's face. */
-export function onRoomSide(wall: OutlineWall, x: number, z: number): boolean {
-  return (x - wall.midX) * wall.inX + (z - wall.midZ) * wall.inZ > 0;
-}
-
-/** Whether a point on the plan is inside an outline. */
-export function insideOutline(outline: OutlinePoint[], x: number, z: number): boolean {
-  let inside = false;
-  for (let i = 0; i < outline.length; i += 1) {
-    const a = outline[i];
-    const b = outline[(i + 1) % outline.length];
-    if ((a.z > z) !== (b.z > z) && x < a.x + ((z - a.z) * (b.x - a.x)) / (b.z - a.z)) inside = !inside;
-  }
-  return inside;
-}
-
 /** The floor or the ceiling of an outlined room: the outline itself, flat, at height `y`. */
 export function buildOutlineFlat(outline: OutlinePoint[], y: number, color: THREE.ColorRepresentation): THREE.BufferGeometry {
   const shape = new THREE.Shape();
@@ -497,4 +413,69 @@ export function buildOutlineFlat(outline: OutlinePoint[], y: number, color: THRE
   // Drawn in XY, laid flat: the shape's Y becomes the room's Z.
   const flat = new THREE.ShapeGeometry(shape).rotateX(Math.PI / 2);
   return merge([paint(place(flat, [0, y, 0]), color)]);
+}
+
+/** The club room's ceiling beam and duct colours (ClubRoom.tsx), so an outlined room's ceiling matches a box one's. */
+const CEILING_BEAM = '#3a3c44';
+const CEILING_DUCT = '#666a75';
+const CEILING_BEAM_DEPTH = 0.16;
+const CEILING_DUCT_RADIUS = 0.15;
+
+/** Where the ceiling beams of an outlined room run: across the room at `z`, from `xMin` to `xMax`. */
+export function outlineBeamRuns(outline: OutlinePoint[]): Array<{ z: number; xMin: number; xMax: number }> {
+  const { zMin, zMax } = outlineBox(outline);
+  const length = zMax - zMin;
+  const half = CEILING_BEAM_DEPTH / 2;
+  const count = Math.max(2, Math.round(length / 2.4));
+  const runs: Array<{ z: number; xMin: number; xMax: number }> = [];
+  for (let i = 0; i <= count; i += 1) {
+    // The first and the last lie along the end walls, just inside them.
+    const z = Math.min(zMax - half - 0.01, Math.max(zMin + half + 0.01, zMin + (length * i) / count));
+    // Each beam stops where either of its edges meets a wall, so it ends at
+    // the notch of an L and is cut short by a wall that runs at an angle.
+    for (const [xMin, xMax] of spansInBoth(outlineSpansX(outline, z - half), outlineSpansX(outline, z + half))) {
+      if (xMax - xMin > 0.05) runs.push({ z, xMin, xMax });
+    }
+  }
+  return runs;
+}
+
+/** Where the air duct of an outlined room runs: down one side at `x`, from `zMin` to `zMax`. */
+export function outlineDuctRuns(outline: OutlinePoint[]): Array<{ x: number; zMin: number; zMax: number }> {
+  const box = outlineBox(outline);
+  // Where the box room hangs it: a sixth of the way in from the stage right wall.
+  const x = box.xMin + (box.xMax - box.xMin) * 0.17;
+  const spans = spansInBoth(
+    outlineSpansZ(outline, x - CEILING_DUCT_RADIUS),
+    outlineSpansZ(outline, x + CEILING_DUCT_RADIUS),
+  );
+  const runs: Array<{ x: number; zMin: number; zMax: number }> = [];
+  for (const [from, to] of spans) {
+    // It stops short of the walls at both ends, as the box room's does.
+    const trim = (to - from) * 0.07;
+    if (to - from - trim * 2 > 0.3) runs.push({ x, zMin: from + trim, zMax: to - trim });
+  }
+  return runs;
+}
+
+/**
+ * The beams and the air duct under the ceiling of an outlined room, as the box
+ * room has them, kept inside the outline. Hangs from height `y`. Null for a
+ * room with space for neither.
+ */
+export function buildOutlineCeilingDressing(outline: OutlinePoint[], y: number): THREE.BufferGeometry | null {
+  const parts: THREE.BufferGeometry[] = [];
+  for (const run of outlineBeamRuns(outline)) {
+    parts.push(paint(
+      place(box(run.xMax - run.xMin, 0.2, CEILING_BEAM_DEPTH), [(run.xMin + run.xMax) / 2, y - 0.1, run.z]),
+      CEILING_BEAM,
+    ));
+  }
+  for (const run of outlineDuctRuns(outline)) {
+    parts.push(paint(
+      place(cylZ(CEILING_DUCT_RADIUS, run.zMax - run.zMin, 14), [run.x, y - 0.18, (run.zMin + run.zMax) / 2]),
+      CEILING_DUCT,
+    ));
+  }
+  return parts.length ? merge(parts) : null;
 }

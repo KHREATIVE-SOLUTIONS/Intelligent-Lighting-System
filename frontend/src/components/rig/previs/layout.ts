@@ -12,6 +12,13 @@
 import type { BeamRoom } from './beamThrow';
 import { FIXTURE_SPECS } from './fixtureSpecs';
 import type { FixtureModelKind } from './fixtureSpecs';
+import {
+  insetPoint, outlineAround, outlineBox, outlineSpansX, outlineSpansZ, outlineWalls, usableRoom,
+} from './outline';
+import type { KnownRoom, OutlinePoint, OutlineWall } from './outline';
+
+export { usableRoom } from './outline';
+export type { KnownRoom } from './outline';
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -24,6 +31,12 @@ export type LayoutFixture = {
   kind: FixtureModelKind;
   /** Static fixtures can be stood lens-up; a moving head aims itself. */
   hasPanTilt: boolean;
+  /**
+   * True where the position is a guess nobody has confirmed. The wall of a
+   * scanned outline does not move out for one: the scan measured the wall and
+   * nobody has measured the fixture.
+   */
+  guess?: boolean;
 };
 
 /**
@@ -93,6 +106,15 @@ export type Venue = {
   layout: ClubLayout;
   mounts: Map<number, FixtureMount>;
   trussRows: TrussRow[];
+  /**
+   * The floor outline of a room that is not a box, as the view draws it: the
+   * scan's, with a wall moved out for a fixture standing beyond it. Null for a
+   * box. The walls, the ceiling, the beams, the mounts and the cameras all
+   * read this one, so they cannot disagree about where a wall is.
+   */
+  outline: OutlinePoint[] | null;
+  /** The walls of `outline`, worked out once. Empty for a box. */
+  outlineWalls: OutlineWall[];
 };
 
 /** Fixtures below this stand on the floor rather than hang. */
@@ -117,19 +139,6 @@ const DESK_HEIGHT = 0.95;
 const DESK_DEPTH = 0.55;
 const SPEAKER_WIDTH = 0.95;
 const SPEAKER_DEPTH = 0.8;
-
-/**
- * The room's own box, where it is known: wall to wall and floor to ceiling,
- * centred on the origin. A room scan gives one (`room_shell.room`).
- */
-export type KnownRoom = { width: number; depth: number; height: number };
-
-/** True for a room whose three sizes are real numbers a room could have. */
-export function usableRoom(room: Partial<KnownRoom> | null | undefined): room is KnownRoom {
-  return Boolean(room)
-    && [room!.width, room!.depth, room!.height].every((v) => typeof v === 'number' && Number.isFinite(v))
-    && room!.width! >= 1 && room!.depth! >= 1 && room!.height! >= 1.5;
-}
 
 /**
  * A truss the room itself has, which the view draws from the room and not
@@ -177,12 +186,20 @@ export function hangsFrom(hangers: Hanger[], fixture: { x: number; y: number; z:
  * hanging from one is clamped to it and gets no truss of the view's own: the
  * view's truss only ever runs across the room, and would otherwise hang a
  * short stub of it over every fixture round a ring.
+ *
+ * `floorOutline` is the floor of a known room that is not a box
+ * (`roomOutline`). Its walls are then the room's walls: a fixture is bracketed
+ * to whichever of them it is against, a truss stops at them, and the one
+ * nearest a fixture standing outside the room moves out for it, as a box
+ * room's wall does, unless the fixture's position is a guess
+ * (`LayoutFixture.guess`). `room` is still the box round it.
  */
 export function buildVenue(
   stage: { width: number; depth: number; height: number },
   fixtures: LayoutFixture[],
   room?: KnownRoom | null,
   hangers: Hanger[] = [],
+  floorOutline?: OutlinePoint[] | null,
 ): Venue {
   const width = Math.max(2, Number(stage.width) || 10);
   const depth = Math.max(2, Number(stage.depth) || 8);
@@ -198,12 +215,27 @@ export function buildVenue(
   const reachX = usable.reduce((m, f) => Math.max(m, Math.abs(f.x)), 0);
   const minZ = usable.reduce((m, f) => Math.min(m, f.z), 0);
   const maxZ = usable.reduce((m, f) => Math.max(m, f.z), 0);
-  const wallX = Math.max((known ? known.width : width) / 2, reachX + 0.15);
-  const backZ = Math.min(-(known ? known.depth : depth) / 2, minZ - 0.15);
+  // A room that is not a box: its walls are the outline's, and the nearest of
+  // them moves out for a fixture standing outside the room. Not for a guess:
+  // a scan's suggestion only brings a row inside the room's box, so a guess
+  // can be left in the notch of an L, and a wall somebody measured does not
+  // give way to a position nobody has.
+  const outline = known && floorOutline && floorOutline.length >= 3
+    ? outlineAround(floorOutline, usable.filter((fixture) => !fixture.guess))
+    : null;
+  const walls = outline ? outlineWalls(outline) : [];
+  // The box below is then the box round the outline, wherever its walls moved to.
+  const around = outline ? outlineBox(outline) : null;
+  const wallX = Math.max(
+    (known ? known.width : width) / 2,
+    reachX + 0.15,
+    around ? Math.max(-around.xMin, around.xMax) : 0,
+  );
+  const backZ = Math.min(-(known ? known.depth : depth) / 2, minZ - 0.15, around ? around.zMin : 0);
   // With no room known, the house is made up: the stage box, then some floor
   // for the audience. A known room ends at its own rear wall.
   const stageFrontZ = known
-    ? Math.max(known.depth / 2, maxZ + 0.15) - 0.3
+    ? Math.max(known.depth / 2, maxZ + 0.15, around ? around.zMax : 0) - 0.3
     : Math.max(depth / 2, maxZ + 0.3);
   const houseZ = known ? stageFrontZ + 0.3 : stageFrontZ + clamp(depth * 0.35, 2.5, 6);
 
@@ -246,11 +278,24 @@ export function buildVenue(
 
     // Nearest vertical surface: a wall, or the booth front for a fixture
     // hung just in front of it below desk height.
-    const surfaces: Array<{ reach: number; dirX: number; dirZ: number }> = [
-      { reach: fixture.z - backZ, dirX: 0, dirZ: -1 },
-      { reach: wallX - fixture.x, dirX: 1, dirZ: 0 },
-      { reach: fixture.x + wallX, dirX: -1, dirZ: 0 },
-    ];
+    const surfaces: Array<{ reach: number; dirX: number; dirZ: number }> = outline
+      // Each wall of the outline the fixture stands in front of, the inner
+      // walls of a notch included.
+      ? walls
+        .filter((wall) => {
+          const along = (fixture.x - wall.x1) * (wall.x2 - wall.x1) + (fixture.z - wall.z1) * (wall.z2 - wall.z1);
+          return along >= 0 && along <= wall.length * wall.length;
+        })
+        .map((wall) => ({
+          reach: (fixture.x - wall.x1) * wall.inX + (fixture.z - wall.z1) * wall.inZ,
+          dirX: -wall.inX + 0,
+          dirZ: -wall.inZ + 0,
+        }))
+      : [
+        { reach: fixture.z - backZ, dirX: 0, dirZ: -1 },
+        { reach: wallX - fixture.x, dirX: 1, dirZ: 0 },
+        { reach: fixture.x + wallX, dirX: -1, dirZ: 0 },
+      ];
     const inFrontOfBooth =
       Math.abs(fixture.x) <= boothWidth / 2 + 0.05 && fixture.y <= RISER_HEIGHT + DESK_HEIGHT;
     if (inFrontOfBooth) surfaces.push({ reach: fixture.z - fasciaZ, dirX: 0, dirZ: -1 });
@@ -326,8 +371,20 @@ export function buildVenue(
     for (const member of row.members) {
       mounts.set(member.fixture.id, { type: 'truss', drop: Math.max(0, row.chordY - member.clampY) });
     }
-    const xMin = Math.max(-wallX + 0.05, row.xMin - TRUSS_OVERHANG);
-    const xMax = Math.min(wallX - 0.05, row.xMax + TRUSS_OVERHANG);
+    // The truss stops short of the walls either side of its fixtures: in a
+    // room that is not a box, the walls the line across the room at its depth
+    // meets, which may be the inner walls of a notch.
+    let low = -wallX;
+    let high = wallX;
+    if (outline) {
+      const over = outlineSpansX(outline, row.z).filter((span) => span[0] <= row.xMax && span[1] >= row.xMin);
+      if (over.length > 0) {
+        low = Math.min(...over.map((span) => span[0]));
+        high = Math.max(...over.map((span) => span[1]));
+      }
+    }
+    const xMin = Math.max(low + 0.05, row.xMin - TRUSS_OVERHANG);
+    const xMax = Math.min(high - 0.05, row.xMax + TRUSS_OVERHANG);
     return { z: row.z, chordY: row.chordY, xMin, xMax };
   });
 
@@ -376,7 +433,7 @@ export function buildVenue(
     },
   };
 
-  return { layout, mounts, trussRows };
+  return { layout, mounts, trussRows, outline, outlineWalls: walls };
 }
 
 /**
@@ -390,14 +447,20 @@ export function roomSpan(layout: ClubLayout): number {
 /**
  * What a beam can land on in this room. With the venue hidden there are no
  * walls to stop it, so only the floor and the ceiling height count.
+ *
+ * `outline` is the walls of a room that is not a box (`Venue.outlineWalls`):
+ * a beam then ends on those, the inner walls of a notch included, and not on
+ * the box round them.
  */
-export function beamRoom(layout: ClubLayout, withWalls: boolean): BeamRoom {
-  return {
+export function beamRoom(layout: ClubLayout, withWalls: boolean, outline?: OutlineWall[] | null): BeamRoom {
+  const room: BeamRoom = {
     ceilingY: layout.ceilingY,
     walls: withWalls
       ? { xMin: -layout.wallX, xMax: layout.wallX, zMin: layout.backZ, zMax: layout.houseZ }
       : null,
   };
+  if (withWalls && outline && outline.length > 0) room.outline = outline;
+  return room;
 }
 
 // ---------------------------------------------------------------------------
@@ -413,7 +476,49 @@ export type CameraPreset = {
   fov: number;
 };
 
-export function cameraPreset(mode: CameraMode, layout: ClubLayout): CameraPreset {
+/** How far from every wall of a room that is not a box a camera in it stands, and the point it looks at lies. */
+export const CAMERA_WALL_CLEARANCE = 0.6;
+
+/**
+ * Where a camera stands and what it looks at. `outline` is the floor of a room
+ * that is not a box (`Venue.outline`). The presets are worked out from the
+ * room's box, whose middle or dance floor may be in the notch of such a room,
+ * outside its walls. Where one is, it is brought to the nearest place inside:
+ *
+ * - the point a camera looks at and turns about, with the camera carried
+ *   along, so it is the same view of a different spot;
+ * - the dance-floor camera, which stands in the room;
+ * - the DJ camera, which stands a metre behind whichever wall is upstage of
+ *   what it looks at.
+ *
+ * A preset that is already inside the room is left exactly as it is, and so
+ * is the top view, which frames the room's whole box.
+ */
+export function cameraPreset(mode: CameraMode, layout: ClubLayout, outline?: OutlinePoint[] | null): CameraPreset {
+  const preset = boxCameraPreset(mode, layout);
+  if (!outline || outline.length < 3 || mode === 'top') return preset;
+
+  const [tx, ty, tz] = preset.target;
+  const [px, py, pz] = preset.position;
+  const target = insetPoint(outline, tx, tz, CAMERA_WALL_CLEARANCE);
+  let x = px + (target.x - tx);
+  let z = pz + (target.z - tz);
+
+  if (mode === 'floor') {
+    const stand = insetPoint(outline, x, z, CAMERA_WALL_CLEARANCE);
+    x = stand.x;
+    z = stand.z;
+  } else if (mode === 'dj') {
+    // On the line up and down stage the camera is on, behind the wall upstage of the target.
+    const spans = outlineSpansZ(outline, x);
+    const facing = spans.find((span) => span[0] <= target.z && span[1] >= target.z) ?? spans[0];
+    if (facing) z = facing[0] - 1.0;
+  }
+  if (target.x === tx && target.z === tz && x === px && z === pz) return preset;
+  return { ...preset, position: [x, py, z], target: [target.x, ty, target.z] };
+}
+
+function boxCameraPreset(mode: CameraMode, layout: ClubLayout): CameraPreset {
   const { depth, height } = layout;
   const baseTarget: [number, number, number] = [0, height * 0.45, 0];
 

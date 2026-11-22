@@ -8,6 +8,8 @@
 // Axes are the rig's: metres, origin at the centre of the floor, X across,
 // Y up, -Z upstage.
 import type { Rig, RigFixture, RoomShell } from '../../../types';
+import { holdNearOutline, roomOutline } from './outline';
+import type { OutlinePoint } from './outline';
 
 export type Point3 = { x: number; y: number; z: number };
 
@@ -265,11 +267,23 @@ export function snapToLines(
 // Limits
 // ---------------------------------------------------------------------------
 
-export type PositionLimits = { halfX: number; halfZ: number; top: number };
+export type PositionLimits = {
+  halfX: number;
+  halfZ: number;
+  top: number;
+  /**
+   * The floor outline of a scanned room that is not a box. A position is then
+   * also held to within `OUTSIDE_MARGIN_M` of the room itself, so the notch of
+   * an L is outside it like anywhere else beyond a wall.
+   */
+  outline?: OutlinePoint[] | null;
+};
 
 /**
  * How far out and how high a fixture may be put: the larger of the stage and
- * the scanned room, and a margin. Mirrors `position_limits` in
+ * the scanned room, and a margin; and, in a scanned room that is not a box,
+ * no further than that margin from the room's own walls. Mirrors
+ * `position_limits` and `position_outline` in
  * backend/app/api/endpoints/fixture_position.py, which has the last word.
  */
 export function positionLimits(
@@ -280,19 +294,31 @@ export function positionLimits(
     const base = finite(stage) && stage > 0 ? stage : fallback;
     return finite(scanned) && scanned > 0 ? Math.max(base, scanned) : base;
   };
-  return {
+  const limits: PositionLimits = {
     halfX: size(rig.stage_width, room?.width, 10) / 2 + OUTSIDE_MARGIN_M,
     halfZ: size(rig.stage_depth, room?.depth, 8) / 2 + OUTSIDE_MARGIN_M,
     top: size(rig.stage_height, room?.height, 6) + OUTSIDE_MARGIN_M,
   };
+  // Only a room that is not a box has one: a box room's limits say nothing of it.
+  const outline = roomOutline(rig.room_shell);
+  if (outline) limits.outline = outline;
+  return limits;
 }
 
+/**
+ * A position held inside the limits. In a room that is not a box it is first
+ * brought to within the margin of the room's walls, then held to the box, in
+ * that order: the server does the same two steps in the same order.
+ */
 export function clampPosition(point: Point3, limits: PositionLimits): Point3 {
   const hold = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+  const plan = limits.outline && limits.outline.length >= 3
+    ? holdNearOutline(limits.outline, point.x, point.z, OUTSIDE_MARGIN_M)
+    : point;
   return {
-    x: hold(point.x, -limits.halfX, limits.halfX),
+    x: hold(plan.x, -limits.halfX, limits.halfX),
     y: hold(point.y, 0, limits.top),
-    z: hold(point.z, -limits.halfZ, limits.halfZ),
+    z: hold(plan.z, -limits.halfZ, limits.halfZ),
   };
 }
 

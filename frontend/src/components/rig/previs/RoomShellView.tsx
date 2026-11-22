@@ -23,6 +23,7 @@ import {
   buildDome,
   buildDomeSurround,
   buildLedWalls,
+  buildOutlineCeilingDressing,
   buildOutlineFlat,
   buildOverheadLines,
   buildRisers,
@@ -30,7 +31,6 @@ import {
   lineAlreadyDrawn,
   onRoomSide,
   outlineWalls,
-  roomOutline,
   scanRings,
   scanRisers,
   underDome,
@@ -66,7 +66,7 @@ const OutlineRoom = memo(function OutlineRoom({
   ceiling: boolean;
 }) {
   const wallRefs = useRef<Array<THREE.Group | null>>([]);
-  const ceilingRef = useRef<THREE.Mesh>(null);
+  const ceilingRef = useRef<THREE.Group>(null);
 
   const built = useMemo(() => {
     const walls = outlineWalls(outline);
@@ -75,6 +75,8 @@ const OutlineRoom = memo(function OutlineRoom({
       panels: walls.map((wall) => buildWall(wall.length, height)),
       floor: buildOutlineFlat(outline, 0, OUTLINE_FLOOR),
       ceiling: buildOutlineFlat(outline, height, OUTLINE_CEILING),
+      // The beams and the duct the box room's ceiling has, kept inside the outline.
+      dressing: buildOutlineCeilingDressing(outline, height),
     };
   }, [outline, height]);
 
@@ -82,6 +84,7 @@ const OutlineRoom = memo(function OutlineRoom({
     built.panels.forEach((panel) => panel.dispose());
     built.floor.dispose();
     built.ceiling.dispose();
+    built.dressing?.dispose();
   }, [built]);
 
   useFrame(({ camera }) => {
@@ -106,7 +109,12 @@ const OutlineRoom = memo(function OutlineRoom({
           <mesh geometry={built.panels[index]} material={mattMaterial} receiveShadow dispose={null} />
         </group>
       ))}
-      {ceiling && <mesh ref={ceilingRef} geometry={built.ceiling} material={mattMaterial} dispose={null} />}
+      {ceiling && (
+        <group ref={ceilingRef}>
+          <mesh geometry={built.ceiling} material={mattMaterial} dispose={null} />
+          {built.dressing && <mesh geometry={built.dressing} material={mattMaterial} dispose={null} />}
+        </group>
+      )}
     </group>
   );
 });
@@ -115,7 +123,14 @@ export const RoomShellView = memo(function RoomShellView({
   shell,
   layout,
   trussRows = NO_ROWS,
+  outline = null,
 }: {
+  /**
+   * The floor outline of a scanned room that is not a box, as the venue has
+   * it (`Venue.outline`): the same one the beams, the mounts and the cameras
+   * go by, with a wall moved out for a fixture beyond it. Null for a box.
+   */
+  outline?: OutlinePoint[] | null;
   shell: RoomShell;
   layout: ClubLayout;
   /** The truss the view hangs over the rig's own fixtures: a scanned line under one of these is not drawn twice. */
@@ -123,8 +138,6 @@ export const RoomShellView = memo(function RoomShellView({
 }) {
   const domeRef = useRef<THREE.Group>(null);
   const dome = usableDome(shell.dome) ? shell.dome : null;
-  // A scanned room that is not a box: its floor, walls and ceiling follow its outline.
-  const outline = useMemo(() => roomOutline(shell), [shell]);
 
   const built = useMemo(() => {
     // A scanned room's raised areas (stage, risers, booth) are all drawn as
