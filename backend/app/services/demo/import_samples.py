@@ -30,10 +30,10 @@ and a unit test holds the committed copies to what this returns.
 import csv
 import io
 import uuid
-import zipfile
 from typing import Dict, List, Sequence, Tuple
 from xml.sax.saxutils import quoteattr
 
+from app.services.console_export.archive import deterministic_zip
 from app.services.fixture_library.stage_axes import stage_to_z_up
 
 from .patch_sheet import channel_count
@@ -193,15 +193,7 @@ def gdtf_description(file_name: str) -> str:
 
 def _zip(members: Sequence[Tuple[str, bytes]]) -> bytes:
     """A ZIP that is the same bytes on every machine: stored, fixed dates."""
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as zf:
-        for name, data in members:
-            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_STORED
-            info.create_system = 0
-            info.external_attr = 0
-            zf.writestr(info, data)
-    return buffer.getvalue()
+    return deterministic_zip(members)
 
 
 def gdtf_bytes(file_name: str = f"{MAKER}@Demo Spot 16ch.gdtf") -> bytes:

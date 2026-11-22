@@ -118,6 +118,42 @@ def z_up_euler_to_stage(x: float, y: float, z: float) -> Vector:
     return (float(x) + 0.0, float(z) + 0.0, -float(y) + 0.0)
 
 
+def stage_euler_to_z_up(x: float, y: float, z: float) -> Vector:
+    """The inverse of z_up_euler_to_stage, for writing a rig back out."""
+    return (float(x) + 0.0, -float(z) + 0.0, float(y) + 0.0)
+
+
+def stage_rotation_matrix(rotation_x: float, rotation_y: float, rotation_z: float) -> Matrix3:
+    """The stage-axis matrix for a rig fixture's three angles, in degrees.
+
+    Ry(rotation_y) * Rx(rotation_x) * Rz(rotation_z): the inverse of
+    stage_rotation_degrees, and the order the 3D view turns a fixture in.
+    """
+    sx, cx = math.sin(math.radians(rotation_x)), math.cos(math.radians(rotation_x))
+    sy, cy = math.sin(math.radians(rotation_y)), math.cos(math.radians(rotation_y))
+    sz, cz = math.sin(math.radians(rotation_z)), math.cos(math.radians(rotation_z))
+    about_x: Matrix3 = ((1.0, 0.0, 0.0), (0.0, cx, -sx), (0.0, sx, cx))
+    about_y: Matrix3 = ((cy, 0.0, sy), (0.0, 1.0, 0.0), (-sy, 0.0, cy))
+    about_z: Matrix3 = ((cz, -sz, 0.0), (sz, cz, 0.0), (0.0, 0.0, 1.0))
+    return multiply(multiply(about_y, about_x), about_z)
+
+
+def stage_rotation_to_z_up(m: Matrix3) -> Matrix3:
+    """A stage-axis rotation matrix in Z-up axes: C^T M C, undoing z_up_rotation_to_stage."""
+    c: Matrix3 = ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, -1.0, 0.0))
+    c_t: Matrix3 = ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
+    return multiply(multiply(c_t, m), c)
+
+
+def matrix_to_columns(m: Matrix3) -> Tuple[Vector, Vector, Vector]:
+    """The three columns of a matrix: the inverse of columns_to_matrix."""
+    return (
+        (m[0][0], m[1][0], m[2][0]),
+        (m[0][1], m[1][1], m[2][1]),
+        (m[0][2], m[1][2], m[2][2]),
+    )
+
+
 def is_identity(m: Matrix3, tolerance: float = 1e-6) -> bool:
     return all(
         abs(m[r][c] - IDENTITY[r][c]) <= tolerance for r in range(3) for c in range(3)
