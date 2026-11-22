@@ -449,12 +449,6 @@ are no binary fixtures in the repository.
 ## What is left
 
 - **Frontend checks ran on 2026-11-22:** vitest 314 passed and the build passed with slices 4 and the outline work; backend 1608 passed.
-- **Slice 4's frontend checks have not been run.** The session that wrote it
-  could type-check (`npx tsc --noEmit` reports nothing in the files it
-  touched) but could not run vitest or the build. Run
-  `cd frontend; npx vitest run --passWithNoTests; npm run build` before
-  relying on it. The backend tests for it ran under the system Python, not
-  the project venv.
 - **Nothing of slice 4 has been seen in a browser**: an outlined room's walls
   from each camera, an angled bar, a ring, and a drag snapping to either.
 - **Nothing of the outline work has been seen in a browser**: a beam stopping
