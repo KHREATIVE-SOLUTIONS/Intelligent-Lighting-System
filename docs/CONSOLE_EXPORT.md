@@ -315,10 +315,13 @@ exports byte for byte.
   groups, positions within 1 mm. Every other preset the same. A small made-up
   rig covers what LIV lacks: fixtures turned about one and about three axes, an
   unplaced fixture, an unconfirmed one, missing and repeated numbers, names
-  with quotes and ampersands. Script syntax, group order, determinism.
+  with quotes and ampersands. Script syntax, group order, determinism. The
+  unconfirmed fixture is still unconfirmed after MVR export and import, and
+  the same list under another program's provider name marks nothing.
 - `backend/tests/integration/test_api_console_export.py`: the routes, against a
   rig imported into the database; an edit showing in the next export; the
-  export matching `/api/demo/rig`.
+  export matching `/api/demo/rig`; a rig's MVR posted back to
+  `/api/import/venue` previews its one guessed position as not confirmed.
 - `frontend/src/__tests__/consoleExport.test.ts`: paths and file names.
 
 ## What is left
