@@ -1,12 +1,13 @@
 # Room builder from a phone scan
 
-Status: **first slice. The scan reader and the API are built and tested against
+Status: **two slices. The scan reader and the API are built and tested against
 rooms made in code; no file from a real phone has been read by it yet.** Treat
-the first real scan as a test of the reader, not of the room. The frontend
-changes (the Room Scan dialog and the scanned room in the 3D view) were not
-typechecked or run in the session that wrote them (no `node_modules` in the
-worktree, and installing them was refused): run `npm test` and `npm run build`
-in `frontend/` before relying on them.
+the first real scan as a test of the reader, not of the room. The second slice
+adds correcting a suggestion by dragging the fixture in the 3D view, and
+undoing the moves a scan made. The frontend unit tests pass and the bundle
+builds, but **nobody has yet dragged a fixture in a browser**: the drag's
+geometry is tested, the pointer handling in the canvas is not (see What is
+left).
 
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
@@ -67,9 +68,51 @@ Rig editor toolbar, **Room Scan**:
 5. **See it in the 3D view.** Then run Identify Lights: the moved fixtures are
    still unconfirmed.
 
-**Remove the stored room** takes the room off the rig again. It does not put
-moved fixtures back; there is no undo for an applied move other than Identify
-Lights, dragging, or laying the template out again.
+### Correcting a suggestion by dragging
+
+A moved fixture is still a guess (amber in the 3D view). To put one where it
+really is, open the rig's 3D view and switch on **Move fixtures** in the
+header (stored rigs only; the demo rig has no stored positions to change):
+
+- **Press a fixture** to select it. Every fixture gets a faint sphere to grab:
+  amber for a guess, grey for a confirmed position, blue for the selected one.
+- **Drag** moves it along the floor plan at the height it hangs at. The camera
+  holds still while a fixture is held. A readout shows where it would go.
+- **Shift-drag** moves it straight up and down where it stands.
+- **Arrow keys** nudge the selected fixture 0.1 m across or up and down stage,
+  **Page Up / Page Down** change its height; with Shift, 1 m at a time.
+- With a scanned room on the rig, a drag **snaps** to the nearest scanned truss
+  line or raised-area edge within 0.4 m on the plan, among lines within 1.5 m
+  of the fixture's height. On a truss line the fixture also takes the line's
+  hanging height; on a stage or riser edge it keeps its own. The **Snap**
+  button turns this off; holding **Alt** lets go of it for one drag. A height
+  drag does not snap.
+- **Esc** cancels a drag. A press with no real travel only selects: it never
+  snaps, moves or confirms the fixture.
+- **Releasing saves** through `PUT .../fixtures/{id}/position`, which confirms
+  the position: the amber marker goes, and a later room scan, row fit or undo
+  leaves the fixture alone. If the save fails the fixture is put back where it
+  was and the reason is shown.
+
+A position is held to within 2 m of the larger of the stage and the scanned
+room, and between the floor and 2 m over the top. The view applies the same
+limit the server does; the server has the last word.
+
+Dragging in the 2D layout view is unchanged: it saves through batch-update and
+does **not** confirm a position.
+
+### Undoing the moves a scan made
+
+Applying a scan records where each fixture it moved stood before. While that
+record holds moves, **Undo room scan moves (n)** is shown in the Room Scan
+dialog and in the 3D view's header. It asks once, then puts those fixtures
+back. A fixture a person has tapped, confirmed, dragged or moved since the scan
+is **left where it is** and named in the answer with the reason ("Left alone:
+Spot 1 (...)"). The stored room stays.
+
+**Remove the stored room** takes the room off the rig again. When the scan
+moved fixtures it asks first: remove the room and put them back, or remove the
+room only. Removing the room only leaves the undo available afterwards.
 
 ## The API
 
@@ -118,8 +161,29 @@ Refusals, each with a `detail` that says what to do:
 
 ### `DELETE /api/rigs/{rig_id}/room-shell`
 
-Takes the stored room off the rig. Fixtures are left where they are. Answers
-`{"rig_id": ..., "removed": true|false}`.
+Takes the stored room off the rig. Fixtures are left where they are unless
+`restore_fixtures=true`, which also puts back the ones the scan moved. Answers
+`rig_id`, `removed`, `undo_available` and, when asked to restore,
+`fixtures_restored`, `fixtures_skipped`, `skipped_fixtures` and a `message`.
+
+### `POST /api/rigs/{rig_id}/room-scan/undo`
+
+Puts the fixtures the last applied scan moved back where they stood before it.
+Answers `restored`, `skipped`, `restored_fixtures`, `skipped_fixtures` (each
+with `rig_fixture_id`, `name` and a `reason`) and a `message`. A fixture a
+person has placed, confirmed or moved since is skipped, never overwritten.
+409 while a locate walkthrough is running on the rig. The rig itself carries
+the record as read-only `room_scan_undo`, which is how the UI knows there is
+something to undo.
+
+### `PUT /api/rigs/{rig_id}/fixtures/{fixture_id}/position`
+
+What a drag in the 3D view saves through. Body: `position_x`, `position_z` and
+optionally `position_y` (left out, the height is kept). The position is held
+inside the limits above, rounded to the millimetre, and **confirmed**: the
+tags become `position_source:tap` with no `position_unconfirmed`, as a tap in
+flash-and-tap leaves them. Answers the fixture as stored. 404 for an unknown
+rig or fixture, 409 while a locate walkthrough is running. No DMX is sent.
 
 ### Where the shell is read
 
@@ -235,10 +299,40 @@ are no binary fixtures in the repository.
   update cannot write the shell; the route is behind the login.
 - `frontend/src/__tests__/roomScan.test.ts`: the scanned room's walls, ceiling,
   risers and overhead bars in the view, request parameters, and the dialog's
-  wording. **Written but not run** (see Status).
+  wording.
+- `backend/tests/unit/test_room_scan_undo.py` and
+  `backend/tests/integration/test_api_position_drag_and_scan_undo.py`: the undo
+  record, an undo that skips what a person placed later, removal with and
+  without restoring, and the position route confirming a dragged fixture.
+- `frontend/src/__tests__/fixtureDrag.test.ts`: the drag geometry with no
+  canvas. A pointer ray onto the plane at the fixture's height and the rays
+  that miss; the grip taken on the first move so a fixture does not jump; the
+  height drag; which lines a scanned room offers; the snap radius, the height
+  window, truss over edge on a tie, the truss's height taken and an edge's
+  not; the limits; the drawn lift taken off again; a click next to a truss
+  line not counting as a move; keyboard nudges.
+- `frontend/src/__tests__/RoomScanUndoButton.test.tsx`: nothing drawn with no
+  moves to undo; the first click asks and sends nothing; confirming calls the
+  undo route and hands on the answer, skipped fixtures named; a refusal is
+  shown with another go offered.
 
 ## What is left
 
+- **The drag has not been tried in a browser.** `FixtureDragLayer.tsx` (pointer
+  events, the camera held still, the marker and readout) and its wiring in
+  `RigVisualizer.tsx` type-check and build, and the geometry under them is
+  tested, but nobody has picked a fixture up on screen. Check in a real or
+  headless browser against a running backend (`3D_PREVIEW.md` says how) before
+  a venue: grab radius, the Top camera, and a drag begun over another fixture.
+- **Touch.** The drag uses pointer events, so a finger should work, but Shift
+  and Alt have no touch equivalent: on a tablet there is no height drag and no
+  way to let go of the snap for one drag other than the Snap button.
+- **One fixture at a time.** No multi-select, no dragging a whole row, and no
+  rotating a fixture in the 3D view.
+- **Only the last scan can be undone**, and an undo cannot itself be undone.
+  A 3D drag has no undo either: drag it back.
+- **Snap targets are the scan's own lines.** The view's drawn truss rows for a
+  rig with no scanned room are not snap targets, and there is no grid snap.
 - **A real scan.** Polycam, Scaniverse and RoomPlan exports from a real venue
   have not been read. Expect the thresholds in `extract.py` to need tuning.
 - **Binary USDZ** (`.usdc`): not read. Export OBJ.

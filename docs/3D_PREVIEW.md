@@ -48,6 +48,23 @@ in place: see `FLASH_AND_TAP.md`) gets an amber ring, a marker above it and a
 dashed line to the floor. The header counts them. One merged geometry, one
 draw call.
 
+**Move fixtures** (`previs/FixtureDragLayer.tsx`, `previs/fixtureDrag.ts`).
+For a rig stored in the database, the *Move fixtures* button in the header
+puts a grab handle on every fixture. Press one to select it, drag it along the
+floor plan at its height, Shift-drag for height, or nudge the selected one
+with the arrow and Page Up/Down keys. With a scanned room a drag snaps to the
+nearest scanned truss line or raised-area edge (*Snap* button; Alt lets go for
+one drag). Releasing saves through
+`PUT /api/rigs/{id}/fixtures/{fixture_id}/position`, which confirms the
+position, so the amber marker goes. The header also carries *Undo room scan
+moves* when a scan's moves can still be undone. Full behaviour in
+`ROOM_SCAN.md`. All the geometry is pure functions in `fixtureDrag.ts`; the
+layer only turns pointer events into rays. While a fixture is held nothing in
+React changes (the marker moves through refs); the rig is given the new
+position on release. The orbit controls are the scene's default controls
+(`makeDefault`) so the layer can hold the camera still during a drag. Stored
+positions only: nothing here sends DMX.
+
 **Cost.** Fixtures are memoised and given nothing that changes per frame;
 colour, intensity, beam visibility and head angles are written straight to
 three.js objects in the frame loop. The beam debug table is behind a *Debug*
@@ -59,9 +76,17 @@ button and no fixture writes a row for it while it is closed.
 `hangBeam` against three.js's own rotation, and the output feed. The beam state
 mapping and the backend's output frames have their own tests
 (`beamState.test.ts`, `backend/tests/unit/test_preview_output_frames.py`).
+`fixtureDrag.test.ts` covers the drag, snap, limit and nudge geometry of Move
+fixtures; `RoomScanUndoButton.test.tsx` the undo button.
 
 ## What is left
 
+- **Move fixtures has not been dragged in a browser.** Its geometry is tested
+  and the page builds; the pointer handling in the canvas has only been read,
+  not used. Dragging is one fixture at a time, has no undo of its own, and on
+  a touch screen has no height drag (Shift) or one-drag snap release (Alt).
+  A save lays the venue out again, which re-renders every fixture once per
+  drop or key nudge.
 - **Not seen in a browser this round.** The code type-checks, the unit tests
   pass and the bundle builds; nobody has yet looked at the LIV dome, a leaning
   fixture or the amber markers on screen. The in-app browser pane stops WebGL
@@ -78,8 +103,9 @@ mapping and the backend's output frames have their own tests
 - **Scenery does not stop a beam.** Beams land on the floor, the four walls
   and the flat ceiling height. They pass through the dome, the balcony, the
   risers and the LED walls.
-- **Database rigs have no room shell.** Only a demo preset carries one. A
-  patched rig would need the shell stored on, or derived for, the rig.
+- **A database rig has a room shell only after a room scan.** A demo preset
+  carries its own; a patched rig gets one by applying a phone scan
+  (`ROOM_SCAN.md`). Without one it is drawn in the generic club room.
 - **LED walls are idle panels.** Nothing drives their content.
 - **Colour wheels need named ranges.** A wheel channel with no `value_ranges`
   in the profile is drawn open white; gobos, prisms, frost and iris are not
