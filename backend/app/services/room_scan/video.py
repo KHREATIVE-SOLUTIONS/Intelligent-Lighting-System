@@ -66,8 +66,9 @@ THUMB = 512                      # the centre crop sharpness is measured on
 SMALL = 32                       # the grid two frames are compared on
 MIN_FRAMES = 12
 BLUR_SHARE = 0.5                 # blurred: under this share of the sharpness of its neighbours
-FLAT_SHARPNESS = 2.0             # a lens cap, a black frame
-DUPLICATE_DIFF = 1.5             # grey levels (of 255): the same view as the frame before
+FLAT_SHARPNESS = 0.2             # a lens cap, a black frame; a dark room scores well above this
+DUPLICATE_SHARE = 0.013          # the same view as the frame before: it differs by under this share of its contrast
+DUPLICATE_FLOOR = 0.03           # grey levels (of 255): under this two frames are the same whatever the contrast
 
 # Reconstruction
 EXHAUSTIVE_UP_TO = 100           # frames; past this every-pair matching takes too long
@@ -325,12 +326,24 @@ def shrink(grey: np.ndarray) -> np.ndarray:
     return grey.astype(np.float32).reshape(SMALL, block, SMALL, block).mean(axis=(1, 3))
 
 
+def same_view(a: np.ndarray, b: np.ndarray) -> bool:
+    """Whether two whole frames, shrunk to SMALL by SMALL, show the same thing.
+
+    Measured against the frame's own contrast, so a dim room is not taken for
+    a phone standing still.
+    """
+    contrast = float(np.abs(a - a.mean()).mean())
+    return float(np.abs(a - b).mean()) < max(DUPLICATE_FLOOR, DUPLICATE_SHARE * contrast)
+
+
 def select_frames(sharp: np.ndarray, small: np.ndarray, max_frames: int = MAX_FRAMES) -> Tuple[List[int], int, int]:
     """(indices of the frames to keep, how many were blurred, how many were repeats).
 
     A frame is blurred against its neighbours, not against a fixed number:
     how sharp a sharp frame is depends on the room. A repeat is a frame that
     shows what the last kept frame showed (the phone was standing still).
+    `small` is each WHOLE frame shrunk, not its centre: a blank wall in the
+    middle of the picture is not a phone standing still.
     """
     count = len(sharp)
     if count == 0:
@@ -344,7 +357,7 @@ def select_frames(sharp: np.ndarray, small: np.ndarray, max_frames: int = MAX_FR
     for i in range(count):
         if blurred[i]:
             continue
-        if keep and float(np.abs(small[i] - small[keep[-1]]).mean()) < DUPLICATE_DIFF:
+        if keep and same_view(small[keep[-1]], small[i]):
             repeats += 1
             continue
         keep.append(i)
@@ -383,22 +396,25 @@ def _candidate_fps(duration: Optional[float], max_frames: int) -> float:
 def _ffmpeg_candidates(
     ffmpeg: str, video: Path, work: Path, max_frames: int,
     cancel: threading.Event, deadline: float, runner: Runner, report: FrameReport,
-) -> Tuple[List[Path], np.ndarray]:
-    """(candidate frames in order, their grey centre crops as an (N, THUMB, THUMB) array)."""
+) -> Tuple[List[Path], np.ndarray, np.ndarray]:
+    """(candidate frames in order, their grey centre crops (N, THUMB, THUMB), each whole frame shrunk (N, SMALL, SMALL))."""
     report.duration_s = probe_duration(ffmpeg, video)
     fps = _candidate_fps(report.duration_s, max_frames)
     limit = max_frames * CANDIDATES_PER_FRAME
     candidates = work / "candidates"
     candidates.mkdir(parents=True, exist_ok=True)
     thumbs = work / "thumbs.gray"
+    whole = work / "whole.gray"
     side = FRAME_LONG_SIDE
-    # One pass, two outputs off the same frames: the frame itself, and a grey
-    # crop of its centre at full detail to judge it by. ffmpeg turns a portrait
-    # video upright by itself, which the "up" guess later relies on.
+    # One pass, three outputs off the same frames: the frame itself, a grey
+    # crop of its centre at full detail to judge its sharpness by, and the
+    # whole frame shrunk small to tell a repeat by. ffmpeg turns a video with
+    # a rotation recorded in it upright by itself, which the "up" guess relies on.
     graph = (
         f"[0:v]fps={fps:.4f},"
-        f"scale='if(gte(iw,ih),min({side},iw),-2)':'if(gte(iw,ih),-2,min({side},ih))',split[full][t];"
-        f"[t]crop='min({THUMB},iw)':'min({THUMB},ih)',scale={THUMB}:{THUMB},format=gray[thumb]"
+        f"scale='if(gte(iw,ih),min({side},iw),-2)':'if(gte(iw,ih),-2,min({side},ih))',split=3[full][t][w];"
+        f"[t]crop='min({THUMB},iw)':'min({THUMB},ih)',scale={THUMB}:{THUMB},format=gray[thumb];"
+        f"[w]scale={SMALL}:{SMALL}:flags=area,format=gray[whole]"
     )
     log = work / "ffmpeg.log"
     code = runner(
@@ -407,24 +423,27 @@ def _ffmpeg_candidates(
             "-filter_complex", graph,
             "-map", "[full]", "-frames:v", str(limit), "-q:v", "2", str(candidates / "%06d.jpg"),
             "-map", "[thumb]", "-frames:v", str(limit), "-f", "rawvideo", "-pix_fmt", "gray", str(thumbs),
+            "-map", "[whole]", "-frames:v", str(limit), "-f", "rawvideo", "-pix_fmt", "gray", str(whole),
         ],
         log, cancel, deadline,
     )
     files = sorted(candidates.glob("*.jpg"))
-    if code != 0 or not files or not thumbs.is_file():
+    if code != 0 or not files or not thumbs.is_file() or not whole.is_file():
         raise VideoPipelineError(
             "ffmpeg could not read frames out of this video. Send the walkthrough as MP4 or MOV, straight "
             f"from the phone. ({log_tail(log) or f'exit {code}'})"
         )
     grey = np.fromfile(thumbs, dtype=np.uint8)
     grey = grey[: (len(grey) // (THUMB * THUMB)) * THUMB * THUMB].reshape(-1, THUMB, THUMB)
-    count = min(len(files), len(grey))
-    return files[:count], grey[:count]
+    small = np.fromfile(whole, dtype=np.uint8)
+    small = small[: (len(small) // (SMALL * SMALL)) * SMALL * SMALL].reshape(-1, SMALL, SMALL).astype(np.float32)
+    count = min(len(files), len(grey), len(small))
+    return files[:count], grey[:count], small[:count]
 
 
 def _opencv_candidates(
     video: Path, work: Path, max_frames: int, cancel: threading.Event, deadline: float, report: FrameReport,
-) -> Tuple[List[Path], np.ndarray]:
+) -> Tuple[List[Path], np.ndarray, np.ndarray]:
     import cv2  # not a dependency: only reached when ffmpeg is missing and OpenCV is there
 
     capture = cv2.VideoCapture(str(video))
@@ -443,6 +462,7 @@ def _opencv_candidates(
         candidates.mkdir(parents=True, exist_ok=True)
         files: List[Path] = []
         greys: List[np.ndarray] = []
+        smalls: List[np.ndarray] = []
         index = 0
         while len(files) < limit and capture.grab():
             index += 1
@@ -470,11 +490,12 @@ def _opencv_candidates(
                 continue
             files.append(path)
             greys.append(crop)
+            smalls.append(cv2.resize(grey, (SMALL, SMALL), interpolation=cv2.INTER_AREA).astype(np.float32))
     finally:
         capture.release()
     if not files:
         raise VideoPipelineError("OpenCV read no frames out of this video. Send it as MP4 or MOV, or install ffmpeg.")
-    return files, np.stack(greys)
+    return files, np.stack(greys), np.stack(smalls)
 
 
 def sample_frames(
@@ -485,15 +506,15 @@ def sample_frames(
     """Write the frames worth reconstructing from into `frames_dir`, named in order."""
     report = FrameReport(tool=tools.frame_tool or "")
     if tools.ffmpeg:
-        files, grey = _ffmpeg_candidates(tools.ffmpeg, video, work, max_frames, cancel, deadline, runner, report)
+        files, grey, small = _ffmpeg_candidates(
+            tools.ffmpeg, video, work, max_frames, cancel, deadline, runner, report)
     elif tools.opencv:
-        files, grey = _opencv_candidates(video, work, max_frames, cancel, deadline, report)
+        files, grey, small = _opencv_candidates(video, work, max_frames, cancel, deadline, report)
     else:
         raise VideoPipelineError(tools.missing_message() or "Nothing here can read frames out of a video.")
     _check(cancel, deadline)
 
     sharp = np.array([sharpness(g) for g in grey])
-    small = np.stack([shrink(g) for g in grey])
     keep, blurred, repeats = select_frames(sharp, small, max_frames)
     report.candidates, report.blurry, report.duplicates, report.kept = len(files), blurred, repeats, len(keep)
     if len(keep) < MIN_FRAMES:
@@ -507,6 +528,7 @@ def sample_frames(
         shutil.move(str(files[index]), str(frames_dir / f"frame_{number:06d}.jpg"))
     shutil.rmtree(work / "candidates", ignore_errors=True)
     (work / "thumbs.gray").unlink(missing_ok=True)
+    (work / "whole.gray").unlink(missing_ok=True)
     return report
 
 
@@ -739,6 +761,34 @@ def rotation_to_y_up(up: np.ndarray) -> np.ndarray:
     return np.stack([x, up, z])
 
 
+def drop_strays(points: np.ndarray, neighbours: int = 6, factor: float = 3.0) -> np.ndarray:
+    """Which points to keep: those with others near them.
+
+    A reconstruction scatters a few percent of its points far from anything
+    (a bad match, a reflection, something seen through a door). They are few,
+    but everything after this measures the room by where its points end, so
+    they have to go first. A point is a stray when its `neighbours`-th nearest
+    point is more than `factor` times further away than is usual in this cloud.
+    """
+    keep = np.ones(len(points), dtype=bool)
+    if len(points) <= neighbours + 1:
+        return keep
+    # Far out first, cheaply: nothing real is several room-lengths from the middle.
+    reach = np.linalg.norm(points - np.median(points, axis=0), axis=1)
+    keep &= reach <= 3.0 * np.percentile(reach, 75)
+    try:
+        from scipy.spatial import cKDTree
+    except ImportError:      # scipy is a dependency; without it only the far-out cut is made
+        return keep
+    inside = np.flatnonzero(keep)
+    if len(inside) <= neighbours + 1:
+        return keep
+    distance, _ = cKDTree(points[inside]).query(points[inside], k=neighbours + 1)
+    nth = distance[:, -1]
+    keep[inside[nth > factor * np.median(nth)]] = False
+    return keep
+
+
 @dataclass
 class VideoCloud:
     """What a video gave: a cloud that is upright but has no scale yet."""
@@ -765,6 +815,10 @@ def align_cloud(
     """(points, camera centres, whether up was found, notes, warnings), turned so up is +Y."""
     notes: List[str] = []
     warnings: List[str] = []
+    keep = drop_strays(points)
+    if not keep.all():
+        notes.append(f"{int((~keep).sum()):,} stray points far from the rest were left out.")
+        points = points[keep]
     origin = np.median(points, axis=0)
     points = points - origin
     centres = centres - origin if len(centres) else centres

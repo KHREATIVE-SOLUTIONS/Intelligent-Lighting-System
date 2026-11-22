@@ -91,6 +91,19 @@ def _too_large() -> HTTPException:
     )
 
 
+async def _drop_body(request: Request, limit: int) -> None:
+    """Read the upload and throw it away, so the answer is not lost to a
+    connection closed with the video still arriving. The refusals made before
+    the body is looked at (400, 404, an over-long Content-Length) do not do
+    this: a browser part-way through a large upload may see the connection
+    drop instead of their message. The dialog checks those itself first."""
+    dropped = 0
+    async for chunk in request.stream():
+        dropped += len(chunk)
+        if dropped > limit:
+            break
+
+
 @router.get("/room-scan/video/tools")
 async def room_video_tools():
     """Which free tools are installed here, and what to install when a video cannot be read."""
@@ -124,16 +137,13 @@ async def start_room_video(
         # Not an error: the answer says what to install, or what to do instead.
         # The body is read and dropped first, so the answer is not lost to a
         # connection closed with the upload still arriving.
-        dropped = 0
-        async for chunk in request.stream():
-            dropped += len(chunk)
-            if dropped > limit:
-                break
+        await _drop_body(request, limit)
         return {"job_id": None, "rig_id": rig_id, "state": "unavailable", "error": tools.missing_message(),
                 "tools": _tools_answer(tools)}
 
     busy = jobs.running()
     if busy is not None:
+        await _drop_body(request, limit)
         raise HTTPException(
             status_code=409,
             detail="Another walkthrough video is already being processed. Wait for it, or stop it first.",

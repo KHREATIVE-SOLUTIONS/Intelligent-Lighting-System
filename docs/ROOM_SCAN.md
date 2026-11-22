@@ -145,8 +145,13 @@ size is a guess. Do not apply an assumed-scale room and trust its numbers.
    video (at most 4 a second). A frame is dropped as *blurred* when its
    sharpness (variance of the Laplacian over a 512-pixel centre crop) is under
    half that of its neighbours, and as a *repeat* when it shows what the last
-   kept frame showed (the phone stood still). At most 150 are kept, the
-   sharpest of each stretch. Fewer than 12 is refused with advice on filming.
+   kept frame showed (the phone stood still). Repeats are judged on the whole
+   frame shrunk to 32 by 32, against that frame's own contrast, so a blank
+   wall in the middle of the picture or a dim room is not taken for a phone
+   standing still. At most 150 are kept, the sharpest of each stretch. Fewer
+   than 12 is refused with advice on filming. A video filmed upright (sideways
+   pixels plus a rotation recorded beside them) comes out upright from both
+   ffmpeg and OpenCV; that is tested.
 2. **COLMAP**: `feature_extractor` (one camera for all frames),
    `exhaustive_matcher` up to 100 frames or `sequential_matcher` beyond,
    `mapper`, then `model_converter` to text. If the first two fail they are
@@ -157,11 +162,17 @@ size is a guess. Do not apply an assumed-scale room and trust its numbers.
 3. **Dense**, only when asked: COLMAP's `patch_match_stereo` and
    `stereo_fusion` (these need an NVIDIA card with CUDA), else OpenMVS where it
    is installed. Any failure falls back to the sparse cloud, with a note.
-4. **Up.** A photogrammetry model has no up. The average of every frame's
+4. **Strays.** A reconstruction leaves a few percent of its points nowhere
+   near the room (a bad match, a reflection, something seen through a door).
+   Everything after this measures the room by where its points end, so a point
+   whose sixth-nearest neighbour is three times further off than is usual in
+   the cloud is dropped first. Without this a cloud with 3% strays read as a
+   room a third of its real width.
+5. **Up.** A photogrammetry model has no up. The average of every frame's
    image-down is close to gravity; from there the direction is searched (within
    24 degrees) for the one across which the cloud is thinnest, which is the one
    square to the floor and ceiling. The cloud is turned so that is +Y.
-5. **Scale**, when the cloud is fetched: the floor and ceiling (and for a wall
+6. **Scale**, when the cloud is fetched: the floor and ceiling (and for a wall
    measurement the walls) are found with the scan reader's own code, and the
    cloud is scaled so the measured thing is the size given.
 
@@ -374,8 +385,11 @@ For the walkthrough video:
 - `backend/tests/unit/test_room_video.py`: the missing-tool messages and how
   COLMAP is found; which frames are dropped as blurred, repeated or black, and
   how too many are thinned; **frame sampling with real ffmpeg and real OpenCV**
-  on clips made by ffmpeg (skipped where they are not installed), including a
-  portrait clip, a clip that never moves and a file that is not a video; an
+  on clips made by ffmpeg (skipped where they are not installed): a portrait
+  clip whose middle barely changes, a clip filmed upright with its rotation in
+  the metadata, a dark clip, a clip that never moves with and without grain,
+  and a file that is not a video; the room recovered from **sparse, noisy
+  clouds with strays** (600 to 5,000 points), which is what a video gives; an
   outside tool run, stopped and timed out for real (with the Python
   interpreter as the tool); COLMAP's text files read back into camera positions;
   a model tipped about every axis stood up to within 0.15 degrees, where the
@@ -423,12 +437,25 @@ their files read. Nothing more.
   checked against a download.
 - **Dense clouds**: the COLMAP stereo and OpenMVS commands are the least
   certain part and have no test beyond "a failure falls back to sparse".
-- **Up from a sideways video.** If the phone's rotation is not recorded in the
-  video, "image down" is not down and the up search starts from the wrong
-  place. Set the up axis by hand in the preview if the room comes out on its
-  side.
+- **Up from a video with no rotation recorded.** If the phone was held
+  sideways and the video does not say so (some editing and messaging apps strip
+  it), "image down" is not down, the up search starts 90 degrees out and the
+  room comes out on its side. The preview's Up axis setting does **not** fix
+  this in general: the error is not a swap of Y and Z. Send the video straight
+  from the phone, or film again.
+- **How sparse is too sparse.** Synthetic clouds of 600 to 5,000 points, 3 cm
+  of noise, 3% strays and as little as a tenth of the points on the floor and
+  ceiling read correctly. A real room with a bare floor may give fewer than
+  that there; then the floor is taken from the lowest points, with a warning.
+- **Refusals made before the upload is read** (400, 404, and 413 from
+  `Content-Length`) may reach a browser as a dropped connection rather than
+  their message if it is part-way through a large upload. The dialog checks
+  the name and size itself first; `unavailable` and 409 read the upload and
+  drop it before answering.
 - **Progress inside a step.** The bar moves a stage at a time; COLMAP's mapper,
   the slow one, shows as one long stage.
-- **Jobs do not survive a restart**, and closing the dialog stops the job.
+- **Jobs do not survive a restart**, and closing the dialog stops the job
+  (the button says so; a click outside or Escape does not close it while a
+  video is being worked on).
 - **Measurements** are the ceiling height or the longest wall only; there is no
   picking two points in the cloud.

@@ -152,6 +152,8 @@ export default function RoomScanDialog({
   // Only the newest video may land, and a job is stopped when the dialog leaves it.
   const videoRequestRef = useRef(0);
   const jobRef = useRef<{ rigId: number; jobId: string } | null>(null);
+  /** Cuts off a video that is still being sent. */
+  const uploadRef = useRef<AbortController | null>(null);
   // A job outlives the render that started it: it reads what is set now, not what was set then.
   const referenceRef = useRef(reference);
   referenceRef.current = reference;
@@ -179,6 +181,8 @@ export default function RoomScanDialog({
   // server's processor busy for an hour with nobody to hand its result to.
   useEffect(() => {
     videoRequestRef.current += 1;
+    uploadRef.current?.abort();
+    uploadRef.current = null;
     const left = jobRef.current;
     jobRef.current = null;
     if (left) void roomVideoApi.stop(left.rigId, left.jobId).catch(() => undefined);
@@ -198,6 +202,7 @@ export default function RoomScanDialog({
   }, [open, rigId]);
 
   useEffect(() => () => {
+    uploadRef.current?.abort();
     const left = jobRef.current;
     if (left) void roomVideoApi.stop(left.rigId, left.jobId).catch(() => undefined);
   }, []);
@@ -240,6 +245,8 @@ export default function RoomScanDialog({
   /** Let go of the video job, stopping it on the server if it is still running. */
   const dropVideoJob = () => {
     videoRequestRef.current += 1;
+    uploadRef.current?.abort();
+    uploadRef.current = null;
     const running = jobRef.current;
     jobRef.current = null;
     setUploaded(null);
@@ -279,9 +286,24 @@ export default function RoomScanDialog({
 
     try {
       setUploaded(0);
-      let current = await roomVideoApi.start(rigId, chosen, dense ? 'dense' : 'sparse', (fraction) => {
+      const upload = new AbortController();
+      uploadRef.current = upload;
+      const send = () => roomVideoApi.start(rigId, chosen, dense ? 'dense' : 'sparse', (fraction) => {
         if (videoRequestRef.current === request) setUploaded(fraction);
-      });
+      }, upload.signal);
+      let current: RoomVideoJob;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          current = await send();
+          break;
+        } catch (err) {
+          // A job stopped a moment ago may still be letting go of its tool. Give it a few seconds.
+          const stillBusy = axios.isAxiosError(err) && err.response?.status === 409;
+          if (!stillBusy || attempt >= 4 || videoRequestRef.current !== request) throw err;
+          await wait(1500);
+        }
+      }
+      if (uploadRef.current === upload) uploadRef.current = null;
       if (videoRequestRef.current !== request) {
         // The dialog moved on while the video was arriving; the job it started has nobody waiting.
         if (current.job_id) void roomVideoApi.stop(rigId, current.job_id).catch(() => undefined);
@@ -404,7 +426,9 @@ export default function RoomScanDialog({
   const measurementChanged = job?.state === 'done' && scaledBy !== null && scaledBy !== referenceKey(reference);
 
   return (
-    <Dialog open={open} onClose={busy === 'apply' ? undefined : onClose} maxWidth="md" fullWidth>
+    // A click outside or Escape does not close it mid-apply, nor while a video is being
+    // worked on: closing stops that job, and it should take a button to throw minutes away.
+    <Dialog open={open} onClose={busy === 'apply' || videoWorking ? undefined : onClose} maxWidth="md" fullWidth>
       <DialogTitle>Room scan for {rigName}</DialogTitle>
 
       <DialogContent dividers>

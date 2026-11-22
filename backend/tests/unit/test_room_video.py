@@ -15,6 +15,7 @@ these show the steps are called in order and their files read, not that a real
 COLMAP accepts the calls. ffmpeg is run for real where it is installed.
 """
 
+import re
 import shutil
 import subprocess
 import sys
@@ -35,7 +36,8 @@ from app.services.room_scan.video import (
 from app.services.room_scan.video_jobs import CANCELLED, DONE, FAILED, JobBusy, VideoJobs
 from tests.unit.room_scan_meshes import ROOM, sample_surface, room_mesh, write_ply
 from tests.unit.room_video_fakes import (
-    CAMERA_HEIGHT, MODEL_SCALE, MODEL_SHIFT, FakeTools, images_txt, points3d_txt, tipped_rotation, walkthrough,
+    CAMERA_HEIGHT, MODEL_SCALE, MODEL_SHIFT, FakeTools, images_txt, points3d_txt, sparse_walkthrough,
+    tipped_rotation, walkthrough,
 )
 
 FFMPEG = shutil.which("ffmpeg")
@@ -160,6 +162,16 @@ class TestFrameSelection:
         assert 10 in keep
         assert keep[0] < 3 and keep[-1] >= 57                   # from the whole video, not its start
 
+    def test_a_dim_room_is_not_a_phone_standing_still(self):
+        """Two frames are compared against their own contrast, not a fixed number of grey levels."""
+        grey = self.frames(20)
+        sharp = np.array([sharpness(g) for g in grey])
+        dim = np.stack([shrink(g) for g in grey]) * 0.05
+        keep, blurred, repeats = select_frames(sharp, dim)
+        assert repeats == 0 and len(keep) == 20
+        dim[8] = dim[7]
+        assert select_frames(sharp, dim)[2] == 1
+
     def test_no_frames(self):
         assert select_frames(np.array([]), np.zeros((0, 32, 32))) == ([], 0, 0)
 
@@ -171,6 +183,22 @@ def make_clip(path: Path, source: str, seconds: int = 6) -> None:
         capture_output=True, timeout=120,
     )
     assert done.returncode == 0, done.stderr.decode(errors="replace")
+
+
+def frame_size(path: Path) -> str:
+    """Width x height of a JPEG, as ffmpeg reports it."""
+    probe = subprocess.run([FFMPEG, "-hide_banner", "-i", str(path)], capture_output=True, timeout=60)
+    return re.search(r", (\d+x\d+)", probe.stderr.decode(errors="replace")).group(1)
+
+
+def sampler_tools(sampler: str) -> VideoTools:
+    if sampler == "opencv":
+        pytest.importorskip("cv2")
+        return VideoTools(opencv=True, colmap="c")
+    return VideoTools(ffmpeg=FFMPEG, colmap="c")
+
+
+SAMPLERS = pytest.mark.parametrize("sampler", ["ffmpeg", "opencv"])
 
 
 @pytest.mark.skipif(FFMPEG is None, reason="ffmpeg is not installed")
@@ -192,13 +220,46 @@ class TestFramesWithRealFfmpeg:
         # What was only needed to choose is gone.
         assert not (tmp_path / "candidates").exists() and not (tmp_path / "thumbs.gray").exists()
 
-    def test_a_portrait_clip_keeps_its_long_side_within_the_limit(self, tmp_path):
+    @SAMPLERS
+    def test_a_portrait_clip_keeps_its_long_side_within_the_limit(self, tmp_path, sampler):
+        """Also: this pattern barely changes in its middle. Frames are compared whole, so none is a repeat."""
         clip = tmp_path / "tall.mp4"
-        make_clip(clip, "testsrc2=size=1920x1080:rate=30,transpose=1")
-        sample_frames(clip, tmp_path, tmp_path / "frames", VideoTools(ffmpeg=FFMPEG, colmap="c"), never(), FAR)
-        probe = subprocess.run([FFMPEG, "-hide_banner", "-i", str(tmp_path / "frames" / "frame_000001.jpg")],
-                               capture_output=True, timeout=60).stderr.decode(errors="replace")
-        assert "900x1600" in probe
+        make_clip(clip, "testsrc2=size=1080x1920:rate=30")
+        report = sample_frames(clip, tmp_path, tmp_path / "frames", sampler_tools(sampler), never(), FAR)
+        assert report.duplicates == 0 and report.kept == report.candidates
+        assert frame_size(tmp_path / "frames" / "frame_000001.jpg") == "900x1600"
+
+    @SAMPLERS
+    def test_a_video_filmed_upright_comes_out_upright(self, tmp_path, sampler):
+        """A phone held upright records sideways pixels and a rotation beside them. Up is guessed
+        from which way is down in each frame, so the frames have to be turned as the phone was."""
+        flat = tmp_path / "flat.mp4"
+        make_clip(flat, "testsrc2=size=1280x720:rate=30")
+        turned = tmp_path / "turned.mp4"
+        done = subprocess.run(
+            [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-display_rotation", "90", "-i", str(flat),
+             "-c", "copy", str(turned)], capture_output=True, timeout=120)
+        if done.returncode != 0:
+            pytest.skip("this ffmpeg cannot write a rotation into a video")
+        work = tmp_path / "work"
+        work.mkdir()
+        sample_frames(turned, work, work / "frames", sampler_tools(sampler), never(), FAR)
+        assert frame_size(work / "frames" / "frame_000001.jpg") == "720x1280"
+
+    @SAMPLERS
+    def test_a_dark_room_still_gives_its_frames(self, tmp_path, sampler):
+        clip = tmp_path / "dark.mp4"
+        make_clip(clip, "testsrc2=size=1280x720:rate=30,lutyuv=y=val*0.12")
+        report = sample_frames(clip, tmp_path, tmp_path / "frames", sampler_tools(sampler), never(), FAR)
+        assert report.blurry == 0 and report.duplicates == 0 and report.kept == report.candidates
+
+    @SAMPLERS
+    def test_a_grainy_clip_that_never_moves_is_still_a_clip_that_never_moves(self, tmp_path, sampler):
+        clip = tmp_path / "grain.mp4"
+        make_clip(clip, "smptebars=size=640x360:rate=30,noise=alls=12:allf=t")
+        with pytest.raises(VideoPipelineError) as refused:
+            sample_frames(clip, tmp_path, tmp_path / "frames", sampler_tools(sampler), never(), FAR)
+        assert "Only 1 usable frames" in str(refused.value)
 
     def test_a_clip_that_never_moves_is_refused_with_advice(self, tmp_path):
         clip = tmp_path / "still.mp4"
@@ -320,6 +381,37 @@ class TestAlignAndScale:
         assert np.degrees(np.arccos(held @ true_up)) > 3.0
         refined = video.refine_up(cloud - np.median(cloud, axis=0), held)
         assert np.degrees(np.arccos(refined @ true_up)) < 0.15
+
+    @pytest.mark.parametrize("count, flat_share, seed", [
+        (600, 0.25, 0), (600, 0.10, 2), (1500, 0.10, 0), (3000, 0.25, 1), (3000, 0.10, 2), (5000, 0.10, 1),
+    ])
+    def test_a_sparse_noisy_cloud_with_strays_is_still_the_room(self, count, flat_share, seed):
+        """What COLMAP's sparse cloud looks like: few points, mostly on walls, each a few
+        centimetres off, and some percent nowhere near the room. The other tests here use
+        60,000 clean points, which no video gives."""
+        cloud, centres, downs = sparse_walkthrough(count, flat_share=flat_share, seed=seed)
+        points, cameras, upright, notes, _ = align_cloud(cloud, centres, downs)
+        assert upright and any("stray points" in note for note in notes)
+        made = VideoCloud(points=points.astype(np.float32), cameras=cameras.astype(np.float32), upright=True)
+
+        room = room_of(cloud_ply(made, Reference("ceiling_height", ROOM["height"]))[0]).shell["room"]
+        assert room["height"] == pytest.approx(ROOM["height"], abs=0.1)
+        assert sorted([room["width"], room["depth"]]) == pytest.approx([ROOM["depth"], ROOM["width"]], abs=0.25)
+        # And from the phone's height alone, which is how an unmeasured room is scaled.
+        assumed = room_of(cloud_ply(made)[0]).shell["room"]
+        assert assumed["height"] == pytest.approx(ROOM["height"], abs=0.2)
+
+    def test_strays_are_dropped_and_the_room_is_kept(self):
+        cloud, _, _ = sparse_walkthrough(3000, stray=0.05, seed=4)
+        keep = video.drop_strays(cloud)
+        world = (cloud - MODEL_SHIFT) / MODEL_SCALE @ tipped_rotation()
+        inside = (
+            (np.abs(world[:, 0]) < ROOM["width"] / 2 + 0.3) & (np.abs(world[:, 2]) < ROOM["depth"] / 2 + 0.3)
+            & (world[:, 1] > -0.3) & (world[:, 1] < ROOM["height"] + 0.3)
+        )
+        assert keep[inside].mean() > 0.97                # the room stays
+        assert keep[~inside].mean() < 0.1                # what is nowhere near it goes
+        assert video.drop_strays(cloud[:5]).all()        # too few to judge: nothing is dropped
 
     def test_no_cameras_means_no_claim_about_up(self):
         cloud, _ = walkthrough(points=5000)

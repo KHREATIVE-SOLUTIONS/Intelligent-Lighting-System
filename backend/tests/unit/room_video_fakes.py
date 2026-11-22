@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from app.services.room_scan.video import THUMB, VideoCancelled
+from app.services.room_scan.video import SMALL, THUMB, VideoCancelled
 from tests.unit.room_scan_meshes import ROOM, room_mesh, sample_surface
 
 MODEL_SCALE = 0.37                       # model units per metre: a video has no scale
@@ -81,6 +81,40 @@ def walkthrough(
         centre_model = centre @ q.T * MODEL_SCALE + MODEL_SHIFT
         poses.append((to_camera, -to_camera @ centre_model))
     return cloud, poses
+
+
+def sparse_walkthrough(
+    count: int = 3000, flat_share: float = 0.2, noise: float = 0.03, stray: float = 0.03, seed: int = 0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(points, camera centres, camera downs) in model axes, as a SPARSE reconstruction looks.
+
+    Few points, most of them on the walls (a bare floor and ceiling give a
+    feature matcher little to hold), every one a few centimetres off, and a
+    few percent nowhere near the room at all.
+    """
+    rng = np.random.default_rng(seed)
+    half_w, half_d, height = ROOM["width"] / 2.0, ROOM["depth"] / 2.0, ROOM["height"]
+    flat = int(count * flat_share)
+    walls = count - flat
+    level = np.stack([
+        rng.uniform(-half_w, half_w, flat),
+        np.where(rng.random(flat) < 0.5, 0.0, height),
+        rng.uniform(-half_d, half_d, flat),
+    ], axis=1)
+    along = rng.random(walls)
+    side = rng.integers(0, 4, walls)
+    x = np.select([side == 0, side == 1], [-half_w, half_w], default=(along * 2 - 1) * half_w)
+    z = np.select([side == 2, side == 3], [-half_d, half_d], default=(along * 2 - 1) * half_d)
+    upright = np.stack([x, rng.uniform(0.0, height, walls), z], axis=1)
+    room = np.vstack([level, upright]) + rng.normal(0.0, noise, (count, 3))
+    far = rng.random(count) < stray
+    room[far] = rng.uniform(-3.0, 3.0, (int(far.sum()), 3)) * np.array([half_w, height, half_d])
+
+    q = tipped_rotation()
+    _, poses = walkthrough(points=10)
+    centres = np.array([-r.T @ t for r, t in poses])
+    downs = np.array([r[1] for r, _ in poses])
+    return room @ q.T * MODEL_SCALE + MODEL_SHIFT, centres, downs
 
 
 def images_txt(poses: Sequence[Tuple[np.ndarray, np.ndarray]]) -> str:
@@ -154,6 +188,8 @@ class FakeTools:
             else:
                 grey = rng.integers(0, 255, (self.frames, THUMB, THUMB), dtype=np.uint8)
             grey.tofile(thumbs)
+            whole = next(a for a in args if a.endswith("whole.gray"))
+            grey[:, :: THUMB // SMALL, :: THUMB // SMALL].tofile(whole)
             for number in range(1, self.frames + 1):
                 Path(pattern.replace("%06d", f"{number:06d}")).write_bytes(b"\xff\xd8 not a real jpeg")
             return 0

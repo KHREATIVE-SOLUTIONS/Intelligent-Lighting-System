@@ -1440,11 +1440,13 @@ export const roomVideoApi = {
     file: File,
     quality: RoomVideoQuality,
     onUploaded?: (fraction: number) => void,
+    signal?: AbortSignal,
   ): Promise<RoomVideoJob> => {
     const response = await api.post(roomVideoPath(rigId), file, {
       headers: { 'Content-Type': file.type || 'application/octet-stream' },
       params: { filename: file.name, quality },
       timeout: 0,
+      signal,
       onUploadProgress: (event) => {
         if (onUploaded && event.total) onUploaded(event.loaded / event.total);
       },
