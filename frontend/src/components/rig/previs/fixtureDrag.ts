@@ -285,6 +285,22 @@ export function hasMoved(a: Point3, b: Point3): boolean {
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) >= MOVED_FROM_M;
 }
 
+/** A press that travels less than this on screen is a click, however far that is in the room. */
+export const DRAG_START_PX = 5;
+
+/**
+ * Whether the pointer has travelled far enough on screen for a press to be a
+ * drag. Measured in pixels because a click is a thing of the screen: seen from
+ * 15 m, one pixel of wobble is already centimetres on the floor.
+ */
+export function pointerTravelled(
+  down: { x: number; y: number },
+  now: { x: number; y: number },
+  threshold = DRAG_START_PX,
+): boolean {
+  return Math.hypot(now.x - down.x, now.y - down.y) >= threshold;
+}
+
 /**
  * Whether a drag has become a move worth saving.
  *

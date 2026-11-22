@@ -87,8 +87,8 @@ header (stored rigs only; the demo rig has no stored positions to change):
   hanging height; on a stage or riser edge it keeps its own. The **Snap**
   button turns this off; holding **Alt** lets go of it for one drag. A height
   drag does not snap.
-- **Esc** cancels a drag. A press with no real travel only selects: it never
-  snaps, moves or confirms the fixture.
+- **Esc** cancels a drag. A press that travels less than 5 pixels on screen
+  only selects: it never snaps, moves or confirms the fixture.
 - **Releasing saves** through `PUT .../fixtures/{id}/position`, which confirms
   the position: the amber marker goes, and a later room scan, row fit or undo
   leaves the fixture alone. If the save fails the fixture is put back where it
@@ -168,7 +168,10 @@ Takes the stored room off the rig. Fixtures are left where they are unless
 
 ### `POST /api/rigs/{rig_id}/room-scan/undo`
 
-Puts the fixtures the last applied scan moved back where they stood before it.
+Puts the fixtures that scans have moved since the last undo back where they
+stood before the first of them, and spends the record. The stored room stays.
+`GET` on the same path previews what would be restored and skipped, and writes
+nothing.
 Answers `restored`, `skipped`, `restored_fixtures`, `skipped_fixtures` (each
 with `rig_fixture_id`, `name` and a `reason`) and a `message`. A fixture a
 person has placed, confirmed or moved since is skipped, never overwritten.
@@ -329,8 +332,14 @@ are no binary fixtures in the repository.
   way to let go of the snap for one drag other than the Snap button.
 - **One fixture at a time.** No multi-select, no dragging a whole row, and no
   rotating a fixture in the 3D view.
-- **Only the last scan can be undone**, and an undo cannot itself be undone.
-  A 3D drag has no undo either: drag it back.
+- **One undo, all the way back.** The record gathers the moves of every scan
+  applied since the last undo, so an undo puts a fixture back where it stood
+  before the first of them; one scan out of several cannot be undone on its
+  own. The record is spent by an undo whether or not anything was skipped, and
+  an undo cannot itself be undone. A 3D drag has no undo either: drag it back.
+- **Dropping a fixture may move the camera.** Every drop lays the venue out
+  again; if the room grows for a fixture put beyond a wall, the camera preset
+  may be re-applied. Not checked on screen.
 - **Snap targets are the scan's own lines.** The view's drawn truss rows for a
   rig with no scanned room are not snap targets, and there is no grid snap.
 - **A real scan.** Polycam, Scaniverse and RoomPlan exports from a real venue

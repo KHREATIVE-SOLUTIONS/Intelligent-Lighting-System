@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DRAG_START_PX,
   MAX_DRAG_REACH_M,
   SNAP_RADIUS_M,
+  pointerTravelled,
   beginDrag,
   clampPosition,
   dragStep,
@@ -190,6 +192,17 @@ describe('where a drag puts the fixture', () => {
   it('tells a click from a move', () => {
     expect(hasMoved({ x: 0, y: 0, z: 0 }, { x: 0.01, y: 0, z: 0 })).toBe(false);
     expect(hasMoved({ x: 0, y: 0, z: 0 }, { x: 0.02, y: 0, z: 0 })).toBe(true);
+  });
+
+  it('calls a press a drag only once the pointer has travelled on screen', () => {
+    const down = { x: 400, y: 300 };
+    expect(DRAG_START_PX).toBe(5);
+    expect(pointerTravelled(down, { x: 400, y: 300 })).toBe(false);
+    // Two pixels of wobble: centimetres on the floor from across the room, still a click.
+    expect(pointerTravelled(down, { x: 402, y: 299 })).toBe(false);
+    expect(pointerTravelled(down, { x: 403, y: 304 })).toBe(true);
+    expect(pointerTravelled(down, { x: 400, y: 290 })).toBe(true);
+    expect(pointerTravelled(down, { x: 402, y: 299 }, 2)).toBe(true);
   });
 
   it('does not let a click next to a truss line snap, move and confirm the fixture', () => {

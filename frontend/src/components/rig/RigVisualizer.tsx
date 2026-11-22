@@ -1422,6 +1422,7 @@ export default function RigVisualizer() {
   rigRef.current = rig;
   // The newest save of each fixture. An older answer that lands late is dropped.
   const saveSeq = useRef<Record<number, number>>({});
+  const saveChain = useRef<Record<number, Promise<unknown>>>({});
 
   useEffect(() => {
     setMoveMode(false);
@@ -1455,7 +1456,13 @@ export default function RigVisualizer() {
     // Drawn where it was put straight away; the server's answer follows.
     setRig((drawn) => (drawn ? withFixturePosition(drawn, fixtureId, to) : drawn));
     try {
-      const saved = await rigsApi.setFixturePosition(rigId, fixtureId, to);
+      // One fixture's saves go to the server one after another, in the order
+      // they were made: a held nudge key must not leave an earlier position
+      // stored after a later one.
+      const earlier = saveChain.current[fixtureId] ?? Promise.resolve();
+      const request = earlier.catch(() => undefined).then(() => rigsApi.setFixturePosition(rigId, fixtureId, to));
+      saveChain.current[fixtureId] = request;
+      const saved = await request;
       if (!newest()) return;
       setRig((drawn) => (drawn ? withSavedFixture(drawn, saved) : drawn));
       setMoveNotice({
@@ -1483,7 +1490,11 @@ export default function RigVisualizer() {
     if (!moveMode || selectedId === null) return undefined;
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
+      // Keys meant for a field, a dropdown, a menu or a dialog are theirs:
+      // arrowing through the audio device list must not move a fixture.
+      if (target?.closest?.(
+        'input,textarea,select,[contenteditable="true"],[role="combobox"],[role="listbox"],[role="menu"],[role="dialog"]',
+      )) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       const current = rigRef.current;
       const fixture = current?.fixtures?.find((item) => item.id === selectedId);

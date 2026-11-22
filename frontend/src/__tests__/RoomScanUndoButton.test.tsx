@@ -34,7 +34,7 @@ const result: RoomScanUndoResult = {
 };
 
 describe('RoomScanUndoButton', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); });
   afterEach(cleanup);
 
   it('draws nothing when the rig has no moves to undo', () => {

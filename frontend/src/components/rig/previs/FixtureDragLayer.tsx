@@ -22,7 +22,7 @@ import { useThree } from '@react-three/fiber';
 import type { ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
-  beginDrag, dragStep, isRealMove, positionText, settleDrag,
+  beginDrag, dragStep, isRealMove, pointerTravelled, positionText, settleDrag,
 } from './fixtureDrag';
 import type { DragState, Point3, PositionLimits, Ray, SnapLine, Snapped } from './fixtureDrag';
 
@@ -164,6 +164,8 @@ export const FixtureDragLayer = memo(function FixtureDragLayer({
     endDrag(false);
 
     const start: Point3 = { x: handle.x, y: handle.y + handle.lift, z: handle.z };
+    const pressedAt = { x: event.nativeEvent.clientX, y: event.nativeEvent.clientY };
+    let armed = false;
     const active: ActiveDrag = {
       handle,
       state: dragStep(beginDrag(start), rayFrom(event.nativeEvent), event.nativeEvent.shiftKey),
@@ -181,7 +183,10 @@ export const FixtureDragLayer = memo(function FixtureDragLayer({
       // Alt lets go of the snap for one drag without turning it off.
       const lines = ev.altKey ? null : latest.current.snapLines;
       now.settled = settleDrag(now.state, now.handle.lift, latest.current.limits, lines);
-      now.moved = isRealMove(now.state, start, now.settled, now.handle);
+      // A press is a click until the pointer has really travelled on screen;
+      // once it has, it stays a drag even if carried back near where it began.
+      armed = armed || pointerTravelled(pressedAt, { x: ev.clientX, y: ev.clientY });
+      now.moved = armed && isRealMove(now.state, start, now.settled, now.handle);
       showMarker(now.settled, now.handle.lift, now.moved ? positionText(now.settled, now.settled.snappedTo) : null);
     };
     const up = () => endDrag(true);
