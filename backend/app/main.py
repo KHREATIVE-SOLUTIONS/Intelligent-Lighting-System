@@ -19,6 +19,7 @@ from app.api.endpoints import (
     shows, rigs, fixtures, audio, dmx, websocket, effects, training, lfo,
     fixture_library, rig_patching, fixture_test, wizard, templates,
     rig_import_export, discovery, qr_scanning, demo, auth, rig_identify, genre_check,
+    venue_import,
 )
 from app.core.config import settings
 from app.core.logging_config import configure_logging
@@ -761,6 +762,7 @@ app.include_router(rig_identify.router, prefix="/api", tags=["Flash to Identify"
 app.include_router(wizard.router, prefix="/api/wizard", tags=["Setup Wizard"])
 app.include_router(templates.router, prefix="/api/templates", tags=["Templates"])
 app.include_router(rig_import_export.router, prefix="/api", tags=["Import/Export"])
+app.include_router(venue_import.router, prefix="/api", tags=["Import/Export"])
 app.include_router(discovery.router, prefix="/api", tags=["Discovery"])
 app.include_router(qr_scanning.router, prefix="/api", tags=["QR Scanning"])
 app.include_router(demo.router, prefix="/api", tags=["Demo & Venues"])
