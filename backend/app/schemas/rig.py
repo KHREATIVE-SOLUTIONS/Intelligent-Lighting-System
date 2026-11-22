@@ -214,6 +214,10 @@ class RigResponse(RigBase):
     updated_at: datetime
     created_by: Optional[str] = None
     is_active: bool
+    # The room round the rig, where one has been stored (a room scan) or the
+    # rig is a demo preset that describes one. Read-only here: it is written
+    # by the room-scan endpoint, never by a rig update.
+    room_shell: Optional[Dict[str, Any]] = None
     fixtures: List[RigFixtureResponse] = []
 
     class Config:

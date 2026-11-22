@@ -39,7 +39,6 @@ from app.services.venue_import.apply import SOURCE_TEMPLATE, is_unconfirmed, pos
 TAG_SCAN_HINT = "position_hint:room_scan"
 
 OVERHEAD_FROM = 1.9
-FLOOR_STANDING_BELOW = 0.6
 CEILING_DROP = 0.3
 WALL_CLEARANCE = 0.2
 STAGE_EDGE_CLEARANCE = 0.3
@@ -168,7 +167,10 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
             sz1 = float(stage["center_z"]) + float(stage["depth"]) / 2.0
             centre_x = (min(xs) + max(xs)) / 2.0
             if mean_z <= sz1 and sx0 <= centre_x <= sx1:
-                if mean_y < FLOOR_STANDING_BELOW:
+                # Drawn lower than the stage's own top: it was standing on a
+                # floor that is not there. Once lifted it is above the top, so
+                # a second scan does not lift it again.
+                if mean_y < float(stage["height"]):
                     dy = float(stage["height"])
                 edge = STAGE_EDGE_CLEARANCE
                 shift = _fit(min(zs), max(zs), sz0 + edge, sz1 - edge)

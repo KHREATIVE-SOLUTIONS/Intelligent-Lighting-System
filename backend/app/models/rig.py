@@ -37,6 +37,14 @@ class Rig(Base):
     source_format = Column(String(50), nullable=True)  # "mvr", "gdtf", "console", "manual"
     source_file = Column(String(500), nullable=True)
 
+    # The room round the rig, for the 3D view, as a room scan suggested it:
+    # `room` (width, depth, height), `risers`, `truss_lines`, `hanging_bands`
+    # and `scan` (services/room_scan/extract.py). It travels to the view under
+    # the same name as a demo preset's room_shell, which has other keys (dome,
+    # balcony, LED walls); the view draws whichever keys are there.
+    # Scenery only; the engine never reads it. See docs/ROOM_SCAN.md.
+    room_shell = Column(JSON, nullable=True)
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
