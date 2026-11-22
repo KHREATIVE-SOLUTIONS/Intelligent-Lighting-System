@@ -358,6 +358,37 @@ For a rig with a scanned room (`room_shell.source == "scan"`):
   the room", lists each ring with how far across it is, and says when the room
   is not a box and how many walls its outline has.
 
+## What the outline is to the rest of the view
+
+A room that is not a box used to be a box to everything but its own walls.
+Now one outline (`Venue.outline`, from `buildVenue`) is read by all of it. The
+maths is in `previs/outline.ts`, which has no three.js in it.
+
+- **Beams** end on the outline's walls, the inner walls of a notch included
+  (`beamRoom`, `beamLanding`), and not on the box round them. With the venue
+  hidden there are still no walls.
+- **Mounts and truss**: a fixture is bracketed to whichever wall of the
+  outline it is against, and the view's truss stops at the walls the line
+  across the room meets at its depth.
+- **Walls move out** for a fixture placed beyond them, as a box room's do: the
+  nearest wall goes straight out to 0.15 m past it, its ends sliding along the
+  walls either side (`outlineAround`). Not for a position that is still a
+  guess, and not where the move would leave something that is no longer a room;
+  the fixture is then left outside.
+- **Drag limits**: a position is held to within 2 m of the room itself, then
+  to the box, so the depth of a notch is out of reach like anywhere else
+  beyond a wall. The position route does the same two steps in the same order
+  (`hold_position` in `fixture_position.py`, `clampPosition` in
+  `fixtureDrag.ts`), so a fixture does not jump when a drag is saved.
+- **Cameras**: a preset whose target or standing place falls outside the room
+  is brought to the nearest place inside, 0.6 m clear of the walls
+  (`cameraPreset`). A preset already inside is unchanged, and so is the top
+  view.
+- **Ceiling**: the beams and the duct the box ceiling has, cut to the outline
+  (`buildOutlineCeilingDressing`).
+
+A box room, and a shell with no outline, draw and clamp exactly as before.
+
 ## What the tests cover
 
 All scans are built in code (`backend/tests/unit/room_scan_meshes.py`); there
@@ -407,6 +438,14 @@ are no binary fixtures in the repository.
   shell stored before all this drawing and snapping as it did; the dialog's
   wording.
 
+- `backend/tests/unit/test_fixture_position_outline.py`: which rooms have an
+  outline, a position held to within the margin of an L-shaped room and then
+  to the box, and a box room held as it always was.
+- `frontend/src/__tests__/outlineBounds.test.ts` (**written, not yet run**):
+  a beam stopping on the wall of a notch and landing as the box does when the
+  outline is a box; mounts and truss against a notch; walls moving out, and
+  not for a guess; drag limits; the cameras; the ceiling's beams and duct.
+
 ## What is left
 
 - **Slice 4's frontend checks have not been run.** The session that wrote it
@@ -417,13 +456,20 @@ are no binary fixtures in the repository.
   the project venv.
 - **Nothing of slice 4 has been seen in a browser**: an outlined room's walls
   from each camera, an angled bar, a ring, and a drag snapping to either.
-- **An outlined room is still a box to everything but its own walls.** Beams
-  end on the box round the outline (`beamRoom`), so a beam aimed into the
-  notch of an L carries on through the inner wall. Drag limits and the camera
-  presets go by the box too. The outline's ceiling is plain: it has none of
-  the beams and duct the box ceiling has. And where the box's walls move out
-  for a fixture patched beyond them, the outline's walls stay where the scan
-  put them.
+- **The outline work has not been run in the frontend.** `outlineBounds.test.ts`
+  is written but vitest and the build could not be run in the session that
+  wrote it or the one that committed it. Run
+  `cd frontend; npx vitest run; npm run build` before relying on it. The
+  backend tests for it did run and pass.
+- **Nothing of the outline work has been seen in a browser**: a beam stopping
+  on the wall of a notch, a wall moved out for a fixture, the cameras in an
+  L-shaped room, the ceiling's beams and duct.
+- **A guess does not move an outline's wall.** A suggested row is only brought
+  inside the room's box, so an unconfirmed fixture can be drawn standing in
+  the notch of an L, outside the walls, until somebody places it.
+- **Cameras are moved on a 0.25 m grid.** A preset that falls outside the room
+  goes to the nearest grid point 0.6 m clear of the walls, not the exact
+  nearest place.
 - **Part of a ring is not a ring.** An arc of truss under 315 degrees, an
   oval and a square frame are read as lines or not at all.
 - **One outline, no holes.** A pillar or an island wall inside the room is not
