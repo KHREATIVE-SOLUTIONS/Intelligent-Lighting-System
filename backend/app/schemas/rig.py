@@ -218,6 +218,9 @@ class RigResponse(RigBase):
     # rig is a demo preset that describes one. Read-only here: it is written
     # by the room-scan endpoint, never by a rig update.
     room_shell: Optional[Dict[str, Any]] = None
+    # Where fixtures stood before a room scan moved them, while that can still
+    # be undone (POST /rigs/{id}/room-scan/undo). Read-only here as well.
+    room_scan_undo: Optional[Dict[str, Any]] = None
     fixtures: List[RigFixtureResponse] = []
 
     class Config:

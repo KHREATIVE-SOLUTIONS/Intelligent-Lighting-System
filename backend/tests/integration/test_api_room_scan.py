@@ -420,7 +420,7 @@ class TestRoomScanApply:
 
         removed = await client.delete(f"/api/rigs/{rig_id}/room-shell")
         assert removed.status_code == 200, removed.text
-        assert removed.json() == {"rig_id": rig_id, "removed": True}
+        assert removed.json() == {"rig_id": rig_id, "removed": True, "undo_available": 0}
         assert (await client.get(f"/api/rigs/{rig_id}")).json()["room_shell"] is None
         assert (await client.delete(f"/api/rigs/{rig_id}/room-shell")).json()["removed"] is False
 

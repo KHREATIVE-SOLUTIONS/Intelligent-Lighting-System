@@ -45,6 +45,13 @@ class Rig(Base):
     # Scenery only; the engine never reads it. See docs/ROOM_SCAN.md.
     room_shell = Column(JSON, nullable=True)
 
+    # Where each fixture stood before a room scan moved it, so the move can be
+    # undone: `file`, `applied_at`, and `moves` (rig_fixture_id, name, from,
+    # to, tags_before). Kept apart from room_shell, which a new scan replaces
+    # and removing the room clears: those are when an undo is wanted.
+    # Written by the room-scan endpoint only (services/room_scan/undo.py).
+    room_scan_undo = Column(JSON, nullable=True)
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
