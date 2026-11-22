@@ -11,15 +11,24 @@ Only guesses are moved. A fixture a person has tapped or confirmed, one that
 was measured in a file, and one fitted between two tapped ends are never
 touched: each of those knows more about the room than a scan does.
 
-A row moves as one piece. The fit that flash-and-tap offers needs a row's
-guesses to lie on a straight line, and a row moved rigidly is still one. So no
-fixture is moved on its own, and nothing is respaced.
+A row moves as one piece wherever it can. The fit that flash-and-tap offers
+needs a row's guesses to lie on a straight line, and a row moved rigidly is
+still one. The exception is a truss that does not run across the room: a row
+drawn across it cannot be slid under it, so it is laid out along it.
 
     Overhead rows (1.9 m and up)
-        to the nearest overhead line the scan found that runs across the room:
-        its height, its depth, and along it far enough to hang under it. With
-        no such line, to the height of the lowest hanging band. With nothing
-        found overhead, only brought down to hang under the ceiling.
+        to the nearest thing the scan found overhead.
+        A line across the room: its height, its depth, and along it far enough
+        to hang under it, as one piece.
+        A line at any other heading, or a ring: onto it, spaced evenly in
+        address order. Along a line the row keeps the sense it had (which end
+        its first address is at); round a ring the first address is upstage
+        and the rest follow clockwise seen from above. Fixtures of the group
+        that a scan may not move keep their places in the count. A row on a
+        ring is no longer straight, so flash-and-tap's row fit does not apply
+        to it.
+        With no line or ring, to the height of the lowest hanging band. With
+        nothing found overhead, only brought down to hang under the ceiling.
     Floor rows standing where the scan found a stage
         up onto the stage, and in from its edges.
     Every row
@@ -29,6 +38,7 @@ What comes back is still a guess, and is still tagged as one: flash-and-tap and
 dragging are what turn it into a position.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -43,6 +53,12 @@ CEILING_DROP = 0.3
 WALL_CLEARANCE = 0.2
 STAGE_EDGE_CLEARANCE = 0.3
 MOVED_IF_OVER = 0.01
+# A line within this of straight across the room takes a row as one piece.
+ACROSS_WITHIN_DEG = 2.0
+# A fixture this close to a line or ring, and to its height, is on it.
+ON_SHAPE_M = 0.05
+# Fixtures closer than this along a line or round a ring are worth a note.
+CROWDED_UNDER = 0.3
 
 Point = Tuple[float, float, float]
 
@@ -101,13 +117,151 @@ def _centre_shift(low: float, high: float, floor: float, ceiling: float) -> floa
     return (floor + ceiling) / 2.0 - (low + high) / 2.0
 
 
+# ---------------------------------------------------------------------------
+# Truss at an angle, and rings
+# ---------------------------------------------------------------------------
+
+def _number(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _usable_line(line: Any) -> bool:
+    if not isinstance(line, dict):
+        return False
+    ends = [_number(line.get(key)) for key in ("x1", "z1", "x2", "z2", "height")]
+    return None not in ends and math.hypot(ends[2] - ends[0], ends[3] - ends[1]) > 0.2
+
+
+def _usable_ring(ring: Any) -> bool:
+    if not isinstance(ring, dict):
+        return False
+    values = [_number(ring.get(key)) for key in ("center_x", "center_z", "radius", "height")]
+    return None not in values and values[2] > 0.2
+
+
+def _runs_across(line: Dict[str, Any]) -> bool:
+    """Whether a line runs across the room, read from its ends: a shell stored before headings were written has no other say."""
+    run_x, run_z = float(line["x2"]) - float(line["x1"]), float(line["z2"]) - float(line["z1"])
+    return abs(run_z) <= abs(run_x) * math.tan(math.radians(ACROSS_WITHIN_DEG))
+
+
+def _to_segment(x: float, z: float, line: Dict[str, Any]) -> float:
+    ax, az, bx, bz = (float(line[key]) for key in ("x1", "z1", "x2", "z2"))
+    run_x, run_z = bx - ax, bz - az
+    along = max(0.0, min(1.0, ((x - ax) * run_x + (z - az) * run_z) / (run_x * run_x + run_z * run_z)))
+    return math.hypot(x - (ax + along * run_x), z - (az + along * run_z))
+
+
+def _to_ring(x: float, z: float, ring: Dict[str, Any]) -> float:
+    return abs(math.hypot(x - float(ring["center_x"]), z - float(ring["center_z"])) - float(ring["radius"]))
+
+
+def _on_shape(shape: Dict[str, Any], fixture: Any) -> bool:
+    """Whether a fixture already hangs on this line or ring, at its height."""
+    x, y, z = _position(fixture)
+    off = _to_ring(x, z, shape) if "radius" in shape else _to_segment(x, z, shape)
+    return off <= ON_SHAPE_M and abs(y - float(shape["height"])) <= ON_SHAPE_M
+
+
+def _run_length(shape: Dict[str, Any]) -> float:
+    if "radius" in shape:
+        return 2.0 * math.pi * float(shape["radius"])
+    return math.hypot(float(shape["x2"]) - float(shape["x1"]), float(shape["z2"]) - float(shape["z1"]))
+
+
+def _nearest_shape(
+    members: Sequence[Any], x: float, z: float,
+    across: Sequence[Dict[str, Any]], angled: Sequence[Dict[str, Any]], rings: Sequence[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """The angled line or ring an overhead row belongs on, or None when a line across the room (or nothing) is nearer.
+
+    A row already laid on one stays on it: its middle is then in the middle of
+    the line or of the ring, which may be no nearer than something else.
+    """
+    for shape in list(angled) + list(rings):
+        if all(_on_shape(shape, fixture) for fixture in members):
+            return shape
+    best: Optional[Dict[str, Any]] = None
+    nearest = min((abs(float(line["z1"]) - z) for line in across), default=math.inf)
+    for line in angled:
+        off = _to_segment(x, z, line)
+        if off < nearest - 1e-9:
+            best, nearest = line, off
+    for ring in rings:
+        # A row drawn straight through the ring's middle belongs on it as much as one under its arc.
+        middle = math.hypot(x - float(ring["center_x"]), z - float(ring["center_z"]))
+        off = min(middle, _to_ring(x, z, ring))
+        if off < nearest - 1e-9:
+            best, nearest = ring, off
+    return best
+
+
+def _address_order(fixture: Any) -> Tuple[int, int, int]:
+    return (
+        int(getattr(fixture, "universe", 0) or 0),
+        int(getattr(fixture, "dmx_address", 0) or 0),
+        int(getattr(fixture, "id", 0) or 0),
+    )
+
+
+def _whole_row(fixtures: Sequence[Any], members: Sequence[Any]) -> List[Any]:
+    """Every fixture of the row in address order: for a group, the ones a scan may not move as well.
+
+    They keep their places in the count, so the guesses are laid out round the
+    places a person has already settled and not across them.
+    """
+    group = (getattr(members[0], "group_name", None) or "").strip()
+    row = list(members) if not group else [
+        f for f in fixtures if (getattr(f, "group_name", None) or "").strip() == group
+    ]
+    return sorted(row, key=_address_order)
+
+
+def _spots_on(shape: Dict[str, Any], row: Sequence[Any]) -> Dict[int, Tuple[float, float]]:
+    """Where each fixture of a row goes on a line or ring: evenly spaced, in address order. Keyed by id()."""
+    count = len(row)
+    if "radius" in shape:
+        # From upstage, clockwise seen from above, as the 3D view counts round a ring.
+        cx, cz, radius = float(shape["center_x"]), float(shape["center_z"]), float(shape["radius"])
+        return {
+            id(fixture): (
+                cx + radius * math.sin(2.0 * math.pi * k / count),
+                cz - radius * math.cos(2.0 * math.pi * k / count),
+            )
+            for k, fixture in enumerate(row)
+        }
+    ax, az, bx, bz = (float(shape[key]) for key in ("x1", "z1", "x2", "z2"))
+    run_x, run_z = bx - ax, bz - az
+    # The row keeps its own sense: if its addresses ran from stage left to
+    # stage right before, they still do.
+    along = [(_position(f)[0] - ax) * run_x + (_position(f)[2] - az) * run_z for f in row]
+    middle, mean_along = (count - 1) / 2.0, sum(along) / count
+    backwards = sum((k - middle) * (a - mean_along) for k, a in enumerate(along)) < -1e-9
+    spots = {}
+    for k, fixture in enumerate(row):
+        share = (k + 0.5) / count
+        if backwards:
+            share = 1.0 - share
+        spots[id(fixture)] = (ax + run_x * share, az + run_z * share)
+    return spots
+
+
 def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) -> Tuple[List[SuggestedMove], List[str]]:
     """(moves, notes). Fixtures are rig fixtures, or anything with the same attributes."""
     notes: List[str] = []
     if not shell:
         return [], notes
     room = shell.get("room") or {}
-    lines = [l for l in (shell.get("truss_lines") or []) if l.get("axis") == "x"]
+    # Lines across the room take a row as one piece. A line at any other
+    # heading, and a ring, has the row laid out along it.
+    found_lines = [l for l in (shell.get("truss_lines") or []) if _usable_line(l)]
+    lines = [l for l in found_lines if _runs_across(l)]
+    angled = [l for l in found_lines if not _runs_across(l)]
+    rings = [r for r in (shell.get("truss_rings") or []) if _usable_ring(r)]
     bands = shell.get("hanging_bands") or []
     stage = next((r for r in (shell.get("risers") or []) if r.get("kind") == "stage"), None)
     half_width = float(room.get("width") or 0.0) / 2.0
@@ -127,7 +281,13 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
     rows: Dict[str, List[Any]] = {}
     for fixture in candidates:
         x, y, z = _position(fixture)
-        key = (getattr(fixture, "group_name", None) or "").strip() or f"@ y{round(y, 1)} z{round(z, 1)}"
+        group = (getattr(fixture, "group_name", None) or "").strip()
+        # Ungrouped fixtures are a row by standing at one height and depth,
+        # which they no longer do once laid along an angle or round a ring.
+        # One already hanging on such a line is where a scan would put it.
+        if not group and any(_on_shape(shape, fixture) for shape in angled + rings):
+            continue
+        key = group or f"@ y{round(y, 1)} z{round(z, 1)}"
         rows.setdefault(key, []).append(fixture)
 
     moves: List[SuggestedMove] = []
@@ -140,6 +300,35 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
         label = key if not key.startswith("@ ") else "an ungrouped row"
 
         if mean_y >= OVERHEAD_FROM:
+            mean_x = sum(xs) / len(xs)
+            shaped = _nearest_shape(members, mean_x, mean_z, lines, angled, rings)
+            if shaped is not None:
+                # A truss at an angle or a ring: the row is laid out along it.
+                whole_row = _whole_row(fixtures, members)
+                spots = _spots_on(shaped, whole_row)
+                height = float(shaped["height"])
+                name = shaped.get("name") or ("the ring" if "radius" in shaped else "the angled line")
+                reason = f"Moved onto {name} at {height:.2f} m, spaced evenly in address order."
+                reach = _run_length(shaped)
+                if len(whole_row) > 1 and reach / len(whole_row) < CROWDED_UNDER:
+                    notes.append(
+                        f"{label}: {len(whole_row)} fixtures on {name} ({reach:.1f} m round or along) "
+                        f"are {reach / len(whole_row):.2f} m apart; check that the row belongs there."
+                    )
+                for fixture, (x, y, z) in zip(members, points):
+                    to_x, to_z = spots[id(fixture)]
+                    to = (round(to_x, 3) + 0.0, round(max(0.0, height + (y - mean_y)), 3) + 0.0, round(to_z, 3) + 0.0)
+                    if max(abs(to[0] - x), abs(to[1] - y), abs(to[2] - z)) <= MOVED_IF_OVER:
+                        continue
+                    moves.append(SuggestedMove(
+                        rig_fixture_id=int(getattr(fixture, "id", 0) or 0),
+                        name=str(getattr(fixture, "name", "") or ""),
+                        group=str(getattr(fixture, "group_name", "") or ""),
+                        from_position=(round(x, 3), round(y, 3), round(z, 3)),
+                        to_position=to,
+                        reason=reason,
+                    ))
+                continue
             if lines:
                 line = min(lines, key=lambda l: abs(float(l["z1"]) - mean_z))
                 dz = float(line["z1"]) - mean_z

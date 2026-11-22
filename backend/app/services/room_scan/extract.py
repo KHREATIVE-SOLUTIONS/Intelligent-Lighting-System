@@ -670,7 +670,7 @@ def find_outline(
     walls = [_fit_wall(wx, wz, rough[k], rough[(k + 1) % count], cell) for k in range(count)]
     lengths = [float(np.hypot(*(rough[(k + 1) % count] - rough[k]))) for k in range(count)]
     bare = sum(length for wall, length in zip(walls, lengths) if wall is None)
-    if bare > 0.3 * sum(lengths):
+    if bare > max(1.5, 0.1 * sum(lengths)):
         return None, unclear.format(why="too much of its edge has no wall behind it, as where a scan stops short")
 
     corners = []

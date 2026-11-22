@@ -128,6 +128,9 @@ async def import_room_scan(
             "height": shell["room"]["height"],
             "raised_areas": len(shell["risers"]),
             "overhead_lines": len(shell["truss_lines"]),
+            "overhead_rings": len(shell.get("truss_rings") or []),
+            # 4 for a box; the number of outline segments for a room that is not one.
+            "walls": len(shell["room"].get("outline") or []) or 4,
             "hanging_heights": [band["height"] for band in shell["hanging_bands"]],
             "units": shell["scan"]["units"],
             "up_axis": shell["scan"]["up_axis"],

@@ -78,7 +78,7 @@ BIG_STAGE = {"x_min": -3.0, "x_max": 3.0, "z_min": -7.0, "z_max": -5.0, "height"
 RING = {"center_x": 0.5, "center_z": 1.0, "radius": 4.0, "across": 0.3, "bottom": 4.8, "top": 5.1}
 # Centre, length and heading on the plan: clockwise from across the room, seen from above.
 ANGLED_TRUSS = {"center_x": 1.0, "center_z": 0.5, "length": 8.0, "heading_deg": 30.0,
-                "across": 0.3, "bottom": 4.5, "top": 4.8}
+                "across": 0.3, "bottom": 4.0, "top": 4.3}
 
 # An L: the 12 by 10 room with its downstage stage-left corner (4 by 4) walled off.
 # Corners in order, clockwise seen from above, starting upstage stage right.
