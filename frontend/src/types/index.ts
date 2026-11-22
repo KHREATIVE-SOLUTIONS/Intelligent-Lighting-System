@@ -114,6 +114,61 @@ export interface Rig {
   created_by?: string;
   is_active: boolean;
   fixtures: RigFixture[];
+  /**
+   * The room round the rig, where the rig describes one: scenery for the 3D
+   * view. Only a demo venue preset carries it; a database rig has none.
+   */
+  room_shell?: RoomShell | null;
+}
+
+/** A box standing on the floor (or `base_height` above it), sides square to the room. */
+export interface RoomShellBox {
+  center_x: number;
+  center_z: number;
+  /** Along X. */
+  width: number;
+  /** Along Z. */
+  depth: number;
+  height: number;
+  base_height?: number;
+  name?: string;
+  basis?: string;
+}
+
+/**
+ * The room around a rig, in metres and in the rig's own axes: origin at the
+ * centre of the floor, X across, Y up, -Z upstage. Mirrors `RoomShell` in
+ * backend/app/services/demo/venue_presets.py. Angles are degrees clockwise
+ * from upstage seen from above: 0 is -Z, 90 is +X, 180 is +Z.
+ */
+export interface RoomShell {
+  basis?: string;
+  /** A shallow dome ceiling: a spherical cap over a circle on the plan. */
+  dome?: {
+    radius: number;
+    center_x: number;
+    center_z: number;
+    rim_height: number;
+    apex_height: number;
+    diameter_ft?: number;
+    basis?: string;
+  } | null;
+  dance_floor?: { center_x: number; center_z: number; radius: number; basis?: string } | null;
+  /** Part of a flat ring at one height: a balcony or mezzanine. */
+  balcony?: {
+    center_x: number;
+    center_z: number;
+    inner_radius: number;
+    outer_radius: number;
+    soffit_height: number;
+    deck_height: number;
+    start_deg: number;
+    end_deg: number;
+    basis?: string;
+  } | null;
+  dj_booth?: RoomShellBox | null;
+  rear_stage?: RoomShellBox | null;
+  led_walls?: RoomShellBox[] | null;
 }
 
 export interface UniverseConfig {
@@ -192,6 +247,8 @@ export interface FixtureChannel {
   max_value: number;
   is_fine: boolean;
   coarse_channel?: number;
+  /** Named spans of this channel's values, where the profile gives them. */
+  value_ranges?: Array<{ name?: string | null; min_value: number; max_value: number }> | null;
 }
 
 export type ChannelType =

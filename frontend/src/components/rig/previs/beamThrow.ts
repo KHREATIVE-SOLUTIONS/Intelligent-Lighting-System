@@ -77,6 +77,47 @@ export function beamDirection(tiltRad: number, turnRad: number, lensUp: boolean,
 }
 
 /**
+ * Turn a beam's direction by the way its fixture is hung.
+ *
+ * `direction` is the beam in the fixture's own frame: `beamDirection` with the
+ * head's tilt and pan and no yaw. `rxRad` and `rzRad` are the rig's
+ * rotation_x and rotation_z (a fixture hung on its side, or leaning), and
+ * `yawRad` its rotation_y. They are applied Z, then X, then Y, so the yaw is
+ * always a turn about the room's vertical whatever the lean. In the scene that
+ * is a group turned [rx, 0, rz] inside one turned [0, yaw, 0].
+ *
+ * With no lean this is `beamDirection(tilt, pan + yaw)`. Works in place.
+ */
+export function hangBeam(direction: BeamVector, rxRad: number, rzRad: number, yawRad: number): BeamVector {
+  let { x, y, z } = direction;
+  if (rzRad !== 0) {
+    const c = Math.cos(rzRad);
+    const s = Math.sin(rzRad);
+    const nx = x * c - y * s;
+    y = x * s + y * c;
+    x = nx;
+  }
+  if (rxRad !== 0) {
+    const c = Math.cos(rxRad);
+    const s = Math.sin(rxRad);
+    const ny = y * c - z * s;
+    z = y * s + z * c;
+    y = ny;
+  }
+  if (yawRad !== 0) {
+    const c = Math.cos(yawRad);
+    const s = Math.sin(yawRad);
+    const nx = x * c + z * s;
+    z = -x * s + z * c;
+    x = nx;
+  }
+  direction.x = x;
+  direction.y = y;
+  direction.z = z;
+  return direction;
+}
+
+/**
  * What a beam can land on. The floor is at 0. `walls` is null when no walls
  * are drawn (the venue is hidden): a beam then ends only on the floor or the
  * ceiling height, however far out that is.
