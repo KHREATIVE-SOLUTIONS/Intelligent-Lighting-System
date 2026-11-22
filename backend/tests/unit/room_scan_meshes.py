@@ -67,6 +67,122 @@ def room_mesh(truss: bool = True, stage: bool = True, riser: bool = True) -> Tup
     return merge(parts)
 
 
+# --- Rooms that are not boxes, and truss that is not square to the room ------
+#
+# A bigger room than the one above, so a ring of truss 4 m in radius hangs well
+# clear of every wall. Its stage is against the upstage wall, which settles
+# which way round the room comes back.
+
+BIG_ROOM = {"width": 16.0, "depth": 14.0, "height": 6.0}
+BIG_STAGE = {"x_min": -3.0, "x_max": 3.0, "z_min": -7.0, "z_max": -5.0, "height": 0.8}
+RING = {"center_x": 0.5, "center_z": 1.0, "radius": 4.0, "across": 0.3, "bottom": 4.8, "top": 5.1}
+# Centre, length and heading on the plan: clockwise from across the room, seen from above.
+ANGLED_TRUSS = {"center_x": 1.0, "center_z": 0.5, "length": 8.0, "heading_deg": 30.0,
+                "across": 0.3, "bottom": 4.5, "top": 4.8}
+
+# An L: the 12 by 10 room with its downstage stage-left corner (4 by 4) walled off.
+# Corners in order, clockwise seen from above, starting upstage stage right.
+L_ROOM = [(-6.0, -5.0), (6.0, -5.0), (6.0, 1.0), (2.0, 1.0), (2.0, 5.0), (-6.0, 5.0)]
+L_ROOM_PIECES = [
+    [(-6.0, -5.0), (6.0, -5.0), (6.0, 1.0), (-6.0, 1.0)],
+    [(-6.0, 1.0), (2.0, 1.0), (2.0, 5.0), (-6.0, 5.0)],
+]
+L_STAGE = {"x_min": -3.0, "x_max": 3.0, "z_min": -5.0, "z_max": -3.0, "height": 0.8}
+# The same 12 by 10 room with its downstage stage-left corner cut off at an angle.
+CUT_ROOM = [(-6.0, -5.0), (6.0, -5.0), (6.0, 1.0), (2.0, 5.0), (-6.0, 5.0)]
+
+
+def prism(
+    outline: Sequence[Tuple[float, float]], y0: float, y1: float,
+    pieces: Optional[Sequence[Sequence[Tuple[float, float]]]] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """A room with any floor outline: its walls, and its floor and ceiling.
+
+    The floor and ceiling are fans, so they need convex shapes: `pieces` cuts an
+    outline that is not convex into ones that are. The walls follow the outline
+    only, so the cuts leave no wall inside the room.
+    """
+    vertices: List[Tuple[float, float, float]] = []
+    faces: List[Tuple[int, int, int]] = []
+    count = len(outline)
+    for k in range(count):
+        (ax, az), (bx, bz) = outline[k], outline[(k + 1) % count]
+        base = len(vertices)
+        vertices += [(ax, y0, az), (bx, y0, bz), (bx, y1, bz), (ax, y1, az)]
+        faces += [(base, base + 1, base + 2), (base, base + 2, base + 3)]
+    for piece in pieces or [outline]:
+        for y in (y0, y1):
+            base = len(vertices)
+            vertices += [(x, y, z) for x, z in piece]
+            faces += [(base, base + k, base + k + 1) for k in range(1, len(piece) - 1)]
+    return np.array(vertices, dtype=np.float64), np.array(faces, dtype=np.int64)
+
+
+def turned_box(
+    center_x: float, center_z: float, length: float, across: float, y0: float, y1: float, heading_deg: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """A bar on the plan at any heading: clockwise from across the room, seen from above."""
+    corners, triangles = box(-length / 2.0, length / 2.0, y0, y1, -across / 2.0, across / 2.0)
+    c, s = math.cos(math.radians(heading_deg)), math.sin(math.radians(heading_deg))
+    x, z = corners[:, 0], corners[:, 2]
+    turned = np.stack([center_x + x * c - z * s, corners[:, 1], center_z + x * s + z * c], axis=1)
+    return turned, triangles
+
+
+def ring(
+    center_x: float, center_z: float, radius: float, across: float, y0: float, y1: float, segments: int = 72,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """A ring of truss: a flat band round a circle, with its four faces."""
+    inner, outer = radius - across / 2.0, radius + across / 2.0
+    vertices = []
+    for k in range(segments):
+        angle = 2.0 * math.pi * k / segments
+        c, s = math.cos(angle), math.sin(angle)
+        vertices += [
+            (center_x + inner * c, y0, center_z + inner * s), (center_x + outer * c, y0, center_z + outer * s),
+            (center_x + outer * c, y1, center_z + outer * s), (center_x + inner * c, y1, center_z + inner * s),
+        ]
+    faces = []
+    for k in range(segments):
+        a, b = 4 * k, 4 * ((k + 1) % segments)
+        for i in range(4):
+            j = (i + 1) % 4
+            faces += [(a + i, a + j, b + j), (a + i, b + j, b + i)]
+    return np.array(vertices, dtype=np.float64), np.array(faces, dtype=np.int64)
+
+
+def big_room_mesh(with_ring: bool = False, with_angled_truss: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+    """The bigger room in stage axes, with its stage and whatever is asked for overhead."""
+    half_w, half_d = BIG_ROOM["width"] / 2.0, BIG_ROOM["depth"] / 2.0
+    parts = [
+        box(-half_w, half_w, 0.0, BIG_ROOM["height"], -half_d, half_d),
+        box(BIG_STAGE["x_min"], BIG_STAGE["x_max"], 0.0, BIG_STAGE["height"], BIG_STAGE["z_min"], BIG_STAGE["z_max"]),
+    ]
+    if with_ring:
+        parts.append(ring(RING["center_x"], RING["center_z"], RING["radius"], RING["across"],
+                          RING["bottom"], RING["top"]))
+    if with_angled_truss:
+        t = ANGLED_TRUSS
+        parts.append(turned_box(t["center_x"], t["center_z"], t["length"], t["across"],
+                                t["bottom"], t["top"], t["heading_deg"]))
+    return merge(parts)
+
+
+def shaped_room_mesh(
+    outline: Sequence[Tuple[float, float]] = L_ROOM,
+    pieces: Optional[Sequence[Sequence[Tuple[float, float]]]] = L_ROOM_PIECES,
+    height: float = 5.0, stage: bool = True, truss: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """A room with a floor outline that is not a box, its stage against the upstage wall."""
+    parts = [prism(outline, 0.0, height, pieces)]
+    if stage:
+        parts.append(box(L_STAGE["x_min"], L_STAGE["x_max"], 0.0, L_STAGE["height"],
+                         L_STAGE["z_min"], L_STAGE["z_max"]))
+    if truss:
+        parts.append(box(-4.0, 0.0, 4.0, 4.3, -0.65, -0.35))
+    return merge(parts)
+
+
 def as_scanned(
     vertices: np.ndarray,
     yaw_deg: float = 0.0,

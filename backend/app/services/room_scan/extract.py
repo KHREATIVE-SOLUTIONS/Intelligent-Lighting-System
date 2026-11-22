@@ -41,7 +41,7 @@ The turns are all rotations, never a mirror, so stage left stays stage left.
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -70,6 +70,20 @@ OVERHEAD_CEILING_CLEARANCE = 0.2
 OVERHEAD_WALL_CLEARANCE = 0.3
 LINE_MIN_LENGTH = 1.5
 LINE_MAX_WIDTH = 1.2
+# A line within this of the room's own axes is read as running along them.
+AXIS_SNAP_DEG = 2.0
+
+# A ring of truss: points that keep to one circle nearly all the way round.
+RING_MIN_RADIUS = 0.75
+RING_MAX_STRAY = 0.35           # metres off the fitted circle, either side
+RING_MAX_STRAY_SHARE = 0.12     # and as a share of its radius: a square frame strays about 0.2
+RING_SECTORS = 24
+RING_MIN_SECTORS = 21           # 315 degrees of the way round
+
+# The floor outline, for a room that is not a box.
+OUTLINE_BOX_SHARE = 0.95        # a footprint filling this much of its box is a box
+OUTLINE_MIN_SHARE = 0.35        # one filling less than this is not a room's outline
+OUTLINE_MAX_CORNERS = 12
 
 
 @dataclass
@@ -365,6 +379,333 @@ def _patches(points: np.ndarray, cells: np.ndarray, keep: Optional[set] = None) 
 
 
 # ---------------------------------------------------------------------------
+# 5b. The floor outline, for a room that is not a box
+# ---------------------------------------------------------------------------
+
+def inside_outline(x: np.ndarray, z: np.ndarray, outline: np.ndarray) -> np.ndarray:
+    """Which plan points lie inside a closed outline (an N by 2 array of x, z corners)."""
+    inside = np.zeros(len(x), dtype=bool)
+    count = len(outline)
+    for k in range(count):
+        ax, az = outline[k]
+        bx, bz = outline[(k + 1) % count]
+        if az == bz:
+            continue
+        crosses = (az > z) != (bz > z)
+        at = ax + (z - az) * (bx - ax) / (bz - az)
+        inside ^= crosses & (x < at)
+    return inside
+
+
+def _distance_to_segment(x: np.ndarray, z: np.ndarray, a: Sequence[float], b: Sequence[float]) -> np.ndarray:
+    dx, dz = b[0] - a[0], b[1] - a[1]
+    squared = dx * dx + dz * dz
+    along = np.clip(((x - a[0]) * dx + (z - a[1]) * dz) / squared, 0.0, 1.0) if squared > 0 else np.zeros(len(x))
+    return np.hypot(x - (a[0] + along * dx), z - (a[1] + along * dz))
+
+
+def clear_of_outline(x: np.ndarray, z: np.ndarray, outline: np.ndarray, clear: float) -> np.ndarray:
+    """Which plan points are inside the outline and further than `clear` from every wall of it."""
+    keep = inside_outline(x, z, outline)
+    for k in range(len(outline)):
+        keep &= _distance_to_segment(x, z, outline[k], outline[(k + 1) % len(outline)]) > clear
+    return keep
+
+
+def outline_area(outline: np.ndarray) -> float:
+    """Signed area on the plan: positive for corners in clockwise order seen from above (-Z at the top)."""
+    x, z = outline[:, 0], outline[:, 1]
+    return float(np.dot(x, np.roll(z, -1)) - np.dot(np.roll(x, -1), z)) / 2.0
+
+
+def _grow(grid: np.ndarray) -> np.ndarray:
+    """Every cell that touches a filled one, corners included."""
+    padded = np.pad(grid, 1, constant_values=False)
+    out = np.zeros_like(grid)
+    for di in range(3):
+        for dj in range(3):
+            out |= padded[di:di + grid.shape[0], dj:dj + grid.shape[1]]
+    return out
+
+
+def _shrink(grid: np.ndarray) -> np.ndarray:
+    """Every cell whose neighbours are all filled. The edge of the grid counts as filled: it is a wall."""
+    padded = np.pad(grid, 1, constant_values=True)
+    out = np.ones_like(grid)
+    for di in range(3):
+        for dj in range(3):
+            out &= padded[di:di + grid.shape[0], dj:dj + grid.shape[1]]
+    return out
+
+
+def _flood(open_cells: np.ndarray, seeds: List[Tuple[int, int]]) -> np.ndarray:
+    """The open cells that can be reached from the seeds, stepping side to side only."""
+    reached = np.zeros_like(open_cells)
+    frontier = [s for s in seeds if open_cells[s]]
+    for s in frontier:
+        reached[s] = True
+    rows, columns = open_cells.shape
+    while frontier:
+        i, j = frontier.pop()
+        for ni, nj in ((i + 1, j), (i - 1, j), (i, j + 1), (i, j - 1)):
+            if 0 <= ni < rows and 0 <= nj < columns and open_cells[ni, nj] and not reached[ni, nj]:
+                reached[ni, nj] = True
+                frontier.append((ni, nj))
+    return reached
+
+
+def _footprint(x: np.ndarray, z: np.ndarray, room: Dict[str, float], cell: float) -> np.ndarray:
+    """The cells of the room's box the scan has anything in, with gaps closed and the inside filled."""
+    nx = max(1, int(math.ceil((room["x_max"] - room["x_min"]) / cell - 1e-6)))
+    nz = max(1, int(math.ceil((room["z_max"] - room["z_min"]) / cell - 1e-6)))
+    ix = np.floor((x - room["x_min"]) / cell).astype(np.int64)
+    iz = np.floor((z - room["z_min"]) / cell).astype(np.int64)
+    # Half a cell past a wall still belongs to it; further out is a leak through a doorway.
+    near = (
+        (x >= room["x_min"] - 0.5 * cell) & (x <= room["x_max"] + 0.5 * cell)
+        & (z >= room["z_min"] - 0.5 * cell) & (z <= room["z_max"] + 0.5 * cell)
+    )
+    grid = np.zeros((nx, nz), dtype=bool)
+    grid[np.clip(ix[near], 0, nx - 1), np.clip(iz[near], 0, nz - 1)] = True
+    grid = _shrink(_grow(grid))
+
+    # Whatever cannot be reached from outside is inside: floor the scan missed
+    # under a stage, or a room described by its walls alone.
+    padded = np.pad(~grid, 1, constant_values=True)
+    border = [(i, j) for i in range(padded.shape[0]) for j in (0, padded.shape[1] - 1)]
+    border += [(i, j) for j in range(padded.shape[1]) for i in (0, padded.shape[0] - 1)]
+    outside = _flood(padded, border)[1:-1, 1:-1]
+    filled = _grow(_shrink(~outside)) & ~outside
+
+    # The largest piece that hangs together.
+    best = np.zeros_like(filled)
+    remaining = filled.copy()
+    while remaining.any():
+        seed = tuple(int(v) for v in np.argwhere(remaining)[0])
+        piece = _flood(remaining, [seed])
+        remaining &= ~piece
+        if piece.sum() > best.sum():
+            best = piece
+    return best
+
+
+def _trace(grid: np.ndarray) -> Optional[np.ndarray]:
+    """The outer edge of the filled cells as corners on the grid, clockwise seen from above."""
+    filled = np.pad(grid, 1, constant_values=False)
+    steps: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+    for i, j in np.argwhere(grid):
+        i, j = int(i), int(j)
+        if not filled[i + 1, j]:
+            steps.setdefault((i, j), []).append((i + 1, j))
+        if not filled[i + 2, j + 1]:
+            steps.setdefault((i + 1, j), []).append((i + 1, j + 1))
+        if not filled[i + 1, j + 2]:
+            steps.setdefault((i + 1, j + 1), []).append((i, j + 1))
+        if not filled[i, j + 1]:
+            steps.setdefault((i, j + 1), []).append((i, j))
+    loops: List[np.ndarray] = []
+    while steps:
+        start = min(steps)
+        loop = [start]
+        at = start
+        while True:
+            onward = steps[at]
+            following = onward.pop()
+            if not onward:
+                del steps[at]
+            if following == start:
+                break
+            loop.append(following)
+            at = following
+            if at not in steps:
+                loop = []
+                break
+        if len(loop) >= 4:
+            loops.append(np.array(loop, dtype=np.float64))
+    if not loops:
+        return None
+    return max(loops, key=lambda loop: abs(outline_area(loop)))
+
+
+def _keep_corners(points: np.ndarray, tolerance: float) -> List[int]:
+    """Douglas-Peucker on an open run of points: the indices worth keeping."""
+    keep = [0, len(points) - 1]
+    spans = [(0, len(points) - 1)]
+    while spans:
+        first, last = spans.pop()
+        if last - first < 2:
+            continue
+        between = points[first + 1:last]
+        off = _distance_to_segment(between[:, 0], between[:, 1], points[first], points[last])
+        k = int(np.argmax(off))
+        if off[k] > tolerance:
+            keep.append(first + 1 + k)
+            spans += [(first, first + 1 + k), (first + 1 + k, last)]
+    return sorted(set(keep))
+
+
+def _simplify(loop: np.ndarray, tolerance: float) -> np.ndarray:
+    """A closed loop with the corners that do not matter taken out."""
+    far = int(np.argmax(np.hypot(loop[:, 0] - loop[0, 0], loop[:, 1] - loop[0, 1])))
+    first = loop[:far + 1]
+    second = np.vstack([loop[far:], loop[:1]])
+    corners = [first[k] for k in _keep_corners(first, tolerance)[:-1]]
+    corners += [second[k] for k in _keep_corners(second, tolerance)[:-1]]
+    out = np.array(corners)
+
+    # A corner the walls barely turn at is not a corner.
+    changed = True
+    while changed and len(out) > 3:
+        changed = False
+        for k in range(len(out)):
+            before, here, after = out[k - 1], out[k], out[(k + 1) % len(out)]
+            a, b = here - before, after - here
+            turn = abs(math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1]))
+            if turn < math.radians(12.0):
+                out = np.delete(out, k, axis=0)
+                changed = True
+                break
+    return out
+
+
+def _fit_wall(
+    wx: np.ndarray, wz: np.ndarray, a: np.ndarray, b: np.ndarray, cell: float,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """(a point on, the direction of) the wall the scan shows along the edge a to b, or None when it shows none."""
+    length = float(np.hypot(*(b - a)))
+    if length < 1e-6:
+        return None
+    along = (b - a) / length
+    across = np.array([-along[1], along[0]])
+    t = (wx - a[0]) * along[0] + (wz - a[1]) * along[1]
+    s = (wx - a[0]) * across[0] + (wz - a[1]) * across[1]
+    margin = min(0.25 * length, max(cell, 0.3))
+    near = (np.abs(s) <= 1.5 * cell) & (t >= margin) & (t <= length - margin)
+    if near.sum() < 30:
+        return None
+    plan = np.stack([wx[near], wz[near]], axis=1)
+    direction = along
+    for _ in range(2):
+        mean = np.median(plan, axis=0)
+        if len(plan) >= 3:
+            _, vectors = np.linalg.eigh(np.cov((plan - mean).T))
+            direction = vectors[:, -1]
+            if float(direction @ along) < 0:
+                direction = -direction
+        heading = math.degrees(math.atan2(direction[1], direction[0])) % 90.0
+        if min(heading, 90.0 - heading) <= AXIS_SNAP_DEG:
+            # Square to the room: exactly so.
+            direction = np.round(direction)
+        if abs(float(direction @ along)) < math.cos(math.radians(20.0)):
+            return None
+        off = (plan - mean) @ np.array([-direction[1], direction[0]])
+        close = np.abs(off - np.median(off)) <= max(0.06, 0.4 * cell)
+        if close.sum() < 20:
+            return None
+        plan = plan[close]
+    middle = np.median(plan, axis=0)
+    off = (plan - middle) @ np.array([-direction[1], direction[0]])
+    return middle + np.array([-direction[1], direction[0]]) * float(np.median(off)), direction
+
+
+def _crosses_itself(outline: np.ndarray) -> bool:
+    def side(p, q, r) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    count = len(outline)
+    for i in range(count):
+        a, b = outline[i], outline[(i + 1) % count]
+        for j in range(i + 2, count):
+            if (j + 1) % count == i:
+                continue
+            c, d = outline[j], outline[(j + 1) % count]
+            if side(a, b, c) * side(a, b, d) < 0 and side(c, d, a) * side(c, d, b) < 0:
+                return True
+    return False
+
+
+def find_outline(
+    points: np.ndarray, upright: np.ndarray, room: Dict[str, float], cell: float,
+) -> Tuple[Optional[np.ndarray], Optional[str]]:
+    """(the floor outline as x, z corners, or None for a box; why a room that is not a box is drawn as one).
+
+    The plan is cut into cells and the ones the scan has anything in are the
+    room's footprint. Its edge is traced and straightened, and each straight
+    run is then moved onto the wall the scan shows along it, so the corners are
+    as good as the walls and not as coarse as the cells.
+    """
+    box_area = (room["x_max"] - room["x_min"]) * (room["z_max"] - room["z_min"])
+    grid = _footprint(points[:, 0], points[:, 2], room, cell)
+    if grid.sum() >= OUTLINE_BOX_SHARE * grid.size:
+        return None, None
+    unclear = (
+        "The room does not fill its box, but its floor outline was not clear enough to draw "
+        "({why}). It is drawn as a box."
+    )
+    if grid.sum() < OUTLINE_MIN_SHARE * grid.size:
+        return None, unclear.format(why="the scan covers too little of the floor")
+    loop = _trace(grid)
+    if loop is None:
+        return None, unclear.format(why="its edge could not be followed")
+    rough = _simplify(loop, 1.2) * cell + np.array([room["x_min"], room["z_min"]])
+    rough = np.clip(rough, [room["x_min"], room["z_min"]], [room["x_max"], room["z_max"]])
+    # A run of a cell or two is the ragged end of a wall that crosses the
+    # cells at an angle, not a wall: its two ends become one corner.
+    stub = max(2.5 * cell, 0.4)
+    shortened = True
+    while shortened and len(rough) > 4:
+        shortened = False
+        for k in range(len(rough)):
+            after = (k + 1) % len(rough)
+            if float(np.hypot(*(rough[after] - rough[k]))) < stub:
+                rough[k] = (rough[k] + rough[after]) / 2.0
+                rough = np.delete(rough, after, axis=0)
+                shortened = True
+                break
+    if not 4 <= len(rough) <= OUTLINE_MAX_CORNERS:
+        return None, unclear.format(why=f"it came out with {len(rough)} corners")
+
+    wx, wz = points[upright, 0], points[upright, 2]
+    count = len(rough)
+    walls = [_fit_wall(wx, wz, rough[k], rough[(k + 1) % count], cell) for k in range(count)]
+    lengths = [float(np.hypot(*(rough[(k + 1) % count] - rough[k]))) for k in range(count)]
+    bare = sum(length for wall, length in zip(walls, lengths) if wall is None)
+    if bare > 0.3 * sum(lengths):
+        return None, unclear.format(why="too much of its edge has no wall behind it, as where a scan stops short")
+
+    corners = []
+    for k in range(count):
+        before, after = walls[k - 1], walls[k]
+        corner = rough[k]
+        if before is not None and after is not None:
+            (p, d), (q, e) = before, after
+            cross = d[0] * e[1] - d[1] * e[0]
+            if abs(cross) > math.sin(math.radians(8.0)):
+                step = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / cross
+                corner = p + d * step
+        elif before is not None or after is not None:
+            # One wall found: the corner slides onto it.
+            p, d = before if before is not None else after
+            corner = p + d * float((rough[k] - p) @ d)
+        if float(np.hypot(*(corner - rough[k]))) > 2.5 * cell + 0.2:
+            return None, unclear.format(why="its corners did not agree with its walls")
+        corners.append(corner)
+    outline = np.array(corners)
+
+    if _crosses_itself(outline):
+        return None, unclear.format(why="it crossed itself")
+    area = abs(outline_area(outline))
+    if area < OUTLINE_MIN_SHARE * box_area:
+        return None, unclear.format(why="it is much smaller than the room")
+    spans = outline.max(axis=0) - outline.min(axis=0)
+    if area >= 0.97 * float(spans[0] * spans[1]):
+        return None, None       # a box after all
+    if outline_area(outline) < 0:
+        outline = outline[::-1]
+    return outline, None
+
+
+# ---------------------------------------------------------------------------
 # 6. Raised areas
 # ---------------------------------------------------------------------------
 
@@ -461,10 +802,94 @@ def find_raised_areas(
 # 7. Overhead lines
 # ---------------------------------------------------------------------------
 
+def _fit_ring(px: np.ndarray, pz: np.ndarray) -> Optional[Dict[str, float]]:
+    """The circle a patch of overhead points lies on, or None when it is not a ring.
+
+    A circle is fitted through the points by least squares. It is a ring when
+    the points keep close to that circle all the way round: a square frame of
+    truss strays too far from it at its corners, a panel or a cluster fills its
+    middle, and an arc leaves most of the way round empty.
+    """
+    if len(px) < 40:
+        return None
+    if min(float(px.max() - px.min()), float(pz.max() - pz.min())) < 2 * RING_MIN_RADIUS:
+        return None
+    # x2 + z2 = 2a x + 2b z + c, with the centre at (a, b) and c = r2 - a2 - b2.
+    table = np.stack([2 * px, 2 * pz, np.ones(len(px))], axis=1)
+    solved, *_ = np.linalg.lstsq(table, px * px + pz * pz, rcond=None)
+    cx, cz = float(solved[0]), float(solved[1])
+    squared = float(solved[2]) + cx * cx + cz * cz
+    if not squared > 0:
+        return None
+    radius = math.sqrt(squared)
+    if radius < RING_MIN_RADIUS:
+        return None
+    reach = np.hypot(px - cx, pz - cz)
+    inner, outer = np.percentile(reach, [2.0, 98.0])
+    stray = max(radius - float(inner), float(outer) - radius)
+    if stray > min(RING_MAX_STRAY, RING_MAX_STRAY_SHARE * radius):
+        return None
+    sector = np.floor((np.arctan2(pz - cz, px - cx) + math.pi) / (2 * math.pi) * RING_SECTORS).astype(np.int64)
+    filled = len(np.unique(np.clip(sector, 0, RING_SECTORS - 1)))
+    if filled < RING_MIN_SECTORS:
+        return None
+    return {"center_x": cx, "center_z": cz, "radius": radius, "across": float(outer - inner)}
+
+
+def _fit_line(px: np.ndarray, pz: np.ndarray) -> Optional[Dict[str, float]]:
+    """The long thin thing a patch of overhead points is, whichever way it runs on the plan, or None.
+
+    A line within a couple of degrees of the room's own axes is measured as it
+    always was, by its extent along them. Any other heading is measured along
+    the patch's own long axis.
+    """
+    width, depth = float(px.max() - px.min()), float(pz.max() - pz.min())
+
+    def thin(long_side: float, short_side: float) -> bool:
+        return long_side >= LINE_MIN_LENGTH and short_side <= LINE_MAX_WIDTH and long_side >= 2.5 * short_side
+
+    heading = 0.0 if width >= depth else 90.0
+    along = across = None
+    if len(px) >= 3:
+        plan = np.stack([px, pz], axis=1)
+        mean = plan.mean(axis=0)
+        _, vectors = np.linalg.eigh(np.cov((plan - mean).T))
+        direction = vectors[:, -1]
+        if direction[0] < 0 or (abs(direction[0]) < 1e-12 and direction[1] < 0):
+            direction = -direction
+        along = (plan - mean) @ direction
+        across = (plan - mean) @ np.array([-direction[1], direction[0]])
+        heading = math.degrees(math.atan2(direction[1], direction[0]))
+        if along is not None and not thin(float(along.max() - along.min()), float(across.max() - across.min())):
+            along = None
+
+    squared_up = abs(heading) <= AXIS_SNAP_DEG or abs(heading) >= 90.0 - AXIS_SNAP_DEG
+    if along is None or squared_up:
+        if not thin(max(width, depth), min(width, depth)):
+            return None
+        mid_x, mid_z = float(px.min() + px.max()) / 2.0, float(pz.min() + pz.max()) / 2.0
+        if width >= depth:
+            return {"x1": float(px.min()), "z1": mid_z, "x2": float(px.max()), "z2": mid_z, "across": depth}
+        return {"x1": mid_x, "z1": float(pz.min()), "x2": mid_x, "z2": float(pz.max()), "across": width}
+
+    middle = mean + np.array([-direction[1], direction[0]]) * float(across.min() + across.max()) / 2.0
+    start, end = middle + direction * float(along.min()), middle + direction * float(along.max())
+    return {
+        "x1": float(start[0]), "z1": float(start[1]), "x2": float(end[0]), "z2": float(end[1]),
+        "across": float(across.max() - across.min()), "angled": 1.0,
+    }
+
+
 def find_overhead(
     points: np.ndarray, room: Dict[str, float], ceiling: float, density: float, cell: float,
+    outline: Optional[np.ndarray] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """(hanging-height bands with their lines, other overhead objects). Room-aligned, not yet centred."""
+    """(hanging-height bands with their lines and rings, other overhead objects). Room-aligned, not yet centred.
+
+    `outline` is the floor outline where the room is not a box. Its inner walls
+    stand well inside the room's box, so "clear of the walls" is then measured
+    from the outline and not from the box.
+    """
     low = max(OVERHEAD_MIN_HEIGHT, 0.45 * ceiling)
     high = ceiling - OVERHEAD_CEILING_CLEARANCE
     if high - low < 0.3:
@@ -476,6 +901,8 @@ def find_overhead(
         & (x > room["x_min"] + clear) & (x < room["x_max"] - clear)
         & (z > room["z_min"] + clear) & (z < room["z_max"] - clear)
     ]
+    if outline is not None and len(hanging):
+        hanging = hanging[clear_of_outline(hanging[:, 0], hanging[:, 2], outline, clear)]
     if len(hanging) < 15:
         return [], 0
 
@@ -502,24 +929,25 @@ def find_overhead(
     others = 0
     for first, last in runs:
         in_run = hanging[(hanging[:, 1] >= edges[first]) & (hanging[:, 1] <= edges[last + 1])]
-        lines = []
+        lines: List[Dict[str, float]] = []
+        rings: List[Dict[str, float]] = []
         for patch in _patches(in_run, _grid(in_run, origin, grid_cell)):
             px, py, pz = patch["points"][:, 0], patch["points"][:, 1], patch["points"][:, 2]
-            width, depth = float(px.max() - px.min()), float(pz.max() - pz.min())
-            long_side, short_side = max(width, depth), min(width, depth)
-            if long_side >= LINE_MIN_LENGTH and short_side <= LINE_MAX_WIDTH and long_side >= 2.5 * short_side:
-                lines.append({
-                    "x_min": float(px.min()), "x_max": float(px.max()),
-                    "z_min": float(pz.min()), "z_max": float(pz.max()),
-                    "bottom": float(py.min()), "top": float(py.max()),
-                })
+            levels = {"bottom": float(py.min()), "top": float(py.max())}
+            ring = _fit_ring(px, pz)
+            line = _fit_line(px, pz) if ring is None else None
+            if ring is not None:
+                rings.append({**ring, **levels})
+            elif line is not None:
+                lines.append({**line, **levels})
             elif patch["cells"] * grid_cell * grid_cell >= 1.0:
                 others += 1
-        if lines:
+        if lines or rings:
             bands.append({
-                "bottom": min(line["bottom"] for line in lines),
-                "top": max(line["top"] for line in lines),
+                "bottom": min(item["bottom"] for item in lines + rings),
+                "top": max(item["top"] for item in lines + rings),
                 "lines": lines,
+                "rings": rings,
             })
     return bands, others
 
@@ -648,8 +1076,23 @@ def extract_room(mesh: ScanMesh, options: Optional[ScanOptions] = None) -> RoomE
             % round(density)
         )
 
+    # A room that is not a box: its floor outline, and the box round that.
+    outline, outline_note = find_outline(points, upright, room, cell)
+    if outline_note:
+        warnings.append(outline_note)
+    if outline is not None:
+        room = {
+            "x_min": float(outline[:, 0].min()), "x_max": float(outline[:, 0].max()),
+            "z_min": float(outline[:, 1].min()), "z_max": float(outline[:, 1].max()),
+        }
+        width, depth = room["x_max"] - room["x_min"], room["z_max"] - room["z_min"]
+        assumptions.append(
+            f"The room is not a box: its floor outline was traced as {len(outline)} walls. "
+            "Its width and depth are those of the box round it."
+        )
+
     raised = find_raised_areas(points, normals, room, ceiling, density, cell, warnings)
-    bands, other_overhead = find_overhead(points, room, ceiling, density, cell)
+    bands, other_overhead = find_overhead(points, room, ceiling, density, cell, outline)
 
     # Centre the plan on the room, then decide which wall is upstage.
     cx, cz = (room["x_min"] + room["x_max"]) / 2.0, (room["z_min"] + room["z_max"]) / 2.0
@@ -662,7 +1105,13 @@ def extract_room(mesh: ScanMesh, options: Optional[ScanOptions] = None) -> RoomE
 
     raised = [centred(r) for r in raised]
     for band in bands:
-        band["lines"] = [centred(line) for line in band["lines"]]
+        for line in band["lines"]:
+            line["x1"], line["x2"] = line["x1"] - cx, line["x2"] - cx
+            line["z1"], line["z2"] = line["z1"] - cz, line["z2"] - cz
+        for ring in band["rings"]:
+            ring["center_x"], ring["center_z"] = ring["center_x"] - cx, ring["center_z"] - cz
+    if outline is not None:
+        outline = outline - np.array([cx, cz])
 
     auto_turns = upstage_turns(raised[0] if raised else None, width / 2.0, depth / 2.0)
     if raised:
@@ -682,7 +1131,21 @@ def extract_room(mesh: ScanMesh, options: Optional[ScanOptions] = None) -> RoomE
         width, depth = depth, width
     raised = [_turn_extent(r, turns) for r in raised]
     for band in bands:
-        band["lines"] = [_turn_extent(line, turns) for line in band["lines"]]
+        for line in band["lines"]:
+            line["x1"], line["z1"] = quarter_turn(line["x1"], line["z1"], turns)
+            line["x2"], line["z2"] = quarter_turn(line["x2"], line["z2"], turns)
+            # Written from stage right to stage left, or from upstage to downstage.
+            along_x = abs(line["x2"] - line["x1"]) >= abs(line["z2"] - line["z1"])
+            if (line["x1"] > line["x2"]) if (along_x or line.get("angled")) else (line["z1"] > line["z2"]):
+                line["x1"], line["z1"], line["x2"], line["z2"] = line["x2"], line["z2"], line["x1"], line["z1"]
+        for ring in band["rings"]:
+            ring["center_x"], ring["center_z"] = quarter_turn(ring["center_x"], ring["center_z"], turns)
+    outline_points: List[Dict[str, float]] = []
+    if outline is not None:
+        turned = [quarter_turn(float(x), float(z), turns) for x, z in outline]
+        # From the corner furthest upstage (then furthest stage right), clockwise seen from above.
+        first = min(range(len(turned)), key=lambda k: (round(turned[k][1], 2), round(turned[k][0], 2)))
+        outline_points = [{"x": _r(x), "z": _r(z)} for x, z in turned[first:] + turned[:first]]
 
     # --- The shell ----------------------------------------------------------
     risers = []
@@ -707,34 +1170,55 @@ def extract_room(mesh: ScanMesh, options: Optional[ScanOptions] = None) -> RoomE
         })
 
     truss_lines = []
+    truss_rings = []
     hanging_bands = []
     for band in sorted(bands, key=lambda b: b["bottom"]):
         hanging_bands.append({
             "height": _r(band["bottom"]),
             "top": _r(band["top"]),
             "lines": len(band["lines"]),
+            "rings": len(band["rings"]),
             "suggested": True,
-            "basis": "scan: long thin objects hanging clear of the walls at this height",
+            "basis": (
+                "scan: long thin objects hanging clear of the walls at this height" if band["lines"]
+                else "scan: a ring hanging clear of the walls at this height"
+            ),
         })
-        for line in sorted(band["lines"], key=lambda l: (l["z_min"], l["x_min"])):
-            along_x = (line["x_max"] - line["x_min"]) >= (line["z_max"] - line["z_min"])
-            mid_x, mid_z = (line["x_min"] + line["x_max"]) / 2.0, (line["z_min"] + line["z_max"]) / 2.0
-            ends = (
-                (line["x_min"], mid_z, line["x_max"], mid_z) if along_x
-                else (mid_x, line["z_min"], mid_x, line["z_max"])
-            )
-            length = (line["x_max"] - line["x_min"]) if along_x else (line["z_max"] - line["z_min"])
-            across = (line["z_max"] - line["z_min"]) if along_x else (line["x_max"] - line["x_min"])
+        for line in sorted(band["lines"], key=lambda l: (min(l["z1"], l["z2"]), min(l["x1"], l["x2"]))):
+            run_x, run_z = line["x2"] - line["x1"], line["z2"] - line["z1"]
+            angled = bool(line.get("angled"))
+            along_x = abs(run_x) >= abs(run_z)
+            # Clockwise from across the room, seen from above: 0 runs across, 90 upstage to downstage.
+            heading = math.degrees(math.atan2(run_z, run_x)) if angled else (0.0 if along_x else 90.0)
             truss_lines.append({
                 "name": f"Overhead line {len(truss_lines) + 1}",
-                "x1": _r(ends[0]), "z1": _r(ends[1]), "x2": _r(ends[2]), "z2": _r(ends[3]),
+                "x1": _r(line["x1"]), "z1": _r(line["z1"]), "x2": _r(line["x2"]), "z2": _r(line["z2"]),
                 "height": _r(line["bottom"]),
                 "top": _r(line["top"]),
-                "length": _r(length),
-                "across": _r(across),
-                "axis": "x" if along_x else "z",
+                "length": _r(math.hypot(run_x, run_z)),
+                "across": _r(line["across"]),
+                "axis": "angled" if angled else "x" if along_x else "z",
+                "heading_deg": _r(heading, 1),
                 "suggested": True,
-                "basis": "scan: a long thin object hanging clear of the walls; taken for a truss or bar",
+                "basis": (
+                    "scan: a long thin object hanging clear of the walls; taken for a truss or bar"
+                    + (f", running at {abs(heading):.0f} degrees to the room" if angled else "")
+                ),
+            })
+        for ring in sorted(band["rings"], key=lambda r: (r["center_z"], r["center_x"])):
+            truss_rings.append({
+                "name": f"Overhead ring {len(truss_rings) + 1}",
+                "center_x": _r(ring["center_x"]),
+                "center_z": _r(ring["center_z"]),
+                "radius": _r(ring["radius"]),
+                "height": _r(ring["bottom"]),
+                "top": _r(ring["top"]),
+                "across": _r(ring["across"]),
+                "suggested": True,
+                "basis": (
+                    "scan: points hanging clear of the walls that keep to one circle all the way round; "
+                    "taken for a ring of truss"
+                ),
             })
 
     counted = f"{len(mesh.vertices):,} points" + (
@@ -759,6 +1243,7 @@ def extract_room(mesh: ScanMesh, options: Optional[ScanOptions] = None) -> RoomE
         },
         "risers": risers,
         "truss_lines": truss_lines,
+        "truss_rings": truss_rings,
         "hanging_bands": hanging_bands,
         "scan": {
             "file": mesh.source_file,
@@ -775,12 +1260,21 @@ def extract_room(mesh: ScanMesh, options: Optional[ScanOptions] = None) -> RoomE
             "objects": mesh.objects,
         },
     }
+    if outline_points:
+        # Only a room that is not a box carries an outline: its walls are the
+        # segments between these corners, in order, the last back to the first.
+        shell["room"]["outline"] = outline_points
+        shell["room"]["basis"] = (
+            f"scan: the floor outline traced as {len(outline_points)} walls, each moved onto the wall "
+            "the scan shows along it; width and depth are the box round it; "
+            "floor and ceiling from the densest levels at the bottom and top"
+        )
     if other_overhead:
         warnings.append(
             f"{other_overhead} other object{'s' if other_overhead != 1 else ''} overhead "
             "(not long and thin) were seen and not drawn."
         )
-    if not truss_lines:
+    if not truss_lines and not truss_rings:
         assumptions.append(
             "No truss or bar was found overhead, so overhead fixtures keep their height unless the "
             "layout had them above the ceiling."
