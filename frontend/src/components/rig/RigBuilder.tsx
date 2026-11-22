@@ -12,6 +12,7 @@ import PatchTable from './PatchTable';
 import FixtureProperties from './FixtureProperties';
 import IdentifyWalkthrough from './IdentifyWalkthrough';
 import RoomScanDialog from './RoomScanDialog';
+import { undoCount } from '../../utils/roomScan';
 import type { Rig, RigFixture, Fixture, PatchConflict } from '../../types';
 
 /** Long enough that a drag is one request, short enough to feel immediate. */
@@ -471,6 +472,7 @@ export default function RigBuilder() {
         rigId={rig.id}
         rigName={rig.name}
         hasRoom={rig.room_shell?.source === 'scan'}
+        undoMoves={undoCount(rig)}
         onClose={() => setRoomScanOpen(false)}
         onChanged={() => {
           clearHistory();

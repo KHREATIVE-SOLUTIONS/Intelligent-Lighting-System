@@ -71,8 +71,44 @@ export interface RoomScanPreview {
     room_shell_stored: boolean;
     fixtures_moved: number;
     fixtures_still_unconfirmed: number;
+    /** How many fixture moves an undo would now take back. */
+    undo_available?: number;
     message: string;
   };
+}
+
+/** A fixture an undo left alone, and why: a person has placed, confirmed or moved it since. */
+export interface RoomScanSkipped {
+  rig_fixture_id: number;
+  name: string;
+  reason: string;
+}
+
+/** The answer to POST /api/rigs/{id}/room-scan/undo. */
+export interface RoomScanUndoResult {
+  rig_id: number;
+  restored: number;
+  skipped: number;
+  restored_fixtures: Array<{ rig_fixture_id: number; name: string; from: RoomScanPoint; to: RoomScanPoint }>;
+  skipped_fixtures: RoomScanSkipped[];
+  message: string;
+}
+
+/** The answer to DELETE /api/rigs/{id}/room-shell. The fixture fields are there only when asked to restore. */
+export interface RoomShellRemoved {
+  rig_id: number;
+  removed: boolean;
+  /** Moves that can still be undone afterwards. */
+  undo_available?: number;
+  fixtures_restored?: number;
+  fixtures_skipped?: number;
+  skipped_fixtures?: RoomScanSkipped[];
+  message?: string;
+}
+
+/** How many fixture moves the rig's undo record holds. */
+export function undoCount(rig: { room_scan_undo?: { moves?: unknown[] | null } | null } | null | undefined): number {
+  return rig?.room_scan_undo?.moves?.length ?? 0;
 }
 
 export function roomScanPath(rigId: number): string {
@@ -81,6 +117,15 @@ export function roomScanPath(rigId: number): string {
 
 export function roomShellPath(rigId: number): string {
   return `/rigs/${rigId}/room-shell`;
+}
+
+export function roomScanUndoPath(rigId: number): string {
+  return `/rigs/${rigId}/room-scan/undo`;
+}
+
+/** Where a drag in the 3D view saves a fixture's position, which also confirms it. */
+export function fixturePositionPath(rigId: number, fixtureId: number): string {
+  return `/rigs/${rigId}/fixtures/${fixtureId}/position`;
 }
 
 /**
@@ -151,6 +196,48 @@ const point = (p: RoomScanPoint) => `${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z
 /** A move as text: "(-3.00, 6.00, -1.50) to (-3.00, 4.00, 0.50)". */
 export function moveText(move: RoomScanMove): string {
   return `(${point(move.from)}) to (${point(move.to)})`;
+}
+
+/** "7 fixtures" / "1 fixture". */
+export function fixtureCountText(n: number): string {
+  return count(n, 'fixture');
+}
+
+/** The label of the undo button: "Undo room scan moves (7)". */
+export function undoButtonText(moves: number): string {
+  return `Undo room scan moves (${moves})`;
+}
+
+/** What the undo button asks before it does anything. */
+export function undoQuestionText(moves: number): string {
+  return `Put ${moves === 1 ? 'the 1 fixture' : `the ${moves} fixtures`} the room scan moved back where `
+    + `${moves === 1 ? 'it' : 'they'} stood before it? Any you have tapped, confirmed, dragged or moved since `
+    + 'are left where they are.';
+}
+
+/** "Left alone: Spot 1 (it was tapped or dragged into place since); Par 3 (...)." or '' when none were. */
+export function skippedText(skipped: RoomScanSkipped[] | undefined): string {
+  if (!skipped || skipped.length === 0) return '';
+  const shown = skipped.slice(0, 6).map((item) => `${item.name} (${item.reason})`);
+  const more = skipped.length - shown.length;
+  return `Left alone: ${shown.join('; ')}${more > 0 ? `; and ${more} more` : ''}.`;
+}
+
+/** What an undo did, in the server's words, with the fixtures it left alone named. */
+export function undoResultText(result: RoomScanUndoResult): string {
+  return [result.message, skippedText(result.skipped_fixtures)].filter(Boolean).join(' ');
+}
+
+/** What removing the stored room did, with or without putting fixtures back. */
+export function removeResultText(result: RoomShellRemoved): string {
+  const room = result.removed ? 'The stored room was taken off this rig.' : 'This rig had no stored room.';
+  if (result.fixtures_restored === undefined) {
+    const later = (result.undo_available ?? 0) > 0
+      ? ' Fixtures were left where they are; Undo room scan moves still puts them back.'
+      : ' Fixtures were left where they are.';
+    return room + later;
+  }
+  return [room, result.message, skippedText(result.skipped_fixtures)].filter(Boolean).join(' ');
 }
 
 /** Why a file cannot be sent at all, or null when it can. */

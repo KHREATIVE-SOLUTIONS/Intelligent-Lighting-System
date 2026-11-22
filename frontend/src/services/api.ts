@@ -35,8 +35,12 @@ import type {
   ConsoleExportSummary,
   ConsoleExportTarget,
 } from '../utils/consoleExport';
-import { roomScanParams, roomScanPath, roomShellPath } from '../utils/roomScan';
-import type { RoomScanOptions, RoomScanPreview } from '../utils/roomScan';
+import {
+  fixturePositionPath, roomScanParams, roomScanPath, roomScanUndoPath, roomShellPath,
+} from '../utils/roomScan';
+import type {
+  RoomScanOptions, RoomScanPreview, RoomScanUndoResult, RoomShellRemoved,
+} from '../utils/roomScan';
 
 const API_BASE_URL = '/api';
 
@@ -253,6 +257,25 @@ export const rigsApi = {
     data: Partial<RigFixtureCreate>
   ): Promise<RigFixture> => {
     const response = await api.put(`/rigs/${rigId}/fixtures/${fixtureId}`, data);
+    return response.data;
+  },
+
+  /**
+   * Stores where a person dragged a fixture in the 3D view. Unlike
+   * updateFixture, this confirms the position: the fixture stops being an
+   * unconfirmed guess. Leave `y` out to keep its height. The answer is the
+   * fixture as stored, which the server may have held inside the room.
+   */
+  setFixturePosition: async (
+    rigId: number,
+    fixtureId: number,
+    position: { x: number; z: number; y?: number },
+  ): Promise<RigFixture> => {
+    const response = await api.put(fixturePositionPath(rigId, fixtureId), {
+      position_x: position.x,
+      position_z: position.z,
+      ...(position.y === undefined ? {} : { position_y: position.y }),
+    });
     return response.data;
   },
 
@@ -1406,9 +1429,25 @@ export const roomScanApi = {
     return response.data;
   },
 
-  /** Takes the stored room off the rig. Fixtures stay where they are. */
-  remove: async (rigId: number): Promise<{ rig_id: number; removed: boolean }> => {
-    const response = await api.delete(roomShellPath(rigId));
+  /**
+   * Takes the stored room off the rig. Fixtures stay where they are unless
+   * `restoreFixtures` is set, which also puts back the ones the scan moved.
+   */
+  remove: async (rigId: number, restoreFixtures = false): Promise<RoomShellRemoved> => {
+    const response = await api.delete(
+      roomShellPath(rigId),
+      restoreFixtures ? { params: { restore_fixtures: true } } : undefined,
+    );
+    return response.data;
+  },
+
+  /**
+   * Puts the fixtures a room scan moved back where they stood before it. One a
+   * person has tapped, confirmed, dragged or moved since is left alone and
+   * comes back in `skipped_fixtures`.
+   */
+  undoMoves: async (rigId: number): Promise<RoomScanUndoResult> => {
+    const response = await api.post(roomScanUndoPath(rigId));
     return response.data;
   },
 };

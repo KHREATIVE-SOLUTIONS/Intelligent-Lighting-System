@@ -120,6 +120,23 @@ export interface Rig {
    * has one once a room scan has been applied to it (docs/ROOM_SCAN.md).
    */
   room_shell?: RoomShell | null;
+  /**
+   * Where fixtures stood before a room scan moved them, while that can still
+   * be undone. Null when there is nothing to undo. Read-only: written by the
+   * room-scan endpoint (docs/ROOM_SCAN.md).
+   */
+  room_scan_undo?: RoomScanUndoRecord | null;
+}
+
+export interface RoomScanUndoRecord {
+  file?: string | null;
+  applied_at?: string | null;
+  moves?: Array<{
+    rig_fixture_id: number;
+    name?: string;
+    from: { x: number; y: number; z: number };
+    to: { x: number; y: number; z: number };
+  }> | null;
 }
 
 /** A box standing on the floor (or `base_height` above it), sides square to the room. */

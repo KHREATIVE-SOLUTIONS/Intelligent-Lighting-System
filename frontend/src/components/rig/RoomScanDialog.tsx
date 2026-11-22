@@ -37,15 +37,19 @@ import {
 import { UploadFile as UploadFileIcon } from '@mui/icons-material';
 import axios from 'axios';
 import { roomScanApi } from '../../services/api';
+import RoomScanUndoButton from './RoomScanUndoButton';
 import {
   DEFAULT_SCAN_OPTIONS,
   ROOM_SCAN_ACCEPT,
   fileProblem,
   fixtureMoveText,
   foundLines,
+  fixtureCountText,
   moveText,
+  removeResultText,
   roomScanErrorText,
   roomSizeText,
+  undoResultText,
 } from '../../utils/roomScan';
 import type {
   RoomScanOptions,
@@ -61,6 +65,8 @@ interface RoomScanDialogProps {
   rigName: string;
   /** Whether the rig already has a room stored on it. */
   hasRoom: boolean;
+  /** How many fixture moves the rig's room scan undo record holds (0 for none). */
+  undoMoves?: number;
   onClose: () => void;
   /** Called once a scan has been applied or the stored room removed: the rig has changed. */
   onChanged: () => void;
@@ -80,6 +86,7 @@ export default function RoomScanDialog({
   rigId,
   rigName,
   hasRoom,
+  undoMoves = 0,
   onClose,
   onChanged,
   onView3D,
@@ -92,6 +99,8 @@ export default function RoomScanDialog({
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Removing a room whose scan moved fixtures asks first whether to put them back.
+  const [askRemove, setAskRemove] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Only the newest preview may land: changing the units while one is in
   // flight must not show the old reading under the new setting.
@@ -109,6 +118,7 @@ export default function RoomScanDialog({
     setBusy(null);
     setError(null);
     setNotice(null);
+    setAskRemove(false);
   }, [open, rigId]);
 
   const runPreview = useCallback(async (chosen: File, using: RoomScanOptions) => {
@@ -177,23 +187,20 @@ export default function RoomScanDialog({
     }
   };
 
-  const handleRemove = async () => {
+  const handleRemove = async (restoreFixtures: boolean) => {
+    setAskRemove(false);
     const request = requestRef.current + 1;
     requestRef.current = request;
     setError(null);
     setBusy('remove');
     try {
-      const result = await roomScanApi.remove(rigId);
+      const result = await roomScanApi.remove(rigId, restoreFixtures);
       onChanged();
       if (requestRef.current !== request) return;
       setFile(null);
       setPreview(null);
       setApplied(null);
-      setNotice(
-        result.removed
-          ? 'The stored room was taken off this rig. Fixtures were left where they are.'
-          : 'This rig had no stored room.',
-      );
+      setNotice(removeResultText(result));
     } catch (err) {
       if (requestRef.current !== request) return;
       setError(errorText(err));
@@ -299,6 +306,30 @@ export default function RoomScanDialog({
           </Alert>
         )}
 
+        {askRemove && (
+          <Alert
+            severity="warning"
+            sx={{ mb: 2 }}
+            action={(
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Button color="inherit" size="small" variant="outlined" onClick={() => { void handleRemove(true); }}>
+                  Remove the room and put them back
+                </Button>
+                <Button color="inherit" size="small" onClick={() => { void handleRemove(false); }}>
+                  Remove the room only
+                </Button>
+                <Button color="inherit" size="small" onClick={() => setAskRemove(false)}>
+                  Cancel
+                </Button>
+              </Stack>
+            )}
+          >
+            The scan that drew this room moved {fixtureCountText(undoMoves)}. Put{' '}
+            {undoMoves === 1 ? 'it' : 'them'} back where {undoMoves === 1 ? 'it' : 'they'} stood before the scan
+            as well? Any you have tapped, confirmed, dragged or moved since are left where they are.
+          </Alert>
+        )}
+
         {applied?.applied && (
           <Alert severity="success" sx={{ mb: 2 }}>
             {applied.applied.message}
@@ -354,7 +385,7 @@ export default function RoomScanDialog({
             <Typography variant="body2" sx={{ mb: 1 }}>
               {applied?.applied
                 ? `${applied.applied.fixtures_moved} moved. ${applied.applied.fixtures_still_unconfirmed} are still `
-                  + 'unconfirmed: check them with Identify Lights, or drag them.'
+                  + 'unconfirmed: check them with Identify Lights, or drag them in the 3D view.'
                 : fixtureMoveText(shown)}{' '}
               Positions that were tapped, confirmed, measured in a file or fitted between tapped ends are never moved.
             </Typography>
@@ -405,11 +436,38 @@ export default function RoomScanDialog({
       </DialogContent>
 
       <DialogActions>
-        {hasRoom && !applied && (
-          <Button color="warning" onClick={() => { void handleRemove(); }} disabled={busy !== null} sx={{ mr: 'auto' }}>
-            Remove the stored room
-          </Button>
-        )}
+        <Box sx={{ mr: 'auto', display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+          {hasRoom && !applied && (
+            <Button
+              color="warning"
+              onClick={() => {
+                // With moves to undo, ask whether to put them back; with none, just remove.
+                if (undoMoves > 0) setAskRemove(true);
+                else void handleRemove(false);
+              }}
+              disabled={busy !== null || askRemove}
+            >
+              Remove the stored room
+            </Button>
+          )}
+          {!askRemove && (
+            <RoomScanUndoButton
+              rigId={rigId}
+              moves={undoMoves}
+              disabled={busy !== null}
+              onDone={(result) => {
+                // The preview on screen describes moves that are no longer true.
+                requestRef.current += 1;
+                setFile(null);
+                setPreview(null);
+                setApplied(null);
+                setError(null);
+                setNotice(undoResultText(result));
+                onChanged();
+              }}
+            />
+          )}
+        </Box>
         {applied && onView3D && (
           <Button onClick={onView3D}>See it in the 3D view</Button>
         )}
