@@ -1,0 +1,23 @@
+# LIV approximate demo subset - console-style patch list
+# Authored for the Intelligent Lighting System's import tests from its approximate LIV demo preset. Not a venue's real patch and not a manufacturer's file.
+FID,Label,Fixture Type,Mode,Footprint,Patch,Position,X,Y,Z,Group
+83,Dome Rim 1,Color Kinetics ColorBlast 12,12ch,12,3.1,,3.34,7.00,-12.46,Dome Rim
+84,Dome Rim 2,Color Kinetics ColorBlast 12,12ch,12,3/13,,9.12,7.00,-9.12,Dome Rim
+85,Dome Rim 3,Color Kinetics ColorBlast 12,12ch,12,1049,,12.46,7.00,-3.34,Dome Rim
+86,Dome Rim 4,Color Kinetics ColorBlast 12,12ch,12,3.37,,12.46,7.00,3.34,Dome Rim
+87,Dome Rim 5,Color Kinetics ColorBlast 12,12ch,12,3/49,,9.12,7.00,9.12,Dome Rim
+88,Dome Rim 6,Color Kinetics ColorBlast 12,12ch,12,1085,,3.34,7.00,12.46,Dome Rim
+89,Dome Rim 7,Color Kinetics ColorBlast 12,12ch,12,3.73,,-3.34,7.00,12.46,Dome Rim
+90,Dome Rim 8,Color Kinetics ColorBlast 12,12ch,12,3/85,,-9.12,7.00,9.12,Dome Rim
+91,Dome Rim 9,Color Kinetics ColorBlast 12,12ch,12,1121,,-12.46,7.00,3.34,Dome Rim
+92,Dome Rim 10,Color Kinetics ColorBlast 12,12ch,12,3.109,,-12.46,7.00,-3.34,Dome Rim
+93,Dome Rim 11,Color Kinetics ColorBlast 12,12ch,12,3/121,,-9.12,7.00,-9.12,Dome Rim
+94,Dome Rim 12,Color Kinetics ColorBlast 12,12ch,12,1157,,-3.34,7.00,-12.46,Dome Rim
+95,Tri Par 1,Elation Opti Tri Par,12ch,12,3.145,,-12.60,0.30,-6.00,Wall Pars
+96,Tri Par 2,Elation Opti Tri Par,12ch,12,3/157,,-12.60,0.30,0.00,Wall Pars
+97,Tri Par 3,Elation Opti Tri Par,12ch,12,1193,,-12.60,0.30,6.00,Wall Pars
+98,Tri Par 4,Elation Opti Tri Par,12ch,12,3.181,,12.60,0.30,-6.00,Wall Pars
+99,Tri Par 5,Elation Opti Tri Par,12ch,12,3/193,,12.60,0.30,0.00,Wall Pars
+100,Tri Par 6,Elation Opti Tri Par,12ch,12,1229,,12.60,0.30,6.00,Wall Pars
+101,Tri Par 7,Elation Opti Tri Par,12ch,12,3.217,Staircase Pars,,,,Staircase Pars
+102,Tri Par 8,Elation Opti Tri Par,12ch,12,3/229,Staircase Pars,,,,Staircase Pars
