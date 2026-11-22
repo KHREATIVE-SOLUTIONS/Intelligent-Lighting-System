@@ -438,6 +438,27 @@ describe('a shell stored before outlines, headings and rings', () => {
     expect(targets.every((target) => target.ring === undefined)).toBe(true);
     expect(snapToLines({ x: 1, y: 4.2, z: 0.7 }, targets)).toEqual({ x: 1, y: 4, z: 0.5, snappedTo: targets[0] });
   });
+
+  it('hangs fixtures from a truss running upstage to downstage, the one thing it draws differently', () => {
+    // An old shell could already hold such a line. The view used to hang a
+    // stub of its own truss across it over each fixture; now they hang from it.
+    const old: RoomShell = {
+      ...OLD,
+      truss_lines: [{ name: 'Overhead line 1', x1: 2, z1: -3, x2: 2, z2: 3, height: 4, top: 4.3, length: 6, across: 0.3, axis: 'z' }],
+    };
+    expect(scanHangers(old)).toEqual([{ kind: 'line', x1: 2, z1: -3, x2: 2, z2: 3, height: 4 }]);
+    const fixtures: LayoutFixture[] = [-2, 0, 2].map((z, index) => ({
+      id: index + 1, x: 2, y: 4, z, kind: 'moving_head' as const, hasPanTilt: true,
+    }));
+    expect(buildVenue(STAGE_BOX, fixtures, scannedRoom(old)).trussRows).toHaveLength(3);
+    expect(buildVenue(STAGE_BOX, fixtures, scannedRoom(old), scanHangers(old)).trussRows).toEqual([]);
+    // The bar itself is drawn where it always was.
+    const bar = bounds(buildOverheadLines(old.truss_lines!) as THREE.BufferGeometry);
+    expect(bar.min.z).toBeCloseTo(-3, 4);
+    expect(bar.max.z).toBeCloseTo(3, 4);
+    expect(bar.min.x).toBeCloseTo(1.85, 4);
+    expect(bar.max.x).toBeCloseTo(2.15, 4);
+  });
 });
 
 describe('wording for the shapes a scan found', () => {

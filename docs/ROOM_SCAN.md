@@ -9,6 +9,12 @@ builds, but **nobody has yet dragged a fixture in a browser**: the drag's
 geometry is tested, the pointer handling in the canvas is not (see What is
 left).
 
+The slice called 4 adds **rooms that are not boxes, truss at an angle and rings
+of truss**: the reader finds them, the suggestion lays rows along them, the 3D
+view draws them and a drag snaps to them (see "What slice 4 built"). Its
+backend tests pass. Its frontend tests (273) and the bundle build pass too, but none of it has
+been seen in a browser (see What is left).
+
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
 
@@ -18,9 +24,11 @@ A rig laid out on a stage template has every fixture at a guess, in a room the
 3D view invents from the stage size. A phone can scan the real room in a couple
 of minutes. This reads that scan and suggests:
 
-- the **room shell**: floor, ceiling and the four walls, as a box;
+- the **room shell**: floor, ceiling and walls. A box, or for a room that does
+  not fill its box (an L, a cut corner) the outline of its floor;
 - **raised areas**: a stage, risers, a DJ booth or counter;
-- **overhead lines**: trusses and lighting bars, with the height they hang at;
+- **overhead lines and rings**: trusses and lighting bars at whatever heading
+  they run, and rings of truss, with the height they hang at;
 - **where the rig's unconfirmed fixtures should move** to agree with all that.
 
 Every part of it is a **suggestion**. The operator sees a preview first, and
@@ -82,9 +90,12 @@ header (stored rigs only; the demo rig has no stored positions to change):
 - **Arrow keys** nudge the selected fixture 0.1 m across or up and down stage,
   **Page Up / Page Down** change its height; with Shift, 1 m at a time.
 - With a scanned room on the rig, a drag **snaps** to the nearest scanned truss
-  line or raised-area edge within 0.4 m on the plan, among lines within 1.5 m
-  of the fixture's height. On a truss line the fixture also takes the line's
-  hanging height; on a stage or riser edge it keeps its own. The **Snap**
+  line (at any heading), ring of truss or raised-area edge within 0.4 m on the
+  plan, among those within 1.5 m of the fixture's height. On a ring it goes to
+  the nearest point of the circle, straight out from or in towards the
+  centre; a fixture dropped at the very centre is left alone. On a truss line
+  or ring the fixture also takes its hanging height; on a stage or riser edge
+  it keeps its own. The readout names what it is on. The **Snap**
   button turns this off; holding **Alt** lets go of it for one drag. A height
   drag does not snap.
 - **Esc** cancels a drag. A press that travels less than 5 pixels on screen
@@ -139,7 +150,9 @@ The answer, for both:
 
 - `room_shell`: the suggested shell (below). `replaces_existing_shell` says
   whether the rig already has one.
-- `summary`: width, depth, height, counts, hanging heights, units, up axis.
+- `summary`: width, depth, height, counts (`raised_areas`, `overhead_lines`,
+  `overhead_rings`, and `walls`: 4 for a box, else the number of outline
+  segments), hanging heights, units, up axis.
 - `assumptions`: each guess the reader made, in words, with how to override it.
 - `warnings`: what looks wrong (a 500 m high room, a sparse scan, missing
   walls, a row longer than the truss it was put under).
@@ -201,15 +214,29 @@ rig's: metres, origin at the centre of the floor, X across, Y up, -Z upstage.
 
 ```
 source: "scan", suggested: true, basis: "Suggested from a room scan (...)"
-room:          { width, depth, height, suggested, basis }
+room:          { width, depth, height, suggested, basis,
+                 outline: [ { x, z }, ... ] }     only when it is not a box
 risers:        [ { center_x, center_z, width, depth, height, base_height,
                    name, kind: "stage" | "riser" | "booth", suggested, basis } ]
 truss_lines:   [ { name, x1, z1, x2, z2, height, top, length, across,
-                   axis: "x" | "z", suggested, basis } ]
-hanging_bands: [ { height, top, lines, suggested, basis } ]
+                   axis: "x" | "z" | "angled", heading_deg, suggested, basis } ]
+truss_rings:   [ { name, center_x, center_z, radius, height, top, across,
+                   suggested, basis } ]
+hanging_bands: [ { height, top, lines, rings, suggested, basis } ]
 scan:          { file, format, points, triangles, point_cloud, units, up_axis,
                  wall_turn_deg, quarter_turns, walls_found, ... }
 ```
+
+`room.outline` is the corners of the floor in order, clockwise seen from above,
+the last joined back to the first; the walls are the segments between them, and
+`width` and `depth` are then the box round the outline. A box room carries no
+outline. `heading_deg` is degrees clockwise from across the room (0 across, 90
+upstage to downstage). A ring's `radius` is to the middle of the truss and its
+`height` is its underside, as a line's is.
+
+A shell stored before slice 4 has no `outline`, `truss_rings`, `heading_deg` or
+`rings`, and needs no migration: every reader goes by a line's two ends, and
+takes a missing outline for a box and missing rings for none.
 
 It travels under the same name as a demo preset's `room_shell`, which has other
 keys (dome, balcony, LED walls). The 3D view draws whichever keys are there.
@@ -233,11 +260,22 @@ smaller and lower is a `riser`.
 4. **Floor and ceiling.** The densest level near the bottom and near the top.
 5. **Walls.** The scan is turned until its walls line up with the axes, then
    each wall is the densest plane near its side, so a scan that leaks through a
-   doorway keeps its walls.
+   doorway keeps its walls. That gives the room's box.
+   Where the scan fills less than 95% of that box the room is not one: the
+   plan is cut into cells, the edge of the cells the scan has anything in is
+   traced and straightened, and each straight run is moved onto the wall the
+   scan shows along it. An outline of 4 to 12 corners is kept. One that is not
+   clear enough (too little floor scanned, an edge that cannot be followed, a
+   scan that stops short of a corner) is **drawn as a box, with a warning**
+   saying why.
 6. **Raised areas.** Level patches 0.12 m to 2.2 m above the floor, at least
    1.5 m2.
-7. **Overhead lines.** Long thin things hanging clear of the walls in the upper
-   room, grouped into hanging heights.
+7. **Overhead lines and rings.** Long thin things hanging clear of the walls
+   (of the outline's walls, where there is one) in the upper room, grouped into
+   hanging heights. Each patch is measured along its own long axis, so a truss
+   at any heading is a line. A patch that keeps to one circle (at least 0.75 m
+   in radius) for 315 degrees of the way round is a ring; a square frame of
+   truss strays too far from a circle to be one.
 8. **Upstage.** The side with the largest raised area becomes upstage (-Z).
    With no raised area the scan's own heading is kept. Turns are rotations,
    never a mirror, so stage left stays stage left.
@@ -258,10 +296,18 @@ A row (a group, or ungrouped fixtures at one height and depth) moves as one
 piece, so it keeps its spacing and stays a straight line for flash-and-tap's
 row fit:
 
-- **Overhead rows** (1.9 m and up) go under the nearest overhead line that runs
-  across the room: its height, its depth, and along it far enough to hang under
-  it. With no such line, to the lowest hanging height found; with nothing found
-  overhead, only down to hang under the ceiling.
+- **Overhead rows** (1.9 m and up) go to the nearest thing found overhead.
+  Under a line that runs across the room (within 2 degrees): its height, its
+  depth, and along it far enough to hang under it, as one piece. With no line
+  or ring, to the lowest hanging height found; with nothing found overhead,
+  only down to hang under the ceiling.
+- **A row nearest a line at any other heading, or a ring,** cannot be slid
+  under it, so it is **laid out along it, spaced evenly in address order**.
+  Along a line the row keeps the end its first address was at; round a ring
+  the first address is upstage and the rest follow clockwise seen from above.
+  Fixtures of the group that a scan may not move keep their places in the
+  count and stay where they are. A row round a ring is no longer straight, so
+  flash-and-tap's row fit does not apply to it.
 - **Floor rows standing where the scan found a stage** go up onto it and in
   from its edges.
 - **Every row** comes inside the walls.
@@ -276,13 +322,41 @@ For a rig with a scanned room (`room_shell.source == "scan"`):
 - the walls and the ceiling are the scan's, not worked out from the stage size
   (`buildVenue`'s `room` argument). A wall still moves out for a fixture patched
   beyond it. The rig's `stage_width/depth/height` are not changed;
-- raised areas are drawn as boxes and overhead lines as plain bars. A line is
-  not drawn where the view already hangs a truss over the fixtures under it;
+- **a room with an outline** has its floor and ceiling cut to the outline and
+  one wall standing on each segment of it, in place of the view's box
+  (`OutlineRoom` in `RoomShellView.tsx`; `ClubRoom` is told to leave its own
+  floor, walls and ceiling out). As with the box, a wall is drawn only while
+  the camera is on the room's side of it, so a camera outside looks in;
+- raised areas are drawn as boxes and overhead lines as plain bars, each
+  turned to the heading it runs at. A line straight across the room is not
+  drawn where the view already hangs a truss over the fixtures under it;
+- **rings of truss** are drawn as plain flat rings at their own height;
+- **fixtures on a line that does not run across the room, or on a ring,** hang
+  from it (within 0.3 m of it on the plan and 0.6 m of its height) and get no
+  truss of the view's own. The view's truss only runs across the room, and
+  would otherwise put a short stub of it over every fixture round a ring.
+  This is the one thing an old stored room draws differently: one with a line
+  running upstage to downstage used to get those stubs over its fixtures;
 - the booth, speaker stacks, square dance floor, crowd, and the bar counter and
   door on the rear wall that the view otherwise invents are **left out**: they
   would stand through the stage and risers the scan found, or claim things about
   a real wall that nobody saw. The ceiling's beams and duct are still the
   view's own.
+
+## What slice 4 built
+
+- **Reader** (`extract.py`): the floor outline of a room that is not a box,
+  overhead lines at any heading, and rings of truss. A box room with truss
+  square to it gives the shell it always did.
+- **Suggestion** (`suggest.py`): rows laid evenly, in address order, along an
+  angled line or round a ring. The answer's `summary` counts rings and walls.
+- **3D view** (`roomShell.ts`, `RoomShellView.tsx`, `layout.ts`,
+  `ClubRoom.tsx`): the outline's floor, walls and ceiling; bars at their
+  heading; rings; fixtures hung from angled lines and rings.
+- **Drag** (`fixtureDrag.ts`): snapping to angled lines and to rings.
+- **Dialog** (`utils/roomScan.ts`): the preview says "running at 30 degrees to
+  the room", lists each ring with how far across it is, and says when the room
+  is not a box and how many walls its outline has.
 
 ## What the tests cover
 
@@ -319,8 +393,42 @@ are no binary fixtures in the repository.
   undo route and hands on the answer, skipped fixtures named; a refusal is
   shown with another go offered.
 
+- `backend/tests/unit/test_room_scan_shapes.py`: an L-shaped room, a cut
+  corner, a truss at 30 degrees and a 4 m ring, all built in code: the outline
+  and its walls, the box drawn with a warning when a scan stops short of a
+  corner, the line's heading, the ring, and rows laid along each in address
+  order with placed fixtures keeping their places.
+- `frontend/src/__tests__/roomShapes.test.ts` (**written and type-checked, not
+  yet run**): an angled bar lying on its line whichever end it is written
+  from; a ring's geometry; fixtures clamped to a line or ring with no truss of
+  the view's own; which outlines are taken for one; a wall per segment facing
+  into the room, for corners in either order; the floor cut to the outline;
+  snapping onto an angled line and a ring, and when a ring is left alone; a
+  shell stored before all this drawing and snapping as it did; the dialog's
+  wording.
+
 ## What is left
 
+- **Slice 4's frontend checks have not been run.** The session that wrote it
+  could type-check (`npx tsc --noEmit` reports nothing in the files it
+  touched) but could not run vitest or the build. Run
+  `cd frontend; npx vitest run --passWithNoTests; npm run build` before
+  relying on it. The backend tests for it ran under the system Python, not
+  the project venv.
+- **Nothing of slice 4 has been seen in a browser**: an outlined room's walls
+  from each camera, an angled bar, a ring, and a drag snapping to either.
+- **An outlined room is still a box to everything but its own walls.** Beams
+  end on the box round the outline (`beamRoom`), so a beam aimed into the
+  notch of an L carries on through the inner wall. Drag limits and the camera
+  presets go by the box too. The outline's ceiling is plain: it has none of
+  the beams and duct the box ceiling has. And where the box's walls move out
+  for a fixture patched beyond them, the outline's walls stay where the scan
+  put them.
+- **Part of a ring is not a ring.** An arc of truss under 315 degrees, an
+  oval and a square frame are read as lines or not at all.
+- **One outline, no holes.** A pillar or an island wall inside the room is not
+  part of the outline, and walls are straight: a curved wall comes out as a
+  few straight ones or as the box.
 - **The drag has not been tried in a browser.** `FixtureDragLayer.tsx` (pointer
   events, the camera held still, the marker and readout) and its wiring in
   `RigVisualizer.tsx` type-check and build, and the geometry under them is
@@ -345,10 +453,8 @@ are no binary fixtures in the repository.
 - **A real scan.** Polycam, Scaniverse and RoomPlan exports from a real venue
   have not been read. Expect the thresholds in `extract.py` to need tuning.
 - **Binary USDZ** (`.usdc`): not read. Export OBJ.
-- **Rooms that are not boxes.** L-shaped rooms, sloped or domed ceilings,
-  balconies and mezzanines are read as their bounding box.
-- **Angled trusses** and circular truss are read as axis-aligned lines or not
-  at all. Fixtures are only moved under lines running across the room.
+- **Ceilings and levels.** Sloped or domed ceilings, balconies and mezzanines
+  are still read as a flat ceiling over one floor.
 - **The 2D layout view** does not draw the scanned room; only the 3D view does.
 - **Editing the suggestion.** A raised area or line cannot be renamed, moved or
   deleted in the UI; the choice is to store the shell or not.
