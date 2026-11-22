@@ -11,8 +11,10 @@ Each preset defines:
 - Default genre
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+import logging
+import math
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 
 
@@ -24,6 +26,7 @@ class VenueSize(Enum):
     FESTIVAL_MAINSTAGE = "festival_mainstage"
     BIGROOM_EDM = "bigroom_edm"
     CLUB_NIGHT = "club_night"
+    LIV_MIAMI_APPROX = "liv_miami_approx"
 
 
 @dataclass
@@ -46,6 +49,20 @@ class FixtureSpec:
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
+    # Patch-sheet detail, for a preset modelled on a real room. `model` is the
+    # fixture the source names, `stands_for` is what one patched fixture
+    # represents when several real ones are folded into it, and `basis` says
+    # whether the count is from the source or assumed.
+    model: str = ""
+    stands_for: str = ""
+    basis: str = ""
+    group: str = ""
+    # Engine groups this fixture belongs to, by name: what a look selects on.
+    # `group` above is the one label a person reads on the patch sheet.
+    groups: Tuple[str, ...] = ()
+    # Degrees about X, Y and Z. No preset turns a fixture yet: the 3D view
+    # mounts and aims each one from where it is patched.
+    rotation: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass
@@ -55,6 +72,84 @@ class KeyZoneSpec:
     fixture_ids: List[str]
     active: bool = True
     min_intensity: float = 0.4
+
+
+@dataclass
+class DomeShell:
+    """A shallow dome ceiling: a spherical cap over a circle on the floor plan."""
+    diameter_ft: float
+    radius: float
+    center_x: float
+    center_z: float
+    rim_height: float
+    apex_height: float
+    basis: str
+
+    def height_at(self, distance: float) -> float:
+        """Height of the dome's surface this far out from its centre line."""
+        rise = self.apex_height - self.rim_height
+        sphere = (self.radius ** 2 + rise ** 2) / (2.0 * rise)
+        reach = min(abs(distance), self.radius)
+        return self.apex_height - (sphere - math.sqrt(sphere ** 2 - reach ** 2))
+
+
+@dataclass
+class DiscShell:
+    """A round area of floor: the dance floor."""
+    center_x: float
+    center_z: float
+    radius: float
+    basis: str
+
+
+@dataclass
+class RingShell:
+    """Part of a flat ring at one height: a balcony or mezzanine.
+
+    Angles are in degrees clockwise from upstage seen from above, as
+    _ring_positions counts them: 0 is -Z (the booth), 90 is +X, 180 is +Z.
+    """
+    center_x: float
+    center_z: float
+    inner_radius: float
+    outer_radius: float
+    soffit_height: float
+    deck_height: float
+    start_deg: float
+    end_deg: float
+    basis: str
+
+
+@dataclass
+class BoxShell:
+    """A box standing on the floor (or `base_height` above it), sides square to the room."""
+    center_x: float
+    center_z: float
+    width: float    # along X
+    depth: float    # along Z
+    height: float
+    basis: str
+    base_height: float = 0.0
+    name: str = ""
+
+
+@dataclass
+class RoomShell:
+    """The room around a rig, for the 3D view: metres, in the rig's own axes.
+
+    Origin at the centre of the floor, X across, Y up, -Z upstage. This is
+    scenery only. Nothing here stops a beam or is read by the engine.
+    """
+    basis: str
+    dome: DomeShell
+    dance_floor: DiscShell
+    balcony: RingShell
+    dj_booth: BoxShell
+    rear_stage: BoxShell
+    led_walls: List[BoxShell] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -70,6 +165,14 @@ class VenuePreset:
     default_genre: str
     default_bpm: float
     fixture_counts: Dict[str, int] = field(default_factory=dict)
+    # Set on a preset that imitates a real room: printed at the head of its
+    # patch sheet so the sheet can never be taken for the venue's own.
+    disclaimer: str = ""
+    # The room the rig hangs in, where a preset describes one.
+    room: Optional[RoomShell] = None
+    # Engine group name -> fixture ids, in patch order. Read off each fixture's
+    # `groups`, so the patch sheet and the engine cannot name different sets.
+    groups: Dict[str, List[str]] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.fixture_counts:
@@ -77,6 +180,12 @@ class VenuePreset:
             for f in self.fixtures:
                 counts[f.fixture_type] = counts.get(f.fixture_type, 0) + 1
             self.fixture_counts = counts
+        if not self.groups:
+            groups: Dict[str, List[str]] = {}
+            for f in self.fixtures:
+                for name in f.groups:
+                    groups.setdefault(name, []).append(f.id)
+            self.groups = groups
 
 
 # Channel mappings (shared across presets)
@@ -639,8 +748,268 @@ def _build_club_night() -> VenuePreset:
     )
 
 
+LIV_DISCLAIMER = (
+    "APPROXIMATE RECREATION of LIV Miami (Fontainebleau Miami Beach), built from "
+    "public 2009 trade press. It is NOT LIV's real patch, plot or addressing, and "
+    "is not endorsed by or affiliated with the venue."
+)
+
+# The dome is 88 ft across.
+LIV_DOME_RADIUS = 13.4
+
+
+# The LED walls stand just off the upstage wall, which is at -13.5.
+LIV_LED_WALL_Z = -13.3
+
+
+def _liv_room_shell() -> RoomShell:
+    """The room round the LIV recreation. Only the dome's 88 ft is from the press."""
+    wall = "sourced: LED walls at the booth; size and position assumed"
+    return RoomShell(
+        basis=(
+            "Approximate. The 88 ft dome is from the 2009 press; every other "
+            "dimension is assumed. Not a survey of the venue."
+        ),
+        # Rim and apex are set to clear the dome fixtures patched under it.
+        dome=DomeShell(diameter_ft=88.0, radius=LIV_DOME_RADIUS, center_x=0.0, center_z=0.0,
+                       rim_height=7.2, apex_height=9.1,
+                       basis="sourced: 88 ft across; heights assumed"),
+        dance_floor=DiscShell(center_x=0.0, center_z=0.0, radius=7.5, basis="assumed"),
+        # The rear half of the room, open on the booth side. The mezzanine
+        # spots hang from its soffit.
+        balcony=RingShell(center_x=0.0, center_z=0.0, inner_radius=10.0, outer_radius=LIV_DOME_RADIUS,
+                          soffit_height=4.0, deck_height=4.4, start_deg=90.0, end_deg=270.0,
+                          basis="sourced: a mezzanine level; shape and size assumed"),
+        # Where the 3D view already builds its booth for a 27 m room.
+        dj_booth=BoxShell(center_x=0.0, center_z=-12.85, width=6.5, depth=1.3, height=1.25,
+                          basis="sourced: a DJ booth; position and size assumed", name="DJ booth"),
+        # The rear VIP level that converts to a stage, between the staircase pars.
+        rear_stage=BoxShell(center_x=0.0, center_z=12.5, width=7.0, depth=1.8, height=0.6,
+                            basis="sourced: a rear level that converts to a stage; size assumed",
+                            name="Rear stage riser"),
+        led_walls=[
+            BoxShell(center_x=0.0, center_z=LIV_LED_WALL_Z - 0.1, width=6.0, depth=0.1, height=2.4,
+                     base_height=3.2, basis=wall, name="LED wall centre"),
+            BoxShell(center_x=-5.0, center_z=LIV_LED_WALL_Z - 0.1, width=2.0, depth=0.1, height=2.4,
+                     base_height=3.2, basis=wall, name="LED wall wing left"),
+            BoxShell(center_x=5.0, center_z=LIV_LED_WALL_Z - 0.1, width=2.0, depth=0.1, height=2.4,
+                     base_height=3.2, basis=wall, name="LED wall wing right"),
+        ],
+    )
+
+
+def _ring_positions(count: int, radius: float, y: float,
+                    offset_deg: float) -> List[Tuple[float, float, float]]:
+    """Points round a circle centred over the dance floor, clockwise from upstage.
+
+    Rounded to the centimetre so that a point and its mirror image share exactly
+    one depth: the engine pairs fixtures by equal z and opposite x.
+    """
+    positions = []
+    for i in range(count):
+        angle = math.radians(offset_deg + i * 360.0 / count)
+        positions.append((round(radius * math.sin(angle), 2), y, round(-radius * math.cos(angle), 2)))
+    return positions
+
+
+def _build_liv_miami_approx() -> VenuePreset:
+    """An approximate recreation of LIV Miami, from public sources. Not LIV's plot.
+
+    What the 2009 press (Live Design, PLSN, SJ Lighting) describes: a round room
+    under an 88 ft dome, the dome lit by about 585 LED nodes in radial spokes and
+    about 300 colour floods round its edge; 22 moving spots as the dance-floor
+    package, 4 smaller spots on the mezzanine soffit, 8 LED moving washes low
+    over the crowd at the dome centre, plus LED pars, LED strips and strobes.
+    docs/venues/LIV_MIAMI_APPROX_NOTES.md lists what is sourced, what is
+    assumed and what was changed to fit this system.
+
+    Layout, with -Z upstage (the DJ booth) and +Z toward the rear mezzanine:
+
+        dome            16 spokes x 2 cells of LED nodes, 12 flood segments at the rim
+        chords A-D      z=-7.5/-2.5/2.5/7.5  22 spots on four trusses inside the dome,
+                                             a strobe off each end
+        centre, 10 ft   z=-1.5/1.5           8 moving washes over the dance floor
+        mezzanine       z=11                 4 spots on the soffit, facing the booth
+        booth, skyboxes                      8 LED strips
+        floor                                8 LED pars up the walls and the staircase
+        behind the booth z=-13.3             its LED walls as 27 cells, 2 booth wash pars
+
+    The spots hang on straight chords, not a ring: the engine and the 3D view
+    both read a rig as rows, and a ring would be eleven rows of two heads.
+
+    Universe 0 is the moving lights, 1 the dome matrix, strips and strobes,
+    2 the colour floods and pars, 3 the booth: a stand-in for its LED walls
+    and two wash pars.
+    """
+    # Trim height of the main package. The dome itself rises above it.
+    stage = StageSpec(width=27.0, depth=27.0, height=6.5, truss_lines=4)
+    fixtures: List[FixtureSpec] = []
+
+    def add(alloc, kind, ch_count, fid, name, pos, model, stands_for, basis, group, groups):
+        a, u = alloc.take(ch_count)
+        x, y, z = pos
+        fixtures.append(FixtureSpec(kind, fid, name, a, u, x, y, z,
+                                    model=model, stands_for=stands_for, basis=basis,
+                                    group=group, groups=tuple(groups)))
+
+    # --- Universe 0: moving lights -------------------------------------------
+    moving = _AddressAllocator(universe=0)
+
+    chords = [("a", -7.5, 5, 6.0), ("b", -2.5, 6, 9.0), ("c", 2.5, 6, 9.0), ("d", 7.5, 5, 6.0)]
+    for row, z, count, half in chords:
+        for i, pos in enumerate(_distribute_positions(count, (-half, half), 6.5, z)):
+            # The head on the centre line is on neither side.
+            side = ["spots_left"] if pos[0] < 0 else ["spots_right"] if pos[0] > 0 else []
+            add(moving, "mover", MOVER_CH_COUNT, f"ds575_{row}{i+1}", f"Design Spot {row.upper()}{i+1}",
+                pos, "Elation Design Spot 575E", "1 fixture", "sourced: 22", "Dance Floor Spots",
+                ["floor_spots", f"spots_chord_{row}"] + side)
+
+    # Under the balcony ring: any wider and the outer pair would hang outside it.
+    for i, pos in enumerate(_distribute_positions(4, (-7.5, 7.5), 4.0, 11.0)):
+        add(moving, "spot", SPOT_CH_COUNT, f"ds300_{i+1}", f"Mezzanine Spot {i+1}",
+            pos, "Elation Design Spot 300E", "1 fixture", "sourced: 4", "Mezzanine Spots",
+            ["balcony_spots"])
+
+    # 10 ft over the crowd.
+    wash_index = 0
+    for z in (-1.5, 1.5):
+        for pos in _distribute_positions(4, (-3.6, 3.6), 3.05, z):
+            wash_index += 1
+            add(moving, "wash", WASH_CH_COUNT, f"imp_{wash_index}", f"Impression Wash {wash_index}",
+                pos, "Elation Impression RGB", "1 fixture", "sourced: 8", "Dome Centre Washes",
+                ["centre_washes"])
+
+    # --- Universe 1: dome matrix, strips, strobes ----------------------------
+    matrix = _AddressAllocator(universe=1)
+
+    # About 585 nodes folded into 32 cells: 16 spokes, an inner and an outer
+    # cell on each. Turned half a step so no spoke lies on the centre line.
+    inner = _ring_positions(16, 3.5, 8.6, 11.25)
+    outer = _ring_positions(16, 8.5, 7.8, 11.25)
+    for i in range(16):
+        add(matrix, "bar", BAR_CH_COUNT, f"dome_s{i+1}a", f"Dome Spoke {i+1} Inner",
+            inner[i], "Color Kinetics iColor Cove MX", "about 18 nodes",
+            "sourced: about 585 nodes; spoke count assumed", "Dome Spokes",
+            ["dome_pixels", "dome_spokes", "dome_spokes_inner"])
+        add(matrix, "bar", BAR_CH_COUNT, f"dome_s{i+1}b", f"Dome Spoke {i+1} Outer",
+            outer[i], "Color Kinetics iColor Cove MX", "about 18 nodes",
+            "sourced: about 585 nodes; spoke count assumed", "Dome Spokes",
+            ["dome_pixels", "dome_spokes", "dome_spokes_outer"])
+
+    for i, x in enumerate((-2.7, -0.9, 0.9, 2.7)):
+        add(matrix, "bar", BAR_CH_COUNT, f"dled_booth{i+1}", f"Booth Strip {i+1}",
+            (x, 1.0, -12.1), "Elation DLED 60 Strip", "1 strip",
+            "assumed count and position", "Booth Strips",
+            ["led_strips", "booth_strips", "dj_booth"])
+    strip_index = 0
+    for x in (-13.3, 13.3):
+        for z in (-4.0, 4.0):
+            strip_index += 1
+            add(matrix, "bar", BAR_CH_COUNT, f"dled_sky{strip_index}", f"Skybox Strip {strip_index}",
+                (x, 3.6, z), "Elation DLED 60 Strip", "1 strip",
+                "assumed count and position", "Skybox Strips",
+                ["led_strips", "skybox_strips"])
+
+    # Off both ends of each spot truss, so they share its steel.
+    strobe_index = 0
+    for z, half in ((-7.5, 8.0), (-2.5, 10.5), (2.5, 10.5), (7.5, 8.0)):
+        for x in (-half, half):
+            strobe_index += 1
+            add(matrix, "strobe", STROBE_CH_COUNT, f"atomic_{strobe_index}", f"Atomic Strobe {strobe_index}",
+                (x, 6.5, z), "Martin Atomic 3000 DMX", "1 fixture",
+                "assumed count and position", "Strobes",
+                ["truss_strobes"])
+
+    # --- Universe 2: colour floods and pars ----------------------------------
+    floods = _AddressAllocator(universe=2)
+
+    # About 300 floods folded into 12 segments of 25 round the dome's edge.
+    for i, pos in enumerate(_ring_positions(12, LIV_DOME_RADIUS - 0.5, 7.0, 15.0)):
+        add(floods, "par", BAR_CH_COUNT, f"dome_rim{i+1}", f"Dome Rim {i+1}",
+            pos, "Color Kinetics ColorBlast 12", "about 25 floods",
+            "sourced: about 300 floods; segment count assumed", "Dome Rim",
+            ["dome_pixels", "dome_rim"])
+
+    # Left wall then right wall, so par N and par N+3 are a mirrored pair; then
+    # the pair at the foot of the staircase.
+    par_index = 0
+    for x in (-12.6, 12.6):
+        for z in (-6.0, 0.0, 6.0):
+            par_index += 1
+            add(floods, "par", BAR_CH_COUNT, f"tripar_{par_index}", f"Tri Par {par_index}",
+                (x, 0.3, z), "Elation Opti Tri Par", "1 fixture",
+                "assumed count and position", "Wall Pars",
+                ["led_pars", "wall_pars"])
+    for x in (-4.0, 4.0):
+        par_index += 1
+        add(floods, "par", BAR_CH_COUNT, f"tripar_{par_index}", f"Tri Par {par_index}",
+            (x, 0.3, 12.6), "Elation Opti Tri Par", "1 fixture",
+            "assumed count and position", "Staircase Pars",
+            ["led_pars", "staircase_pars"])
+
+    # --- Universe 3: LED walls and booth wash --------------------------------
+    booth = _AddressAllocator(universe=3)
+
+    # The press says the booth has LED walls and nothing about their size, make
+    # or how they are fed. A video wall is not a lighting fixture, so this is a
+    # stand-in the engine can colour: a centre wall and a wing each side, cut
+    # into cells about a metre wide. They are on the upstage wall, where the 3D
+    # view brackets a fixture to the wall instead of standing it on the floor.
+    #
+    # The wall starts at 3.2 m: the view's DJ camera stands behind this wall at
+    # head height and looks out through it, and its speaker stacks and the DJ
+    # reach about 2.1 m. An odd number of centre columns keeps every cell off
+    # x = +/-0.5, where the engine divides its left, centre and right groups.
+    wall_rows = (5.2, 4.4, 3.6)
+    for r, y in enumerate(wall_rows, start=1):
+        for c, x in enumerate((-2.4, -1.2, 0.0, 1.2, 2.4), start=1):
+            add(booth, "bar", BAR_CH_COUNT, f"ledwall_c_r{r}c{c}", f"LED Wall Centre R{r} C{c}",
+                (x, y, LIV_LED_WALL_Z), "LED video wall (make and model not reported)",
+                "about 1.2 x 0.8 m of wall",
+                "sourced: LED walls at the booth; size, layout and cell count assumed",
+                "LED Wall Centre", ["led_wall", "led_wall_centre", "dj_booth"])
+    for r, y in enumerate(wall_rows, start=1):
+        for c, x in enumerate((-5.5, -4.5, 4.5, 5.5), start=1):
+            add(booth, "bar", BAR_CH_COUNT, f"ledwall_w_r{r}c{c}", f"LED Wall Wing R{r} C{c}",
+                (x, y, LIV_LED_WALL_Z), "LED video wall (make and model not reported)",
+                "about 1.0 x 0.8 m of wall",
+                "sourced: LED walls at the booth; size, layout and cell count assumed",
+                "LED Wall Wings", ["led_wall", "led_wall_wings", "dj_booth"])
+
+    # Two pars over the wall to light the DJ. The press lists no booth wash.
+    for i, x in enumerate((-3.5, 3.5), start=1):
+        add(booth, "par", BAR_CH_COUNT, f"booth_wash_{i}", f"Booth Wash {i}",
+            (x, 6.0, LIV_LED_WALL_Z), "Elation Opti Tri Par", "1 fixture",
+            "assumed: no booth wash is reported", "Booth Wash",
+            ["led_pars", "booth_wash", "dj_booth"])
+
+    key_zones = [
+        KeyZoneSpec("dj_booth", ["ds300_2", "ds300_3"], active=True, min_intensity=0.0),
+    ]
+
+    return VenuePreset(
+        name="liv_miami_approx",
+        display_name="LIV Miami (approximate recreation)",
+        description=(
+            f"{LIV_DISCLAIMER} Round room under an 88 ft dome: 22 dance-floor spots, 4 mezzanine "
+            "spots, 8 moving washes at 10 ft, the dome's LED spokes and rim floods folded into "
+            "44 cells, 8 LED strips, 8 pars and 8 strobes, plus a stand-in for the booth's LED "
+            "walls (27 cells) and 2 booth wash pars. 131 fixtures on 4 universes."
+        ),
+        size=VenueSize.LIV_MIAMI_APPROX,
+        stage=stage,
+        fixtures=fixtures,
+        key_zones=key_zones,
+        default_genre="edm",
+        default_bpm=128.0,
+        disclaimer=LIV_DISCLAIMER,
+        room=_liv_room_shell(),
+    )
+
+
 # Build all presets
 VENUE_PRESETS: Dict[str, VenuePreset] = {
+    "liv_miami_approx": _build_liv_miami_approx(),
     "small_nightclub": _build_small_nightclub(),
     "club_night": _build_club_night(),
     "medium_venue": _build_medium_venue(),
@@ -716,5 +1085,17 @@ def create_venue_rig(preset_name: str):
         "movers_washes",
         list(type_groups.get("mover", [])) + list(type_groups.get("wash", [])),
     )
+
+    # The preset's own groups. One named like a group above would replace the
+    # group the engine looks up for every effect, so it is left out.
+    reserved = set(manager.groups)
+    for name, ids in preset.groups.items():
+        if name in reserved:
+            logging.getLogger(__name__).warning(
+                "Venue preset %s: group '%s' is one of the engine's own and was not created",
+                preset.name, name,
+            )
+            continue
+        manager.create_custom_group(name, list(ids))
 
     return manager, preset

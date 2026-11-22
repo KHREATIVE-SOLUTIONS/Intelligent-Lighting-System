@@ -50,6 +50,8 @@ export const FixtureSupport = memo(function FixtureSupport({
   const geometry = getFixtureGeometry(kind);
   const spec = FIXTURE_SPECS[kind];
   const standing = mount.type === 'stand';
+  // Pipe above the clamp: up to the truss chord, or up to the ceiling.
+  const drop = mount.type === 'truss' || mount.type === 'ceiling' ? mount.drop : 0;
 
   return (
     <>
@@ -60,13 +62,13 @@ export const FixtureSupport = memo(function FixtureSupport({
         dispose={null}
       />
 
-      {mount.type === 'truss' && mount.drop > 0.01 && geometry.clampXs.map((x) => (
+      {drop > 0.01 && geometry.clampXs.map((x) => (
         <mesh
           key={`drop-${x}`}
           geometry={unitPipe}
           material={bodyMaterial}
           position={[x, spec.hangHeight, 0]}
-          scale={[1, mount.drop, 1]}
+          scale={[1, drop, 1]}
           dispose={null}
         />
       ))}
