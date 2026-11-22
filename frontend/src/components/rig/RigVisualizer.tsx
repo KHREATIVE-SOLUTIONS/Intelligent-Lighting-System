@@ -18,6 +18,7 @@ import { useHealthStore } from '../../stores/healthStore';
 import { audioWebSocket } from '../../services/websocket';
 import { createDemoRigFollower, onEngineOnAnotherRig, onLinkRestored, settleRig } from '../../utils/demoRigSync';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
+import { ConsoleExportButton } from './ConsoleExportSection';
 import { createBeatClock, ingestAnalysis } from './previs/beatClock';
 import type { BeatClock } from './previs/beatClock';
 import { beamMouth, beamTube, createBeamMaterial, shapeBeam } from './previs/beamShape';
@@ -1434,6 +1435,14 @@ export default function RigVisualizer() {
             </Button>
           </Tooltip>
         </ButtonGroup>
+        {/* The rig on screen, written out for a desk or a visualiser. */}
+        {isDemo ? (
+          rig.venue && demoPresets.some((d) => d.name === rig.venue) && (
+            <ConsoleExportButton target={{ preset: rig.venue }} />
+          )
+        ) : (
+          <ConsoleExportButton target={{ rigId: rig.id }} />
+        )}
       </Box>
 
       {/* Audio Device Chooser */}

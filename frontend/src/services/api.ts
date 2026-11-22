@@ -24,6 +24,17 @@ import type {
   ProLightingState,
 } from '../types';
 import type { BoxHealthPayload, DmxStatusPayload } from '../utils/showHealth';
+import {
+  consoleExportPath,
+  consoleSummaryPath,
+  fallbackFilename,
+  filenameFromDisposition,
+} from '../utils/consoleExport';
+import type {
+  ConsoleExportKind,
+  ConsoleExportSummary,
+  ConsoleExportTarget,
+} from '../utils/consoleExport';
 
 const API_BASE_URL = '/api';
 
@@ -1355,6 +1366,33 @@ export const importExportApi = {
   exportCSV: async (rigId: number) => {
     const response = await api.get(`/rigs/${rigId}/export/csv`, { responseType: 'blob' });
     return response.data;
+  },
+};
+
+// Back to the console: grandMA2 and MVR, for a database rig or a demo preset.
+// Fetched through `api` so the operator's session token goes with the request.
+export const consoleExportApi = {
+  summary: async (target: ConsoleExportTarget): Promise<ConsoleExportSummary> => {
+    const response = await api.get(consoleSummaryPath(target));
+    return response.data;
+  },
+
+  download: async (
+    target: ConsoleExportTarget,
+    kind: ConsoleExportKind,
+    markNames = false,
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const response = await api.get(consoleExportPath(target, kind), {
+      responseType: 'blob',
+      params: markNames ? { mark_names: true } : undefined,
+    });
+    return {
+      blob: response.data as Blob,
+      filename: filenameFromDisposition(
+        response.headers?.['content-disposition'],
+        fallbackFilename(target, kind),
+      ),
+    };
   },
 };
 

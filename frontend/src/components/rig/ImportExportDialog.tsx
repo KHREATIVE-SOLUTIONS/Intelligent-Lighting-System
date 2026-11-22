@@ -35,6 +35,7 @@ import {
   Close as CloseIcon,
 } from '@mui/icons-material';
 import { importExportApi, fixturesApi } from '../../services/api';
+import { ConsoleExportSection } from './ConsoleExportSection';
 import axios from 'axios';
 
 export type ImportOutcome =
@@ -548,6 +549,9 @@ export default function ImportExportDialog({
             </Stack>
 
             {exporting && <LinearProgress sx={{ mt: 2 }} />}
+
+            <Divider sx={{ my: 3 }} />
+            <ConsoleExportSection target={{ rigId }} />
           </Box>
         )}
       </DialogContent>
