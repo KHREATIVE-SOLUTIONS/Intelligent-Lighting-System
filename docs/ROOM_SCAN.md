@@ -448,6 +448,7 @@ are no binary fixtures in the repository.
 
 ## What is left
 
+- **Frontend checks ran on 2026-11-22:** vitest 314 passed and the build passed with slices 4 and the outline work; backend 1608 passed.
 - **Slice 4's frontend checks have not been run.** The session that wrote it
   could type-check (`npx tsc --noEmit` reports nothing in the files it
   touched) but could not run vitest or the build. Run
@@ -456,11 +457,6 @@ are no binary fixtures in the repository.
   the project venv.
 - **Nothing of slice 4 has been seen in a browser**: an outlined room's walls
   from each camera, an angled bar, a ring, and a drag snapping to either.
-- **The outline work has not been run in the frontend.** `outlineBounds.test.ts`
-  is written but vitest and the build could not be run in the session that
-  wrote it or the one that committed it. Run
-  `cd frontend; npx vitest run; npm run build` before relying on it. The
-  backend tests for it did run and pass.
 - **Nothing of the outline work has been seen in a browser**: a beam stopping
   on the wall of a notch, a wall moved out for a fixture, the cameras in an
   L-shaped room, the ceiling's beams and duct.
