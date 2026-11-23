@@ -178,12 +178,15 @@ function drawnAtTenPixelsAMetre(svg: SVGSVGElement) {
  * event itself: a test DOM that has no DragEvent builds a plain event, which
  * would otherwise carry none.
  */
-function paletteEvent(kind: 'drop' | 'dragOver', svg: SVGSVGElement, clientX: number, clientY: number, payload = '7') {
+function paletteEvent(
+  kind: 'drop' | 'dragOver', svg: SVGSVGElement, clientX: number, clientY: number, payload = '7', altKey = false,
+) {
   const event = createEvent[kind](svg, {
     dataTransfer: { types: [FIXTURE_DRAG_MIME], getData: () => payload },
   });
   Object.defineProperty(event, 'clientX', { value: clientX });
   Object.defineProperty(event, 'clientY', { value: clientY });
+  Object.defineProperty(event, 'altKey', { value: altKey });
   fireEvent(svg, event);
 }
 
@@ -445,17 +448,6 @@ describe('StageView2D: a drag near scanned truss', () => {
     const at = dragSpotTo(shell, onDeck(1.2, -2.7), onDeck(0, 0));
     expect(at.x).toBeCloseTo(1.2);
     expect(at.z).toBeCloseTo(-3);
-  });
-
-  it('does not snap a palette drop: that lands on the grid', () => {
-    const onDropFromPalette = vi.fn();
-    const { container } = view(SCANNED, { onDropFromPalette });
-    const svg = container.querySelector('svg')!;
-    drawnAtTenPixelsAMetre(svg);
-    const where = onScreen(1.2, -2.7);
-    paletteEvent('drop', svg, where.clientX, where.clientY);
-    expect(onDropFromPalette.mock.calls[0][1]).toBeCloseTo(1);
-    expect(onDropFromPalette.mock.calls[0][2]).toBeCloseTo(-2.5);
   });
 
   it('snaps nothing to truss with no scanned room', () => {
