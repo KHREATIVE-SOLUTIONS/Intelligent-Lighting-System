@@ -34,10 +34,21 @@ Slice 9 makes **correcting a suggested layout quicker** in the 2D view: a
 fixture snapped onto scanned truss takes the truss's hang height and a readout
 says what it is on, a palette drop snaps the same way, and a whole row can be
 selected and dragged as one piece, held inside the room (see "Moving a whole
-row" and "What slice 9 built"). No backend change was needed. **Its tests are
-written and type-check but have not been run**: the session that wrote them
-could start `tsc` but neither vitest nor node. None of it has been seen in a
-browser (see What is left).
+row" and "What slice 9 built"). No backend change was needed. Its tests
+pass (frontend vitest 478, run after it was written). None of it has been
+seen in a browser (see What is left).
+
+Slices 10 and 11 add **Lay on truss**, and **a drag threshold, a selection
+box and the keyboard** on the 2D plan. Their tests pass too (frontend vitest
+495 after slice 10, 576 after slice 11).
+
+Slice 12 makes the 2D plan **usable from a phone or a tablet at the venue**:
+a long-press is the touch for Shift, the keys are also buttons over the
+plan, and the plan says when the keys are going to a text field (see
+"Under a finger" and "What slice 12 built"). **Its tests are written and
+type-check but have not been run**: the session that wrote them could run
+`tsc` but not vitest or the build. It has not been tried on a phone, a
+tablet or in any browser (see What is left).
 
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
@@ -824,9 +835,8 @@ are no binary fixtures in the repository.
   preset's, an empty scan); a shell stored before headings and rings; the
   labels and tooltips; the view box with no room, a room inside the stage and
   a room beyond it.
-- `frontend/src/__tests__/StageView2D.test.tsx` (**the tests listed in this
-  item passed in the 344 run of Nov 22 2026; those in the next item were added
-  to the file afterwards and have not been run**): the room layer drawn for a
+- `frontend/src/__tests__/StageView2D.test.tsx` (**passing**: first in the
+  344 run of Nov 22 2026): the room layer drawn for a
   scanned room (walls, outline, raised areas, lines, a ring, each with its
   height) and under the fixtures; the same markup and view box as before for
   no shell, a null shell and a shell that is not a scan; a drag still read in
@@ -871,8 +881,8 @@ are no binary fixtures in the repository.
   deck's own with no room. (Its test that a palette drop does not snap was
   taken out with slice 9: a drop now does.)
 
-- `frontend/src/__tests__/rowMove2d.test.ts` (**slice 9; type-checked, not
-  run**): the readout's words for a truss line, a ring and a row; what counts
+- `frontend/src/__tests__/rowMove2d.test.ts` (**slice 9; passing, frontend
+  vitest 478**): the readout's words for a truss line, a ring and a row; what counts
   as on a truss; which fixtures are a row by group, by scanned truss line,
   angled line or ring, and by height and depth, with and without a scanned
   room; a row's shift held to the deck, to a box room and to an L (stopped at
@@ -881,7 +891,7 @@ are no binary fixtures in the repository.
   a row move undone in one step with its heights, and redone; the height
   from before the drag being the one kept; a drag that changed no height
   undone with no heights touched; a height set on a fixture the row did not
-  carry surviving the undo. **Slice 10, also type-checked and not run**:
+  carry surviving the undo. **Slice 10, passing, frontend vitest 495**:
   address order; the nearest truss to a row, a ring by its centre; places
   along a line (even, the row's sense kept, none to keep), along an angled
   line and round a ring; a row laid in address order at the truss's height,
@@ -889,7 +899,7 @@ are no binary fixtures in the repository.
   of it laid when a place is beyond the walls; what is said for each; the
   lay undone in one step with its heights.
 - `frontend/src/__tests__/StageView2DRowMove.test.tsx` (**slice 9;
-  type-checked, not run**): a drag taking a truss line's and a ring's height,
+  passing, frontend vitest 478**): a drag taking a truss line's and a ring's height,
   none out of reach, with Alt or with snapping off, and the pick-up height
   given back off the truss; the readout's text and place, and its going
   away; a palette drop snapping onto a line and a ring at their height, not
@@ -902,8 +912,8 @@ are no binary fixtures in the repository.
   over the background; one fixture with no scanned room reported exactly as
   before.
 
-- `frontend/src/__tests__/planSelect2d.test.ts` (**slice 11; type-checked,
-  not run**): the threshold under, at and over 5 pixels in each direction;
+- `frontend/src/__tests__/planSelect2d.test.ts` (**slice 11; passing,
+  frontend vitest 576**): the threshold under, at and over 5 pixels in each direction;
   a box's corners in any order, what it takes in dragged each of the four
   ways, a centre on its edge, an empty box; a plain and an additive
   selection; an arrow key's shift, with Shift, and for other keys; a nudge
@@ -911,7 +921,7 @@ are no binary fixtures in the repository.
   wall and at the notch of an L, going nowhere against an edge, and giving
   no height; which elements keep their keys.
 - `frontend/src/__tests__/StageView2DSelectKeys.test.tsx` (**slice 11;
-  type-checked, not run**): a click and a wobble moving nothing, for one
+  passing, frontend vitest 576**): a click and a wobble moving nothing, for one
   fixture and for a row; a drag from exactly 5 pixels; a slipped
   double-click leaving an off-grid guess off the grid; a palette drop
   unchanged; a box drawn and let go, in each direction, plain and with
@@ -924,13 +934,55 @@ are no binary fixtures in the repository.
   select, a contenteditable element and a dialog, with a modifier, with
   the keyboard off, and on a read-only plan.
 - `frontend/src/__tests__/RigBuilderSelectKeys.test.tsx` (**slice 11;
-  type-checked, not run**): the editor itself, with its side panels left
+  passing, frontend vitest 576**): the editor itself, with its side panels left
   out and the API a stand-in. A click or a wobble adds no undo step and
   sends nothing; a drag is one undo step and one batch-update; a box
   selects, and adds with Shift; Escape; each arrow press is one undo step
   and one batch-update; R then Shift+arrow moves the row whole to the
   deck's edge and no further; one Undo puts it back; keys typed in the
   rig's name do nothing.
+
+- `frontend/src/__tests__/planTouch2d.test.ts` (**slice 12; type-checked,
+  not run**): which pointers are a finger or a pen; a press undecided
+  under 500 ms, a long-press from 500 ms held still or with a wobble, a
+  drag from 5 pixels however short the press and when the time is up, and
+  a decision that stays made; a pad arrow's shift for each direction, at
+  10x, and against the matching arrow key; when the focus cue is due (a
+  field, a drop-down) and when it is not (the page, a button, a dialog).
+- `frontend/src/__tests__/StageView2DTouch.test.tsx` (**slice 12;
+  type-checked, not run**): a long-press adding a fixture at 500 ms and
+  not at 499, taking a selected one out, moving nothing wherever the
+  finger then goes, and holding with a wobble; a finger's drag, tap and
+  row drag; a pen; a mouse pointer left to the mouse events; a second
+  finger; a cancelled press; a read-only plan and one that has gone. A
+  long-press on empty floor marked and its box added to the selection, a
+  plain box without the wait, lifted with no box, a tap still clearing
+  the selection, a cancelled box. The pad shown only when asked for with
+  something selected, after the plan in its box, every button named and
+  44 pixels, each arrow against its key, the 10x switch, the clamp at the
+  deck and at a room's wall, nothing reported against an edge, Select row
+  and Lay on truss. The cue for a field, a drop-down and a field focused
+  before the plan was drawn; none for a button, a dialog or a plan
+  without the keyboard; a click, a finger and a press on a fixture each
+  taking the focus back.
+- `frontend/src/__tests__/RigBuilderRowLay.test.tsx` (**slice 12;
+  type-checked, not run**): the editor itself. A row dragged is one
+  batch-update and one undo step however many moves it took; one Undo
+  puts it back, one Redo carries it again, and a new move after an Undo
+  leaves nothing to redo. Lay on truss offered only with scanned truss
+  and two selected; a laid row saved in one batch-update and one step at
+  the truss's height; one Undo putting it back with its heights and one
+  Redo laying it again; pressed again, nothing saved; the same from the
+  pad's button.
+- `frontend/src/__tests__/RigBuilderTouch.test.tsx` (**slice 12;
+  type-checked, not run**): the editor itself. A long-press adding to the
+  selection and taking out of it, with no undo step and nothing sent
+  wherever the finger goes, and the next nudge a step of its own; a box
+  after a long-press on empty floor; a finger's drag as one step and one
+  batch-update; a tap. Each tap of the pad one step and one batch-update,
+  the same request the key sends, a row at 10x held at the deck's edge,
+  and one Undo putting it back. The cue while the rig's name is typed,
+  gone after a click on the plan, with the keys working again.
 
 ## What is left
 
