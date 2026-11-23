@@ -25,13 +25,19 @@ moved since is left alone and reported (services/room_scan/undo.py).
 
 DELETE /api/rigs/{rig_id}/room-shell takes the shell off again. It leaves moved
 fixtures where they are unless asked to put them back (restore_fixtures=true).
+
+PATCH and DELETE on /api/rigs/{rig_id}/room-shell/{kind}/{index} rename, move
+or take out one raised area, overhead line or ring of the stored shell: the
+scan suggested it, and a person who can see the room corrects it
+(services/room_scan/edit.py). No fixture moves with it.
 """
 
 import asyncio
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -41,6 +47,7 @@ from app.models.rig import Rig, RigFixture
 from app.services.room_scan import (
     RoomScanError, ScanOptions, extract_room, read_scan_file, suggest_positions,
 )
+from app.services.room_scan.edit import ShellEditError, delete_item, edit_item, item_name
 from app.services.room_scan.suggest import TAG_SCAN_HINT
 from app.services.room_scan.undo import plan_undo, record_moves, restore, undo_count, undo_message
 from app.services.venue_import.apply import SOURCE_TEMPLATE, is_unconfirmed, with_position_source
@@ -281,3 +288,79 @@ async def remove_room_shell(
     await db.flush()
     answer["undo_available"] = undo_count(rig.room_scan_undo)
     return answer
+
+
+class ShellItemEdit(BaseModel):
+    """What to change on one raised area, overhead line or ring. Anything left out is kept."""
+    name: Optional[str] = Field(default=None, max_length=200)
+    # Where the middle of it goes, in the rig's axes: metres, X across, -Z upstage.
+    center_x: Optional[float] = Field(default=None, allow_inf_nan=False)
+    center_z: Optional[float] = Field(default=None, allow_inf_nan=False)
+
+
+async def _rig(db: AsyncSession, rig_id: int) -> Rig:
+    rig = (await db.execute(select(Rig).where(Rig.id == rig_id))).scalar_one_or_none()
+    if rig is None:
+        raise HTTPException(status_code=404, detail="Rig not found")
+    return rig
+
+
+@router.patch("/rigs/{rig_id}/room-shell/{kind}/{index}")
+async def edit_room_shell_item(
+    rig_id: int,
+    kind: str,
+    index: int,
+    body: ShellItemEdit,
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename or move one raised area, overhead line or ring of the stored room.
+
+    `kind` is the list it is stored in (`risers`, `truss_lines`, `truss_rings`)
+    and `index` its place in that list, from 0. A line keeps its length and
+    heading. No fixture is moved, the scan's undo record is left alone, and
+    nothing reaches a device (services/room_scan/edit.py).
+    """
+    rig = await _rig(db, rig_id)
+    try:
+        shell, item = edit_item(
+            rig.room_shell, kind, index, name=body.name, center_x=body.center_x, center_z=body.center_z,
+        )
+    except ShellEditError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    # A new object throughout: the column is plain JSON, so a change made in place is never written.
+    rig.room_shell = shell
+    await db.flush()
+    logger.info("Room shell: rig %s '%s': %s %d edited (%s)", rig.id, rig.name, kind, index, item_name(kind, item))
+    return {"rig_id": rig.id, "kind": kind, "index": index, "item": item, "room_shell": shell}
+
+
+@router.delete("/rigs/{rig_id}/room-shell/{kind}/{index}")
+async def delete_room_shell_item(
+    rig_id: int,
+    kind: str,
+    index: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Take one raised area, overhead line or ring out of the stored room.
+
+    The items after it move up one place. No fixture is moved: one that hung
+    on a deleted truss stays where it is. There is no undo; reading the scan
+    again brings it back, and replaces every other edit with it.
+    """
+    rig = await _rig(db, rig_id)
+    try:
+        shell, removed = delete_item(rig.room_shell, kind, index)
+    except ShellEditError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    rig.room_shell = shell
+    await db.flush()
+    name = item_name(kind, removed)
+    logger.info("Room shell: rig %s '%s': %s %d deleted (%s)", rig.id, rig.name, kind, index, name)
+    return {
+        "rig_id": rig.id,
+        "kind": kind,
+        "index": index,
+        "removed": removed,
+        "room_shell": shell,
+        "message": f"{name} was taken out of the stored room. No fixture was moved.",
+    }
