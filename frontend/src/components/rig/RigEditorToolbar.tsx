@@ -45,6 +45,10 @@ interface RigEditorToolbarProps {
   onSelectRow?: () => void;
   /** How many fixtures are selected: the button needs one to go by. */
   selectedCount?: number;
+  /** Lays the selected fixtures along the nearest scanned truss. The button is left out when this is. */
+  onLayRow?: () => void;
+  /** The truss the selection would be laid along, for the tooltip. The button needs one. */
+  layTargetName?: string | null;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -76,6 +80,8 @@ export default function RigEditorToolbar({
   hasRoom = false,
   onSelectRow,
   selectedCount = 0,
+  onLayRow,
+  layTargetName = null,
   onUndo,
   onRedo,
   canUndo,
@@ -148,6 +154,22 @@ export default function RigEditorToolbar({
           <span>
             <Button size="small" onClick={onSelectRow} disabled={selectedCount === 0}>
               Select row
+            </Button>
+          </span>
+        </Tooltip>
+      )}
+
+      {onLayRow && (
+        <Tooltip
+          title={
+            selectedCount > 1 && layTargetName
+              ? `Lay the ${selectedCount} selected fixtures along ${layTargetName}, the scanned truss nearest their middle: evenly spaced in address order, at its hang height. One Undo puts them back`
+              : 'Select two or more fixtures (Select row, or Shift-click), then this spaces them evenly along the nearest scanned truss'
+          }
+        >
+          <span>
+            <Button size="small" onClick={onLayRow} disabled={selectedCount < 2 || !layTargetName}>
+              Lay on truss
             </Button>
           </span>
         </Tooltip>

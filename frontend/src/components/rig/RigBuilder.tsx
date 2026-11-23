@@ -8,8 +8,11 @@ import RigEditorToolbar from './RigEditorToolbar';
 import type { PositionSaveState } from './RigEditorToolbar';
 import FixturePalette from './FixturePalette';
 import StageView2D from './StageView2D';
-import { paletteClickSpot, roomPlan } from './roomPlan2d';
-import { heightIdsOf, heightsBefore, rowOf, snapshotPositions, withMoves, withSnapshot } from './rowMove2d';
+import { paletteClickSpot, planTrussTargets, roomPlan } from './roomPlan2d';
+import {
+  heightIdsOf, heightsBefore, layNoticeText, layRowOnTruss, nearestTruss, rowOf, snapshotPositions, withMoves,
+  withSnapshot,
+} from './rowMove2d';
 import type { PlanMove } from './rowMove2d';
 import PatchTable from './PatchTable';
 import FixtureProperties from './FixtureProperties';
@@ -229,6 +232,35 @@ export default function RigBuilder() {
     if (row.length > 0) selectFixtures(row);
   };
 
+  /**
+   * Lays the selected fixtures evenly along the scanned truss nearest them
+   * (`layRowOnTruss`, docs/ROOM_SCAN.md). Saved as a row move is: one undo
+   * step, one batch-update, heights kept in the step where they change, and
+   * no tag touched.
+   */
+  const handleLayRow = () => {
+    const current = rigRef.current;
+    if (!current) return;
+    const lay = layRowOnTruss(
+      current.fixtures, selectedFixtureIds, current.room_shell,
+      // The walls the plan draws and holds a drag to.
+      roomPlan(current.room_shell)?.walls ?? null, current.stage_width, current.stage_depth,
+    );
+    if (!lay.ok) {
+      setNotice({ severity: 'error', text: layNoticeText(lay) });
+      return;
+    }
+    const next = withMoves(current.fixtures, lay.moves);
+    setNotice({ severity: 'success', text: layNoticeText(lay, next.changed.length) });
+    if (next.changed.length === 0) return;
+
+    pushUndo(snapshotPositions(current.fixtures));
+    noteUndoHeights(heightsBefore(current.fixtures, lay.moves));
+    applyRig({ ...current, fixtures: next.fixtures });
+    next.changed.forEach((fixtureId) => dirtyIdsRef.current.add(fixtureId));
+    void flushPositions();
+  };
+
   const handleFixtureDragEnd = () => {
     pendingUndoRef.current = false;
     void flushPositions();
@@ -379,6 +411,12 @@ export default function RigBuilder() {
   // The properties panel edits one fixture; with several selected there is
   // no one fixture for it to edit.
   const selectedFixture = selectedFixtures.length === 1 ? selectedFixtures[0] : undefined;
+  // "Lay on truss" is offered only where a scan found truss, and names the
+  // truss it would use: the one nearest the middle of what is selected.
+  const scannedTruss = planTrussTargets(rig.room_shell);
+  const layTarget = nearestTruss(
+    scannedTruss, selectedFixtures.map((f) => ({ x: f.position_x, z: f.position_z })),
+  );
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 88px)', mx: -3, mt: -3 }}>
@@ -399,6 +437,8 @@ export default function RigBuilder() {
         hasRoom={rig.room_shell?.source === 'scan'}
         selectedCount={selectedFixtures.length}
         onSelectRow={() => { if (selectedFixtures.length > 0) handleSelectRow(selectedFixtures[0].id); }}
+        onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
+        layTargetName={layTarget?.name ?? null}
         onUndo={handleUndo}
         onRedo={handleRedo}
         canUndo={undoStack.length > 0}
