@@ -499,7 +499,7 @@ class TestRoomShellEdit:
         assert (await client.get(f"/api/rigs/{rig_id}")).json()["room_scan_undo"] == undo
 
     @pytest.mark.asyncio
-    async def test_a_moved_line_keeps_its_length_and_no_fixture_follows_it(
+    async def test_a_moved_line_keeps_its_length_and_no_fixture_follows_one_told_to_go_alone(
         self, client: AsyncClient, sample_rig_data, sample_fixture_data,
     ):
         rig_id, before = await self.stored(client, sample_rig_data, sample_fixture_data)
@@ -508,7 +508,8 @@ class TestRoomShellEdit:
         middle_x = (line["x1"] + line["x2"]) / 2
 
         response = await client.patch(
-            f"/api/rigs/{rig_id}/room-shell/truss_lines/0", json={"center_z": 1.5, "name": "Front truss"},
+            f"/api/rigs/{rig_id}/room-shell/truss_lines/0",
+            json={"center_z": 1.5, "name": "Front truss", "carry_fixtures": False},
         )
 
         assert response.status_code == 200, response.text
@@ -521,7 +522,8 @@ class TestRoomShellEdit:
         assert (moved["height"], moved["length"]) == (line["height"], line["length"])
         # A person put it there: it is no longer the scan's suggestion.
         assert moved["suggested"] is False and "Moved by hand" in moved["basis"]
-        # The row the scan hung under it stays where the scan put it.
+        # The row the scan hung under it stays where the scan put it: carry_fixtures was false.
+        # (Left to its default the row goes with the truss: test_api_room_shell_carry.py.)
         assert await fixtures_by_name(client, rig_id) == fixtures
 
     @pytest.mark.asyncio

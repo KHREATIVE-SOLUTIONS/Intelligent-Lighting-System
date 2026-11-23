@@ -101,8 +101,10 @@ class TestResizeHeightHeading:
         line = before["truss_lines"][0]
         mid_x, mid_z = (line["x1"] + line["x2"]) / 2, (line["z1"] + line["z2"]) / 2
 
+        # The truss alone: what its fixtures do when they go with it is test_api_room_shell_carry.py's.
         response = await client.patch(
-            f"/api/rigs/{rig_id}/room-shell/truss_lines/0", json={"length": 6.0, "heading_deg": 90, "height": 3.2},
+            f"/api/rigs/{rig_id}/room-shell/truss_lines/0",
+            json={"length": 6.0, "heading_deg": 90, "height": 3.2, "carry_fixtures": False},
         )
 
         assert response.status_code == 200, response.text
@@ -118,7 +120,8 @@ class TestResizeHeightHeading:
         assert [band["height"] for band in shell["hanging_bands"]] == [3.2]
         assert shell["hanging_bands"][0]["suggested"] is False
         bands_add_up(shell)
-        # The fixtures the scan hung under it stay where they were.
+        # Asked to leave them, the fixtures the scan hung under it stay where they were.
+        assert response.json()["fixtures_moved"] == []
         assert await fixtures_by_name(client, rig_id) == fixtures
 
     @pytest.mark.asyncio
@@ -331,10 +334,12 @@ class TestUndo:
             response = await request
             assert response.status_code in (200, 201), response.text
             rooms.append(response.json()["room_shell"])
+        # The truss took the four fixtures the scan hung under it along, in the same step.
         labels = [
-            f"{stage} renamed", f"{scanned['risers'][1]['name']} moved", f"{truss} resized",
+            f"{stage} renamed", f"{scanned['risers'][1]['name']} moved", f"{truss} resized, with 4 fixtures",
             "Overhead ring 1 added", "Main stage deleted",
         ]
+        assert await fixtures_by_name(client, rig_id) != fixtures
         assert len({json.dumps(room, sort_keys=True) for room in rooms}) == 6
 
         preview = await client.get(f"{path}/undo")
@@ -350,7 +355,10 @@ class TestUndo:
             assert undone.status_code == 200, undone.text
             answer = undone.json()
             assert answer["undone"] == labels[left]
-            assert answer["message"] == f"Undone: {labels[left]}. No fixture was moved."
+            assert answer["message"] == f"Undone: {labels[left]}. " + (
+                "4 fixtures put back where they hung before it." if left == 2 else "No fixture was moved."
+            )
+            assert len(answer["fixtures_restored"]) == (4 if left == 2 else 0) and answer["fixtures_skipped"] == []
             assert answer["room_shell"] == rooms[left]
             assert answer["undo"] == {"available": left, "label": labels[left - 1] if left else None}
             rig = await rig_of(client, rig_id)
@@ -363,7 +371,7 @@ class TestUndo:
         nothing = await client.post(f"{path}/undo")
         assert nothing.status_code == 409 and "no edit to the room left to undo" in nothing.json()["detail"]
         assert (await rig_of(client, rig_id))["room_shell"] == scanned
-        # No fixture moved on the way out or back, and the scan's undo is still there.
+        # Every fixture is back exactly where it was, and the scan's undo is still there.
         assert await fixtures_by_name(client, rig_id) == fixtures
         assert (await rig_of(client, rig_id))["room_scan_undo"] == scan_undo
 
