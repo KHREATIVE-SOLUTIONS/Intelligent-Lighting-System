@@ -16,8 +16,11 @@ backend tests pass. Its frontend tests (273) and the bundle build pass too, but 
 been seen in a browser (see What is left).
 
 The **2D layout view** now draws the stored scanned room under the fixtures
-(see "In the 2D layout view"). That work type-checks, but **its tests have not
-been run and it has not been seen in a browser** (see What is left).
+(see "In the 2D layout view"), and **holds a drag or a palette drop to that
+room** instead of to the stage deck, with its labels laid out round the room.
+The room layer's own tests passed when it was built. The drag, drop and label
+work type-checks, but **its tests were written and not run, and none of the 2D
+room work has been seen in a browser** (see What is left).
 
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
@@ -113,9 +116,11 @@ A position is held to within 2 m of the larger of the stage and the scanned
 room, and between the floor and 2 m over the top. The view applies the same
 limit the server does; the server has the last word.
 
-Dragging in the 2D layout view is unchanged: it saves through batch-update and
-does **not** confirm a position. It is still held to the stage deck, not to
-the scanned room drawn round it, and does not snap to the scan's truss.
+Dragging in the 2D layout view still saves through batch-update and does
+**not** confirm a position. With a scanned room drawn it is held inside the
+room's walls rather than to the stage deck (see "In the 2D layout view"). That
+limit is tighter than this one: the 2D view stops at the wall, the 3D view and
+the server 2 m beyond it. It does not snap to the scan's truss.
 
 ### Undoing the moves a scan made
 
@@ -377,8 +382,54 @@ it.
 - **Fixtures are drawn last**, on top of all of it, and are what a press lands
   on.
 
+### Dragging and dropping in the room
+
+When the room's walls are drawn, a drag and a drop from the palette are held
+to the room, not to the deck (`holdOnPlan` in `roomPlan2d.ts`):
+
+- **Inside the walls**: anywhere inside the floor outline when the room has
+  one, else inside the room's box. A position beyond a wall is brought to the
+  nearest point of the walls, by the 3D view's own `holdNearOutline` with no
+  margin. The notch of an L is outside the room: a fixture dragged or dropped
+  into it stops on the notch's wall.
+- **A fixture a scan hung beyond the deck stays where it is when picked up**,
+  and can be moved about out in the room.
+- **Grid snap carries on past the deck** (`snapToRoomGrid`): the same
+  multiples of the grid size, with no last line to stop at. The grid lines
+  themselves are still only drawn on the deck. A position held to a wall may
+  rest between two lines.
+- **Truss snap** is as before: onto the depth of the plan's own purple truss
+  lines, then held to the room.
+- What holds a drag is the walls the plan draws, so the two cannot disagree.
+  A scan with truss or raised areas but no usable room draws no walls, and a
+  drag is then held to the deck as with no room.
+
+### Labels
+
+- **The plan's own labels go by the room** (`planFrame`). With walls drawn,
+  "UPSTAGE — BACK WALL" stands over the scanned room's upstage wall, the
+  AUDIENCE arrow and word below its downstage wall, and the scale bar over
+  its upstage stage right corner: all outside the room's floor. Each goes by
+  the outer of the deck and the walls, so a room smaller than the deck does
+  not pull them onto the deck. The deck's own upstage and downstage edges are
+  still drawn as lines.
+- **The room layer's labels are kept off each other** (`planLabels`). Each
+  starts where it always was: a raised area's in its middle, a truss line's
+  over the middle of the line, a ring's over its upstage side. Taken in that
+  order, one that would print over a label already placed is stepped away
+  from its shape by 1.4 times its text height, then tried on the far side of
+  the shape, then further each way; the earlier label keeps its place. One
+  with nowhere clear stays where it began.
+- **A truss label lies along its line.** A line more than a degree off
+  straight across has its label turned to it, on the upper side, between -90
+  and 90 degrees so it never reads upside down; a line running upstage to
+  downstage reads up the plan. A line straight across keeps a level label.
+- Text cannot be measured where this is worked out, so a label's width is
+  taken as 0.55 of its text height for each character.
+
 A rig with no scanned room (no shell, or a demo preset's shell) draws exactly
-what it did: nothing is added and the view is the size it was.
+what it did: nothing is added, the view is the size it was, the labels are
+where they were, and a drag or a drop is held to the deck on the deck's grid.
 
 ## What slice 4 built
 
@@ -487,29 +538,68 @@ are no binary fixtures in the repository.
   preset's, an empty scan); a shell stored before headings and rings; the
   labels and tooltips; the view box with no room, a room inside the stage and
   a room beyond it.
-- `frontend/src/__tests__/StageView2D.test.tsx` (**passing: frontend vitest 344 passed, Nov 22 2026**): the room layer drawn for a scanned room (walls, outline,
-  raised areas, lines, a ring, each with its height) and under the fixtures;
-  the same markup and view box as before for no shell, a null shell and a
-  shell that is not a scan; a drag still read in stage metres with the view
-  grown.
+- `frontend/src/__tests__/StageView2D.test.tsx` (**the tests listed in this
+  item passed in the 344 run of Nov 22 2026; those in the next item were added
+  to the file afterwards and have not been run**): the room layer drawn for a
+  scanned room (walls, outline, raised areas, lines, a ring, each with its
+  height) and under the fixtures; the same markup and view box as before for
+  no shell, a null shell and a shell that is not a scan; a drag still read in
+  stage metres with the view grown.
+- The same file, added with the drag work (**written, not run**): a fixture
+  beyond the deck not brought onto it when picked up, in each snap mode; a
+  drag held at a box room's wall and to an L-shaped outline; a palette drop
+  landing out in the room, on a wall, and out of a notch, and its landing
+  spot shown; with no room, or a scan with no walls, a drag and a drop still
+  held to the deck on its grid; the plan's own labels against the deck and
+  against the room; a level label on a truss straight across, a turned one on
+  an angled line, and one of two overlapping labels nudged.
+- `frontend/src/__tests__/roomPlan2dLayout.test.ts` (**written, not run**):
+  the same with no drawing. A position held to the deck, to a box room and to
+  an L-shaped outline (inside, in the notch, beyond the box, beyond a
+  corner); the grid past the deck; what the plan's labels are set against
+  for no room, a room beyond the deck, inside it, past one side, and an
+  outline; a label's turn from either end of a line; labels left alone when
+  clear, nudged when they would overlap, and placed along an angled line.
 
 ## What is left
 
 - **Frontend checks ran on 2026-11-22, 7:00 PM ET, after the 2D layout view's room layer:** vitest 344 passed (21 files) and the build passed. Backend was last run with the outline work (1608 passed, 10 skipped, 5 xfailed); this slice is frontend-only.
+- **The 2D drag, drop and label work has not had its tests run.** It was
+  written on 2026-11-22 after the run above, in a session that could start
+  `tsc` but not vitest. `npx tsc --noEmit -p .` gives the same 13 errors with
+  it as without, none in the files it touches. Run
+  `npx vitest run src/__tests__/roomPlan2dLayout.test.ts src/__tests__/StageView2D.test.tsx src/__tests__/roomPlan2d.test.ts`
+  from `frontend`, then the whole suite and the build. The palette-drop tests
+  set the pointer position on the event by hand; if they fail and the rest
+  pass, suspect the test's event before the view.
 - **The 2D room layer has not been seen in a browser**: label sizes and
-  overlaps in a crowded room, the tooltips, and a drag with the view grown.
-- **A 2D drag or palette drop is still held to the stage deck.** The grown
-  view shows fixtures a scan hung beyond the deck; picking one up in the 2D
-  view brings it onto the deck on the first move, and a fixture dropped from
-  the palette out in the room lands on the deck's edge. Use the 3D view's
-  Move fixtures for a fixture out in the room.
-- **The 2D plan's own labels still go by the stage.** With a room drawn, the
-  deck's upstage edge still reads "UPSTAGE — BACK WALL" though the scanned
-  wall is elsewhere, and AUDIENCE and the scale bar sit inside the room's
-  floor.
-- **Labels on the 2D plan are not laid out.** Each sits on its own shape, so
-  two trusses close together can print over each other, and a label is not
-  turned to an angled line.
+  nudges in a crowded room, a turned label, the tooltips, where UPSTAGE,
+  AUDIENCE and the scale bar land round a real room, and a drag and a palette
+  drop out in the room with the view grown.
+- **A fixture already outside the walls jumps to the wall on its first 2D
+  move.** The 3D view and the server let a fixture stand up to 2 m beyond a
+  wall, and a guess can stand in the notch of an L. Picked up in the 2D view,
+  either comes to the nearest wall at once. Use the 3D view's Move fixtures
+  to place something beyond a wall.
+- **The same goes for a deck that reaches beyond the scanned room.** The room
+  is the limit, so a fixture on the part of the deck outside the walls is
+  brought inside them when moved in 2D.
+- **The 2D and 3D limits differ by 2 m**, as above: 2D stops at the wall. The
+  batch-update route the 2D view saves through holds nothing itself.
+- **A palette click, as against a drop, still goes by the deck.** Clicking a
+  fixture in the palette adds it at centre stage, stepped clear of others
+  within the deck (`clearSpotNear` in `RigBuilder.tsx`), whatever the room.
+- **2D label layout is simple.** It keeps the room layer's labels off each
+  other only: not off fixture names, the plan's own labels, the purple TRUSS
+  lines, or the walls and shapes themselves. A nudged label can end up over
+  another shape, or outside the view on a crowded edge. Width is guessed
+  from the character count. A raised area's label is not kept inside a
+  narrow area, and there are no leader lines back to the shape.
+- **AUDIENCE stands outside the downstage wall.** It marks which way is
+  downstage; it no longer sits where a crowd would stand, which in a scanned
+  room is inside the walls.
+- **The 2D grid is only drawn on the deck**, though a drag snaps to it
+  everywhere in the room, and a 2D drag does not snap to the scan's truss.
 - **Nothing of slice 4 has been seen in a browser**: an outlined room's walls
   from each camera, an angled bar, a ring, and a drag snapping to either.
 - **Nothing of the outline work has been seen in a browser**: a beam stopping
