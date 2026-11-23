@@ -182,8 +182,8 @@ it is open.
 - **Size and height** (slice 15). A raised area has **Width** (across the
   room) and **Front to back**, a line has **Length** and **Heading**, a ring
   has **Radius**, and every row has **Height**: a raised area's deck above
-  the floor, and the underside of a line or ring, which is where fixtures
-  hang from. A heading is degrees clockwise from across the room seen from
+  its base (the floor, unless it has a base height: see below), and the
+  underside of a line or ring, which is where fixtures hang from. A heading is degrees clockwise from across the room seen from
   above: 0 runs across, 90 from upstage to downstage, and a line has no
   front, so 135 is stored as -45. A size changes about the middle; a line is
   made longer along the way it runs and turned about its middle.
@@ -191,8 +191,19 @@ it is open.
   quarter turn. A raised area stands square to the room in both views, so it
   has no other heading. The turn is typed into the row, and is saved like
   any other change.
+- **Kind** (slice 18), on a raised area's row: a selector that makes it a
+  **Stage**, a **Riser** or a **Booth or counter** where it is. Its place
+  in the list is kept, and no fixture moves. One still called what its old
+  kind is called ("Riser") is called what its new kind is ("Stage"); a name
+  somebody gave is kept. It is marked **Kind set by hand**.
+- **Base height** (slice 18), on a raised area's row: how far its underside
+  is above the floor. 0 stands on the floor, as everything a scan finds
+  does; more floats, as a balcony or a mezzanine does, and its top is then
+  its base and its height together. The row and the 2D plan's tooltip say
+  how far it floats ("top 3.00 m above the floor, floating 2.70 m above
+  it"). A changed base is marked **Resized by hand**.
 - **The limits.** A raised area's sides are at least 0.3 m and its deck 0.05
-  to 3 m, with its top under the ceiling. A line is at least 0.5 m long and
+  to 3 m, with its top under the ceiling; its base height is 0 to 10 m. A line is at least 0.5 m long and
   a ring 0.3 m in radius; either hangs between 0.5 m and the ceiling. The
   row says so when a field is under its limit or not a number. Whether a
   size fits the room is the server's to say, and its words are shown ("...
@@ -223,14 +234,30 @@ it is open.
   the plan and 0.6 m of its underside: the reach "Select row" goes by.
   Unticked, the truss goes alone, as it did before slice 17, and the box
   stays unticked for that row until the dialog is opened again, or until a
-  delete or an undo, which may change which row is which. A rename and a
-  raised area never move a fixture.
+  delete or an undo, which may change which row is which. A rename never
+  moves a fixture.
+- **Fixtures follow the raised area they stand on** (slice 18). Each raised
+  area's row has the same box, worded **Move the fixtures standing on it**
+  and ticked to start with. Ticked, a raised area that is moved, raised,
+  lowered, resized or given a quarter turn takes the fixtures standing on
+  it along: shifted with a move, raised or lowered by what its top moved
+  (its height or its base height), kept at the same share of a footprint
+  made bigger or smaller (half way across a stage made wider is still half
+  way across), and swung a quarter turn clockwise seen from above about its
+  middle with **Turn**, their heading turned with them. The message says
+  how many moved ("3 fixtures standing on it moved with it."). A fixture
+  stands on a raised area when it is over its footprint, or within 0.15 m
+  of its edge, and between 0.05 m under its top and 0.6 m above it. One
+  that hangs on a truss or ring of the room is the truss's, never the
+  stage's under it; one over two raised areas (a riser on a stage) stands
+  on the one whose top it is nearer. Unticked, the raised area goes alone.
+  A change of kind never moves a fixture.
 - **A change that would carry a fixture out of the room is refused whole**,
   with the server's words naming the fixtures and where they would have
-  gone: neither the truss nor any fixture moves. "Out" is past the room's
+  gone: neither the truss or raised area nor any fixture moves. "Out" is past the room's
   box and the 2 m round it, more than 2 m above the ceiling, or below the
-  floor. Change the truss by less, or untick the box and move the fixtures
-  afterwards.
+  floor. Change the truss or raised area by less, or untick the box and
+  move the fixtures afterwards.
 - **Add what the scan missed**, under the rows: choose a stage, a riser, a
   booth or counter, a truss line or a truss ring, give it a name (left
   empty, it is called what it is), where its middle goes, its size and its
@@ -241,9 +268,11 @@ it is open.
   nothing in can be added to as well.
 - **Delete asks first** ("Keep it" / "Delete it"), in the row. Fixtures hung
   on a deleted truss stay where they are, and nothing snaps to it or is laid
-  along it afterwards.
+  along it afterwards. Fixtures standing on a deleted raised area stay where
+  they are too, and the question says so.
 - **Undo**, bottom left, takes back the latest change to the room: a rename,
-  a move, a resize, an added item or a delete. One press, one change, latest
+  a move, a resize, a change of kind or base height, an added item or a
+  delete. One press, one change, latest
   first, up to the last 20. The button says what it will take back ("Undo:
   Stage resized (2 more)"). The steps are kept on the server beside the
   room, so they are still there after the page is loaded again or the
@@ -251,13 +280,15 @@ it is open.
   they belong to has been replaced) and when the room is removed. An undo
   cannot itself be undone. **A truss and the fixtures it took along are one
   step**: the button says so ("Undo: Truss 1 moved, with 4 fixtures"), and
-  one press puts the truss and the fixtures back exactly where they were. A
+  one press puts the truss and the fixtures back exactly where they were.
+  A raised area and the fixtures standing on it are one step in the same
+  way. A
   fixture that somebody has moved since is left where they put it, and the
   message says how many were left.
 - **One change at a time.** Each stored change, and each one undone, comes
   back as the whole room, which the plan draws and snaps to at once; the rig
-  is not loaded again, unless the change moved fixtures (a truss that took
-  its fixtures along, or an undo that put them back), when it is, and the
+  is not loaded again, unless the change moved fixtures (a truss or a raised
+  area that took its fixtures along, or an undo that put them back), when it is, and the
   editor's own Undo steps are dropped because they hold the old positions.
   A save or an added item keeps what is typed in the
   other rows; a delete or an undo clears all of it, because rows may have
@@ -305,13 +336,15 @@ it is open.
   included, is refused until Identify Lights is finished or ended on the
   rig, and the dialog shows the reason.
 - **No tag changes, no patch is touched and nothing is sent to a light.**
-  The only fixtures that move are the ones hung on a truss or ring that is
-  moved, raised, lowered, turned or resized with its box ticked, and only
+  The only fixtures that move are the ones hung on a truss or ring, or
+  standing on a raised area, that is moved, raised, lowered, turned or
+  resized with its box ticked, and only
   their position and their heading (`rotation_y`) change: not their address,
   universe, mode, group or tags. A guess that is carried is still a guess,
   and a tapped fixture is still a tapped one. The editor's own Undo does not
   take a room edit back (the room has its own, above). "Undo room scan
-  moves" keeps its record, but a fixture a truss has carried no longer
+  moves" keeps its record, but a fixture a truss or a raised area has
+  carried no longer
   stands where the scan put it, so that undo leaves it alone as "moved since
   the scan". Reading the scan again **replaces every edit made here**, and
   does not put carried fixtures back.
@@ -374,8 +407,10 @@ that could be undone. Fixtures are left where they are unless
 ### `PATCH /api/rigs/{rig_id}/room-shell/{kind}/{index}`
 
 Renames, moves, resizes, raises or turns one raised area, overhead line or
-ring of the stored room (`services/room_scan/edit.py`), and takes the
-fixtures hung on a line or ring along (`services/room_scan/carry.py`). `kind` is the list it is stored in: `risers`,
+ring of the stored room (`services/room_scan/edit.py`), makes a raised area
+another kind or floats it on a base height, and takes the fixtures hung on a
+line or ring, or standing on a raised area, along
+(`services/room_scan/carry.py`). `kind` is the list it is stored in: `risers`,
 `truss_lines` or `truss_rings`. `index` is its place in that list, from 0. The
 lists carry no ids, and the views leave out items they cannot draw, so this is
 the place in the stored list and not the place on the plan.
@@ -392,7 +427,9 @@ JSON body, every field optional; anything left out (or `null`) is kept:
 | `heading_deg` | `truss_lines` only: degrees clockwise from across the room seen from above, -360 to 360. Stored over -90 and up to 90, to a tenth: a line has no front |
 | `radius` | `truss_rings` only: to the middle of the truss, from 0.3 m |
 | `height` | a raised area's deck above its base, 0.05 to 3 m with its top under the ceiling; the underside of a line or ring, 0.5 m to the ceiling (`room.height`; 30 m where the room has none) |
-| `carry_fixtures` | `truss_lines` and `truss_rings`: whether the fixtures hung on it go with it. `true` when left out or `null`. Not a change by itself: sent alone it is refused like an empty body |
+| `base_height` | `risers` only (slice 18): how far its underside is above the floor, 0 to 10 m, with its top (`base_height + height`) under the ceiling. 0 stands on the floor |
+| `riser_kind` | `risers` only (slice 18): `stage`, `riser` or `booth`. Its place in the list is kept |
+| `carry_fixtures` | whether the fixtures hung on a line or ring, or standing on a raised area (slice 18), go with it. `true` when left out or `null`. Not a change by itself: sent alone it is refused like an empty body |
 
 - **The fixtures hung on a line or ring go with it** (slice 17,
   `services/room_scan/carry.py`) unless `carry_fixtures` is `false`:
@@ -423,7 +460,40 @@ JSON body, every field optional; anything left out (or `null`) is kept:
     the item included. The `detail` names up to three of the fixtures and
     where they would have gone. A room with no size along an axis holds
     nothing along it.
-  - A rename, a raised area, and an edit that changes nothing carry nothing.
+  - A rename and an edit that changes nothing carry nothing.
+- **The fixtures standing on a raised area go with it** (slice 18, the same
+  file) unless `carry_fixtures` is `false`:
+  - *Standing on it* is over its footprint on the plan or within 0.15 m of
+    its edge, and from 0.05 m under its top to 0.6 m above it
+    (`STAND_MARGIN_M`, `STAND_UNDER_M`, `STAND_WINDOW_M`); its top is
+    `base_height + height`. A fixture that hangs on any line or ring of
+    the room by the rule above stands on nothing. One over two raised areas
+    stands on the one whose top it is nearer, and on the one listed first
+    when they are as near. A raised area with a number missing, or no size,
+    is stood on by nothing.
+  - *Where it goes*, again from the item as stored before and after: a
+    move shifts it by the middle's shift; a `height` or a `base_height`
+    adds what the top moved; a `width` or `depth` keeps its place as a
+    share of the footprint, measured from the middle. **A quarter turn**
+    is a `width` and `depth` that changed places (and differ): the fixture
+    is swung a quarter turn clockwise seen from above about the middle,
+    and 90 degrees comes off its `rotation_y`. That is all a quarter turn
+    is to the server, so the same two numbers typed by hand are one too.
+  - The same fields only are written, and the same refusal (422, nothing
+    written) applies, with "standing on" in its words. A rename, a change
+    of `riser_kind` and an edit that changes nothing carry nothing.
+- **`riser_kind`** changes the item's `kind` where it is in its list. An
+  item whose name is still what its old kind is called ("Riser") is named
+  what the new kind is called, unless a `name` is sent with it; any other
+  name is kept. It gets `suggested: false` and "Kind set by hand." added to
+  its `basis`, once. The kind it already is changes nothing. No fixture is
+  moved.
+- **`base_height`** is stored to the millimetre and set before the height,
+  whose limit goes by it (`ceiling - base_height`, at most 3 m). A top that
+  would be above the ceiling is refused (422, "Give it a lower base or a
+  lower height."). A changed base counts as a resize ("Resized by hand.");
+  the undo label says "raised" or "lowered". An item stored with no
+  `base_height` stands on the floor, and 0 sent for it changes nothing.
 - The middle is a raised area's or a ring's own centre, and for a line half
   way between its two ends. One of `center_x` and `center_z` given alone keeps
   the other.
@@ -462,13 +532,16 @@ JSON body, every field optional; anything left out (or `null`) is kept:
 Answers `rig_id`, `kind`, `index`, `item` (the item as stored), `room_shell`
 (the whole stored room after the change), `changed` (false when what was
 sent is what was stored: nothing is written and no step is left to undo),
-`undo` (`available`, `label`: see the undo route), `carry_fixtures` (whether
+`undo` (`available`, `label`: see the undo route), `riser_kind` (what a
+raised area now is; null for a line or ring), `first_stage` (the place in
+`risers` of the first raised area that is a stage, the one a suggestion puts
+floor lights on, or null), `carry_fixtures` (whether
 fixtures were to go with it), `fixtures_moved` (each carried fixture's
 `rig_fixture_id`, `name`, `from` and `to`, each `x`, `y`, `z` and
 `rotation_y`; empty when none moved) and a `message` ("4 fixtures hung on
-Truss 1 moved with it."). When fixtures moved, the undo step's label says so
-("Truss 1 moved, with 4 fixtures"), and a client holding the rig should read
-it again.
+Truss 1 moved with it.", "3 fixtures standing on Stage moved with it.").
+When fixtures moved, the undo step's label says so ("Truss 1 moved, with 4
+fixtures"), and a client holding the rig should read it again.
 
 Refused with 409 while a locate walkthrough is running on the rig, before
 anything else about the request is looked at, as every room edit is.
@@ -482,7 +555,8 @@ list it goes in. Answers 201.
 | --- | --- |
 | `center_x`, `center_z` | where its middle goes. Needed |
 | `width`, `depth`, `height` | `risers`: all three needed |
-| `riser_kind` | `risers` only: `stage`, `riser` or `booth`. A riser when left out |
+| `riser_kind` | `risers` only: `stage`, `riser` or `booth`. A riser when left out or empty |
+| `base_height` | `risers` only (slice 18): as for `PATCH`. On the floor (0) when left out |
 | `length`, `height` | `truss_lines`: both needed |
 | `heading_deg` | `truss_lines` only: across the room (0) when left out |
 | `radius`, `height` | `truss_rings`: both needed |
@@ -495,7 +569,7 @@ list it goes in. Answers 201.
   holds at most 50.
 - It is stored with `added_by_hand: true`, `suggested: false` and `basis`
   "Added by hand.": a person's, not the scan's. A raised area stands on the
-  floor (`base_height` 0). A truss or ring is taken to be 0.3 m deep and
+  floor (`base_height` 0) unless a `base_height` is given. A truss or ring is taken to be 0.3 m deep and
   0.3 m across (`top`, `across`), and is counted in `hanging_bands` as a
   raised one is.
 
@@ -520,7 +594,9 @@ has moved since, or that is no longer in the rig, is left alone and listed
 in `fixtures_skipped` with the `reason` ("it was moved since"), as the
 scan's own undo does: an undo takes back the edit, not what was done after
 it. No tag is touched either way. `outside` is worked out after the
-fixtures are back.
+fixtures are back. The same goes for the fixtures that stood on a raised
+area (slice 18); the `message` then says "put back where they stood before
+it".
 
 `GET` writes nothing and answers `rig_id`, `available` (how many edits can
 be undone) and `label` (what the next undo takes back, or null). The rig
@@ -531,7 +607,8 @@ The record is `rigs.room_shell_undo` (JSON, migration
 `008_rig_room_shell_undo`; additive and nullable): `steps`, oldest first,
 each with a `label`, an `at` and the whole `shell` as it stood before that
 edit, and, where the edit carried fixtures, `fixtures`: the list the edit
-answered as `fixtures_moved`. Whole rooms are kept, not the edits run backwards: a room is a few
+answered as `fixtures_moved`, with `kind`, the list the edited item is in
+(slice 18; a step stored before it has none and reads as a truss's). Whole rooms are kept, not the edits run backwards: a room is a few
 kilobytes, and a delete moves places and can drop a band. Only the last 20
 steps are kept. The rooms are not sent with the rig. The record is
 **emptied when a scan is applied** (a preview leaves it) **and when the room
@@ -672,7 +749,7 @@ Refusals. Nothing is written by a refused request, and no undo step is left:
 | --- | --- |
 | 404 | no such rig ("Rig not found"); `kind` is not one of the three lists (`room`, `hanging_bands` and the rest cannot be edited; the `detail` names the three); the rig has no room stored, or its shell is not from a scan (`source` is not `"scan"`, as a demo preset's); or, for `PATCH` and `DELETE`, there is no item at `index` (negative, past the end, or not an object). That `detail` says how many the list has and to load the rig again, since the room may have been changed elsewhere. Checked in that order |
 | 409 | a locate walkthrough is running on the rig. `PATCH` only: a centre, a size or a heading was given for an item with no usable position stored (a line missing an end, a centre that is not a number); it can still be renamed, raised or deleted. `POST` to a list: it already holds 50. `POST .../undo`: there is no edit left to undo |
-| 422, `detail` a sentence | a name with nothing in it, or over 60 characters once trimmed; a number that is not finite; a size, height or heading outside its limits ("The width of a raised area must be between 0.3 m and 100 m; 0.1 m is not."); a size too big for the room ("... the room and the 2 m round it have room for 16 m."); a size field that is not this list's ("A raised area has no radius to set. It takes: width, depth, height."); a heading for a line with both ends at one point and no length given. `PATCH` only: a body with nothing in it ("Nothing to change: give a name, a centre, a size, a height or a heading."). `POST` only: no centre, a size or height the kind needs left out, a `riser_kind` that is not one of the three, or one given for a line or ring |
+| 422, `detail` a sentence | a name with nothing in it, or over 60 characters once trimmed; a number that is not finite; a size, height or heading outside its limits ("The width of a raised area must be between 0.3 m and 100 m; 0.1 m is not."); a size too big for the room ("... the room and the 2 m round it have room for 16 m."); a size field that is not this list's ("A raised area has no radius to set. It takes: width, depth, height, base height."); a heading for a line with both ends at one point and no length given. `PATCH` only: a body with nothing in it ("Nothing to change: give a name, a centre, a size, a height, a heading, a base height or a kind."), and a `riser_kind` that is empty. `POST` only: no centre, a size or height the kind needs left out. Both: a `riser_kind` that is not one of the three, or one given for a line or ring; a `base_height` outside 0 to 10 m, or one that puts a raised area's top above the ceiling |
 | 422, `detail` FastAPI's list of errors | `index` is not a whole number; no body; a `name` over 200 characters as sent; a field that is not a number at all (`"wide"`) |
 
 A number that is not finite is refused by `edit.py`, in a sentence, and not
@@ -752,7 +829,10 @@ set by hand." or "Height set by hand.".
 
 Edit Room writes into the same shape. An item a person has moved or resized
 has `suggested: false` and says so at the end of its `basis` ("Moved by
-hand.", "Resized by hand."). One a person added has `added_by_hand: true`,
+hand.", "Resized by hand."); so has a raised area whose kind a person set
+("Kind set by hand."). A raised area's `base_height` is how far its
+underside is above the floor: a scan always writes 0, and Edit Room can set
+it (slice 18), so its top is `base_height + height`. One a person added has `added_by_hand: true`,
 `suggested: false` and `basis` "Added by hand."; nothing the scan found
 carries `added_by_hand`. A hanging band started by a truss or ring set to a
 height where nothing hung has `suggested: false` and a `basis` beginning "by
@@ -769,7 +849,8 @@ keys (dome, balcony, LED walls). The 3D view draws whichever keys are there.
 What a raised area *is* is guessed from its size alone, and its `basis` says
 so: 6 m2 or more is a `stage`; smaller and at least 0.6 m high is a `booth`
 ("Booth or counter": a bar counter looks the same to a scan as a DJ booth);
-smaller and lower is a `riser`.
+smaller and lower is a `riser`. Edit Room's kind selector sets it by hand
+(slice 18).
 
 ## How the scan is read
 
@@ -868,8 +949,8 @@ For a rig with a scanned room (`room_shell.source == "scan"`):
   (`OutlineRoom` in `RoomShellView.tsx`; `ClubRoom` is told to leave its own
   floor, walls and ceiling out). As with the box, a wall is drawn only while
   the camera is on the room's side of it, so a camera outside looks in;
-- raised areas are drawn as boxes and overhead lines as plain bars, each
-  turned to the heading it runs at. A line straight across the room is not
+- raised areas are drawn as boxes, from their base height up, and overhead
+  lines as plain bars, each turned to the heading it runs at. A line straight across the room is not
   drawn where the view already hangs a truss over the fixtures under it;
 - **rings of truss** are drawn as plain flat rings at their own height;
 - **fixtures on a line that does not run across the room, or on a ring,** hang
@@ -899,7 +980,8 @@ it.
   wall is not moved out for a fixture beyond it, as the 3D view's is.
 - **Raised areas**: a brown rectangle each, labelled with its name (or
   "Stage", "Riser", "Booth or counter" from its kind) and the height of its
-  top above the floor.
+  top above the floor. The tooltip of one with a base height also says how
+  far it floats (slice 18).
 - **Truss lines**: teal, between the line's two ends at whatever heading, as
   wide as the scan measured, labelled with the height it hangs at. The purple
   dashed TRUSS lines are still the plan's own, worked out from the fixtures.
@@ -1150,6 +1232,81 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 18 built
+
+Raised areas in Edit Room: the fixtures standing on one follow it, it can
+be made another kind, and it can float on a base height. Until now a stage
+that was moved or raised left its floor lights behind, a riser could not be
+made a stage short of deleting it, and nothing could be drawn above the
+floor but truss.
+
+- **What stands on it** (`backend/app/services/room_scan/carry.py`):
+  `stands_on` and `standing_fixtures` (over the footprint and 0.15 m round
+  it, 0.05 m under the top to 0.6 m above it, never a fixture that hangs on
+  a line or ring, the nearer top of two), `quarter_turned`, and
+  `carried_moves` now answering for `risers` too: a move, a height or base
+  height, a resize by share of the footprint, a quarter turn.
+  `refuse_outside`, `apply_moves` and `put_back` are slice 17's, unchanged
+  but for their words ("standing on", "stood").
+- **The edit** (`edit.py`): `edit_item` takes `riser_kind` and
+  `base_height`; `add_item` takes `base_height`; `base_of`, `deck_top` and
+  `first_stage` are new, and `height_limits` goes by the base. A kind
+  change renames an item still carrying its old kind's name, marks it
+  "Kind set by hand." and is worded "made a stage" in the undo label; a
+  base change is worded "raised" or "lowered".
+- **The route** (`room_scan.py`): `PATCH .../room-shell/risers/{index}`
+  takes `carry_fixtures` (default true), `riser_kind` and `base_height`,
+  and every `PATCH` answers `riser_kind` and `first_stage`. `POST
+  .../room-shell/risers` takes `base_height`. Still 409 during a locate
+  walkthrough. No new route and no migration.
+- **One undo step** (`edit_undo.py`): `push_step` keeps the edited item's
+  list (`kind`) beside the carried fixtures, so the undo's message can say
+  whether they hung or stood.
+- **The suggestion** (`suggest.py`): floor lights put on a stage are lifted
+  to its top, base included, and the reason says that height.
+- **The helpers** (`utils/roomShellEdit.ts`): `carriesFixtures` is now true
+  for a raised area; `stoodOn`, `carryLabel`, `carryBoxName`,
+  `CARRY_STANDING_LABEL`; `RISER_KIND_CHOICES`, `riserKindShown`;
+  `BASE_HEIGHT_LABEL`, `baseHeightShown`, `baseHeightProblem`,
+  `floatingText`; a `ShellItem` carries `baseHeight` and `riserKind`;
+  `readDraft` reads the two new fields only once they are touched;
+  `withCarry` sends the flag with a raised area's change of place, size,
+  height or base, and not with its name or kind.
+- **The dialog** (`RoomShellEditDialog.tsx`): on each raised area's row the
+  box, a **Kind** selector and a **Base height** field; the help text says
+  what a base height is.
+- **The plan** (`roomPlan2d.ts`): a floating raised area's tooltip says how
+  far it floats. The 3D view already drew a raised area from its
+  `base_height` up, and a test now holds it to that.
+- **Judgment calls.**
+  - *Standing is by distance, like hanging.* Nothing links a fixture to a
+    platform. The window is 0.6 m above the top so a light on a low stand
+    or a moving head on its base goes along, 0.05 m under it for one drawn
+    a little into the deck, and 0.15 m round the edge for a base that
+    overhangs the lip.
+  - *A truss wins over a stage.* A fixture within reach of any line or ring
+    is hung, not standing, so a truss low over a stage keeps its lights
+    when the stage moves.
+  - *A resize keeps shares, not metres.* A row spread across a stage made
+    wider is spread across the wider stage, as a row along a truss made
+    longer is.
+  - *A quarter turn is clockwise seen from above*, and is read from the
+    sizes alone: a raised area has no heading to store.
+  - *A kind change keeps the item's place in its list*, so making an
+    earlier raised area a stage makes it the first stage. `first_stage` is
+    answered so a client can tell.
+  - *A base change is a resize*, not a new mark, and the refusal for a top
+    above the ceiling asks for a lower base or a lower height.
+  - *The default is to carry*, as for truss: a request that says nothing
+    takes the fixtures along.
+- **Older tests changed on purpose.** The backend ones that asserted that a
+  raised area carries nothing now send `carry_fixtures: false` or expect
+  the carry and its words. The frontend ones now expect `carry_fixtures:
+  true` in a raised area's save, and the helpers' tests expect a raised
+  area to carry.
+- **Nothing here sends Art-Net or DMX or touches a patch, a mode or a tag,**
+  and there is no new network call beyond the app's own API.
 
 ## What slice 17 built
 
@@ -1648,7 +1805,8 @@ are no binary fixtures in the repository.
   only** — `tsc --noEmit` shows the same 13 errors in untouched files as
   before and none new, but `npx vitest run` and `npm run build` were refused
   by the session's permissions, so the three new test files and the changes
-  to the three Edit Room ones **have not been run**):
+  to the three Edit Room ones were not run then; the whole frontend suite
+  was run after slice 18 and passed, 943 tests):
   `backend/tests/unit/test_room_scan_adjust.py`: a width, depth, length,
   radius, height and heading each changing that and nothing else, the shell
   given left unchanged, a value it already has changing nothing; a line made
@@ -1711,7 +1869,8 @@ are no binary fixtures in the repository.
   their undo, and the login.
   `frontend/src/__tests__/roomWallsEdit.test.ts`,
   `RoomShellWallsDialog.test.tsx`, `StageView2DWalls.test.tsx` and
-  `RigBuilderWalls.test.tsx` (**type-checked, not run**): the helpers; the
+  `RigBuilderWalls.test.tsx` (written unrun; run with the whole frontend
+  suite after slice 18, which passed): the helpers; the
   Walls section's rows, a corner saved, added and deleted, the height, a
   refusal, the warning list on opening, after a change and after Undo, the
   hand-over button; the plan's handles, the 5 pixel threshold, one call for
@@ -1727,41 +1886,123 @@ are no binary fixtures in the repository.
   turn, a ring's radius, move and height; **a light square to the truss
   still square to it after a turn**, checked against the rig's own rotation
   matrix; 80 degrees to -80 being 20 degrees on and swapped ends being no
-  turn; the stored middle followed, not the one asked for; a rename, a
-  raised area and a no-op carrying nothing; only position and heading
+  turn; the stored middle followed, not the one asked for; a rename and a
+  no-op carrying nothing, and (since slice 18) a raised area taking what
+  stands on it and never what hangs over it; only position and heading
   written; the refusal's sentence, the margin itself being inside, the
   floor and the ceiling; an undo putting back exactly and leaving one moved
   since or gone; a record that cannot be read; the sentences.
   `backend/tests/integration/test_api_room_shell_carry.py` (run, 11 pass):
   a move, a raise, a turn and a shorter line over HTTP with every other
   field of every fixture unchanged and the other lights untouched, the step
-  stored with its fixtures, `carry_fixtures` false and null, a rename and a
-  raised area, a ring made bigger then moved and raised and undone twice,
+  stored with its fixtures, `carry_fixtures` false and null, a rename, a
+  raised area told to go alone and one made another kind (since slice 18), a ring made bigger then moved and raised and undone twice,
   the 422 writing nothing and the truss alone allowed, one undo restoring
   truss and fixtures, a dragged fixture left by the undo, and the 409 under
   a walkthrough for the edit and the undo.
   `frontend/src/__tests__/RoomShellCarryDialog.test.tsx` and
-  `RigBuilderRoomCarry.test.tsx` (**type-checked, not run**): the box on a
-  line and a ring and not on a raised area, what is sent ticked and
+  `RigBuilderRoomCarry.test.tsx` (written unrun; run with the whole frontend
+  suite after slice 18, which passed): the box on a line and a ring, a
+  raised area's being worded for what stands on it (since slice 18), what is sent ticked and
   unticked, the notice for several, one and none, no flag with a rename,
   the server's refusal shown, `onFixturesMoved` after a carry and after an
   undo that restored and not otherwise; and in the editor the rig read
   again, the plan redrawn, the editor's undo steps dropped, nothing read
   again when the truss went alone, and both Undo buttons.
+- **Slice 18 (raised areas).** Run after it: backend pytest 1951 passed,
+  frontend vitest 943 passed, and the build.
+  `backend/tests/unit/test_room_scan_raised.py`: what stands on a raised
+  area (the footprint and its margin, the window at the top, a floating
+  area's base and height together, a number missing, a light hung on a
+  truss over the stage staying the truss's, the nearer top of two and the
+  first listed when as near); a move, a height and a base height, a resize
+  by share, a quarter turn with the heading, a middle brought in to fit
+  being the one followed; a rename, a kind change and a no-op carrying
+  nothing; only position and heading written, and the undo putting back
+  exactly; the refusal past the margin and through the ceiling's margin; a
+  riser made a stage keeping its place and taking the kind's name, a given
+  name kept and a sent one winning, the same kind changing nothing, a wrong
+  kind and a kind for a truss refused, `first_stage`, a suggestion going by
+  the first stage of the shell it is given and lifting onto a floating
+  stage's top; a base stored to the millimetre, a missing one read as the
+  floor, the limits of 0 and 10 m, a top above the ceiling refused and a
+  height going by the new base, no base for a truss, an added area on the
+  floor unless given one; the sentences, and the step remembering which
+  list.
+  `backend/tests/integration/test_api_room_shell_raised.py`: over HTTP, a
+  moved stage taking the row standing on it and nothing else, a higher
+  deck and a base height, a resize, a quarter turn, `carry_fixtures`
+  false, a light on a truss over the stage left with its truss; the 422
+  writing nothing; a riser made a stage and a stage made a booth with
+  `riser_kind`, `first_stage` and the undo labels answered, no fixture
+  moved, and both undone back to the scanned room; the same kind being no
+  change and a wrong or empty one refused; a base height refused outside
+  its limits, a platform added floating, a base of 0 being no change; one
+  undo putting the stage and what stood on it back, a fixture moved since
+  left where it was put; and the 409 under a walkthrough.
+  `frontend/src/__tests__/RoomShellRaisedDialog.test.tsx`: the box on each
+  raised area, worded and ticked; the kind and base shown, and neither on
+  a truss; a stage moved with its fixtures, the count in the notice and
+  the rig read again; the box unticked; a riser made a stage with no word
+  about fixtures; the kind it already is being no change; a base height
+  taking what stands on it up; a kind, a base and a height in one save; a
+  wrong base height saying why and sending nothing; the server's refusal
+  shown; an undo that put fixtures back having the rig read again; the
+  helpers (the words, the flag, the row's base and kind, `readDraft`,
+  `editResultText`, the delete question, the "Kind set by hand" mark); the
+  2D plan's tooltip for a floating area; and the 3D box drawn from its base
+  up.
 
 ## What is left
 
-- **The frontend tests of slice 17 have not been run either.** `npx vitest
-  run` was refused by the session's permissions in every form, as for
-  slices 15 and 16 below. `npx tsc --noEmit` reports the same 13 errors as
-  before, none in a file this slice touches. The backend suite was run
-  after slice 17: 1898 passed, 10 skipped, 5 xfailed. Nothing of it has
-  been seen in a browser: the box in an already wide row, and the plan and
-  the 3D view redrawing under the open dialog.
+- **Checks ran after slice 18**: backend pytest 1951 passed, frontend
+  vitest 943 passed, and the build passed. That frontend run is the first
+  to take in the test files of slices 15, 16 and 17, which were written in
+  sessions that could not run vitest. **Nothing of slices 15 to 18 has been
+  seen in a browser**: a raised area's row is now wider still (a kind
+  selector, a base height field and the box), and the plan and the 3D view
+  redraw under the open dialog.
+- **Fixtures follow a raised area only so far** (slice 18):
+  - **"Standing on it" is by distance, not by a link.** A light on a stand
+    more than 0.6 m above the deck stays behind, and so does one clamped
+    under a floating platform. One on the floor within 0.15 m of a low
+    riser's edge and 0.6 m of its top goes along. Untick the box, or use
+    Undo, when the reach guesses wrong.
+  - **A fixture within reach of any truss is never carried by a raised
+    area**, even a floor light that happens to stand within 0.3 m and
+    0.6 m of a low truss.
+  - **A raised area carries fixtures, not other raised areas.** A riser on
+    a stage stays where it is when the stage is moved, and so do the lights
+    on that riser: they are the riser's. Move the riser too.
+  - **A quarter turn is always clockwise, and is read from the sizes.**
+    Two turns leave the area as it was and its fixtures swapped end for
+    end, facing the other way. Width and depth typed the other way round
+    are a turn; a turn and another size change in one save are a resize,
+    not a turn; a square area has no turn.
+  - **A resize spreads the fixtures out or closes them up**, by share of
+    the footprint. To keep a row's spacing on a bigger stage, untick the
+    box.
+  - **A deleted raised area leaves its fixtures in the air**, at the height
+    its top was.
+  - **A change of kind moves nothing and re-suggests nothing.** The only
+    suggestion is made when a scan is read, from that scan's own room, in
+    which every raised area is the scan's guess and stands on the floor. A
+    kind or a base height set by hand is replaced when the scan is read
+    again, so neither has yet reached a suggestion: `first_stage` and the
+    lift to a floating stage's top are tested on the function alone.
+  - **The Add form has no base height.** Add the platform, then set its
+    base in its row (the `POST` route takes `base_height`).
+  - **A base height is the whole of a level.** A balcony is a box with a
+    top: no rail, no stairs, no sloped or stepped deck, and a scan still
+    finds none of them. Whether a 3D drag or a 2D snap lands a fixture on
+    a floating deck has not been checked.
+  - **The limits of slice 17 below hold here too**: the room's box and
+    not its walls, a fixture already outside blocking every carry, the
+    editor's own Undo steps dropped, only `rotation_y` turned, and a
+    carried fixture left alone by "Undo room scan moves".
 - **Fixtures follow a truss only so far** (slice 17):
   - **Only from Edit Room's rows.** A deleted truss leaves its fixtures
-    where they hung, a moved wall carries nothing, and a raised area never
-    takes the fixtures standing on it.
+    where they hung, and a moved wall carries nothing.
   - **"Hung on it" is by distance, not by a link.** Nothing records which
     truss a fixture belongs to: one within 0.3 m and 0.6 m of it goes, a
     floor light that happens to stand that close under a low truss goes
@@ -1793,15 +2034,10 @@ are no binary fixtures in the repository.
   - **Only `rotation_y` turns.** A fixture with a tilt or roll stored keeps
     them, which is right for a hanging light and may not be for one mounted
     on its side.
-- **The frontend tests and the build of slices 15 and 16 have not been
-  run.** Run `npx vitest run` and `npm run build` in `frontend/` before
-  relying on them: both were refused by the permissions of the sessions
-  that wrote these slices, and only `npx tsc --noEmit` could be run (it
-  reports the 13 errors it reported before, none in a file these slices
-  touch). The tests were written against the patterns of the Edit Room
-  tests that pass, but a wrong label, a wrong expected sentence, or a
-  state update that lands a tick later than a test waits for would only
-  show when they run. Nothing of either slice has been seen in a browser:
+- **Slices 15 and 16 have not been seen in a browser.** Their frontend
+  tests and the build were not run when they were written; they passed in
+  the run after slice 18, above. Nothing of either slice has been seen in
+  a browser:
   the dialog is now wide and long (seven columns, a table of corners and a
   form), and how it sits on a small screen is unknown; nor have the corner
   handles, how they sit over a fixture at a corner, or the strip over the
@@ -1980,7 +2216,8 @@ are no binary fixtures in the repository.
   have not been read. Expect the thresholds in `extract.py` to need tuning.
 - **Binary USDZ** (`.usdc`): not read. Export OBJ.
 - **Ceilings and levels.** Sloped or domed ceilings, balconies and mezzanines
-  are still read as a flat ceiling over one floor.
+  are still read as a flat ceiling over one floor. A balcony can be put in
+  by hand as a raised area with a base height (slice 18).
 - **Editing the walls goes only so far** (slice 16):
   - **Nothing follows a wall.** A fixture, raised area, truss or ring the
     new walls leave outside is listed and left where it is. There is no
@@ -2021,17 +2258,18 @@ are no binary fixtures in the repository.
     walls in the 3D view while the dialog is open is not listed until then.
 - **Editing the room goes only so far.** A raised area, line or ring can be
   renamed, moved, resized, raised or lowered and deleted, a line can be
-  turned, and any of them can be added (Edit Room, slice 15). What is left:
+  turned, and any of them can be added (Edit Room, slice 15); a raised area
+  can be made another kind and floated on a base height (slice 18). What is
+  left:
   - **A raised area cannot stand at an angle.** It has a quarter turn (its
     sides swapped) and no other heading: the 2D plan, the 3D view, the drag's
     snap to its edges and a scan's suggestion all take its sides as square
     to the room. A real heading means drawing and snapping to a turned box
     in each of them.
-  - **A raised area cannot be changed from a riser to a stage** once it is
-    there, short of deleting it and adding it again. Only the first `stage`
-    in the list is what a scan's suggestion puts floor lights along.
-  - **A ring cannot be made an arc**, and a raised area always stands on the
-    floor: `base_height` cannot be set.
+  - **Only the first `stage` in the list** is what a scan's suggestion puts
+    floor lights along, and a raised area cannot be moved up or down its
+    list: a kind change keeps its place.
+  - **A ring cannot be made an arc.**
   - **Sizes and positions of items are typed, not dragged.** Only the
     corners of the walls can be dragged (slice 16).
   - **Everything is held to the room's box and 2 m round it, not to the
@@ -2050,8 +2288,8 @@ are no binary fixtures in the repository.
   - **Every room edit is refused while a locate walkthrough runs**, even a
     rename. That is stricter than the scan routes, on purpose.
   - **Fixtures follow a line or ring** that is moved, raised, turned or
-    resized (slice 17; its limits are above). They do not follow a raised
-    area or a wall.
+    resized (slice 17), **and a raised area** (slice 18); the limits of
+    both are above. They do not follow a wall.
 - **Crowd and booth in a scanned room** are left out rather than fitted round
   what the scan found.
 - **Photos to a room** (photogrammetry inside this system) is out of scope: the
