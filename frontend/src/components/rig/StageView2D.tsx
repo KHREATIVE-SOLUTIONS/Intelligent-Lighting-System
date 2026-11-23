@@ -3,7 +3,10 @@ import { Box } from '@mui/material';
 import { FIXTURE_DRAG_MIME, computeTrussLines } from '../../stores/rigEditorStore';
 import type { SnapMode } from '../../stores/rigEditorStore';
 import type { RigFixture, RoomShell } from '../../types';
-import { planPolygonPoints, planViewBox, roomPlan } from './roomPlan2d';
+import {
+  holdOnPlan, planFrame, planLabels, planPolygonPoints, planViewBox, roomPlan, snapToRoomGrid,
+} from './roomPlan2d';
+import type { PlanLabel } from './roomPlan2d';
 
 const FIXTURE_TYPE_COLORS: Record<string, string> = {
   moving_head: '#e91e63',
@@ -82,6 +85,14 @@ export default function StageView2D({
     () => planViewBox(width, depth, padding, plan?.bounds),
     [width, depth, padding, plan],
   );
+  // The walls a drag is held inside, when a scanned room is drawn; with none
+  // it is held to the deck.
+  const walls = plan?.walls ?? null;
+  // What UPSTAGE, AUDIENCE and the scale bar are set against: the deck, or
+  // the outer of the deck and the scanned walls.
+  const frame = useMemo(() => planFrame(width, depth, padding, walls), [width, depth, padding, walls]);
+  // The room layer's labels, nudged clear of each other.
+  const labels = useMemo(() => (plan ? planLabels(plan) : null), [plan]);
 
   const acceptsDrop = !readonly && !!onDropFromPalette;
 
@@ -124,6 +135,10 @@ export default function StageView2D({
         );
         return { x, z: nearest };
       }
+      // In a scanned room the grid carries on past the deck: stopping at the
+      // deck's last line would bring a fixture hung out in the room onto the
+      // deck the moment it was picked up.
+      if (walls) return snapToRoomGrid(x, z, gridSize);
       // Only the grid lines the plan actually draws, which stop at the last whole
       // square inside the stage. Rounding without that lands a fixture dragged to
       // the edge of, say, a 5.5 m stage on z=3.0 - off the deck and between two
@@ -134,19 +149,34 @@ export default function StageView2D({
       };
       return { x: onGrid(x, width / 2), z: onGrid(z, depth / 2) };
     },
-    [snapMode, gridSize, trussLines, width, depth]
+    [snapMode, gridSize, trussLines, width, depth, walls]
   );
 
   // The deck, and only the deck. The band below the stage is drawn and labelled
   // AUDIENCE: a fixture dropped there renders on top of that label with its own
   // name clipped off the viewBox, and the rig would claim a light is standing in
   // the crowd.
+  // With a scanned room drawn it is the room instead: inside its walls (the
+  // floor outline, or the box), where the scan may have hung fixtures well
+  // beyond the deck.
   const clampToPlan = useCallback(
-    (x: number, z: number) => ({
-      x: Math.min(Math.max(x, -width / 2), width / 2),
-      z: Math.min(Math.max(z, -depth / 2), depth / 2),
-    }),
-    [width, depth]
+    (x: number, z: number) => holdOnPlan(x, z, width, depth, walls),
+    [width, depth, walls]
+  );
+
+  // A label of the room layer, where the layout put it; turned only when it
+  // lies along a line that is not straight across.
+  const roomLabel = (label: PlanLabel, fill: string) => (
+    <text
+      x={toSvgX(label.x)}
+      y={toSvgY(label.z)}
+      transform={label.angle !== 0 ? `rotate(${label.angle} ${toSvgX(label.x)} ${toSvgY(label.z)})` : undefined}
+      textAnchor="middle"
+      fill={fill}
+      fontSize={label.size}
+    >
+      {label.text}
+    </text>
   );
 
   const handleMouseDown = (e: React.MouseEvent, fixtureId: number) => {
@@ -344,15 +374,7 @@ export default function StageView2D({
                   stroke={ROOM_RAISED}
                   strokeWidth={0.05}
                 />
-                <text
-                  x={toSvgX(area.centerX)}
-                  y={toSvgY(area.centerZ) + 0.08}
-                  textAnchor="middle"
-                  fill={ROOM_RAISED_TEXT}
-                  fontSize={0.24}
-                >
-                  {area.label}
-                </text>
+                {labels && roomLabel(labels.raised[index], ROOM_RAISED_TEXT)}
               </g>
             ))}
 
@@ -377,15 +399,7 @@ export default function StageView2D({
                   stroke={ROOM_TRUSS}
                   strokeWidth={0.05}
                 />
-                <text
-                  x={toSvgX((line.x1 + line.x2) / 2)}
-                  y={toSvgY((line.z1 + line.z2) / 2) - line.across / 2 - 0.1}
-                  textAnchor="middle"
-                  fill={ROOM_TRUSS}
-                  fontSize={0.22}
-                >
-                  {line.label}
-                </text>
+                {labels && roomLabel(labels.trussLines[index], ROOM_TRUSS)}
               </g>
             ))}
 
@@ -409,15 +423,7 @@ export default function StageView2D({
                   stroke={ROOM_TRUSS}
                   strokeWidth={0.05}
                 />
-                <text
-                  x={toSvgX(ring.centerX)}
-                  y={toSvgY(ring.centerZ - ring.radius) - ring.across / 2 - 0.1}
-                  textAnchor="middle"
-                  fill={ROOM_TRUSS}
-                  fontSize={0.22}
-                >
-                  {ring.label}
-                </text>
+                {labels && roomLabel(labels.trussRings[index], ROOM_TRUSS)}
               </g>
             ))}
           </g>
@@ -458,9 +464,10 @@ export default function StageView2D({
           stroke="#5c6bc0"
           strokeWidth={0.08}
         />
+        {/* Its label goes by the scanned room's back wall when one is drawn. */}
         <text
-          x={toSvgX(0)}
-          y={padding - 0.25}
+          x={frame.centreX}
+          y={frame.top - 0.25}
           textAnchor="middle"
           fill="#8c9eff"
           fontSize={0.3}
@@ -478,16 +485,18 @@ export default function StageView2D({
           stroke={AUDIENCE_COLOR}
           strokeWidth={0.08}
         />
+        {/* The arrow and the word stand below the deck, or below the scanned
+            room's downstage wall: outside its floor, pointing the way out. */}
         <polygon
-          points={`${toSvgX(0) - 0.28},${depth + padding + 0.2} ${toSvgX(0) + 0.28},${
-            depth + padding + 0.2
-          } ${toSvgX(0)},${depth + padding + 0.55}`}
+          points={`${frame.centreX - 0.28},${frame.bottom + 0.2} ${frame.centreX + 0.28},${
+            frame.bottom + 0.2
+          } ${frame.centreX},${frame.bottom + 0.55}`}
           fill={AUDIENCE_COLOR}
           opacity={0.9}
         />
         <text
-          x={toSvgX(0)}
-          y={depth + padding + 0.9}
+          x={frame.centreX}
+          y={frame.bottom + 0.9}
           textAnchor="middle"
           fill={AUDIENCE_COLOR}
           fontSize={0.34}
@@ -559,16 +568,16 @@ export default function StageView2D({
 
         {/* Scale indicator */}
         <line
-          x1={padding + 0.2}
-          y1={padding - 0.45}
-          x2={padding + 1.2}
-          y2={padding - 0.45}
+          x1={frame.left + 0.2}
+          y1={frame.top - 0.45}
+          x2={frame.left + 1.2}
+          y2={frame.top - 0.45}
           stroke="#666"
           strokeWidth={0.03}
         />
         <text
-          x={padding + 0.7}
-          y={padding - 0.6}
+          x={frame.left + 0.7}
+          y={frame.top - 0.6}
           textAnchor="middle"
           fill="#666"
           fontSize={0.2}
