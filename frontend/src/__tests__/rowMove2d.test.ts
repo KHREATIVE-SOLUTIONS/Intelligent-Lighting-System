@@ -5,8 +5,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { planTrussTargets, roomPlan } from '../components/rig/roomPlan2d';
 import {
-  heightIdsOf, heightsBefore, holdRowShift, onPlanTarget, rowOf, rowReadoutText, snapReadoutText, snapshotPositions,
-  withMoves, withSnapshot,
+  addressOrder, heightIdsOf, heightsBefore, holdRowShift, layNoticeText, layRowOnTruss, nearestTruss, onPlanTarget,
+  rowOf, rowReadoutText, snapReadoutText, snapshotPositions, spotsOn, withMoves, withSnapshot,
 } from '../components/rig/rowMove2d';
 import type { RowFixture } from '../components/rig/rowMove2d';
 import { useRigEditorStore } from '../stores/rigEditorStore';
@@ -323,5 +323,197 @@ describe('the editor\'s selection and undo, for a row', () => {
     const back = withSnapshot([fx(1, 2, 4.2, 2)], [{ id: 1, position_x: 0, position_z: 0 }]);
     expect(back.changed).toEqual([1]);
     expect(back.fixtures).toEqual([fx(1, 0, 4.2, 0)]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A row laid along scanned truss
+// ---------------------------------------------------------------------------
+
+const [, ANGLED] = planTrussTargets(SHELL);
+const at = (x: number, z: number) => ({ x, z });
+const addressed = (id: number, address: number, x: number, y: number, z: number, universe = 0) => ({
+  ...fx(id, x, y, z), universe, dmx_address: address,
+});
+
+describe('addressOrder', () => {
+  it('goes by universe, then address, then id, and leaves what it was given alone', () => {
+    const row = [addressed(1, 20, 0, 0, 0), addressed(2, 1, 0, 0, 0, 1), addressed(3, 5, 0, 0, 0), addressed(4, 5, 0, 0, 0)];
+    expect(addressOrder(row).map((f) => f.id)).toEqual([3, 4, 1, 2]);
+    expect(row.map((f) => f.id)).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe('nearestTruss', () => {
+  const targets = planTrussTargets(SHELL);
+
+  it('is the truss nearest the middle of the row', () => {
+    // Middle (0, -1): a metre from Truss 1, and metres from the others.
+    expect(nearestTruss(targets, [at(-2, -1), at(0, -1), at(2, -1)])).toBe(targets[0]);
+    // Middle (-3, 3): on the angled truss.
+    expect(nearestTruss(targets, [at(-4, 3), at(-2, 3)])).toBe(targets[1]);
+  });
+
+  it('takes a row drawn through a ring\'s middle as belonging on the ring', () => {
+    // Middle (3, 2) is the ring's centre: 1.5 m from its circle, and 4 m from Truss 1.
+    expect(nearestTruss(targets, [at(2, 2), at(4, 2)])).toBe(targets[2]);
+  });
+
+  it('is nothing with no truss, or no row', () => {
+    expect(nearestTruss([], [at(0, 0)])).toBeNull();
+    expect(nearestTruss(targets, [])).toBeNull();
+  });
+});
+
+describe('spotsOn', () => {
+  it('spaces a row evenly along a line, half a space in from each end', () => {
+    // 8 m of truss from x = -4 to 4, four fixtures: 2 m apart, 1 m in.
+    const spots = spotsOn(TRUSS, [at(-3, 0), at(-1, 1), at(0, 0), at(5, 2)]);
+    expect(spots.map((p) => p.x)).toEqual([-3, -1, 1, 3]);
+    expect(spots.map((p) => p.z)).toEqual([-2, -2, -2, -2]);
+  });
+
+  it('keeps the sense the row had: first to last ran the other way, and still does', () => {
+    const spots = spotsOn(TRUSS, [at(3, 0), at(1, 0), at(0, 0), at(-2, 0)]);
+    expect(spots.map((p) => p.x)).toEqual([3, 1, -1, -3]);
+  });
+
+  it('counts from the line\'s first end for a row with no sense along it', () => {
+    // Both at the same place along the truss.
+    expect(spotsOn(TRUSS, [at(0, 0), at(0, 3)]).map((p) => p.x)).toEqual([-2, 2]);
+  });
+
+  it('lays a row along a truss at an angle', () => {
+    // From (-5, 1) to (-1, 5): a quarter and three quarters of the way.
+    const spots = spotsOn(ANGLED, [at(-5, 0), at(-1, 0)]);
+    expect(spots).toEqual([at(-4, 2), at(-2, 4)]);
+  });
+
+  it('goes round a ring from upstage, clockwise seen from above', () => {
+    // Centre (3, 2), radius 1.5: upstage, stage left, downstage, stage right.
+    const spots = spotsOn(RING, [at(0, 0), at(0, 0), at(0, 0), at(0, 0)]);
+    const expected = [at(3, 0.5), at(4.5, 2), at(3, 3.5), at(1.5, 2)];
+    spots.forEach((spot, k) => {
+      expect(spot.x).toBeCloseTo(expected[k].x);
+      expect(spot.z).toBeCloseTo(expected[k].z);
+    });
+  });
+});
+
+describe('layRowOnTruss', () => {
+  const walls = roomPlan(SHELL)!.walls!;
+  // Three a metre downstage of Truss 1 at 3 m, their ids not in address order,
+  // and one more that is not selected.
+  const rig = [
+    addressed(1, 20, 2, 3, -1), addressed(2, 1, -2, 3, -1), addressed(3, 10, 0, 3, -1), addressed(4, 30, 0, 0.5, 4),
+  ];
+
+  it('lays the selected fixtures along the nearest truss in address order, at its height', () => {
+    const lay = layRowOnTruss(rig, [1, 2, 3], SHELL, walls, 6, 4);
+    if (!lay.ok) throw new Error('not laid');
+    expect(lay.target.name).toBe('Truss 1');
+    // 8 m between three: 2.667 m apart, 1.333 m in from each end.
+    expect(lay.spacing).toBeCloseTo(8 / 3);
+    expect(lay.moves.map((move) => move.id)).toEqual([2, 3, 1]);
+    expect(lay.moves[0].x).toBeCloseTo(-8 / 3);
+    expect(lay.moves[1].x).toBeCloseTo(0);
+    expect(lay.moves[2].x).toBeCloseTo(8 / 3);
+    lay.moves.forEach((move) => {
+      expect(move.z).toBe(-2);
+      expect(move.y).toBe(4.2);
+    });
+    expect(layNoticeText(lay, 3)).toBe('Laid 3 fixtures along Truss 1, 2.67 m apart, at 4.20 m.');
+  });
+
+  it('keeps which end the first address is at', () => {
+    // Addresses 1, 2, 3 run from stage left to stage right.
+    const reversed = [addressed(1, 1, 2, 3, -1), addressed(2, 2, 0, 3, -1), addressed(3, 3, -2, 3, -1)];
+    const lay = layRowOnTruss(reversed, [1, 2, 3], SHELL, walls, 6, 4);
+    if (!lay.ok) throw new Error('not laid');
+    expect(lay.moves.map((move) => move.id)).toEqual([1, 2, 3]);
+    expect(lay.moves[0].x).toBeCloseTo(8 / 3);
+    expect(lay.moves[2].x).toBeCloseTo(-8 / 3);
+  });
+
+  it('moves nothing the second time: a laid row is where it would be laid', () => {
+    const first = layRowOnTruss(rig, [1, 2, 3], SHELL, walls, 6, 4);
+    if (!first.ok) throw new Error('not laid');
+    const laid = withMoves(rig, first.moves);
+    expect(laid.changed).toEqual([1, 2, 3]);
+    const second = layRowOnTruss(laid.fixtures, [1, 2, 3], SHELL, walls, 6, 4);
+    if (!second.ok) throw new Error('not laid');
+    expect(withMoves(laid.fixtures, second.moves).changed).toEqual([]);
+    expect(layNoticeText(second, 0)).toBe('The 3 fixtures are already laid along Truss 1, 2.67 m apart, at 4.20 m.');
+  });
+
+  it('lays a row round a ring, and says so', () => {
+    const row = [addressed(1, 1, 2, 3, 2), addressed(2, 2, 4, 3, 2)];
+    const lay = layRowOnTruss(row, [1, 2], SHELL, walls, 6, 4);
+    if (!lay.ok) throw new Error('not laid');
+    expect(lay.target.name).toBe('Overhead A');
+    // Upstage of the centre, then opposite it.
+    expect(lay.moves[0].x).toBeCloseTo(3);
+    expect(lay.moves[0].z).toBeCloseTo(0.5);
+    expect(lay.moves[1].x).toBeCloseTo(3);
+    expect(lay.moves[1].z).toBeCloseTo(3.5);
+    expect(lay.moves.map((move) => move.y)).toEqual([4.8, 4.8]);
+    // Half of a circle 2 pi 1.5 = 9.42 m round.
+    expect(layNoticeText(lay, 2)).toBe('Laid 2 fixtures round Overhead A (ring), 4.71 m apart, at 4.80 m.');
+  });
+
+  it('says when the row will be close together', () => {
+    const many = Array.from({ length: 40 }, (_, k) => addressed(k + 1, k + 1, -2 + k * 0.1, 3, -1));
+    const lay = layRowOnTruss(many, many.map((f) => f.id), SHELL, walls, 6, 4);
+    // 8 m between forty: 0.2 m apart.
+    expect(layNoticeText(lay, 40)).toBe(
+      'Laid 40 fixtures along Truss 1, 0.20 m apart, at 4.20 m. That is close: check they fit side by side.',
+    );
+  });
+
+  it('lays none of a row when a place on the truss is outside the walls', () => {
+    // A room 6 m across (walls at x = -3 and 3) with 10 m of truss stored through it.
+    const narrow: RoomShell = {
+      source: 'scan',
+      room: { width: 6, depth: 10, height: 6 },
+      truss_lines: [{ name: 'Long', x1: -5, z1: -2, x2: 5, z2: -2, height: 4, across: 0.3 }],
+    };
+    const narrowWalls = roomPlan(narrow)!.walls!;
+    const four = [-1.5, -0.5, 0.5, 1.5].map((x, k) => addressed(k + 1, k + 1, x, 3, 0));
+    // Four places at x = -3.75, -1.25, 1.25 and 3.75: the two end ones are outside.
+    const lay = layRowOnTruss(four, [1, 2, 3, 4], narrow, narrowWalls, 4, 4);
+    expect(lay).toMatchObject({ ok: false, why: 'beyond-walls', beyond: 2 });
+    expect(layNoticeText(lay)).toBe(
+      'Long runs beyond the walls: 2 of the row\'s places on it are outside the room. Nothing was moved.',
+    );
+    // Two places at x = -2.5 and 2.5 are inside.
+    expect(layRowOnTruss(four, [2, 3], narrow, narrowWalls, 4, 4).ok).toBe(true);
+  });
+
+  it('needs two fixtures and a scanned truss', () => {
+    expect(layRowOnTruss(rig, [1], SHELL, walls, 6, 4)).toEqual({ ok: false, why: 'too-few' });
+    expect(layRowOnTruss(rig, [1, 99], SHELL, walls, 6, 4)).toEqual({ ok: false, why: 'too-few' });
+    expect(layRowOnTruss(rig, [1, 2], null, null, 6, 4)).toEqual({ ok: false, why: 'no-truss' });
+    expect(layRowOnTruss(rig, [1, 2], { source: 'scan', room: { width: 12, depth: 10, height: 6 } }, walls, 6, 4))
+      .toEqual({ ok: false, why: 'no-truss' });
+    expect(layNoticeText({ ok: false, why: 'too-few' })).toBe('Select two or more fixtures to lay along a truss.');
+    expect(layNoticeText({ ok: false, why: 'no-truss' })).toBe('This rig has no scanned truss to lay a row along.');
+  });
+
+  it('is undone in one step, heights and all', () => {
+    useRigEditorStore.setState({ undoStack: [], redoStack: [] });
+    const store = () => useRigEditorStore.getState();
+    const lay = layRowOnTruss(rig, [1, 2, 3], SHELL, walls, 6, 4);
+    if (!lay.ok) throw new Error('not laid');
+    // As the editor does it: one snapshot, the heights the lay changes, then the moves.
+    store().pushUndo(snapshotPositions(rig));
+    store().noteUndoHeights(heightsBefore(rig, lay.moves));
+    const laid = withMoves(rig, lay.moves);
+    expect(store().undoStack).toHaveLength(1);
+    expect(heightIdsOf(store().undoStack[0])).toEqual([1, 2, 3]);
+
+    const previous = store().undo(snapshotPositions(laid.fixtures, heightIdsOf(store().undoStack[0])));
+    const undone = withSnapshot(laid.fixtures, previous!);
+    expect(undone.changed).toEqual([1, 2, 3]);
+    expect(undone.fixtures).toEqual(rig);
   });
 });
