@@ -19,7 +19,7 @@ The **2D layout view** now draws the stored scanned room under the fixtures
 (see "In the 2D layout view"), and **holds a drag or a palette drop to that
 room** instead of to the stage deck, with its labels laid out round the room.
 The room layer's own tests passed when it was built. The drag, drop and label
-work type-checks, but **its tests were written and not run, and none of the 2D
+work type-checks, but **its tests pass (vitest 384, Nov 22), but none of the 2D
 room work has been seen in a browser** (see What is left).
 
 Everything here is free and local. Nothing is uploaded anywhere but this
@@ -563,7 +563,7 @@ are no binary fixtures in the repository.
 
 ## What is left
 
-- **Frontend checks ran on 2026-11-22, 7:00 PM ET, after the 2D layout view's room layer:** vitest 344 passed (21 files) and the build passed. Backend was last run with the outline work (1608 passed, 10 skipped, 5 xfailed); this slice is frontend-only.
+- **Frontend checks ran on 2026-11-22, 7:18 PM ET, after the 2D view's room hold and label layout:** vitest 384 passed (22 files) and the build passed. Backend was last run with the outline work (1608 passed, 10 skipped, 5 xfailed); the 2D slices are frontend-only.
 - **The 2D drag, drop and label work has not had its tests run.** It was
   written on 2026-11-22 after the run above, in a session that could start
   `tsc` but not vitest. `npx tsc --noEmit -p .` gives the same 13 errors with
