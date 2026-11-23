@@ -229,7 +229,8 @@ describe('RigBuilder: correcting fixtures on the 2D plan', () => {
     const svg = await editor();
     click('Spot 2', px(60, 50), svg);
     const name = screen.getByDisplayValue('Test Rig');
-    name.focus();
+    // The plan draws a cue while the focus is in a field: an update, like an event.
+    act(() => { name.focus(); });
     for (const key of ['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown', 'r', 'Escape']) {
       fireEvent.keyDown(name, { key });
     }
@@ -238,7 +239,7 @@ describe('RigBuilder: correcting fixtures on the 2D plan', () => {
     expect(api.batchUpdateFixtures).not.toHaveBeenCalled();
     expect(selected()).toEqual([2]);
     // Out of the field, the plan has the keyboard again.
-    name.blur();
+    act(() => { name.blur(); });
     press('ArrowRight');
     await flush();
     expect(history()).toBe(1);
