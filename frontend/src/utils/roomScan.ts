@@ -123,6 +123,14 @@ export function roomShellPath(rigId: number): string {
   return `/rigs/${rigId}/room-shell`;
 }
 
+/**
+ * One raised area, overhead line or ring of the stored room: the list it is
+ * stored in (`risers`, `truss_lines`, `truss_rings`) and its place there, from 0.
+ */
+export function roomShellItemPath(rigId: number, kind: string, index: number): string {
+  return `/rigs/${rigId}/room-shell/${kind}/${index}`;
+}
+
 export function roomScanUndoPath(rigId: number): string {
   return `/rigs/${rigId}/room-scan/undo`;
 }

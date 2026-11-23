@@ -36,8 +36,12 @@ import type {
   ConsoleExportTarget,
 } from '../utils/consoleExport';
 import {
-  fixturePositionPath, roomScanParams, roomScanPath, roomScanUndoPath, roomShellPath,
+  fixturePositionPath, roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellPath,
 } from '../utils/roomScan';
+// Types only: the module itself reads the 3D view's checks, which this file has no use for.
+import type {
+  ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
+} from '../utils/roomShellEdit';
 import type {
   RoomScanOptions, RoomScanPreview, RoomScanUndoResult, RoomShellRemoved,
 } from '../utils/roomScan';
@@ -1448,6 +1452,27 @@ export const roomScanApi = {
    */
   undoMoves: async (rigId: number): Promise<RoomScanUndoResult> => {
     const response = await api.post(roomScanUndoPath(rigId));
+    return response.data;
+  },
+
+  /**
+   * Renames or moves one raised area, overhead line or ring of the stored
+   * room. `index` is its place in the stored list, not on the plan. No
+   * fixture moves with it. Answers the whole room as it now is.
+   */
+  editShellItem: async (
+    rigId: number,
+    kind: ShellItemKind,
+    index: number,
+    changes: ShellItemChanges,
+  ): Promise<ShellItemEdited> => {
+    const response = await api.patch(roomShellItemPath(rigId, kind, index), changes);
+    return response.data;
+  },
+
+  /** Takes one raised area, overhead line or ring out of the stored room. There is no undo. */
+  deleteShellItem: async (rigId: number, kind: ShellItemKind, index: number): Promise<ShellItemDeleted> => {
+    const response = await api.delete(roomShellItemPath(rigId, kind, index));
     return response.data;
   },
 };
