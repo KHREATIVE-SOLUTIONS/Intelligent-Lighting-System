@@ -330,6 +330,45 @@ it is open.
   and the keys and the nudge pad are off. The strip over the plan says what
   the last drag did and what is now outside the walls, and has **Undo** (the
   room's own), **Back to Edit Room** and **Done with walls**.
+- **Arrange room items on the plan** (slice 19), over the rows, closes the
+  dialog and lets the raised areas, truss lines and rings be picked up in
+  the 2D plan (**items mode**). Only what the plan draws can be: an item
+  listed as "Not drawn" is still edited in its row.
+  - **Drag one to move it.** Its outline follows the pointer and the words
+    over it say where its middle is; it goes to the grid unless the snap
+    mode is None or Alt is held. A press that stays within 5 pixels moves
+    nothing and only selects it. Each drag is **one request** (the same
+    `PATCH` a row's Save sends, with the middle alone) and **one undo
+    step**. Where the server puts it is what is drawn: a middle beyond the
+    room is held to the 2 m round it, as from a row.
+  - **The selected item has handles.** A truss line has a square one on one
+    end for its **length**, which changes about its middle, to the grid's
+    step and never under 0.5 m, and a round one past the other end for its
+    **heading**, which turns it about its middle, to 5 degrees with the
+    snap on and to a tenth of a degree without. A ring has a square one on
+    its stage left side for its **radius**, to the grid's step and never
+    under 0.3 m. Each drag of a handle is one request, with that one field,
+    and one undo step. A raised area has no handle: its sides are typed in
+    its row.
+  - **The arrow keys nudge the selected item** by the grid step, ten steps
+    with Shift, up the plan being upstage. **One request and one undo step
+    for each key press**: presses are not gathered into one, and a key held
+    down does not repeat. Presses made faster than the server answers are
+    sent one after another, each from where the one before left the item.
+    Escape, or a click on empty floor, lets go of the item.
+  - **Fixtures go with it as its box says.** The boxes ticked or unticked
+    in the dialog are carried over, and the strip over the plan has the
+    selected item's box ("Move the fixtures hung on it" / "standing on
+    it"). When fixtures moved, the rig is read again, so the 2D plan and the
+    3D view show them where they now are, and the editor's own Undo steps
+    are dropped.
+  - **A change the server refuses goes back**, and the strip says why in
+    the server's words: a carry that would take a fixture out of the room
+    (422), a size that cannot fit (422), a locate walkthrough running (409).
+  - While items mode is on, fixtures are drawn faint and take no press,
+    there is no selection box, and the plan's other keys and the nudge pad
+    are off. The strip has **Undo** (the room's own), **Back to Edit Room**
+    and **Done arranging**. Items mode and walls mode are never on together.
 - **The walls share the room's Undo**: a moved, added or deleted corner and
   a changed height are each one step, with the other edits, latest first.
 - **Not while a locate walkthrough is running.** Every change here, Undo
@@ -1233,6 +1272,68 @@ A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
 
+## What slice 19 built
+
+The room's items, arranged on the 2D plan: until now a raised area, a truss
+line or a ring was put somewhere by typing two numbers into its row. Frontend
+only: the server already took everything a drag sends.
+
+- **The helpers** (`components/rig/roomItemDrag2d.ts`, new, no React):
+  `planItems` (what can be picked up, each with the list and the place the
+  server knows it by, read from `shellItems` and not from the plan's own
+  shapes, which leave out what cannot be drawn), `itemHandles` (where a
+  line's length and rotate handles and a ring's radius handle stand),
+  `dragItem` (what a drag of one grip has the item at: the shape to draw,
+  what to send, the words over it), `nudgeItem` (an arrow key's change) and
+  `gripHint`.
+- **The plan** (`StageView2D.tsx`): with the new `itemsEdit` prop on, each
+  item's footprint is drawn again **over the fixtures**, to be pressed, with
+  the selected one's handles. A drag past the 5 pixel threshold is drawn as
+  it goes and reported once, when it ends, through `onItemChange(kind,
+  index, changes)`; a drag that ends where it began reports nothing. The
+  arrow keys call `onItemNudge(kind, index, dx, dz)` once for each press,
+  from a listener of the mode's own. `selectedItemKey` and `onItemSelect`
+  hold which item is selected. Fixtures take no press, as in walls mode.
+  With the prop off the plan is as it was.
+- **The editor** (`RigBuilder.tsx`): items mode and its strip over the plan
+  (what the last change did or why it was refused, the selected item's box,
+  Undo, Back to Edit Room, Done arranging). Every change goes through one
+  queue (`queueRoomChange`): one `editShellItem` each, sent only once the
+  one before it was answered and, where that one moved fixtures, the rig was
+  read again. A nudge is worked out when its turn comes, from the room as
+  the change before it left it.
+- **The dialog** (`RoomShellEditDialog.tsx`): the button **Arrange room
+  items on the plan**, which hands over its unticked boxes
+  (`onArrangeItems(leftAlone)`).
+- **No backend change, no new route and no migration.** A move is `PATCH
+  .../room-shell/{kind}/{index}` with `center_x` and `center_z`, a handle is
+  the same route with `length`, `heading_deg` or `radius`, and each carries
+  `carry_fixtures`. The carry, the 422 and the undo step are slices 15, 17
+  and 18's, unchanged.
+- **The 3D view needed no change.** It draws the room and the fixtures from
+  the rig, which is given the answered room after each change and read
+  again when fixtures were carried.
+- **Judgment calls.**
+  - *One request for each key press*, not one for a burst: a press is then
+    one undo step, as it is for a nudged fixture, and what Undo takes back
+    is never a guess. The cost is a request a press.
+  - *Requests are queued, not dropped.* Walls mode ignores a drag made while
+    one is out; here a second arrow key pressed before the first is answered
+    would then be lost, so it waits its turn instead.
+  - *A length changes about the middle*, because that is what the server
+    does with `length`: the end that is dragged goes half as far as the
+    line grows, and the other end moves as far the other way.
+  - *The rotate handle stands past the end*, 0.6 m out, so it is not under
+    the length handle of a short line or under a fixture hung at the end.
+  - *The item being dragged is drawn twice*: its outline where the drag has
+    it, and the item itself where it still is until the server answers.
+    That keeps the plan's frame still under the pointer.
+  - *An undo lets go of the selection and of the unticked boxes*, as the
+    dialog does: it may bring back a deleted item, and the ones after it
+    then change places.
+- **Nothing here sends Art-Net or DMX or touches a patch, a mode or a tag,**
+  and there is no new network call beyond the app's own API.
+
 ## What slice 18 built
 
 Raised areas in Edit Room: the fixtures standing on one follow it, it can
@@ -1909,6 +2010,38 @@ are no binary fixtures in the repository.
   undo that restored and not otherwise; and in the editor the rig read
   again, the plan redrawn, the editor's undo steps dropped, nothing read
   again when the truss went alone, and both Undo buttons.
+- **Slice 19 (items arranged on the plan).** Frontend only, and **written
+  and type-checked but not run**: the session that wrote them was refused
+  `npx vitest run` and `npm run build`, as the sessions of slices 15 to 17
+  were. `npx tsc --noEmit` passes with the 13 errors it had before, none in
+  a file this slice touched.
+  `frontend/src/__tests__/roomItemDrag2d.test.ts`: what can be picked up
+  and by which stored place, the footprints and the handles, a move to the
+  grid and off it, a moved line keeping its shape, a drag that ends where
+  it began, a length about the middle and its least, a heading folded as
+  the server stores one and snapped to 5 degrees or a tenth, a radius and
+  its least, a grip the shape does not have, and a nudge sending one axis.
+  `StageView2DItems.test.tsx`: nothing to pick up with the mode off, on a
+  read-only plan or with no room; the stored place in each test id; a
+  press selecting and a wobble under 5 pixels sending nothing; one call
+  for a whole drag, with the middle alone; Alt letting go of the grid; a
+  drag brought back sending nothing; the item kept where it was dropped
+  until the answer, then put back; a drag carried off the plan; handles on
+  the selected item only; the length, rotate and radius handles; the arrow
+  keys, Shift, a held key, nothing selected, the mode off and a field
+  having the keys; Escape and empty floor; the click that ends a drag; no
+  fixture picked up or boxed; and the layer being over the fixtures.
+  `RigBuilderItems.test.tsx`: the hand-over from the dialog; a truss moved
+  with one `editShellItem`, `carry_fixtures` true, the rig read again and
+  the fixtures redrawn, the room's undo label and no editor undo step; a
+  raised area moved to the grid with nothing read again; the 5 pixel
+  threshold; the box unticked in the dialog and in the strip both sending
+  `carry_fixtures` false; a 422 and a 409 each put back with the server's
+  words; two quick arrow keys as two requests, the second from where the
+  first left the truss; Shift and a held key; the length, rotate and
+  radius handles each one request; the strip's Undo with fixtures put
+  back; fixtures taking no press until Done arranging; and Back to Edit
+  Room.
 - **Slice 18 (raised areas).** Run after it: backend pytest 1951 passed,
   frontend vitest 943 passed, and the build.
   `backend/tests/unit/test_room_scan_raised.py`: what stands on a raised
@@ -1955,6 +2088,45 @@ are no binary fixtures in the repository.
 
 ## What is left
 
+- **Slice 19's frontend tests have not been run, and nor has the build.**
+  `npx vitest run` and `npm run build` were refused in the session that
+  wrote the slice; only `npx tsc --noEmit` ran, with its 13 older errors
+  and no new one. Run both in `frontend/` before relying on it: the three
+  new test files are `roomItemDrag2d.test.ts`, `StageView2DItems.test.tsx`
+  and `RigBuilderItems.test.tsx`. No backend file changed, so the backend
+  run below stands. **Nothing of it has been seen in a browser** either:
+  how wide a truss is to press, whether the handles are easy to hit at the
+  plan's usual size, and how the strip reads with its box in it.
+- **Arranging items on the plan goes only so far** (slice 19):
+  - **A raised area is moved, not sized, on the plan.** It has no handles:
+    its width, its front to back and its quarter turn are typed in its row.
+  - **A length changes about the middle.** There is no dragging one end
+    while the other stays put; move the line afterwards.
+  - **A height is not set on the plan**, which has none: a row's Height
+    still is.
+  - **A drag does not snap to anything but the grid**: not to a wall, to
+    another item's edge, or to the fixtures. A length and a radius go to
+    the grid's step, so an end does not land on a grid line unless the
+    middle is on one.
+  - **A heading goes to 5 degrees**, or to a tenth with the snap off or Alt
+    held. Nothing snaps it to square with a wall that is not square to the
+    room.
+  - **One request for each key press.** A held key does not repeat, and ten
+    quick presses are ten requests and ten undo steps (the room keeps 20).
+  - **No nudge pad.** The arrow keys have no buttons on a touch screen in
+    this mode; an item is dragged with a finger, and not nudged.
+  - **A refused change is not explained on the item**, only in the strip.
+  - **The item is drawn twice during a drag**: its outline where the drag
+    has it and the item where it still is. Its label and its fixtures stay
+    where they are until the server answers.
+  - **Going back to Edit Room starts its boxes ticked again**, as opening
+    the dialog always does: a box unticked in the strip is not carried
+    back.
+  - **Only one item at a time.** There is no selecting two, and a raised
+    area still does not carry a riser standing on it.
+  - **Overlapping items**: the one drawn last takes the press (rings over
+    lines over raised areas, later in a list over earlier). A ring is
+    pressed on its truss, not inside it.
 - **Checks ran after slice 18**: backend pytest 1951 passed, frontend
   vitest 943 passed, and the build passed. That frontend run takes in the
   test files of slices 15, 16 and 17, which were written in sessions that
@@ -2005,8 +2177,9 @@ are no binary fixtures in the repository.
     editor's own Undo steps dropped, only `rotation_y` turned, and a
     carried fixture left alone by "Undo room scan moves".
 - **Fixtures follow a truss only so far** (slice 17):
-  - **Only from Edit Room's rows.** A deleted truss leaves its fixtures
-    where they hung, and a moved wall carries nothing.
+  - **Only from Edit Room's rows and its items mode on the plan** (slice
+    19). A deleted truss leaves its fixtures where they hung, and a moved
+    wall carries nothing.
   - **"Hung on it" is by distance, not by a link.** Nothing records which
     truss a fixture belongs to: one within 0.3 m and 0.6 m of it goes, a
     floor light that happens to stand that close under a low truss goes
@@ -2274,8 +2447,11 @@ are no binary fixtures in the repository.
     floor lights along, and a raised area cannot be moved up or down its
     list: a kind change keeps its place.
   - **A ring cannot be made an arc.**
-  - **Sizes and positions of items are typed, not dragged.** Only the
-    corners of the walls can be dragged (slice 16).
+  - **Items are dragged on the plan only so far** (slice 19): any of them
+    can be moved there, a line's length and heading and a ring's radius
+    have handles, and the arrow keys nudge. A raised area's sizes, every
+    height and a base height are still typed. See the limits of slice 19
+    above.
   - **Everything is held to the room's box and 2 m round it, not to the
     floor outline**, so in an L-shaped room an item can be put in the notch.
   - **A plain move holds the middle only; a resize holds the whole item.**
