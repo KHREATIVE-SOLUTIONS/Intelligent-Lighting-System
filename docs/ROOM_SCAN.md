@@ -22,6 +22,14 @@ The room layer's own tests passed when it was built. The drag, drop and label
 work's tests pass too (vitest 384, Nov 22), **but none of the 2D
 room work has been seen in a browser** (see What is left).
 
+Slice 8 makes the rest of it go by **a room that is not a box**: a suggested
+row is held inside the floor outline and not only its box, a 2D drag snaps to
+the scan's truss, the 2D grid is drawn across the room, and a fixture clicked
+in the palette lands inside the room (see "What slice 8 built"). Its backend
+unit tests pass (167 across the room-scan unit files, Nov 22). **Its frontend
+tests are written and type-check but have not been run**, and none of it has
+been seen in a browser (see What is left).
+
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
 
@@ -120,7 +128,8 @@ Dragging in the 2D layout view still saves through batch-update and does
 **not** confirm a position. With a scanned room drawn it is held inside the
 room's walls rather than to the stage deck (see "In the 2D layout view"). That
 limit is tighter than this one: the 2D view stops at the wall, the 3D view and
-the server 2 m beyond it. It does not snap to the scan's truss.
+the server 2 m beyond it. It snaps to the scan's truss lines and rings on the
+plan as the 3D drag does, but does not take the truss's height.
 
 ### Undoing the moves a scan made
 
@@ -320,7 +329,23 @@ row fit:
   flash-and-tap's row fit does not apply to it.
 - **Floor rows standing where the scan found a stage** go up onto it and in
   from its edges.
-- **Every row** comes inside the walls.
+- **Every row** comes inside the walls: 0.2 m in from the walls of the room's
+  box.
+- **In a room with a floor outline** (an L, a cut corner) the box is not the
+  room. A row with any guess outside the outline, in the notch of an L say, is
+  shifted **as one piece** by the least that puts every guess of it inside and
+  0.2 m clear of every wall, in steps of 0.05 m. Of two shifts as short, the
+  one that changes depth less is taken. A row already inside is left alone,
+  however close to a wall of the notch it stands. A row that fits nowhere in
+  one piece (corner to corner of an L) has only its guesses outside brought
+  in, each on its own, and a note in the answer says the row is no longer
+  straight. A guess laid along an angled line or round a ring is left on it
+  unless that spot is outside the outline, which a truss the scan found never
+  is. A box room, and an outline that is not one (fewer than three corners, a
+  number missing, under 1 m2), is held to the box as before.
+
+A fixture a scan may not move is never brought inside either: a tapped or
+confirmed fixture standing in a notch stays there.
 
 A moved fixture keeps `position_source:template` and `position_unconfirmed` and
 gains `position_hint:room_scan`. Applying the same scan again moves nothing.
@@ -395,14 +420,45 @@ to the room, not to the deck (`holdOnPlan` in `roomPlan2d.ts`):
 - **A fixture a scan hung beyond the deck stays where it is when picked up**,
   and can be moved about out in the room.
 - **Grid snap carries on past the deck** (`snapToRoomGrid`): the same
-  multiples of the grid size, with no last line to stop at. The grid lines
-  themselves are still only drawn on the deck. A position held to a wall may
-  rest between two lines.
-- **Truss snap** is as before: onto the depth of the plan's own purple truss
-  lines, then held to the room.
+  multiples of the grid size, with no last line to stop at. A position held
+  to a wall may rest between two lines.
+- **The grid is drawn where it snaps** (`planGrid`): across the room's floor
+  and the deck, each line for the stretches of it inside the walls or on the
+  deck. In a room with a floor outline a line stops at the wall of a notch
+  and nothing is drawn in the notch. A line that lies exactly along a wall
+  may or may not be drawn under it.
+- **A drag snaps to the scan's truss** (`planTrussTargets`,
+  `snapToScannedTruss`): within 0.4 m on the plan of a scanned truss line (at
+  any heading) or ring, the fixture goes onto it, by the 3D drag's own
+  `snapLines` and `snapToLines`. On a ring it goes straight out from or in
+  towards the centre. It is tried first in the Grid and Truss snap modes;
+  out of reach, the mode carries on as before (the grid, or the depth of the
+  plan's own purple truss lines). **Holding Alt** lets go of the scanned
+  truss for that drag, and the snap mode **None** lets go of everything.
+  Unlike the 3D drag it does not go by height (any truss on the plan is in
+  reach), does not snap to the edges of raised areas, and does not change the
+  fixture's height. The snapped position is then held to the room.
 - What holds a drag is the walls the plan draws, so the two cannot disagree.
   A scan with truss or raised areas but no usable room draws no walls, and a
-  drag is then held to the deck as with no room.
+  drag is then held to the deck as with no room; it still snaps to that
+  scan's truss.
+
+### Clicking a fixture in the palette
+
+A click, as against a drop, lets the app choose the place (`paletteClickSpot`
+in `roomPlan2d.ts`, called from `RigBuilder.tsx`). With a scanned room's walls
+drawn:
+
+- **centre stage** when that is inside the room, which it is in every box
+  room;
+- else **the middle of the room's floor** by area, brought 0.6 m in from the
+  walls where it is nearer than that (`insetPoint`): the middle of an L's
+  floor can fall close to its notch;
+- then stepped clear of fixtures already within 0.6 m, as before, each step
+  **held to the walls** and not to the deck.
+
+With no scanned room it is centre stage, stepped clear inside the deck, as it
+always was.
 
 ### Labels
 
@@ -430,6 +486,19 @@ to the room, not to the deck (`holdOnPlan` in `roomPlan2d.ts`):
 A rig with no scanned room (no shell, or a demo preset's shell) draws exactly
 what it did: nothing is added, the view is the size it was, the labels are
 where they were, and a drag or a drop is held to the deck on the deck's grid.
+
+## What slice 8 built
+
+- **Suggestion** (`suggest.py`): `_floor_outline` reads the room's outline by
+  the position route's rule; `_shift_into_outline` finds the least shift of a
+  whole row that puts it inside, using the reader's own `inside_outline` and
+  `clear_of_outline`. Applying the same scan again still moves nothing: a row
+  is only sent there when a guess is outside the outline, and lands 0.2 m
+  inside it.
+- **2D drag** (`StageView2D.tsx`, `roomPlan2d.ts`): snapping to scanned truss
+  lines and rings with the 3D drag's helpers; Alt lets go.
+- **2D grid** (`planGrid`): drawn across the room's floor and the deck.
+- **Palette click** (`paletteClickSpot`, `RigBuilder.tsx`): into the room.
 
 ## What slice 4 built
 
@@ -561,6 +630,29 @@ are no binary fixtures in the repository.
   outline; a label's turn from either end of a line; labels left alone when
   clear, nudged when they would overlap, and placed along an angled line.
 
+- `backend/tests/unit/test_room_scan_shapes.py`, `TestGuessesInsideAnOutline`
+  (**passing, Nov 22 2026**): a floor row in the notch of an L brought inside
+  as one piece, by the least shift, keeping its spacing, height and tags; the
+  same scan applied again moving nothing, for a floor row, a row brought down
+  to a hanging height and a row overhanging its truss; a tapped, confirmed,
+  measured or row-fitted fixture in the notch left there; a row already
+  inside left alone; a guess beyond a cut corner; a row that fits nowhere in
+  one piece; a scanned L; a box room and an outline that is not one moving a
+  row exactly as before; a spot on a stored ring that reaches into a notch.
+- `frontend/src/__tests__/roomPlan2dLayout.test.ts`, added with slice 8
+  (**written, not run**): which shapes of a scan are snap targets; snapping to
+  a line, its end, an angled line and a ring, the reach, the nearer of two,
+  and no height window; the grid in a box room, past a deck, over a deck that
+  reaches beyond the room, and cut to an L; where a palette click goes with
+  no room (as before), in a box room, and in a room whose notch takes in
+  centre stage.
+- `frontend/src/__tests__/StageView2D.test.tsx`, added with slice 8
+  (**written, not run**): a drag snapping onto a truss line, an angled line
+  and a ring; Alt and the snap mode None letting go; the grid beyond a
+  truss's reach; a snapped position still held to the walls; a palette drop
+  not snapping; no snap with no scanned room; the grid drawn wall to wall,
+  stopped at a notch, and the deck's own with no room.
+
 ## What is left
 
 - **Frontend checks ran on 2026-11-22, 7:18 PM ET, after the 2D view's room hold and label layout:** vitest 384 passed (22 files) and the build passed. Backend was last run with the outline work (1608 passed, 10 skipped, 5 xfailed); the 2D slices are frontend-only.
@@ -572,23 +664,54 @@ are no binary fixtures in the repository.
   from `frontend`, then the whole suite and the build. The palette-drop tests
   set the pointer position on the event by hand; if they fail and the rest
   pass, suspect the test's event before the view.
+- **Slice 8's frontend tests have not been run either.** Written on
+  2026-11-22 in a session that could start `tsc` but not vitest;
+  `npx tsc --noEmit -p .` gives the same 13 errors with them as without, none
+  in the files touched. Their expected numbers were worked out by hand. Run
+  `npx vitest run src/__tests__/roomPlan2dLayout.test.ts src/__tests__/StageView2D.test.tsx`
+  from `frontend`, then the whole suite and the build. The backend's API
+  tests (`backend/tests/integration/test_api_room_scan.py`) were not run with
+  the outline hold either; only the unit files were.
 - **The 2D room layer has not been seen in a browser**: label sizes and
   nudges in a crowded room, a turned label, the tooltips, where UPSTAGE,
-  AUDIENCE and the scale bar land round a real room, and a drag and a palette
-  drop out in the room with the view grown.
+  AUDIENCE and the scale bar land round a real room, a drag and a palette
+  drop out in the room with the view grown, a drag snapping to a truss line
+  and a ring, the grid across an L-shaped floor, and where a palette click
+  lands.
+- **A 2D drag that snaps to truss keeps the fixture's height.** The 3D drag
+  hangs the fixture at the truss's height; the 2D view saves only where it is
+  on the plan. Nothing on the plan says what it snapped to, either: there is
+  no readout or highlight as the 3D view has.
+- **A palette drop does not snap to scanned truss**, only a drag does. A
+  fixture dropped on a truss line lands on the grid next to it.
+- **The 2D truss snap takes hold on the first move.** There is no 5 pixel
+  threshold as in the 3D view, so a press with a wobble next to a truss puts
+  the fixture on it (as a press already puts one on the grid). Alt has no
+  touch equivalent.
+- **Alt lets go of the scanned truss only.** The grid, or the plan's own
+  truss lines, still take the fixture; set the snap mode to None for a free
+  drag.
+- **A row too long for any arm of the room is no longer straight.** Its
+  guesses outside the walls are brought in one by one, so flash-and-tap's row
+  fit does not apply to it, and if it was also centred on a truss it
+  overhangs, applying the same scan again may shift it once more.
+- **A row brought inside an outline may leave its truss.** A row that
+  overhangs a truss into a notch is shifted whole to where it fits, which can
+  be the other arm of an L. The least shift is not always the one a rigger
+  would choose.
+- **A room's "middle" for a palette click is the middle of its floor by
+  area**, found to the nearest 0.25 m when it has to be brought in from a
+  wall. It does not look for the widest part of the room.
 - **A fixture already outside the walls jumps to the wall on its first 2D
   move.** The 3D view and the server let a fixture stand up to 2 m beyond a
-  wall, and a guess can stand in the notch of an L. Picked up in the 2D view,
-  either comes to the nearest wall at once. Use the 3D view's Move fixtures
-  to place something beyond a wall.
+  wall, and a fixture a person placed can stand in the notch of an L. Picked
+  up in the 2D view, either comes to the nearest wall at once. Use the 3D
+  view's Move fixtures to place something beyond a wall.
 - **The same goes for a deck that reaches beyond the scanned room.** The room
   is the limit, so a fixture on the part of the deck outside the walls is
   brought inside them when moved in 2D.
 - **The 2D and 3D limits differ by 2 m**, as above: 2D stops at the wall. The
   batch-update route the 2D view saves through holds nothing itself.
-- **A palette click, as against a drop, still goes by the deck.** Clicking a
-  fixture in the palette adds it at centre stage, stepped clear of others
-  within the deck (`clearSpotNear` in `RigBuilder.tsx`), whatever the room.
 - **2D label layout is simple.** It keeps the room layer's labels off each
   other only: not off fixture names, the plan's own labels, the purple TRUSS
   lines, or the walls and shapes themselves. A nudged label can end up over
@@ -598,16 +721,15 @@ are no binary fixtures in the repository.
 - **AUDIENCE stands outside the downstage wall.** It marks which way is
   downstage; it no longer sits where a crowd would stand, which in a scanned
   room is inside the walls.
-- **The 2D grid is only drawn on the deck**, though a drag snaps to it
-  everywhere in the room, and a 2D drag does not snap to the scan's truss.
 - **Nothing of slice 4 has been seen in a browser**: an outlined room's walls
   from each camera, an angled bar, a ring, and a drag snapping to either.
 - **Nothing of the outline work has been seen in a browser**: a beam stopping
   on the wall of a notch, a wall moved out for a fixture, the cameras in an
   L-shaped room, the ceiling's beams and duct.
-- **A guess does not move an outline's wall.** A suggested row is only brought
-  inside the room's box, so an unconfirmed fixture can be drawn standing in
-  the notch of an L, outside the walls, until somebody places it.
+- **A guess does not move an outline's wall.** A scan now suggests a place
+  inside the outline for every guess it may move, but a guess the scan was
+  applied without moving (the box unticked), or one added in the notch
+  afterwards, is still drawn outside the walls until somebody places it.
 - **Cameras are moved on a 0.25 m grid.** A preset that falls outside the room
   goes to the nearest grid point 0.6 m clear of the walls, not the exact
   nearest place.
