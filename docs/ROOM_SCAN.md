@@ -519,6 +519,42 @@ A scan's suggestion moves a row as one piece, and so can a person
 
 With one fixture selected, or none, a drag is what it was.
 
+### Laying a row along a truss
+
+A drag carries a row and never respaces it. **Lay on truss** in the toolbar
+does the other thing: it spreads the selected fixtures evenly along scanned
+truss, as a scan's suggestion lays a row along an angled truss or round a
+ring (`layRowOnTruss` in `rowMove2d.ts`, `RigBuilder.tsx`,
+`RigEditorToolbar.tsx`). The button is there only in a rig whose scan found
+truss, and needs two or more fixtures selected.
+
+- **Which truss**: the scanned line or ring nearest the middle of the
+  selection on the plan (`nearestTruss`), the first the scan listed where
+  two are as near. A ring is as near as its centre or its circle, whichever
+  is nearer, so a row drawn straight through a ring belongs on it. Any
+  truss on the plan is in reach, at whatever height. The button's tooltip
+  names the truss before anything moves.
+- **Where each goes** (`spotsOn`) is `suggest.py`'s own rule (`_spots_on`).
+  Along a line: the whole length shared out with half a space at each end,
+  so four fixtures on 8 m hang 2 m apart and 1 m in. Round a ring: the
+  first upstage, the rest clockwise seen from above.
+- **In address order** (`addressOrder`: universe, address, id), and along a
+  line the row keeps the sense it had: if its first address was towards
+  stage left before, it still is.
+- **Every one takes the truss's hang height.**
+- **All of it or none of it.** If any place on the truss is outside what a
+  drag is held to (the walls, or the deck where the scan has no usable
+  room), nothing moves and a message says how many places are outside. A
+  stored truss that runs out through a wall is the case.
+- **Saved and undone as a row move is**: one batch-update, no tag touched
+  (guesses stay amber), and one Undo puts every fixture back, heights
+  included. A message says what was done: "Laid 4 fixtures along Truss 1,
+  2.00 m apart, at 4.20 m.", with a word more when they come under 0.3 m
+  apart. Pressed again on a row already laid, it moves nothing and says so.
+- Unlike a scan's suggestion it lays out what is **selected**, whatever its
+  tags: a tapped or measured fixture that is selected moves too, and the
+  unselected fixtures of a group keep no place in the count.
+
 ### Clicking a fixture in the palette
 
 A click, as against a drop, lets the app choose the place (`paletteClickSpot`
@@ -565,6 +601,17 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 10 built
+
+- **Lay on truss** (`rowMove2d.ts`): `nearestTruss`, `spotsOn`,
+  `addressOrder`, `spacingOn`, `layRowOnTruss` and `layNoticeText`, with no
+  React in them. `spotsOn` is a port of `suggest.py`'s `_spots_on`.
+- **The button and its save** (`RigEditorToolbar.tsx`, `RigBuilder.tsx`):
+  `handleLayRow` uses the row move's own pieces (`withMoves`,
+  `snapshotPositions`, `heightsBefore`, `noteUndoHeights`) and writes at
+  once. `StageView2D.tsx` is unchanged.
+- **No backend change.**
 
 ## What slice 9 built
 
@@ -762,7 +809,13 @@ are no binary fixtures in the repository.
   a row move undone in one step with its heights, and redone; the height
   from before the drag being the one kept; a drag that changed no height
   undone with no heights touched; a height set on a fixture the row did not
-  carry surviving the undo.
+  carry surviving the undo. **Slice 10, also type-checked and not run**:
+  address order; the nearest truss to a row, a ring by its centre; places
+  along a line (even, the row's sense kept, none to keep), along an angled
+  line and round a ring; a row laid in address order at the truss's height,
+  laid again moving nothing, laid round a ring, laid close together; none
+  of it laid when a place is beyond the walls; what is said for each; the
+  lay undone in one step with its heights.
 - `frontend/src/__tests__/StageView2DRowMove.test.tsx` (**slice 9;
   type-checked, not run**): a drag taking a truss line's and a ring's height,
   none out of reach, with Alt or with snapping off, and the pick-up height
@@ -805,12 +858,36 @@ are no binary fixtures in the repository.
   fixture's name or the truss's own label, a row dragged along a wall and
   into the notch of an L, a double-click selecting a row, and Ctrl-click on
   a Mac, where the browser may open its menu instead.
-- **A row is carried, never turned or respaced.** It snaps onto a truss with
-  the fixture under the pointer only, so a row that does not lie along the
-  truss has one fixture on it, and a row longer than the truss overhangs its
-  ends; those fixtures keep their old height while the rest take the
+- **Slice 10 has not had its tests run either** (Lay on truss). It was
+  written on 2026-11-22 in a session where vitest needed an approval nobody
+  was there to give, so its expected numbers were also worked out by hand.
+  `npx tsc --noEmit -p .` gives the same 13 errors, none in its files. Its
+  tests are at the end of `src/__tests__/rowMove2d.test.ts`, which the
+  command above already runs. `handleLayRow` in `RigBuilder.tsx` and the
+  button are type-checked only, and nothing of it has been seen in a
+  browser.
+- **A drag carries a row, never turns or respaces it.** It snaps onto a truss
+  with the fixture under the pointer only, so a row that does not lie along
+  the truss has one fixture on it, and a row longer than the truss overhangs
+  its ends; those fixtures keep their old height while the rest take the
   truss's, which the readout's count ("3 of 4 on ...") is there to show.
-  There is no "lay this row along this truss" as the scan's suggestion does.
+  Lay on truss is what respaces a row.
+- **Lay on truss chooses the truss itself**: the nearest to the middle of
+  the selection, however far that is. To lay a row on another truss, carry
+  it near that one first. Nothing on the plan shows the laid places before
+  the press; the tooltip names the truss and Undo takes it back.
+- **Lay on truss fills the whole truss.** Spacing is the truss's length
+  over the count: there is no keeping a row's own spacing, no setting one,
+  and no laying along part of a truss or part of a ring. A line straight
+  across the room is filled the same way, where a scan's suggestion would
+  slide the row under it as one piece.
+- **Lay on truss goes by the selection alone.** A group's unselected
+  fixtures keep no place in the count (a scan's suggestion gives them one),
+  so laying half a group puts it over the other half's places. Select the
+  whole row first.
+- **A truss partly outside the walls takes no row** that would have a place
+  beyond them, though most of it is inside. Lay fewer fixtures, or carry
+  the row there by hand.
 - **A row is held by its nearest walls, one fixture at a time.** That is
   exact against the straight walls of a box and of an L. Where two members
   are pushed opposite ways (a row wider than the room is across, or wedged
