@@ -125,7 +125,9 @@ describe('RoomShellEditDialog: size, height and heading', () => {
     fireEvent.click(button('Save Overhead line 1'));
     await flush();
 
-    expect(api.editShellItem).toHaveBeenCalledWith(7, 'truss_lines', 0, { length: 6, heading_deg: 90, height: 3.5 });
+    expect(api.editShellItem).toHaveBeenCalledWith(
+      7, 'truss_lines', 0, { length: 6, heading_deg: 90, height: 3.5, carry_fixtures: true },
+    );
     expect(screen.getByText(
       'Overhead line 1 is now 6.0 m long, underside 3.50 m up, running upstage to downstage. '
       + 'No fixture was moved with it.',
@@ -144,7 +146,7 @@ describe('RoomShellEditDialog: size, height and heading', () => {
     fireEvent.click(button('Save Overhead ring 1'));
     await flush();
 
-    expect(api.editShellItem).toHaveBeenCalledWith(7, 'truss_rings', 0, { radius: 2 });
+    expect(api.editShellItem).toHaveBeenCalledWith(7, 'truss_rings', 0, { radius: 2, carry_fixtures: true });
   });
 
   it('turns a raised area a quarter turn by swapping its sides', async () => {

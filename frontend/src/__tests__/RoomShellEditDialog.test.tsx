@@ -118,7 +118,8 @@ describe('RoomShellEditDialog', () => {
     await flush();
 
     // The third stored line, though the plan draws it second: the stub is left out there.
-    expect(api.editShellItem).toHaveBeenCalledWith(7, 'truss_lines', 2, { center_x: 2 });
+    // A moved line takes the fixtures hung on it unless its box is unticked (RoomShellCarryDialog.test.tsx).
+    expect(api.editShellItem).toHaveBeenCalledWith(7, 'truss_lines', 2, { center_x: 2, carry_fixtures: true });
     expect(onChanged.mock.calls[0][0]).toBe(after);
     expect(screen.getByText('Overhead line 3 was moved to 2, 2.5. No fixture was moved with it.')).toBeTruthy();
     expect(field('Across of Overhead line 3').value).toBe('2');
