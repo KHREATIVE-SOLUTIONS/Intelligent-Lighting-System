@@ -201,7 +201,10 @@ export function dragItem(item: PlanItem, grip: ItemGrip, at: PlanPoint, snap: It
     const heading = lineHeading(lineThrough({ x: 0, z: 0 }, 1, degrees)) ?? stored;
     const changed = Math.abs(heading - stored) >= 0.05;
     return {
-      shape: changed ? lineThrough(centre, length, heading) : shape,
+      // Drawn with its first end, which the handle stands past, on the
+      // pointer's side: the folded heading alone would put the handle on the
+      // far end once the pointer is stage left of the middle.
+      shape: changed ? lineThrough(centre, length, degrees + 180) : shape,
       changes: changed ? { heading_deg: heading } : null,
       readout: `${positionText(heading)} deg`,
     };

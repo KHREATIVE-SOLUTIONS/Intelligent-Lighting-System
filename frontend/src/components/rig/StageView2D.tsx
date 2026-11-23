@@ -380,11 +380,12 @@ export default function StageView2D({
     ));
   }, [walls, wallHandles, cornerPreview]);
 
-  // The room's items that can be picked up: none unless the mode is on.
-  const roomItems = useMemo(
-    () => (itemsEdit && !readonly ? planItems(roomShell) : null),
-    [itemsEdit, readonly, roomShell],
-  );
+  // The room's items that can be picked up: none unless the mode is on, and
+  // null for a room with nothing in it to pick up.
+  const roomItems = useMemo(() => {
+    const items = itemsEdit && !readonly ? planItems(roomShell) : [];
+    return items.length > 0 ? items : null;
+  }, [itemsEdit, readonly, roomShell]);
 
   // The mode turned off under a press: the press is over, and nothing is sent.
   useEffect(() => {
@@ -612,6 +613,9 @@ export default function StageView2D({
    * gone 5 pixels.
    */
   const pressItem = (at: ScreenPoint, item: PlanItem, grip: ItemGrip) => {
+    // A drop is still waiting for its answer: the room on screen is not yet
+    // the one a new drag would start from, so the press is let pass.
+    if (itemPreview && !itemRef.current) return;
     skipBackgroundClick.current = false;
     if (item.key !== selectedItemKey) onItemSelect?.(item.key);
     const raw = pointerToStage(at.clientX, at.clientY);
