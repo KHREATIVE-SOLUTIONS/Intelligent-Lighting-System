@@ -20,8 +20,11 @@
  * A truss line or ring that is moved, raised, turned or resized takes the
  * fixtures hung on it along, unless its "Move the fixtures hung on it" box is
  * unticked; the notice says how many moved, and the editor is told to read
- * the rig again (`onFixturesMoved`). Nothing else here moves a fixture, and
- * nothing is sent to a light.
+ * the rig again (`onFixturesMoved`). A raised area takes the fixtures standing
+ * on it in the same way ("Move the fixtures standing on it"), and its row has
+ * a selector for what it is (stage, riser, booth) and a base height, for a
+ * platform that floats. Nothing else here moves a fixture, and nothing is
+ * sent to a light.
  */
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -48,13 +51,17 @@ import axios from 'axios';
 import { roomScanApi } from '../../services/api';
 import type { RoomShell } from '../../types';
 import {
-  CARRY_LABEL,
+  BASE_HEIGHT_LABEL,
   NEW_ITEM_CHOICES,
+  RISER_KIND_CHOICES,
   SHELL_FIELD_LABELS,
   SHELL_NAME_MAX,
   SHELL_SIZE_FIELDS,
+  baseHeightShown,
   carriedCount,
   carriesFixtures,
+  carryBoxName,
+  carryLabel,
   deleteQuestionText,
   draftOf,
   editResultText,
@@ -64,6 +71,7 @@ import {
   quarterTurned,
   readDraft,
   readNewItem,
+  riserKindShown,
   shellEditErrorText,
   shellItemKey,
   shellItemTitle,
@@ -149,7 +157,7 @@ export default function RoomShellEditDialog({
   // What has been typed into a row and not yet saved, by the row's key. A row
   // with nothing typed shows what is stored.
   const [drafts, setDrafts] = useState<Record<string, ShellItemDraft>>({});
-  // The lines and rings whose "Move the fixtures hung on it" box is unticked, by the row's key.
+  // The rows whose "Move the fixtures hung on it" (or "standing on it") box is unticked, by the row's key.
   // A row not here takes its fixtures along, which is how every row starts.
   const [leftAlone, setLeftAlone] = useState<Record<string, boolean>>({});
   // The request that is out: one change at a time, each built on the last one stored.
@@ -226,7 +234,8 @@ export default function RoomShellEditDialog({
     setNotice(null);
     setBusyWith({ key, what: 'save' });
     try {
-      // A truss or ring that is moved, raised, turned or resized takes the fixtures hung on it, unless its box is unticked.
+      // A truss or ring that is moved, raised, turned or resized takes the fixtures hung on it, and a
+      // raised area the ones standing on it, unless its box is unticked.
       const carry = !leftAlone[key];
       const result = await roomScanApi.editShellItem(
         rigId, item.kind, item.index, withCarry(item, reading.changes, carry),
@@ -434,8 +443,10 @@ export default function RoomShellEditDialog({
           the middle of the floor (downstage is positive, upstage negative). A heading is degrees
           clockwise from across the room, seen from above: 0 runs across, 90 from upstage to
           downstage. A moved line keeps its length and the way it runs. The fixtures hung on a truss
-          or a ring go with it when it is moved, raised, turned or resized, unless its box is
-          unticked; nothing else here moves a fixture. Undo takes back one change at a time, with
+          or a ring, and the ones standing on a raised area, go with it when it is moved, raised,
+          turned or resized, unless its box is unticked; nothing else here moves a fixture. A raised
+          area&apos;s base height is how far its underside is above the floor: 0 stands on it, more
+          floats, as a balcony does. Undo takes back one change at a time, with
           the fixtures it moved; reading the scan again replaces every change, and then there is
           nothing left to undo.
         </Typography>
@@ -515,6 +526,38 @@ export default function RoomShellEditDialog({
                               Turn
                             </Button>
                           )}
+                          {item.kind === 'risers' && (
+                            // How far its underside is above the floor: 0 stands on it, more floats.
+                            <TextField
+                              size="small"
+                              label={`${BASE_HEIGHT_LABEL} (m)`}
+                              value={baseHeightShown(item, draft)}
+                              disabled={busy}
+                              onChange={(e) => setField(item, 'base_height', e.target.value)}
+                              inputProps={{ 'aria-label': `${BASE_HEIGHT_LABEL} of ${title}`, inputMode: 'decimal' }}
+                              sx={{ width: 124 }}
+                            />
+                          )}
+                          {item.kind === 'risers' && (
+                            // What it is. Its place in the list is kept; only the first stage takes a scan's floor lights.
+                            <TextField
+                              select
+                              size="small"
+                              label="Kind"
+                              value={riserKindShown(item, draft)}
+                              disabled={busy}
+                              onChange={(e) => setField(item, 'riser_kind', e.target.value)}
+                              SelectProps={{ native: true }}
+                              inputProps={{ 'aria-label': `Kind of ${title}` }}
+                              sx={{ width: 160 }}
+                            >
+                              {/* One stored with no kind the row knows shows as none until one is chosen. */}
+                              {item.riserKind === null && <option value="" disabled>Not set</option>}
+                              {RISER_KIND_CHOICES.map((choice) => (
+                                <option key={choice.kind} value={choice.kind}>{choice.label}</option>
+                              ))}
+                            </TextField>
+                          )}
                         </Box>
                       </TableCell>
                       <TableCell sx={{ width: 120 }}>
@@ -526,8 +569,8 @@ export default function RoomShellEditDialog({
                           <Chip key={mark} size="small" label={mark} sx={{ mt: 0.5, mr: 0.5 }} />
                         ))}
                         {carriesFixtures(item.kind) && (
-                          // Fixtures hang on a line or a ring: when it is moved, raised, turned or
-                          // resized they go with it, unless this is unticked.
+                          // Fixtures hang on a line or a ring and stand on a raised area: when it is
+                          // moved, raised, turned or resized they go with it, unless this is unticked.
                           <FormControlLabel
                             sx={{ display: 'flex', mt: 0.5, mr: 0 }}
                             control={
@@ -536,10 +579,10 @@ export default function RoomShellEditDialog({
                                 checked={!leftAlone[key]}
                                 disabled={busy}
                                 onChange={(e) => setLeftAlone((current) => ({ ...current, [key]: !e.target.checked }))}
-                                inputProps={{ 'aria-label': `Move the fixtures hung on ${title}` }}
+                                inputProps={{ 'aria-label': carryBoxName(item.kind, title) }}
                               />
                             }
-                            label={<Typography variant="caption">{CARRY_LABEL}</Typography>}
+                            label={<Typography variant="caption">{carryLabel(item.kind)}</Typography>}
                           />
                         )}
                         {reading.problem && (

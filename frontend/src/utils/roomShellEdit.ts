@@ -35,7 +35,22 @@ export const SHELL_LIMITS = {
   hang: 0.5,
   /** A heading, either way round. */
   heading: 360,
+  /** How far above the floor a raised area's underside can float (edit.BASE_MAX_M). */
+  baseMost: 10,
 } as const;
+
+/** What a raised area is. Only the first stage in the list is what a scan's suggestion puts floor lights on. */
+export type RiserKind = 'stage' | 'riser' | 'booth';
+
+/** The kinds a raised area's row offers, in the order of its selector. */
+export const RISER_KIND_CHOICES: Array<{ kind: RiserKind; label: string }> = [
+  { kind: 'stage', label: 'Stage' },
+  { kind: 'riser', label: 'Riser' },
+  { kind: 'booth', label: 'Booth or counter' },
+];
+
+/** What the base height field of a raised area's row is called. */
+export const BASE_HEIGHT_LABEL = 'Base height';
 
 /** The size fields each kind of item has, in the order the dialog shows them. */
 export const SHELL_SIZE_FIELDS: Record<ShellItemKind, ShellSizeField[]> = {
@@ -77,11 +92,18 @@ export interface ShellItem {
    * set from a row.
    */
   sizes: Partial<Record<ShellSizeField, number>>;
+  /**
+   * A raised area's underside above the floor: 0 for one that stands on it,
+   * or that was stored before a base could be set. Null for a line or a ring.
+   */
+  baseHeight: number | null;
+  /** What a raised area is, or null for a line, a ring, and one stored with no kind the row knows. */
+  riserKind: RiserKind | null;
   /** Whether the 2D and 3D views draw it. One they do not can still be deleted. */
   drawn: boolean;
   /** False once somebody has moved, resized or added it: it is no longer the scan's guess. */
   suggested: boolean;
-  /** What a person has done to it, for the row's chips: "Added by hand", "Moved by hand", "Resized by hand". */
+  /** What a person has done to it, for the row's chips: "Added by hand", "Moved by hand", "Resized by hand", "Kind set by hand". */
   marks: string[];
 }
 
@@ -95,6 +117,14 @@ const metres = (value: number) => `${value.toFixed(1)} m`;
 const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const named = (name: unknown): string => (typeof name === 'string' ? name.trim() : '');
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+
+/**
+ * What is said after a raised area's top when it does not stand on the floor:
+ * ", floating 2.70 m above it". Nothing for one that does.
+ */
+export function floatingText(base: number | null | undefined): string {
+  return isNumber(base) && base > 0 ? `, floating ${base.toFixed(2)} m above it` : '';
+}
 
 /** The sizes of a stored item that are numbers, by field. */
 function sizesOf(stored: Record<string, unknown>, fields: ShellSizeField[]): Partial<Record<ShellSizeField, number>> {
@@ -113,6 +143,7 @@ function marksOf(stored: { suggested?: boolean; basis?: string; added_by_hand?: 
   if (stored.added_by_hand === true) marks.push('Added by hand');
   if (basis.includes('Moved by hand.')) marks.push('Moved by hand');
   if (basis.includes('Resized by hand.')) marks.push('Resized by hand');
+  if (basis.includes('Kind set by hand.')) marks.push('Kind set by hand');
   // A shell edited before the marks were told apart says only that it is not the scan's.
   if (marks.length === 0 && stored.suggested === false) marks.push('Moved by hand');
   return marks;
@@ -150,16 +181,19 @@ export function shellItems(shell: RoomShell | null | undefined): ShellItem[] {
     const riser = stored as unknown as RoomShellBox;
     const drawn = usableBox(riser);
     const centre = isNumber(riser.center_x) && isNumber(riser.center_z) ? { x: riser.center_x, z: riser.center_z } : null;
+    const base = isNumber(riser.base_height) && riser.base_height > 0 ? riser.base_height : 0;
     items.push({
       kind: 'risers',
       index,
       name: named(riser.name),
       fallbackName: KIND_WORDS[riser.kind ?? 'riser'] ?? 'Raised area',
       detail: drawn
-        ? `${metres(riser.width)} by ${metres(riser.depth)}, top ${((riser.base_height ?? 0) + riser.height).toFixed(2)} m above the floor`
+        ? `${metres(riser.width)} by ${metres(riser.depth)}, top ${(base + riser.height).toFixed(2)} m above the floor${floatingText(base)}`
         : 'Not drawn: its size is missing',
       centre,
       sizes: sizesOf(stored, SHELL_SIZE_FIELDS.risers),
+      baseHeight: base,
+      riserKind: riser.kind === 'stage' || riser.kind === 'riser' || riser.kind === 'booth' ? riser.kind : null,
       drawn,
       suggested: riser.suggested !== false,
       marks: marksOf(riser),
@@ -188,6 +222,8 @@ export function shellItems(shell: RoomShell | null | undefined): ShellItem[] {
         : 'Not drawn: its ends or its height are missing, or it is too short',
       centre: ends ? { x: (line.x1 + line.x2) / 2, z: (line.z1 + line.z2) / 2 } : null,
       sizes,
+      baseHeight: null,
+      riserKind: null,
       drawn,
       suggested: line.suggested !== false,
       marks: marksOf(line),
@@ -209,6 +245,8 @@ export function shellItems(shell: RoomShell | null | undefined): ShellItem[] {
         : 'Not drawn: its size or its height is missing',
       centre,
       sizes: sizesOf(stored, SHELL_SIZE_FIELDS.truss_rings),
+      baseHeight: null,
+      riserKind: null,
       drawn,
       suggested: ring.suggested !== false,
       marks: marksOf(ring),
@@ -242,6 +280,10 @@ export interface ShellItemDraft {
   radius?: string;
   height?: string;
   heading_deg?: string;
+  /** A raised area's base height, as typed. Left out until the row's field is touched: it then shows what is stored. */
+  base_height?: string;
+  /** What a raised area is to be, as chosen. Left out until the row's selector is touched. */
+  riser_kind?: string;
 }
 
 /** What is sent to change an item. Anything left out is kept. */
@@ -255,29 +297,57 @@ export interface ShellItemChanges {
   radius?: number;
   height?: number;
   heading_deg?: number;
+  /** A raised area's underside above the floor, in metres: 0 stands on it. */
+  base_height?: number;
+  /** What a raised area is to be. Its place in the list is kept. */
+  riser_kind?: RiserKind;
   /**
-   * Whether the fixtures hung on a line or ring go with it when it is moved,
-   * raised, turned or resized. Left out, the server takes them along.
+   * Whether the fixtures hung on a line or ring, or standing on a raised
+   * area, go with it when it is moved, raised, turned or resized. Left out,
+   * the server takes them along.
    */
   carry_fixtures?: boolean;
 }
 
-/** Whether fixtures hang on this kind of item: a truss line or a ring, never a raised area. */
+/**
+ * Whether fixtures go with this kind of item: they hang on a truss line or a
+ * ring, and since slice 18 they stand on a raised area.
+ */
 export function carriesFixtures(kind: ShellItemKind): boolean {
-  return kind === 'truss_lines' || kind === 'truss_rings';
+  return kind === 'truss_lines' || kind === 'truss_rings' || kind === 'risers';
+}
+
+/** Whether fixtures stand on this kind of item (a raised area) rather than hang on it. */
+export function stoodOn(kind: ShellItemKind): boolean {
+  return kind === 'risers';
 }
 
 /** The label of the box that says whether a truss takes its fixtures along. */
 export const CARRY_LABEL = 'Move the fixtures hung on it';
 
+/** The same box on a raised area's row. */
+export const CARRY_STANDING_LABEL = 'Move the fixtures standing on it';
+
+/** The label of a row's box: fixtures hang on a truss and stand on a raised area. */
+export function carryLabel(kind: ShellItemKind): string {
+  return stoodOn(kind) ? CARRY_STANDING_LABEL : CARRY_LABEL;
+}
+
+/** What the box is called for a screen reader: "Move the fixtures standing on Stage". */
+export function carryBoxName(kind: ShellItemKind, title: string): string {
+  return `Move the fixtures ${stoodOn(kind) ? 'standing' : 'hung'} on ${title}`;
+}
+
 /**
  * What is sent for a row's changes, with whether its fixtures go along. The
- * flag goes only with a change that could move one: a line or ring whose
- * place, size, height or heading changes. A rename and a raised area are sent
- * as they were.
+ * flag goes only with a change that could move one: an item whose place,
+ * size, height, base or heading changes. A rename and a change of what a
+ * raised area is are sent as they were.
  */
 export function withCarry(item: Pick<ShellItem, 'kind'>, changes: ShellItemChanges, carry: boolean): ShellItemChanges {
-  const reshapes = Object.keys(changes).some((key) => key !== 'name' && key !== 'carry_fixtures');
+  const reshapes = Object.keys(changes).some(
+    (key) => key !== 'name' && key !== 'carry_fixtures' && key !== 'riser_kind',
+  );
   return carriesFixtures(item.kind) && reshapes ? { ...changes, carry_fixtures: carry } : changes;
 }
 
@@ -388,7 +458,43 @@ export function readDraft(item: ShellItem, draft: ShellItemDraft): DraftReading 
     if (Math.abs(value - stored) >= (field === 'heading_deg' ? 0.05 : 0.0005)) changes[field] = value;
   }
 
+  // A raised area's base and kind are in the draft only once the row's field or selector was touched.
+  if (item.kind === 'risers' && item.baseHeight !== null && draft.base_height !== undefined
+    && draft.base_height.trim() !== positionText(item.baseHeight)) {
+    const value = typedNumber(draft.base_height);
+    const problem = baseHeightProblem(value);
+    if (problem || value === null) return { changes: null, problem };
+    if (Math.abs(value - item.baseHeight) >= 0.0005) changes.base_height = value;
+  }
+  if (item.kind === 'risers' && draft.riser_kind !== undefined && draft.riser_kind !== (item.riserKind ?? '')) {
+    const chosen = RISER_KIND_CHOICES.find((choice) => choice.kind === draft.riser_kind);
+    if (!chosen) return { changes: null, problem: 'A raised area is a stage, a riser or a booth.' };
+    changes.riser_kind = chosen.kind;
+  }
+
   return { changes: Object.keys(changes).length > 0 ? changes : null, problem: null };
+}
+
+/**
+ * Why a typed base height cannot be sent, or null when it can: a number of
+ * metres from 0 (standing on the floor) to 10. Whether the top then fits
+ * under the ceiling is the server's to say.
+ */
+export function baseHeightProblem(value: number | null): string | null {
+  if (value === null || value < 0 || value > SHELL_LIMITS.baseMost) {
+    return `${BASE_HEIGHT_LABEL} must be a number of metres from 0 (on the floor) to ${SHELL_LIMITS.baseMost}.`;
+  }
+  return null;
+}
+
+/** What a row's base height field shows: what was typed, or what is stored. '' for a line or a ring. */
+export function baseHeightShown(item: ShellItem, draft: ShellItemDraft): string {
+  return draft.base_height ?? (item.baseHeight === null ? '' : positionText(item.baseHeight));
+}
+
+/** What a row's kind selector shows: what was chosen, or what is stored. '' when it has no kind the row knows. */
+export function riserKindShown(item: ShellItem, draft: ShellItemDraft): string {
+  return draft.riser_kind ?? item.riserKind ?? '';
 }
 
 /**
@@ -431,9 +537,16 @@ export interface ShellItemEdited {
   /** False when what was sent is what was stored: nothing was written and there is no step to undo. */
   changed?: boolean;
   undo?: ShellUndoInfo;
-  /** Whether the fixtures hung on it were to go with it. */
+  /** For a raised area: what it now is. Null for a line or a ring. */
+  riser_kind?: string | null;
+  /** The place in `risers` of the room's first stage, which a scan's suggestion puts floor lights on; null with none. */
+  first_stage?: number | null;
+  /** Whether the fixtures hung on it, or standing on it, were to go with it. */
   carry_fixtures?: boolean;
-  /** The fixtures hung on a line or ring that moved with it. The rig's positions are stale once this is not empty. */
+  /**
+   * The fixtures hung on a line or ring, or standing on a raised area, that
+   * moved with it. The rig's positions are stale once this is not empty.
+   */
   fixtures_moved?: CarriedFixture[];
   message?: string;
 }
@@ -512,9 +625,15 @@ export function editResultText(
   const title = shellItemTitle(after ?? before);
   const moved = changes.center_x !== undefined || changes.center_z !== undefined;
   const renamed = changes.name !== undefined;
-  const resized = SHELL_SIZE_FIELDS[before.kind].some((field) => changes[field] !== undefined);
+  const resized = SHELL_SIZE_FIELDS[before.kind].some((field) => changes[field] !== undefined)
+    || changes.base_height !== undefined;
   const parts: string[] = [];
   if (renamed) parts.push(`${shellItemTitle(before)} is now called ${title}.`);
+  if (changes.riser_kind !== undefined) {
+    const now = RISER_KIND_CHOICES.find((choice) => choice.kind === changes.riser_kind);
+    // One the server renamed with its kind ("Riser" to "Stage") is named as it was, or the sentence says nothing.
+    parts.push(`${renamed ? title : shellItemTitle(before)} is now a ${(now?.label ?? changes.riser_kind).toLowerCase()}.`);
+  }
   if (moved && after?.centre) {
     const held = (changes.center_x !== undefined && Math.abs(after.centre.x - changes.center_x) >= 0.0005)
       || (changes.center_z !== undefined && Math.abs(after.centre.z - changes.center_z) >= 0.0005);
@@ -538,13 +657,17 @@ export function editResultText(
   return parts.join(' ') || `${title} was saved.`;
 }
 
-/** What became of the fixtures hung on a changed item, in a sentence: the moved-count notice. */
+/**
+ * What became of the fixtures hung on a changed line or ring, or standing on
+ * a changed raised area, in a sentence: the moved-count notice.
+ */
 export function carriedText(kind: ShellItemKind, carried?: { moved: number; asked: boolean }): string {
   if (carried && carriesFixtures(kind)) {
+    const how = stoodOn(kind) ? 'standing on' : 'hung on';
     if (carried.moved > 0) {
-      return `${carried.moved} fixture${carried.moved === 1 ? '' : 's'} hung on it moved with it.`;
+      return `${carried.moved} fixture${carried.moved === 1 ? '' : 's'} ${how} it moved with it.`;
     }
-    if (!carried.asked) return 'The fixtures hung on it were left where they are.';
+    if (!carried.asked) return `The fixtures ${how} it were left where they are.`;
   }
   return 'No fixture was moved with it.';
 }
@@ -553,7 +676,9 @@ export function carriedText(kind: ShellItemKind, carried?: { moved: number; aske
 export function deleteQuestionText(item: ShellItem): string {
   const overhead = item.kind !== 'risers';
   return `Take ${shellItemTitle(item)} out of the stored room? `
-    + (overhead ? 'Fixtures hung on it stay where they are, and nothing will snap to it or be laid along it. ' : '')
+    + (overhead
+      ? 'Fixtures hung on it stay where they are, and nothing will snap to it or be laid along it. '
+      : 'Fixtures standing on it stay where they are. ')
     + 'Undo here brings it back, until the scan is read again.';
 }
 

@@ -130,9 +130,12 @@ export function roomPlan(shell: RoomShell | null | undefined): RoomPlan | null {
   }
 
   const raised: PlanRaised[] = scanRisers(shell).map((riser) => {
-    const top = (riser.base_height ?? 0) + riser.height;
+    const base = Number.isFinite(riser.base_height) && riser.base_height! > 0 ? riser.base_height! : 0;
+    const top = base + riser.height;
     const kind = riser.kind ?? 'riser';
     const name = riser.name ?? KIND_WORDS[kind] ?? 'Raised area';
+    // One that does not stand on the floor (a balcony, a mezzanine) says how far above it it floats.
+    const floating = base > 0 ? `, floating ${base.toFixed(2)} m above it` : '';
     return {
       x: riser.center_x - riser.width / 2,
       z: riser.center_z - riser.depth / 2,
@@ -143,7 +146,7 @@ export function roomPlan(shell: RoomShell | null | undefined): RoomPlan | null {
       top,
       kind,
       label: `${name} · ${top.toFixed(2)} m high`,
-      tooltip: `${name}: ${metres(riser.width)} by ${metres(riser.depth)}, top ${top.toFixed(2)} m above the floor`,
+      tooltip: `${name}: ${metres(riser.width)} by ${metres(riser.depth)}, top ${top.toFixed(2)} m above the floor${floating}`,
     };
   });
 
