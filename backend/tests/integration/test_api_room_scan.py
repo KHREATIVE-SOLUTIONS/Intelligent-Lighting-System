@@ -15,8 +15,11 @@ The scans are made in the test (tests/unit/room_scan_meshes.py). Nothing here
 drives a fixture: the endpoint changes stored positions and scenery only.
 """
 
+import json
+
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import text
 
 from app.services.venue_import.apply import is_unconfirmed, position_source
 from tests.unit.room_scan_meshes import (
@@ -439,6 +442,192 @@ class TestRoomScanApply:
         assert edited.json()["room_shell"] is not None
 
 
+class TestRoomShellEdit:
+    """PATCH and DELETE on /room-shell/{kind}/{index}: one raised area, line or ring, by hand.
+
+    The synthetic room has two raised areas and one overhead line.
+    """
+
+    async def stored(self, client: AsyncClient, sample_rig_data, sample_fixture_data, lights=LIGHTS):
+        rig_id = await build_rig(client, sample_rig_data, sample_fixture_data, lights=lights)
+        applied = await client.post(
+            f"/api/rigs/{rig_id}/room-scan", files=upload("club.obj", scan_file()), params={"apply": True},
+        )
+        assert applied.status_code == 200, applied.text
+        return rig_id, applied.json()["room_shell"]
+
+    async def shell_of(self, client: AsyncClient, rig_id: int):
+        rig = await client.get(f"/api/rigs/{rig_id}")
+        assert rig.status_code == 200, rig.text
+        return rig.json()["room_shell"]
+
+    async def column(self, db_session, rig_id: int):
+        """The shell as the database row has it, not as the loaded rig does.
+
+        The requests of one test share a session, so the rig a GET answers
+        with is the object the edit assigned to. The column is plain JSON: a
+        change the session did not see as one would be answered and never
+        written. This reads the row itself.
+        """
+        row = (await db_session.execute(
+            text("SELECT room_shell FROM rigs WHERE id = :id"), {"id": rig_id},
+        )).one()
+        return json.loads(row[0]) if isinstance(row[0], str) else row[0]
+
+    @pytest.mark.asyncio
+    async def test_a_rename_is_stored_and_changes_nothing_else(
+        self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, before = await self.stored(client, sample_rig_data, sample_fixture_data)
+        fixtures = await fixtures_by_name(client, rig_id)
+        undo = (await client.get(f"/api/rigs/{rig_id}")).json()["room_scan_undo"]
+
+        response = await client.patch(f"/api/rigs/{rig_id}/room-shell/risers/1", json={"name": "  The bar "})
+
+        assert response.status_code == 200, response.text
+        answer = response.json()
+        assert (answer["rig_id"], answer["kind"], answer["index"]) == (rig_id, "risers", 1)
+        assert answer["item"] == {**before["risers"][1], "name": "The bar"}
+
+        # Read back from the rig, as the views load it: the edit was written, not only answered.
+        after = await self.shell_of(client, rig_id)
+        assert after == answer["room_shell"]
+        assert after == {**before, "risers": [before["risers"][0], {**before["risers"][1], "name": "The bar"}]}
+        assert await self.column(db_session, rig_id) == after
+        # No fixture moved or was retagged, and the scan's moves can still be undone.
+        assert await fixtures_by_name(client, rig_id) == fixtures
+        assert (await client.get(f"/api/rigs/{rig_id}")).json()["room_scan_undo"] == undo
+
+    @pytest.mark.asyncio
+    async def test_a_moved_line_keeps_its_length_and_no_fixture_follows_it(
+        self, client: AsyncClient, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, before = await self.stored(client, sample_rig_data, sample_fixture_data)
+        line = before["truss_lines"][0]
+        fixtures = await fixtures_by_name(client, rig_id)
+        middle_x = (line["x1"] + line["x2"]) / 2
+
+        response = await client.patch(
+            f"/api/rigs/{rig_id}/room-shell/truss_lines/0", json={"center_z": 1.5, "name": "Front truss"},
+        )
+
+        assert response.status_code == 200, response.text
+        moved = (await self.shell_of(client, rig_id))["truss_lines"][0]
+        assert moved["name"] == "Front truss"
+        assert (moved["z1"] + moved["z2"]) / 2 == pytest.approx(1.5, abs=0.001)
+        assert (moved["x1"] + moved["x2"]) / 2 == pytest.approx(middle_x, abs=0.001)
+        assert moved["x2"] - moved["x1"] == pytest.approx(line["x2"] - line["x1"], abs=0.001)
+        assert moved["z2"] - moved["z1"] == pytest.approx(line["z2"] - line["z1"], abs=0.001)
+        assert (moved["height"], moved["length"]) == (line["height"], line["length"])
+        # A person put it there: it is no longer the scan's suggestion.
+        assert moved["suggested"] is False and "Moved by hand" in moved["basis"]
+        # The row the scan hung under it stays where the scan put it.
+        assert await fixtures_by_name(client, rig_id) == fixtures
+
+    @pytest.mark.asyncio
+    async def test_a_move_is_held_to_the_room(self, client: AsyncClient, sample_rig_data, sample_fixture_data):
+        rig_id, before = await self.stored(client, sample_rig_data, sample_fixture_data, lights=[])
+
+        response = await client.patch(
+            f"/api/rigs/{rig_id}/room-shell/risers/0", json={"center_x": 900.0, "center_z": -900.0},
+        )
+
+        assert response.status_code == 200, response.text
+        item = response.json()["item"]
+        assert item["center_x"] == pytest.approx(before["room"]["width"] / 2 + 2.0, abs=0.001)
+        assert item["center_z"] == pytest.approx(-(before["room"]["depth"] / 2 + 2.0), abs=0.001)
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_line_takes_its_hanging_height_with_it(
+        self, client: AsyncClient, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, before = await self.stored(client, sample_rig_data, sample_fixture_data)
+        fixtures = await fixtures_by_name(client, rig_id)
+        assert len(before["truss_lines"]) == 1 and len(before["hanging_bands"]) == 1
+
+        response = await client.delete(f"/api/rigs/{rig_id}/room-shell/truss_lines/0")
+
+        assert response.status_code == 200, response.text
+        answer = response.json()
+        assert answer["removed"] == before["truss_lines"][0]
+        assert "Overhead line 1" in answer["message"] and "No fixture was moved" in answer["message"]
+        after = await self.shell_of(client, rig_id)
+        assert after == answer["room_shell"]
+        assert after["truss_lines"] == [] and after["hanging_bands"] == []
+        assert after["risers"] == before["risers"] and after["room"] == before["room"]
+        assert await fixtures_by_name(client, rig_id) == fixtures
+
+        # It is gone: the same request again has nothing to delete.
+        again = await client.delete(f"/api/rigs/{rig_id}/room-shell/truss_lines/0")
+        assert again.status_code == 404 and "load the rig again" in again.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_raised_area_moves_the_next_one_up(
+        self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, before = await self.stored(client, sample_rig_data, sample_fixture_data, lights=[])
+
+        response = await client.delete(f"/api/rigs/{rig_id}/room-shell/risers/0")
+
+        assert response.status_code == 200, response.text
+        after = await self.shell_of(client, rig_id)
+        assert after["risers"] == [before["risers"][1]]
+        assert await self.column(db_session, rig_id) == after
+        assert after["truss_lines"] == before["truss_lines"] and after["hanging_bands"] == before["hanging_bands"]
+        # Edits made one after another each build on the last one stored.
+        renamed = await client.patch(f"/api/rigs/{rig_id}/room-shell/risers/0", json={"name": "DJ booth"})
+        assert renamed.status_code == 200, renamed.text
+        assert [area["name"] for area in (await self.shell_of(client, rig_id))["risers"]] == ["DJ booth"]
+
+    @pytest.mark.asyncio
+    async def test_what_cannot_be_edited_says_why(self, client: AsyncClient, sample_rig_data, sample_fixture_data):
+        bare = await build_rig(client, sample_rig_data, sample_fixture_data, lights=[])
+        no_room = await client.patch(f"/api/rigs/{bare}/room-shell/risers/0", json={"name": "Bar"})
+        assert no_room.status_code == 404 and "no scanned room" in no_room.json()["detail"]
+        assert (await client.delete(f"/api/rigs/{bare}/room-shell/risers/0")).status_code == 404
+
+        assert (await client.patch("/api/rigs/999999/room-shell/risers/0", json={"name": "Bar"})).status_code == 404
+        assert (await client.delete("/api/rigs/999999/room-shell/risers/0")).status_code == 404
+
+        await client.post(
+            f"/api/rigs/{bare}/room-scan", files=upload("club.obj", scan_file()), params={"apply": True},
+        )
+        before = await self.shell_of(client, bare)
+        path = f"/api/rigs/{bare}/room-shell"
+
+        assert (await client.patch(f"{path}/risers/7", json={"name": "Bar"})).status_code == 404
+        assert (await client.delete(f"{path}/truss_rings/0")).status_code == 404
+        # The room's own box and the scan's record are not items.
+        assert (await client.delete(f"{path}/room/0")).status_code == 404
+        assert (await client.patch(f"{path}/hanging_bands/0", json={"name": "Bar"})).status_code == 404
+
+        blank = await client.patch(f"{path}/risers/0", json={"name": "   "})
+        assert blank.status_code == 422 and "name" in blank.json()["detail"]
+        assert (await client.patch(f"{path}/risers/0", json={"name": "x" * 61})).status_code == 422
+        nothing = await client.patch(f"{path}/risers/0", json={})
+        assert nothing.status_code == 422 and "Nothing to change" in nothing.json()["detail"]
+        assert (await client.patch(f"{path}/risers/0", json={"center_x": "left"})).status_code == 422
+        assert (await client.patch(f"{path}/risers/first", json={"name": "Bar"})).status_code == 422
+
+        # None of it wrote anything.
+        assert await self.shell_of(client, bare) == before
+
+    @pytest.mark.asyncio
+    async def test_a_scan_read_again_replaces_the_edits(
+        self, client: AsyncClient, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, before = await self.stored(client, sample_rig_data, sample_fixture_data, lights=[])
+        await client.patch(f"/api/rigs/{rig_id}/room-shell/risers/0", json={"name": "Main stage"})
+        await client.delete(f"/api/rigs/{rig_id}/room-shell/truss_lines/0")
+
+        again = await client.post(
+            f"/api/rigs/{rig_id}/room-scan", files=upload("club.obj", scan_file()), params={"apply": True},
+        )
+
+        assert again.status_code == 200, again.text
+        assert await self.shell_of(client, rig_id) == before
+
+
 class TestRoomScanNeedsAnOperator:
 
     @pytest.mark.asyncio
@@ -447,3 +636,9 @@ class TestRoomScanNeedsAnOperator:
             "/api/rigs/1/room-scan", files=upload("club.obj", b"v 0 0 0\n"),
         )
         assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_editing_the_stored_room_is_behind_the_login(self, unauthenticated_client: AsyncClient):
+        renamed = await unauthenticated_client.patch("/api/rigs/1/room-shell/risers/0", json={"name": "Bar"})
+        assert renamed.status_code in (401, 403)
+        assert (await unauthenticated_client.delete("/api/rigs/1/room-shell/risers/0")).status_code in (401, 403)
