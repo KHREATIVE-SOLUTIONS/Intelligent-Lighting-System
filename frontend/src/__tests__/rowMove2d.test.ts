@@ -5,7 +5,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { planTrussTargets, roomPlan } from '../components/rig/roomPlan2d';
 import {
-  holdRowShift, onPlanTarget, rowOf, rowReadoutText, snapReadoutText, snapshotPositions, withMoves, withSnapshot,
+  heightIdsOf, heightsBefore, holdRowShift, onPlanTarget, rowOf, rowReadoutText, snapReadoutText, snapshotPositions,
+  withMoves, withSnapshot,
 } from '../components/rig/rowMove2d';
 import type { RowFixture } from '../components/rig/rowMove2d';
 import { useRigEditorStore } from '../stores/rigEditorStore';
@@ -255,24 +256,67 @@ describe('the editor\'s selection and undo, for a row', () => {
     // One snapshot for the whole drag, as the editor takes on its first move.
     store().pushUndo(snapshotPositions(before));
     // The row carried onto a truss at z = -2 that hangs at 4.2 m, in two steps of the pointer.
-    const partWay = withMoves(before, [{ id: 1, x: -0.9, z: -1 }, { id: 2, x: 0.1, z: -1 }, { id: 3, x: 1.1, z: -1 }]);
-    const after = withMoves(partWay.fixtures, [
+    const first = [{ id: 1, x: -0.9, z: -1 }, { id: 2, x: 0.1, z: -1 }, { id: 3, x: 1.1, z: -1 }];
+    store().noteUndoHeights(heightsBefore(before, first));
+    const partWay = withMoves(before, first);
+    const second = [
       { id: 1, x: -0.8, z: -2, y: 4.2 }, { id: 2, x: 0.2, z: -2, y: 4.2 }, { id: 3, x: 1.2, z: -2, y: 4.2 },
-    ]);
+    ];
+    store().noteUndoHeights(heightsBefore(partWay.fixtures, second));
+    const after = withMoves(partWay.fixtures, second);
     expect(after.changed).toEqual([1, 2, 3]);
     expect(store().undoStack).toHaveLength(1);
+    // The step knows the three heights the snap changed, and not the fourth fixture's.
+    expect(heightIdsOf(store().undoStack[0])).toEqual([1, 2, 3]);
 
-    const previous = store().undo(snapshotPositions(after.fixtures));
+    const previous = store().undo(snapshotPositions(after.fixtures, heightIdsOf(store().undoStack[0])));
     const undone = withSnapshot(after.fixtures, previous!);
     // The three that moved are what is saved again, in one batch; the fourth never changed.
     expect(undone.changed).toEqual([1, 2, 3]);
     expect(undone.fixtures).toEqual(before);
     expect(store().undoStack).toHaveLength(0);
 
-    const next = store().redo(snapshotPositions(undone.fixtures));
+    const next = store().redo(snapshotPositions(undone.fixtures, heightIdsOf(store().redoStack[0])));
     const redone = withSnapshot(undone.fixtures, next!);
     expect(redone.changed).toEqual([1, 2, 3]);
     expect(redone.fixtures).toEqual(after.fixtures);
+  });
+
+  it('keeps the height from before the drag, not one from part way through it', () => {
+    const before = [fx(1, 0, 4, 0)];
+    store().pushUndo(snapshotPositions(before));
+    // Onto a truss at 4.2 m, off it again, and onto one at 5 m.
+    store().noteUndoHeights(heightsBefore(before, [{ id: 1, x: 0, z: -2, y: 4.2 }]));
+    const onFirst = withMoves(before, [{ id: 1, x: 0, z: -2, y: 4.2 }]);
+    store().noteUndoHeights(heightsBefore(onFirst.fixtures, [{ id: 1, x: 0, z: 3, y: 5 }]));
+    expect(store().undoStack[0]).toEqual([{ id: 1, position_x: 0, position_y: 4, position_z: 0 }]);
+  });
+
+  it('leaves heights out of an undo when the drag changed none, as it always did', () => {
+    const before = [fx(1, 0, 4, 0), fx(2, 2, 4, 0)];
+    store().pushUndo(snapshotPositions(before));
+    const move = [{ id: 1, x: 1, z: 1 }];
+    store().noteUndoHeights(heightsBefore(before, move));
+    expect(heightIdsOf(store().undoStack[0])).toEqual([]);
+    // Both heights are then changed some other way: in the properties panel, say.
+    const moved = withMoves(before, move).fixtures.map((f) => ({ ...f, position_y: 6 }));
+    const previous = store().undo(snapshotPositions(moved, heightIdsOf(store().undoStack[0])));
+    const undone = withSnapshot(moved, previous!);
+    expect(undone.changed).toEqual([1]);
+    expect(undone.fixtures).toEqual([fx(1, 0, 6, 0), fx(2, 2, 6, 0)]);
+  });
+
+  it('does not take back a height set on a fixture the row move did not carry', () => {
+    const before = [fx(1, -1, 4, 0), fx(2, 0, 4, 0), fx(3, 3, 1, 3)];
+    store().pushUndo(snapshotPositions(before));
+    const move = [{ id: 1, x: -1, z: -2, y: 4.2 }, { id: 2, x: 0, z: -2, y: 4.2 }];
+    store().noteUndoHeights(heightsBefore(before, move));
+    // Fixture 3 is raised in the properties panel after the row was moved.
+    const after = withMoves(withMoves(before, move).fixtures, [{ id: 3, x: 3, z: 3, y: 2.5 }]).fixtures;
+    const previous = store().undo(snapshotPositions(after, heightIdsOf(store().undoStack[0])));
+    const undone = withSnapshot(after, previous!);
+    expect(undone.changed).toEqual([1, 2]);
+    expect(undone.fixtures).toEqual([fx(1, -1, 4, 0), fx(2, 0, 4, 0), fx(3, 3, 2.5, 3)]);
   });
 
   it('leaves a height alone when a snapshot has none', () => {

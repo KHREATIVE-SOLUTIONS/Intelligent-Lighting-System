@@ -9,7 +9,7 @@ import type { PositionSaveState } from './RigEditorToolbar';
 import FixturePalette from './FixturePalette';
 import StageView2D from './StageView2D';
 import { paletteClickSpot, roomPlan } from './roomPlan2d';
-import { rowOf, snapshotPositions, withMoves, withSnapshot } from './rowMove2d';
+import { heightIdsOf, heightsBefore, rowOf, snapshotPositions, withMoves, withSnapshot } from './rowMove2d';
 import type { PlanMove } from './rowMove2d';
 import PatchTable from './PatchTable';
 import FixtureProperties from './FixtureProperties';
@@ -41,7 +41,7 @@ export default function RigBuilder() {
   const {
     viewMode, snapMode, gridSize, selectedFixtureIds,
     setViewMode, setSnapMode, selectFixture, selectFixtures, deselectAll,
-    undoStack, redoStack, pushUndo, undo, redo, clearHistory,
+    undoStack, redoStack, pushUndo, noteUndoHeights, undo, redo, clearHistory,
   } = useRigEditorStore();
 
   // Drags fire faster than React commits, so the pending-write bookkeeping is
@@ -207,6 +207,9 @@ export default function RigBuilder() {
       pushUndo(snapshotPositions(current.fixtures));
       pendingUndoRef.current = false;
     }
+    // A snap onto scanned truss is the one thing here that changes a height:
+    // the undo step for this drag then has to know what it was.
+    noteUndoHeights(heightsBefore(current.fixtures, moves));
 
     applyRig({ ...current, fixtures: next.fixtures });
     next.changed.forEach((fixtureId) => dirtyIdsRef.current.add(fixtureId));
@@ -245,14 +248,18 @@ export default function RigBuilder() {
   const handleUndo = () => {
     const current = rigRef.current;
     if (!current) return;
-    const previous = undo(snapshotPositions(current.fixtures));
+    // What redo goes back to keeps heights for the same fixtures the step
+    // being undone does: those whose height that drag changed, and no other.
+    const stack = useRigEditorStore.getState().undoStack;
+    const previous = undo(snapshotPositions(current.fixtures, heightIdsOf(stack[stack.length - 1])));
     if (previous) applySnapshot(previous);
   };
 
   const handleRedo = () => {
     const current = rigRef.current;
     if (!current) return;
-    const next = redo(snapshotPositions(current.fixtures));
+    const stack = useRigEditorStore.getState().redoStack;
+    const next = redo(snapshotPositions(current.fixtures, heightIdsOf(stack[stack.length - 1])));
     if (next) applySnapshot(next);
   };
 

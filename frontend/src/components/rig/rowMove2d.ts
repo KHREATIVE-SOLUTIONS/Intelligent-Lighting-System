@@ -183,17 +183,47 @@ export function withMoves<F extends Positioned>(fixtures: F[], moves: PlanMove[]
   return { fixtures: next, changed };
 }
 
-/** Every fixture's position, to step back to: its height too, which a snap onto truss changes. */
-export function snapshotPositions(fixtures: Positioned[]): FixturePositionSnapshot[] {
-  return fixtures.map((f) => ({
-    id: f.id, position_x: f.position_x, position_y: f.position_y, position_z: f.position_z,
-  }));
+/**
+ * Every fixture's place on the plan, to step back to. A height is kept only
+ * for the fixtures in `withHeights`: those whose height the drag being
+ * undone changed, by a snap onto scanned truss. Every other fixture's height
+ * is none of an undo's business (it may have been set in the properties
+ * panel since), which is how it has always been.
+ */
+export function snapshotPositions(fixtures: Positioned[], withHeights?: Iterable<number>): FixturePositionSnapshot[] {
+  const heights = new Set(withHeights ?? []);
+  return fixtures.map((f) => (
+    heights.has(f.id)
+      ? { id: f.id, position_x: f.position_x, position_y: f.position_y, position_z: f.position_z }
+      : { id: f.id, position_x: f.position_x, position_z: f.position_z }
+  ));
+}
+
+/** The fixtures a snapshot keeps a height for. */
+export function heightIdsOf(snapshot: FixturePositionSnapshot[] | undefined): number[] {
+  return (snapshot ?? []).filter((entry) => entry.position_y !== undefined).map((entry) => entry.id);
+}
+
+/**
+ * The heights a set of moves is about to change, as they are now: what an
+ * undo of those moves has to put back. Empty for moves that give no height
+ * or give the one a fixture already has.
+ */
+export function heightsBefore(fixtures: Positioned[], moves: PlanMove[]): Array<{ id: number; position_y: number }> {
+  const byId = new Map(fixtures.map((fixture) => [fixture.id, fixture]));
+  const before: Array<{ id: number; position_y: number }> = [];
+  for (const move of moves) {
+    const fixture = byId.get(move.id);
+    if (!fixture || move.y === undefined || move.y === fixture.position_y) continue;
+    before.push({ id: fixture.id, position_y: fixture.position_y });
+  }
+  return before;
 }
 
 /**
  * Fixtures put back where a snapshot has them, and the ids of those that
- * changed. A snapshot with no height (one taken before heights were kept)
- * leaves the height alone.
+ * changed. A fixture the snapshot keeps no height for keeps the height it
+ * has.
  */
 export function withSnapshot<F extends Positioned>(
   fixtures: F[], snapshot: FixturePositionSnapshot[],

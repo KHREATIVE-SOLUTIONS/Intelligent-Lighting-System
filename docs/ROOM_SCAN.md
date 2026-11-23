@@ -507,7 +507,7 @@ A scan's suggestion moves a row as one piece, and so can a person
 - **Moved guesses stay guesses.** The row is saved through batch-update, all
   of it in one request, which leaves every tag as it is: nothing is
   confirmed, and the fixtures are still amber in the 3D view.
-- **One undo puts the whole row back**, heights included: the editor's Undo
+- **One undo puts the whole row back**, with the heights a snap changed: the editor's Undo
   takes one step for the whole drag, as it does for one fixture, and Redo
   moves it again. (This is the editor's own undo, not "Undo room scan
   moves": that one will now leave these fixtures alone, as "moved since the
@@ -577,9 +577,11 @@ selected and carried on the deck too, held to the deck's edges.
   and a double-click select a row (`rowOf`); a drag carries the selection by
   one shift held to the room (`holdRowShift`).
 - **Save and undo** (`RigBuilder.tsx`): a row move is one batch-update and
-  one undo step. The undo snapshot now keeps heights (`snapshotPositions`,
-  `withSnapshot`), which it did not need to before a 2D drag could change
-  one.
+  one undo step. An undo step now keeps a height, but only for a fixture
+  whose height that drag changed by snapping onto truss (`heightsBefore`,
+  `noteUndoHeights`, `snapshotPositions`). Every other height is left out,
+  so undoing a move never takes back a height set in the properties panel,
+  and a drag that met no truss is undone exactly as before.
 - **No backend change.** `PUT .../fixtures/batch-update` already took
   `position_y` and already left tags alone.
 
@@ -757,7 +759,10 @@ are no binary fixtures in the repository.
   room; a row's shift held to the deck, to a box room and to an L (stopped at
   the notch, let into the other arm, a member that starts outside); moves
   put on a rig; the editor's store building a selection and selecting a row;
-  a row move undone in one step with its heights, and redone.
+  a row move undone in one step with its heights, and redone; the height
+  from before the drag being the one kept; a drag that changed no height
+  undone with no heights touched; a height set on a fixture the row did not
+  carry surviving the undo.
 - `frontend/src/__tests__/StageView2DRowMove.test.tsx` (**slice 9;
   type-checked, not run**): a drag taking a truss line's and a ring's height,
   none out of reach, with Alt or with snapping off, and the pick-up height
@@ -832,7 +837,13 @@ are no binary fixtures in the repository.
 - **The 2D truss snap takes hold on the first move.** There is no 5 pixel
   threshold as in the 3D view, so a press with a wobble next to a truss puts
   the fixture on it (as a press already puts one on the grid). Alt has no
-  touch equivalent.
+  touch equivalent. The same wobble now moves a whole row: a double-click to
+  select a row, or a press on a selected row, that slips can put every
+  off-grid guess of it onto the grid. Undo takes it back; the Select row
+  button selects without touching the plan.
+- **An undone height can be an old one.** An undo step keeps the height a
+  fixture had before the drag snapped it onto truss. If that height is then
+  changed in the properties panel, undoing the drag puts the older one back.
 - **Alt lets go of the scanned truss only.** The grid, or the plan's own
   truss lines, still take the fixture; set the snap mode to None for a free
   drag.

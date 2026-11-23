@@ -8,7 +8,11 @@ export type SnapMode = 'grid' | 'truss' | 'none';
 export interface FixturePositionSnapshot {
   id: number;
   position_x: number;
-  /** The height, which a snap onto scanned truss changes. Left alone by an undo when absent. */
+  /**
+   * The height, kept only for a fixture whose height the drag itself changed
+   * (a snap onto scanned truss). Absent, an undo leaves the height alone, so
+   * a height set in the properties panel is never taken back by undoing a move.
+   */
   position_y?: number;
   position_z: number;
 }
@@ -64,6 +68,11 @@ interface RigEditorState {
   setHoveredFixture: (id: number | null) => void;
   setDragging: (dragging: boolean) => void;
   pushUndo: (snapshot: FixturePositionSnapshot[]) => void;
+  /**
+   * Adds heights to the newest undo step, for fixtures it has none for yet:
+   * the height each had before the drag that step belongs to changed it.
+   */
+  noteUndoHeights: (heights: Array<{ id: number; position_y: number }>) => void;
   undo: (current: FixturePositionSnapshot[]) => FixturePositionSnapshot[] | null;
   redo: (current: FixturePositionSnapshot[]) => FixturePositionSnapshot[] | null;
   clearHistory: () => void;
@@ -106,6 +115,21 @@ export const useRigEditorStore = create<RigEditorState>((set, get) => ({
       undoStack: [...s.undoStack, snapshot].slice(-HISTORY_LIMIT),
       redoStack: [],
     })),
+
+  noteUndoHeights: (heights) =>
+    set((s) => {
+      if (s.undoStack.length === 0 || heights.length === 0) return s;
+      const byId = new Map(heights.map((h) => [h.id, h.position_y]));
+      let noted = false;
+      const top = s.undoStack[s.undoStack.length - 1].map((entry) => {
+        const height = byId.get(entry.id);
+        // The first height noted is the one from before the drag: keep it.
+        if (height === undefined || entry.position_y !== undefined) return entry;
+        noted = true;
+        return { ...entry, position_y: height };
+      });
+      return noted ? { undoStack: [...s.undoStack.slice(0, -1), top] } : s;
+    }),
 
   undo: (current) => {
     const { undoStack } = get();
