@@ -8,6 +8,8 @@ export type SnapMode = 'grid' | 'truss' | 'none';
 export interface FixturePositionSnapshot {
   id: number;
   position_x: number;
+  /** The height, which a snap onto scanned truss changes. Left alone by an undo when absent. */
+  position_y?: number;
   position_z: number;
 }
 
@@ -56,6 +58,8 @@ interface RigEditorState {
   setSnapMode: (mode: SnapMode) => void;
   setGridSize: (size: number) => void;
   selectFixture: (id: number, multi?: boolean) => void;
+  /** Makes these the selection, in place of whatever was selected: a whole row at once. */
+  selectFixtures: (ids: number[]) => void;
   deselectAll: () => void;
   setHoveredFixture: (id: number | null) => void;
   setDragging: (dragging: boolean) => void;
@@ -89,6 +93,8 @@ export const useRigEditorStore = create<RigEditorState>((set, get) => ({
       }
       return { selectedFixtureIds: newSet };
     }),
+
+  selectFixtures: (ids) => set({ selectedFixtureIds: new Set(ids) }),
 
   deselectAll: () => set({ selectedFixtureIds: new Set() }),
 
