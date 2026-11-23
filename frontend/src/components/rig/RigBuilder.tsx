@@ -557,7 +557,9 @@ export default function RigBuilder() {
       <Snackbar
         open={!!notice}
         autoHideDuration={5000}
-        onClose={() => setNotice(null)}
+        // Not on a click elsewhere: the click that asks for the next notice is
+        // one, and would take that notice down in the same breath it went up.
+        onClose={(_event, reason) => { if (reason !== 'clickaway') setNotice(null); }}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
         <Alert severity={notice?.severity ?? 'success'} onClose={() => setNotice(null)} variant="filled">
