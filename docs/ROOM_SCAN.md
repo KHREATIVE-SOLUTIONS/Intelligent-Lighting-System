@@ -1802,7 +1802,7 @@ are no binary fixtures in the repository.
 
 - **Slice 15** (written with it, Nov 23 2026. **Backend: run and passing**,
   full suite 1794 passed, 10 skipped, 5 xfailed. **Frontend: type-checked
-  only** — `tsc --noEmit` shows the same 13 errors in untouched files as
+  only when written** — `tsc --noEmit` shows the same 13 errors in untouched files as
   before and none new, but `npx vitest run` and `npm run build` were refused
   by the session's permissions, so the three new test files and the changes
   to the three Edit Room ones were not run then; the whole frontend suite
@@ -1956,18 +1956,20 @@ are no binary fixtures in the repository.
 ## What is left
 
 - **Checks ran after slice 18**: backend pytest 1951 passed, frontend
-  vitest 943 passed, and the build passed. That frontend run is the first
-  to take in the test files of slices 15, 16 and 17, which were written in
-  sessions that could not run vitest. **Nothing of slices 15 to 18 has been
+  vitest 943 passed, and the build passed. That frontend run takes in the
+  test files of slices 15, 16 and 17, which were written in sessions that
+  could not run vitest. **Nothing of slices 15 to 18 has been
   seen in a browser**: a raised area's row is now wider still (a kind
   selector, a base height field and the box), and the plan and the 3D view
   redraw under the open dialog.
 - **Fixtures follow a raised area only so far** (slice 18):
   - **"Standing on it" is by distance, not by a link.** A light on a stand
     more than 0.6 m above the deck stays behind, and so does one clamped
-    under a floating platform. One on the floor within 0.15 m of a low
-    riser's edge and 0.6 m of its top goes along. Untick the box, or use
-    Undo, when the reach guesses wrong.
+    under a floating platform. One beside the area, within 0.15 m of its
+    edge, goes along when its own height is in that window (a light on a
+    stand next to a low riser); one on the floor there, more than 0.05 m
+    under the top, does not. Untick the box, or use Undo, when the reach
+    guesses wrong.
   - **A fixture within reach of any truss is never carried by a raised
     area**, even a floor light that happens to stand within 0.3 m and
     0.6 m of a low truss.
@@ -1977,8 +1979,9 @@ are no binary fixtures in the repository.
   - **A quarter turn is always clockwise, and is read from the sizes.**
     Two turns leave the area as it was and its fixtures swapped end for
     end, facing the other way. Width and depth typed the other way round
-    are a turn; a turn and another size change in one save are a resize,
-    not a turn; a square area has no turn.
+    are a turn, whatever else is saved with them; a width or depth that
+    is not the exact swap is a resize, not a turn; a square area has no
+    turn.
   - **A resize spreads the fixtures out or closes them up**, by share of
     the footprint. To keep a row's spacing on a bigger stage, untick the
     box.
@@ -1988,8 +1991,9 @@ are no binary fixtures in the repository.
     suggestion is made when a scan is read, from that scan's own room, in
     which every raised area is the scan's guess and stands on the floor. A
     kind or a base height set by hand is replaced when the scan is read
-    again, so neither has yet reached a suggestion: `first_stage` and the
-    lift to a floating stage's top are tested on the function alone.
+    again, so neither has yet reached a suggestion through the API: a
+    suggestion going by a stage set by hand, and its lift to a floating
+    stage's top, are tested on the function alone.
   - **The Add form has no base height.** Add the platform, then set its
     base in its row (the `POST` route takes `base_height`).
   - **A base height is the whole of a level.** A balcony is a box with a
