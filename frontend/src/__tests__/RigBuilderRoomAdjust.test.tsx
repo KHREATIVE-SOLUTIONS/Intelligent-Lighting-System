@@ -162,7 +162,8 @@ describe('RigBuilder: Edit Room, sizes, adding and undo', () => {
     fireEvent.click(button('Save Stage'));
     await flush();
 
-    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { height: 0.9 });
+    // Since slice 18 a raised area takes what stands on it; the answer here says none moved, so the rig is not read again.
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { height: 0.9, carry_fixtures: true });
     // The plan under the dialog draws the room as the server answered it.
     expect(screen.getByText(/^Stage . 0\.90 m high$/)).toBeTruthy();
     expect(screen.queryByText(/^Stage . 0\.60 m high$/)).toBeNull();

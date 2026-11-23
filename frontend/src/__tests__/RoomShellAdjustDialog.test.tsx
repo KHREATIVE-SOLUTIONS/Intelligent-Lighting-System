@@ -100,7 +100,8 @@ describe('RoomShellEditDialog: size, height and heading', () => {
     await flush();
 
     expect(api.editShellItem).toHaveBeenCalledTimes(1);
-    expect(api.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { width: 8 });
+    // The size that changed, and (since slice 18) that the fixtures standing on it go along.
+    expect(api.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { width: 8, carry_fixtures: true });
     expect(onChanged).toHaveBeenCalledWith(after, undo);
     expect(screen.getByText(
       'Stage is now 8.0 m by 3.0 m, top 0.60 m above the floor. No fixture was moved with it.',
@@ -163,7 +164,7 @@ describe('RoomShellEditDialog: size, height and heading', () => {
     fireEvent.click(button('Save Stage'));
     await flush();
 
-    expect(api.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { width: 3, depth: 6 });
+    expect(api.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { width: 3, depth: 6, carry_fixtures: true });
   });
 
   it('has no turn for a line or a ring, which have a heading or need none', () => {

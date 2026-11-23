@@ -84,10 +84,11 @@ describe('RoomShellEditDialog: fixtures follow their truss', () => {
   beforeEach(() => { vi.clearAllMocks(); });
   afterEach(cleanup);
 
-  it('has the box on a line and a ring, ticked, and none on a raised area', () => {
+  it('has the box on a line and a ring, ticked, and a raised area\'s is worded for what stands on it', () => {
     open();
     expect(box('Truss 1').checked).toBe(true);
     expect(box('Ring 1').checked).toBe(true);
+    // Nothing hangs on a stage: its box is slice 18's (RoomShellRaisedDialog.test.tsx).
     expect(screen.queryByRole('checkbox', { name: 'Move the fixtures hung on Stage' })).toBeNull();
     expect(screen.getAllByText('Move the fixtures hung on it')).toHaveLength(2);
     // The box is not a change to save.
@@ -175,7 +176,7 @@ describe('RoomShellEditDialog: fixtures follow their truss', () => {
     expect(onFixturesMoved).not.toHaveBeenCalled();
   });
 
-  it('sends no flag with a rename or with a raised area', async () => {
+  it('sends no flag with a rename, and sends it with a raised area\'s height', async () => {
     const renamed = shell();
     renamed.truss_lines![0].name = 'Front truss';
     api.editShellItem.mockResolvedValueOnce({ rig_id: 7, kind: 'truss_lines', index: 0, item: {}, room_shell: renamed });
@@ -193,7 +194,8 @@ describe('RoomShellEditDialog: fixtures follow their truss', () => {
     type('Height of Stage', '0.9');
     fireEvent.click(button('Save Stage'));
     await flush();
-    expect(api.editShellItem).toHaveBeenLastCalledWith(7, 'risers', 0, { height: 0.9 });
+    // Since slice 18 a raised area takes what stands on it. This answer lists none, so the rig is not read again.
+    expect(api.editShellItem).toHaveBeenLastCalledWith(7, 'risers', 0, { height: 0.9, carry_fixtures: true });
     expect(onFixturesMoved).not.toHaveBeenCalled();
   });
 
@@ -252,7 +254,8 @@ describe('roomShellEdit: the words and the flag', () => {
   it('knows which kinds carry fixtures', () => {
     expect(carriesFixtures('truss_lines')).toBe(true);
     expect(carriesFixtures('truss_rings')).toBe(true);
-    expect(carriesFixtures('risers')).toBe(false);
+    // Since slice 18: the fixtures standing on a raised area go with it.
+    expect(carriesFixtures('risers')).toBe(true);
   });
 
   it('adds the flag only to a change that could move a fixture', () => {
@@ -261,7 +264,9 @@ describe('roomShellEdit: the words and the flag', () => {
       name: 'Halo', height: 4, carry_fixtures: false,
     });
     expect(withCarry({ kind: 'truss_lines' }, { name: 'Front' }, true)).toEqual({ name: 'Front' });
-    expect(withCarry({ kind: 'risers' }, { center_x: 1, width: 3 }, true)).toEqual({ center_x: 1, width: 3 });
+    expect(withCarry({ kind: 'risers' }, { center_x: 1, width: 3 }, true)).toEqual({
+      center_x: 1, width: 3, carry_fixtures: true,
+    });
   });
 
   it('counts what an answer says moved, and says it', () => {
@@ -272,8 +277,8 @@ describe('roomShellEdit: the words and the flag', () => {
     expect(carriedText('truss_rings', { moved: 1, asked: true })).toBe('1 fixture hung on it moved with it.');
     expect(carriedText('truss_lines', { moved: 0, asked: true })).toBe('No fixture was moved with it.');
     expect(carriedText('truss_lines', { moved: 0, asked: false })).toBe('The fixtures hung on it were left where they are.');
-    // A raised area carries nothing, whatever it is told.
-    expect(carriedText('risers', { moved: 0, asked: false })).toBe('No fixture was moved with it.');
+    // A raised area's fixtures stand on it.
+    expect(carriedText('risers', { moved: 0, asked: false })).toBe('The fixtures standing on it were left where they are.');
     expect(carriedText('truss_lines')).toBe('No fixture was moved with it.');
   });
 });
