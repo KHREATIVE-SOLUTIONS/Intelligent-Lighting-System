@@ -44,8 +44,8 @@ box and the keyboard** on the 2D plan. Their tests pass too (frontend vitest
 
 Slice 12 makes the 2D plan **usable from a phone or a tablet at the venue**:
 a long-press is the touch for Shift, the keys are also buttons over the
-plan, and the plan says when the keys are going to a text field (see
-"Under a finger" and "What slice 12 built"). Its tests pass (frontend vitest 654, build OK). It has not been tried on a phone, a
+plan, and the plan says when the keys are going to a text field
+(`planTouch2d.ts`, `PlanNudgePad.tsx`, `StageView2D.tsx`). Its tests pass (frontend vitest 654, build OK). It has not been tried on a phone, a
 tablet or in any browser (see What is left).
 
 Everything here is free and local. Nothing is uploaded anywhere but this
@@ -940,15 +940,15 @@ are no binary fixtures in the repository.
   deck's edge and no further; one Undo puts it back; keys typed in the
   rig's name do nothing.
 
-- `frontend/src/__tests__/planTouch2d.test.ts` (**slice 12; type-checked,
-  not run**): which pointers are a finger or a pen; a press undecided
+- `frontend/src/__tests__/planTouch2d.test.ts` (**slice 12; passing,
+  frontend vitest 654**): which pointers are a finger or a pen; a press undecided
   under 500 ms, a long-press from 500 ms held still or with a wobble, a
   drag from 5 pixels however short the press and when the time is up, and
   a decision that stays made; a pad arrow's shift for each direction, at
   10x, and against the matching arrow key; when the focus cue is due (a
   field, a drop-down) and when it is not (the page, a button, a dialog).
 - `frontend/src/__tests__/StageView2DTouch.test.tsx` (**slice 12;
-  type-checked, not run**): a long-press adding a fixture at 500 ms and
+  passing, frontend vitest 654**): a long-press adding a fixture at 500 ms and
   not at 499, taking a selected one out, moving nothing wherever the
   finger then goes, and holding with a wobble; a finger's drag, tap and
   row drag; a pen; a mouse pointer left to the mouse events; a second
@@ -964,7 +964,7 @@ are no binary fixtures in the repository.
   without the keyboard; a click, a finger and a press on a fixture each
   taking the focus back.
 - `frontend/src/__tests__/RigBuilderRowLay.test.tsx` (**slice 12;
-  type-checked, not run**): the editor itself. A row dragged is one
+  passing, frontend vitest 654**): the editor itself. A row dragged is one
   batch-update and one undo step however many moves it took; one Undo
   puts it back, one Redo carries it again, and a new move after an Undo
   leaves nothing to redo. Lay on truss offered only with scanned truss
@@ -973,7 +973,7 @@ are no binary fixtures in the repository.
   Redo laying it again; pressed again, nothing saved; the same from the
   pad's button.
 - `frontend/src/__tests__/RigBuilderTouch.test.tsx` (**slice 12;
-  type-checked, not run**): the editor itself. A long-press adding to the
+  passing, frontend vitest 654**): the editor itself. A long-press adding to the
   selection and taking out of it, with no undo step and nothing sent
   wherever the finger goes, and the next nudge a step of its own; a box
   after a long-press on empty floor; a finger's drag as one step and one
@@ -985,37 +985,18 @@ are no binary fixtures in the repository.
 ## What is left
 
 - **Checks ran on 2026-11-22, 7:44 PM ET, after slice 8 (outline-held guesses, 2D truss snap, room grid, palette click):** frontend vitest 424 passed (22 files) and the build passed; backend pytest tests/ 1632 passed, 10 skipped, 5 xfailed, including tests/integration/test_api_room_scan.py.
-- **Slice 9 has not had its tests run** (truss height, readout, palette
-  snap, multi-select, row moves). It was written on 2026-11-22 after the run
-  above, in a session that could start `tsc` but not vitest or node, so
-  every expected number in its tests was worked out by hand.
-  `npx tsc --noEmit -p .` gives the same 13 errors with it as without, none
-  in the files it touches. From `frontend` run
-  `npx vitest run src/__tests__/rowMove2d.test.ts src/__tests__/StageView2DRowMove.test.tsx src/__tests__/StageView2D.test.tsx src/__tests__/roomPlan2dLayout.test.ts`,
-  then the whole suite and the build. `rowMove2d.test.ts` has no drawing in
-  it: if it passes and the view's tests fail, suspect the test's events
-  (the palette tests set the pointer position and Alt on the event by hand)
-  before the view. No backend file changed, so the backend run above stands.
-- **Slice 11 has not had its tests run** (drag threshold, selection box,
-  keys). It was written on 2026-11-22 in a session where `tsc` ran and
-  vitest and the build needed an approval nobody was there to give, so its
-  expected numbers were worked out by hand too. `npx tsc --noEmit -p .`
-  gives the same 13 errors, none in its files. From `frontend` run
-  `npx vitest run src/__tests__/planSelect2d.test.ts src/__tests__/StageView2DSelectKeys.test.tsx src/__tests__/RigBuilderSelectKeys.test.tsx src/__tests__/StageView2D.test.tsx src/__tests__/StageView2DRowMove.test.tsx`,
-  then `npx vitest run` and `npm run build`. If `planSelect2d.test.ts`
-  passes and the others fail, suspect the test's events first.
-  `RigBuilderSelectKeys.test.tsx` is the first test to draw the editor
-  itself: it finds the Undo button by the icon's `data-testid="UndoIcon"`
-  and the plan by a fixture's label, and stands in for five side panels.
-  None of slice 11 has been seen in a browser: the box's look, whether a
-  box drag selects text elsewhere on the page, and the keys with the focus
-  left on a toolbar button.
-- **The editor's wiring is tested only where slice 11 touched it.**
-  `RigBuilderSelectKeys.test.tsx` covers a drag, a nudge and a row nudge
-  saved in one batch-update and undone in one step. A row *dragged* through
-  the editor, the Select row and Lay on truss buttons, Redo, a height
-  changed by a snap and undone, and the properties panel put away for
-  several selected are still type-checked only.
+- **Slices 9 to 12 have had their tests run, and they pass**: frontend
+  vitest 654 after slice 12, and the build. No backend file changed in any
+  of them, so the backend run above stands. None of them has been seen in
+  a browser: the readout, the selection box's look, whether a box drag
+  selects text elsewhere on the page, the keys with the focus left on a
+  toolbar button, and the nudge pad under a finger.
+- **The editor's wiring for a row drag, Lay on truss and Redo is tested**
+  by `RigBuilderRowLay.test.tsx`, as a drag, a nudge and a row nudge are by
+  `RigBuilderSelectKeys.test.tsx`: each is one batch-update and one undo
+  step. The Select row button, a height changed by a drag's snap and then
+  undone, and the properties panel put away for several selected are still
+  type-checked only.
 - **A held arrow key moves one step.** Auto-repeat is ignored so that one
   press is one undo step and one request. There is no finer step than the
   grid's: for less, drag with the snap mode set to Free, or type the
@@ -1033,8 +1014,8 @@ are no binary fixtures in the repository.
   to take fixtures *out* of a selection; Shift-click does that.
 - **The keys need the focus off a field.** After typing the rig's name or
   choosing a snap mode, the focus stays there and the plan ignores keys
-  until something else is clicked. Nothing on screen says so. Escape,
-  R and the arrows have no touch equivalent.
+  until the plan is clicked. Since slice 12 a line on the plan says so, and
+  the nudge pad gives a finger the arrows, Select row and Lay on truss.
 - **The 2D room layer has not been seen in a browser**: label sizes and
   nudges in a crowded room, a turned label, the tooltips, where UPSTAGE,
   AUDIENCE and the scale bar land round a real room, a drag and a palette
@@ -1044,14 +1025,6 @@ are no binary fixtures in the repository.
   fixture's name or the truss's own label, a row dragged along a wall and
   into the notch of an L, a double-click selecting a row, and Ctrl-click on
   a Mac, where the browser may open its menu instead.
-- **Slice 10 has not had its tests run either** (Lay on truss). It was
-  written on 2026-11-22 in a session where vitest needed an approval nobody
-  was there to give, so its expected numbers were also worked out by hand.
-  `npx tsc --noEmit -p .` gives the same 13 errors, none in its files. Its
-  tests are at the end of `src/__tests__/rowMove2d.test.ts`, which the
-  command above already runs. `handleLayRow` in `RigBuilder.tsx` and the
-  button are type-checked only, and nothing of it has been seen in a
-  browser.
 - **A drag carries a row, never turns or respaces it.** It snaps onto a truss
   with the fixture under the pointer only, so a row that does not lie along
   the truss has one fixture on it, and a row longer than the truss overhangs
