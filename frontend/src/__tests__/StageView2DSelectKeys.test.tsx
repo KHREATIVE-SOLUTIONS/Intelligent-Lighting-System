@@ -3,7 +3,7 @@
 // selection box, and R, the arrow keys and Escape act on the selection.
 // docs/ROOM_SCAN.md.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react';
 import StageView2D from '../components/rig/StageView2D';
 import type { PlanMove } from '../components/rig/rowMove2d';
 import { FIXTURE_DRAG_MIME } from '../stores/rigEditorStore';
@@ -601,7 +601,9 @@ describe('StageView2D: when the keys are not the plan\'s', () => {
     document.body.appendChild(holder);
     added.push(holder);
     const element = holder.querySelector<HTMLElement>('#it')!;
-    element.focus();
+    // The plan now notes where the focus is (its focus cue), so a change of
+    // focus is something it draws: done as an update, like an event.
+    act(() => { element.focus(); });
     return element;
   }
 
@@ -652,7 +654,7 @@ describe('StageView2D: when the keys are not the plan\'s', () => {
     const field = focused('<input id="it" />');
     press('ArrowRight');
     expect(calls.log).toEqual([]);
-    field.blur();
+    act(() => { field.blur(); });
     press('ArrowRight');
     expect(calls.onFixturesDrag).toHaveBeenCalledTimes(1);
   });
