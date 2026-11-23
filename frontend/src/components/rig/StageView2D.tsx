@@ -8,6 +8,9 @@ import {
   snapToRoomGrid, snapToScannedTruss,
 } from './roomPlan2d';
 import type { PlanLabel } from './roomPlan2d';
+import { holdRowShift, onPlanTarget, rowReadoutText, snapReadoutText } from './rowMove2d';
+import type { PlanMove, RowShift } from './rowMove2d';
+import type { SnapLine } from './previs/fixtureDrag';
 
 const FIXTURE_TYPE_COLORS: Record<string, string> = {
   moving_head: '#e91e63',
@@ -48,9 +51,41 @@ interface StageView2DProps {
   readonly?: boolean;
   onFixtureClick?: (id: number, multi: boolean) => void;
   onFixtureDragStart?: (id: number) => void;
-  onFixtureDrag?: (id: number, x: number, z: number) => void;
+  /**
+   * `y` is given only when the drag put the fixture on a scanned truss line
+   * or ring, whose hang height it takes, or took it off one again, when it
+   * is the height the fixture was picked up at.
+   */
+  onFixtureDrag?: (id: number, x: number, z: number, y?: number) => void;
+  /**
+   * Several selected fixtures carried together, each by the same shift.
+   * Without this a press on one of several selected fixtures selects and
+   * drags that one alone, as it always did.
+   */
+  onFixturesDrag?: (moves: PlanMove[]) => void;
   onFixtureDragEnd?: (id: number) => void;
-  onDropFromPalette?: (fixtureId: number, x: number, z: number) => void;
+  /** A double-click on a fixture: select the whole row it is in. */
+  onFixtureSelectRow?: (id: number) => void;
+  /** `y` is given only when the drop landed on a scanned truss line or ring. */
+  onDropFromPalette?: (fixtureId: number, x: number, z: number, y?: number) => void;
+}
+
+/** One press on a fixture, until it is let go. */
+interface DragSession {
+  /** The fixture under the pointer. */
+  leadId: number;
+  /** Where each fixture being carried stood when it was picked up; the lead alone unless a row is. */
+  members: Array<{ id: number; x: number; y: number; z: number }>;
+  /** The lead's position less the pointer's, unsnapped, so the fixture does not jump to the pointer. */
+  offset: { x: number; z: number };
+  /** The shift the row has now. */
+  shift: RowShift;
+  /** True once the drag has put a fixture on scanned truss: from then on heights are reported. */
+  heightTouched: boolean;
+  /** True once the pointer has moved with the fixture held. */
+  moved: boolean;
+  /** A plain press on one of several selected fixtures: selects it alone if let go without a move. */
+  collapseOnRelease: boolean;
 }
 
 export default function StageView2D({
@@ -65,13 +100,22 @@ export default function StageView2D({
   onFixtureClick,
   onFixtureDragStart,
   onFixtureDrag,
+  onFixturesDrag,
   onFixtureDragEnd,
+  onFixtureSelectRow,
   onDropFromPalette,
 }: StageView2DProps) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [draggingId, setDraggingId] = useState<number | null>(null);
-  const [dragOffset, setDragOffset] = useState({ x: 0, z: 0 });
-  const [dropPreview, setDropPreview] = useState<{ x: number; z: number } | null>(null);
+  // The fixtures being carried: one, or a selected row. Empty when none is held.
+  const [draggingIds, setDraggingIds] = useState<number[]>([]);
+  const dragRef = useRef<DragSession | null>(null);
+  // Set when a row drag ends, so the click that follows a release over the
+  // background (a row held at a wall is not under the pointer) does not
+  // deselect the row that was just moved.
+  const skipBackgroundClick = useRef(false);
+  const [dropPreview, setDropPreview] = useState<{ x: number; z: number; on?: string } | null>(null);
+  // What the drag has snapped onto, said next to the fixture under the pointer.
+  const [snapNote, setSnapNote] = useState<{ x: number; z: number; text: string } | null>(null);
   // Depth the dragged fixture started at, so its own truss stays a snap target
   // while it is lifted off it.
   const dragOriginZ = useRef<number | null>(null);
@@ -106,12 +150,13 @@ export default function StageView2D({
   const toSvgY = useCallback((z: number) => z + depth / 2 + padding, [depth, padding]);
 
   const trussLines = useMemo(() => {
+    // Every fixture being carried is left out, or a row would snap to itself.
     const depths = fixtures
-      .filter((f) => f.id !== draggingId)
+      .filter((f) => !draggingIds.includes(f.id))
       .map((f) => f.position_z);
     if (dragOriginZ.current !== null) depths.push(dragOriginZ.current);
     return computeTrussLines(depths);
-  }, [fixtures, draggingId]);
+  }, [fixtures, draggingIds]);
 
   const pointerToStage = useCallback(
     (clientX: number, clientY: number) => {
@@ -128,14 +173,14 @@ export default function StageView2D({
   );
 
   const applySnap = useCallback(
-    (x: number, z: number, ontoScannedTruss = false) => {
+    (x: number, z: number, ontoScannedTruss = false): { x: number; z: number; snappedTo?: SnapLine } => {
       if (snapMode === 'none') return { x, z };
       // A drag near a truss line or ring the scan found goes onto it, as in
       // the 3D view, before the grid or the plan's own truss lines are tried.
       // Out of its reach the snap mode carries on as it always has.
       if (ontoScannedTruss && scannedTruss.length > 0) {
         const onTruss = snapToScannedTruss(x, z, scannedTruss);
-        if (onTruss.snappedTo) return { x: onTruss.x, z: onTruss.z };
+        if (onTruss.snappedTo) return { x: onTruss.x, z: onTruss.z, snappedTo: onTruss.snappedTo };
       }
       if (snapMode === 'truss') {
         // No truss to hang on yet: leave the position untouched rather than
@@ -190,55 +235,150 @@ export default function StageView2D({
     </text>
   );
 
+  /**
+   * Where a snapped position ends up once it is held to the plan, and the
+   * scanned truss it is then on: none when it was not snapped to any, or when
+   * the walls held it off the truss it was snapped to.
+   */
+  const settle = (snapped: { x: number; z: number; snappedTo?: SnapLine }) => {
+    const pos = clampToPlan(snapped.x, snapped.z);
+    const on = snapped.snappedTo && onPlanTarget(snapped.snappedTo, pos.x, pos.z) ? snapped.snappedTo : null;
+    return { ...pos, on };
+  };
+
   const handleMouseDown = (e: React.MouseEvent, fixtureId: number) => {
     if (readonly) return;
     e.stopPropagation();
     const fixture = fixtures.find((f) => f.id === fixtureId);
     if (!fixture) return;
+    skipBackgroundClick.current = false;
 
-    onFixtureClick?.(fixtureId, e.shiftKey);
-    setDraggingId(fixtureId);
+    // Shift, Ctrl and Cmd all add to, or take from, the selection.
+    const multi = e.shiftKey || e.ctrlKey || e.metaKey;
+    const wasSelected = selectedIds.has(fixtureId);
+    let carried = [fixtureId];
+    let collapseOnRelease = false;
+    if (multi) {
+      onFixtureClick?.(fixtureId, true);
+      if (onFixturesDrag) {
+        // Taken out of the selection: there is nothing to carry.
+        if (wasSelected) return;
+        carried = [...selectedIds, fixtureId];
+      }
+    } else if (wasSelected && selectedIds.size > 1 && onFixturesDrag) {
+      // One of several selected fixtures: the selection is kept and carried
+      // together. Let go without a move, it is selected alone after all.
+      carried = [...selectedIds];
+      collapseOnRelease = true;
+    } else {
+      onFixtureClick?.(fixtureId, false);
+    }
+
+    const members = fixtures
+      .filter((f) => carried.includes(f.id))
+      .map((f) => ({ id: f.id, x: f.position_x, y: f.position_y, z: f.position_z }));
     dragOriginZ.current = fixture.position_z;
 
     // Offset is held in unsnapped coordinates; snapping is applied to the final
     // position so grid mode actually lands on the grid.
     const raw = pointerToStage(e.clientX, e.clientY);
-    setDragOffset({
-      x: fixture.position_x - raw.x,
-      z: fixture.position_z - raw.z,
-    });
+    dragRef.current = {
+      leadId: fixtureId,
+      members,
+      offset: { x: fixture.position_x - raw.x, z: fixture.position_z - raw.z },
+      shift: { dx: 0, dz: 0 },
+      heightTouched: false,
+      moved: false,
+      collapseOnRelease,
+    };
+    setDraggingIds(members.map((m) => m.id));
     onFixtureDragStart?.(fixtureId);
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (draggingId === null || readonly) return;
+    const drag = dragRef.current;
+    if (!drag || readonly) return;
+    const lead = drag.members.find((m) => m.id === drag.leadId);
+    if (!lead) return;
+    drag.moved = true;
     const raw = pointerToStage(e.clientX, e.clientY);
     // Holding Alt lets go of the scanned truss for this drag, as it does in
     // the 3D view; the snap mode set to none lets go of everything.
-    const snapped = applySnap(raw.x + dragOffset.x, raw.z + dragOffset.z, !e.altKey);
-    const pos = clampToPlan(snapped.x, snapped.z);
-    onFixtureDrag?.(draggingId, pos.x, pos.z);
+    const snapped = applySnap(raw.x + drag.offset.x, raw.z + drag.offset.z, !e.altKey);
+
+    if (drag.members.length > 1) {
+      // A row: the lead goes where one fixture would, and every other member
+      // takes the same shift, cut short where any of them would leave the room.
+      const shift = holdRowShift(
+        walls, width, depth, drag.members, drag.shift,
+        { dx: snapped.x - lead.x, dz: snapped.z - lead.z },
+      );
+      drag.shift = shift;
+      const target = snapped.snappedTo ?? null;
+      const placed = drag.members.map((m) => {
+        const x = m.x + shift.dx;
+        const z = m.z + shift.dz;
+        return { member: m, x, z, on: !!target && onPlanTarget(target, x, z) };
+      });
+      const onCount = placed.filter((p) => p.on).length;
+      if (onCount > 0) drag.heightTouched = true;
+      // On the truss a member takes its hang height; off it, the height it
+      // was picked up at. No height is reported in a drag that met no truss.
+      onFixturesDrag?.(placed.map((p): PlanMove => (
+        drag.heightTouched
+          ? { id: p.member.id, x: p.x, z: p.z, y: p.on && target ? target.height : p.member.y }
+          : { id: p.member.id, x: p.x, z: p.z }
+      )));
+      setSnapNote(target && onCount > 0
+        ? { x: lead.x + shift.dx, z: lead.z + shift.dz, text: rowReadoutText(target, onCount, placed.length) }
+        : null);
+      return;
+    }
+
+    const pos = settle(snapped);
+    if (pos.on) {
+      drag.heightTouched = true;
+      onFixtureDrag?.(drag.leadId, pos.x, pos.z, pos.on.height);
+      setSnapNote({ x: pos.x, z: pos.z, text: snapReadoutText(pos.on) });
+      return;
+    }
+    // Off the truss again: back to the height it was picked up at.
+    if (drag.heightTouched) onFixtureDrag?.(drag.leadId, pos.x, pos.z, lead.y);
+    else onFixtureDrag?.(drag.leadId, pos.x, pos.z);
+    setSnapNote(null);
   };
 
-  const endDrag = () => {
-    if (draggingId !== null) onFixtureDragEnd?.(draggingId);
-    setDraggingId(null);
+  const endDrag = (released: boolean) => {
+    const drag = dragRef.current;
+    if (drag) {
+      if (released && drag.collapseOnRelease && !drag.moved) onFixtureClick?.(drag.leadId, false);
+      if (drag.members.length > 1 && drag.moved) skipBackgroundClick.current = true;
+      onFixtureDragEnd?.(drag.leadId);
+    }
+    dragRef.current = null;
+    setDraggingIds((ids) => (ids.length === 0 ? ids : []));
+    setSnapNote(null);
     dragOriginZ.current = null;
   };
 
   const handleBackgroundClick = () => {
+    if (skipBackgroundClick.current) {
+      skipBackgroundClick.current = false;
+      return;
+    }
     if (!readonly) {
       onFixtureClick?.(-1, false); // Deselect
     }
   };
 
+  // A palette drop goes onto scanned truss as a drag does, Alt letting go.
   const handleDragOver = (e: React.DragEvent) => {
     if (!acceptsDrop || !e.dataTransfer.types.includes(FIXTURE_DRAG_MIME)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     const raw = pointerToStage(e.clientX, e.clientY);
-    const snapped = applySnap(raw.x, raw.z);
-    setDropPreview(clampToPlan(snapped.x, snapped.z));
+    const pos = settle(applySnap(raw.x, raw.z, !e.altKey));
+    setDropPreview(pos.on ? { x: pos.x, z: pos.z, on: snapReadoutText(pos.on) } : { x: pos.x, z: pos.z });
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -250,9 +390,10 @@ export default function StageView2D({
     const fixtureId = Number(payload);
     if (!Number.isFinite(fixtureId)) return;
     const raw = pointerToStage(e.clientX, e.clientY);
-    const snapped = applySnap(raw.x, raw.z);
-    const pos = clampToPlan(snapped.x, snapped.z);
-    onDropFromPalette?.(fixtureId, pos.x, pos.z);
+    const pos = settle(applySnap(raw.x, raw.z, !e.altKey));
+    // On scanned truss the new fixture hangs at the truss's height.
+    if (pos.on) onDropFromPalette?.(fixtureId, pos.x, pos.z, pos.on.height);
+    else onDropFromPalette?.(fixtureId, pos.x, pos.z);
   };
 
   // Grid lines, drawn on the same multiples of gridSize that applySnap rounds
@@ -314,8 +455,8 @@ export default function StageView2D({
         width="100%"
         height="100%"
         onMouseMove={handleMouseMove}
-        onMouseUp={endDrag}
-        onMouseLeave={endDrag}
+        onMouseUp={() => endDrag(true)}
+        onMouseLeave={() => endDrag(false)}
         onClick={handleBackgroundClick}
         onDragOver={handleDragOver}
         onDragLeave={() => setDropPreview(null)}
@@ -553,7 +694,11 @@ export default function StageView2D({
               key={f.id}
               transform={`translate(${toSvgX(f.position_x)}, ${toSvgY(f.position_z)})`}
               onMouseDown={(e) => handleMouseDown(e, f.id)}
-              onClick={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                skipBackgroundClick.current = false;
+              }}
+              onDoubleClick={onFixtureSelectRow && !readonly ? () => onFixtureSelectRow(f.id) : undefined}
               style={{ cursor: readonly ? 'default' : 'grab' }}
             >
               {/* Selection ring */}
@@ -600,7 +745,28 @@ export default function StageView2D({
             <text y={0.62} textAnchor="middle" fill="#4fc3f7" fontSize={0.22}>
               {`${dropPreview.x.toFixed(1)}, ${dropPreview.z.toFixed(1)}`}
             </text>
+            {dropPreview.on && (
+              <text data-testid="snap-readout" y={-0.5} textAnchor="middle" fill={ROOM_TRUSS} fontSize={0.24}>
+                {dropPreview.on}
+              </text>
+            )}
           </g>
+        )}
+
+        {/* What a drag has snapped onto: the scanned truss and the height it
+            hangs at, over the fixture under the pointer. */}
+        {snapNote && (
+          <text
+            data-testid="snap-readout"
+            x={toSvgX(snapNote.x)}
+            y={toSvgY(snapNote.z) - 0.55}
+            textAnchor="middle"
+            fill={ROOM_TRUSS}
+            fontSize={0.24}
+            style={{ pointerEvents: 'none' }}
+          >
+            {snapNote.text}
+          </text>
         )}
 
         {/* Scale indicator */}
