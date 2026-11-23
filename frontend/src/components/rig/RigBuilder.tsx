@@ -23,7 +23,7 @@ import IdentifyWalkthrough from './IdentifyWalkthrough';
 import RoomScanDialog from './RoomScanDialog';
 import { undoCount } from '../../utils/roomScan';
 import RoomShellEditDialog from './RoomShellEditDialog';
-import type { Rig, RigFixture, Fixture, PatchConflict, RoomShell } from '../../types';
+import type { Rig, RigFixture, Fixture, PatchConflict, RoomShell, RoomShellEdits } from '../../types';
 
 /** Long enough that a drag is one request, short enough to feel immediate. */
 const POSITION_SAVE_DEBOUNCE_MS = 400;
@@ -199,14 +199,16 @@ export default function RigBuilder() {
   };
 
   /**
-   * The stored room after one of its items was renamed, moved or deleted, as
-   * the server answered it. Only the room is replaced: no fixture moved, so
-   * the positions on screen and the undo steps that hold them are still true.
-   * The editor's Undo does not take a room edit back.
+   * The stored room after one of its items was changed, added or deleted, or
+   * after such an edit was undone, as the server answered it. Only the room
+   * and the count of its edits that can be undone are replaced: no fixture
+   * moved, so the positions on screen and the undo steps that hold them are
+   * still true. The editor's own Undo does not take a room edit back; the
+   * room has an Undo of its own in the dialog, kept on the server.
    */
-  const handleRoomEdited = (shell: RoomShell) => {
+  const handleRoomEdited = (shell: RoomShell, edits?: RoomShellEdits) => {
     const current = rigRef.current;
-    if (current) applyRig({ ...current, room_shell: shell });
+    if (current) applyRig({ ...current, room_shell: shell, room_shell_edits: edits ?? current.room_shell_edits });
   };
 
   const handleFixtureClick = (fixtureId: number, multi: boolean) => {
@@ -648,13 +650,15 @@ export default function RigBuilder() {
         }}
       />
 
-      {/* What the scan found, corrected by hand. Each stored change comes
-          back as the whole room, which the plan then draws and snaps to. */}
+      {/* What the scan found, corrected by hand. Each stored change, and each
+          one undone, comes back as the whole room, which the plan then draws
+          and snaps to. */}
       <RoomShellEditDialog
         open={roomEditOpen}
         rigId={rig.id}
         rigName={rig.name}
         shell={rig.room_shell}
+        undo={rig.room_shell_edits}
         onClose={() => setRoomEditOpen(false)}
         onChanged={handleRoomEdited}
       />

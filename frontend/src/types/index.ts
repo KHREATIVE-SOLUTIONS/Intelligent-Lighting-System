@@ -126,6 +126,19 @@ export interface Rig {
    * room-scan endpoint (docs/ROOM_SCAN.md).
    */
   room_scan_undo?: RoomScanUndoRecord | null;
+  /**
+   * The edits made to the stored room by hand that can still be undone, one
+   * at a time. Read-only: the rooms they go back to stay on the server
+   * (docs/ROOM_SCAN.md).
+   */
+  room_shell_edits?: RoomShellEdits | null;
+}
+
+/** How many edits to a rig's stored room can be undone, and what the next undo takes back. */
+export interface RoomShellEdits {
+  available: number;
+  /** What the latest edit did: "Stage renamed". Null when there is none. */
+  label?: string | null;
 }
 
 export interface RoomScanUndoRecord {
@@ -155,6 +168,8 @@ export interface RoomShellBox {
   kind?: string;
   /** True for anything a scan found: nobody has checked it against the room. */
   suggested?: boolean;
+  /** True for one a person put into the room by hand (Edit Room): the scan did not find it. */
+  added_by_hand?: boolean;
 }
 
 /** A truss or bar a room scan found overhead, as a line on the plan at a height. */
@@ -179,6 +194,8 @@ export interface RoomShellLine {
   /** Degrees clockwise from across the room, seen from above: 0 runs across, 90 upstage to downstage. */
   heading_deg?: number;
   suggested?: boolean;
+  /** True for one a person put into the room by hand (Edit Room): the scan did not find it. */
+  added_by_hand?: boolean;
   basis?: string;
 }
 
@@ -195,6 +212,8 @@ export interface RoomShellRing {
   /** Its width across the ring, inside edge to outside edge. */
   across?: number;
   suggested?: boolean;
+  /** True for one a person put into the room by hand (Edit Room): the scan did not find it. */
+  added_by_hand?: boolean;
   basis?: string;
 }
 

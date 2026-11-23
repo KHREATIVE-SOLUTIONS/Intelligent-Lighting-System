@@ -131,6 +131,16 @@ export function roomShellItemPath(rigId: number, kind: string, index: number): s
   return `/rigs/${rigId}/room-shell/${kind}/${index}`;
 }
 
+/** One list of the stored room (`risers`, `truss_lines`, `truss_rings`): where an item is added to it. */
+export function roomShellListPath(rigId: number, kind: string): string {
+  return `/rigs/${rigId}/room-shell/${kind}`;
+}
+
+/** Where the latest edit made to the stored room by hand is taken back. */
+export function roomShellUndoPath(rigId: number): string {
+  return `/rigs/${rigId}/room-shell/undo`;
+}
+
 export function roomScanUndoPath(rigId: number): string {
   return `/rigs/${rigId}/room-scan/undo`;
 }

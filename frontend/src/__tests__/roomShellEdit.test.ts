@@ -108,7 +108,7 @@ describe('shellItems', () => {
     const broken = shell();
     (broken.risers![0] as unknown as Record<string, unknown>).center_x = null;
     expect(item('risers', 0, broken).centre).toBeNull();
-    expect(draftOf(item('risers', 0, broken))).toEqual({ name: 'Stage', x: '', z: '' });
+    expect(draftOf(item('risers', 0, broken))).toMatchObject({ name: 'Stage', x: '', z: '' });
   });
 });
 
@@ -131,8 +131,10 @@ describe('positionText and draftOf', () => {
   });
 
   it('starts a row at what is stored', () => {
-    expect(draftOf(item('risers', 0))).toEqual({ name: 'Stage', x: '0', z: '-3.5' });
-    expect(draftOf(item('risers', 1))).toEqual({ name: '', x: '4', z: '3' });
+    expect(draftOf(item('risers', 0))).toEqual({
+      name: 'Stage', x: '0', z: '-3.5', width: '6', depth: '3', height: '0.6',
+    });
+    expect(draftOf(item('risers', 1))).toEqual({ name: '', x: '4', z: '3', width: '2', depth: '1', height: '1' });
   });
 });
 
@@ -196,7 +198,7 @@ describe('readDraft', () => {
 
   it('moves a line by its middle', () => {
     const angled = item('truss_lines', 2);
-    expect(draftOf(angled)).toEqual({ name: 'Overhead line 3', x: '-1', z: '2.5' });
+    expect(draftOf(angled)).toMatchObject({ name: 'Overhead line 3', x: '-1', z: '2.5' });
     expect(readDraft(angled, { ...draftOf(angled), z: '0' }).changes).toEqual({ center_z: 0 });
   });
 
@@ -243,10 +245,12 @@ describe('wording', () => {
     const truss = deleteQuestionText(item('truss_lines', 0));
     expect(truss).toMatch(/^Take Overhead line 1 out of the stored room\?/);
     expect(truss).toContain('Fixtures hung on it stay where they are');
-    expect(truss).toContain('cannot be undone here');
+    // A delete can be taken back now, for as long as the scan is not read again.
+    expect(truss).toContain('Undo here brings it back, until the scan is read again.');
+    expect(truss).not.toContain('cannot be undone');
     const stage = deleteQuestionText(item('risers', 0));
     expect(stage).not.toContain('Fixtures hung on it');
-    expect(stage).toContain('reading the scan again brings it back');
+    expect(stage).toContain('Undo here brings it back');
   });
 
   it('uses the server\'s words for a refusal where it gave any', () => {

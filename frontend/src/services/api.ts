@@ -36,11 +36,12 @@ import type {
   ConsoleExportTarget,
 } from '../utils/consoleExport';
 import {
-  fixturePositionPath, roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellPath,
+  fixturePositionPath, roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellListPath,
+  roomShellPath, roomShellUndoPath,
 } from '../utils/roomScan';
 // Types only: the module itself reads the 3D view's checks, which this file has no use for.
 import type {
-  ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
+  ShellEditUndone, ShellItemAdd, ShellItemAdded, ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
 } from '../utils/roomShellEdit';
 import type {
   RoomScanOptions, RoomScanPreview, RoomScanUndoResult, RoomShellRemoved,
@@ -1456,9 +1457,10 @@ export const roomScanApi = {
   },
 
   /**
-   * Renames or moves one raised area, overhead line or ring of the stored
-   * room. `index` is its place in the stored list, not on the plan. No
-   * fixture moves with it. Answers the whole room as it now is.
+   * Renames, moves, resizes, raises or turns one raised area, overhead line
+   * or ring of the stored room. `index` is its place in the stored list, not
+   * on the plan. No fixture moves with it. Answers the whole room as it now
+   * is, and how many edits can be undone.
    */
   editShellItem: async (
     rigId: number,
@@ -1470,9 +1472,28 @@ export const roomScanApi = {
     return response.data;
   },
 
-  /** Takes one raised area, overhead line or ring out of the stored room. There is no undo. */
+  /** Takes one raised area, overhead line or ring out of the stored room. `undoShellEdit` brings it back. */
   deleteShellItem: async (rigId: number, kind: ShellItemKind, index: number): Promise<ShellItemDeleted> => {
     const response = await api.delete(roomShellItemPath(rigId, kind, index));
+    return response.data;
+  },
+
+  /**
+   * Puts a raised area, overhead line or ring into the stored room by hand,
+   * at the end of its list. It is marked as added by hand, not as the scan's.
+   */
+  addShellItem: async (rigId: number, kind: ShellItemKind, item: ShellItemAdd): Promise<ShellItemAdded> => {
+    const response = await api.post(roomShellListPath(rigId, kind), item);
+    return response.data;
+  },
+
+  /**
+   * Takes back the latest edit made to the stored room by hand: one edit for
+   * each call. Answers the whole room as it was before that edit. No fixture
+   * moves, and the scan's own undo (`undoMoves`) is a different thing.
+   */
+  undoShellEdit: async (rigId: number): Promise<ShellEditUndone> => {
+    const response = await api.post(roomShellUndoPath(rigId));
     return response.data;
   },
 };

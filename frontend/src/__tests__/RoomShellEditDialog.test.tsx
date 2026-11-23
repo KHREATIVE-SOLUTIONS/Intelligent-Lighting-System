@@ -9,7 +9,7 @@ import { roomScanApi } from '../services/api';
 import type { RoomShell } from '../types';
 
 vi.mock('../services/api', () => ({
-  roomScanApi: { editShellItem: vi.fn(), deleteShellItem: vi.fn() },
+  roomScanApi: { editShellItem: vi.fn(), deleteShellItem: vi.fn(), addShellItem: vi.fn(), undoShellEdit: vi.fn() },
 }));
 
 const api = vi.mocked(roomScanApi);
@@ -100,7 +100,7 @@ describe('RoomShellEditDialog', () => {
 
     expect(api.editShellItem).toHaveBeenCalledTimes(1);
     expect(api.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { name: 'Main stage' });
-    expect(onChanged).toHaveBeenCalledWith(after);
+    expect(onChanged.mock.calls[0][0]).toBe(after);
     expect(screen.getByText('Stage is now called Main stage.')).toBeTruthy();
     // The row shows what is stored, and has nothing more to save.
     expect(field('Name of Main stage').value).toBe('Main stage');
@@ -119,7 +119,7 @@ describe('RoomShellEditDialog', () => {
 
     // The third stored line, though the plan draws it second: the stub is left out there.
     expect(api.editShellItem).toHaveBeenCalledWith(7, 'truss_lines', 2, { center_x: 2 });
-    expect(onChanged).toHaveBeenCalledWith(after);
+    expect(onChanged.mock.calls[0][0]).toBe(after);
     expect(screen.getByText('Overhead line 3 was moved to 2, 2.5. No fixture was moved with it.')).toBeTruthy();
     expect(field('Across of Overhead line 3').value).toBe('2');
     expect(screen.getByText('Moved by hand')).toBeTruthy();
@@ -178,7 +178,7 @@ describe('RoomShellEditDialog', () => {
 
     expect(api.deleteShellItem).toHaveBeenCalledTimes(1);
     expect(api.deleteShellItem).toHaveBeenCalledWith(7, 'truss_lines', 0);
-    expect(onChanged).toHaveBeenCalledWith(after);
+    expect(onChanged.mock.calls[0][0]).toBe(after);
     expect(screen.getByText('Overhead line 1 was taken out of the stored room. No fixture was moved.')).toBeTruthy();
     expect(screen.queryByLabelText('Name of Overhead line 1')).toBeNull();
     // The lines after it have each moved up a place.

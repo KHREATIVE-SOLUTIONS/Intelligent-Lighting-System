@@ -24,7 +24,7 @@ vi.mock('../services/api', () => ({
     addFixture: vi.fn(),
   },
   fixturesApi: { get: vi.fn() },
-  roomScanApi: { editShellItem: vi.fn(), deleteShellItem: vi.fn() },
+  roomScanApi: { editShellItem: vi.fn(), deleteShellItem: vi.fn(), addShellItem: vi.fn(), undoShellEdit: vi.fn() },
 }));
 
 // The panels round the plan have nothing to do with the room.
