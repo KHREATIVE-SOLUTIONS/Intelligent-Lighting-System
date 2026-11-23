@@ -221,6 +221,11 @@ class RigResponse(RigBase):
     # Where fixtures stood before a room scan moved them, while that can still
     # be undone (POST /rigs/{id}/room-scan/undo). Read-only here as well.
     room_scan_undo: Optional[Dict[str, Any]] = None
+    # The edits made to the stored room by hand that can still be undone
+    # (POST /rigs/{id}/room-shell/undo): `available`, how many, and `label`,
+    # what the next undo takes back. The rooms they go back to stay on the
+    # server. Read-only here as well.
+    room_shell_edits: Optional[Dict[str, Any]] = None
     fixtures: List[RigFixtureResponse] = []
 
     class Config:

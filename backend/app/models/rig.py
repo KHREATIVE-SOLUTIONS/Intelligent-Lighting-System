@@ -52,11 +52,26 @@ class Rig(Base):
     # Written by the room-scan endpoint only (services/room_scan/undo.py).
     room_scan_undo = Column(JSON, nullable=True)
 
+    # What the stored room was before each edit made to it by hand, latest
+    # last, so an edit can be undone one at a time: `steps` (label, at,
+    # shell). Emptied when a scan is read again or the room is taken off: the
+    # steps are of a room that is no longer there. Written by the room-scan
+    # endpoint only (services/room_scan/edit_undo.py). Not sent with the rig:
+    # `room_shell_edits` below is what a reader gets.
+    room_shell_undo = Column(JSON, nullable=True)
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True)
+
+    @property
+    def room_shell_edits(self):
+        """How many edits to the stored room can be undone, and what the next undo takes back."""
+        from app.services.room_scan.edit_undo import undo_summary
+
+        return undo_summary(self.room_shell_undo)
 
     # Relationships
     fixtures = relationship("RigFixture", back_populates="rig", cascade="all, delete-orphan")
