@@ -41,6 +41,10 @@ interface RigEditorToolbarProps {
   onRoomScan?: () => void;
   /** Whether a scanned room is already stored on the rig. */
   hasRoom?: boolean;
+  /** Selects the whole row the selected fixture is in. The button is left out when this is. */
+  onSelectRow?: () => void;
+  /** How many fixtures are selected: the button needs one to go by. */
+  selectedCount?: number;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -70,6 +74,8 @@ export default function RigEditorToolbar({
   onIdentify,
   onRoomScan,
   hasRoom = false,
+  onSelectRow,
+  selectedCount = 0,
   onUndo,
   onRedo,
   canUndo,
@@ -129,6 +135,22 @@ export default function RigEditorToolbar({
         >
           {snapHint}
         </Typography>
+      )}
+
+      {onSelectRow && (
+        <Tooltip
+          title={
+            selectedCount > 0
+              ? 'Select every fixture in the same row: its group, its scanned truss, or its height and depth. Then drag one to move them all. Double-clicking a fixture does the same; Shift-click or Ctrl-click adds one at a time'
+              : 'Select a fixture first, then this selects the rest of its row'
+          }
+        >
+          <span>
+            <Button size="small" onClick={onSelectRow} disabled={selectedCount === 0}>
+              Select row
+            </Button>
+          </span>
+        </Tooltip>
       )}
 
       <Box sx={{ flexGrow: 1 }} />

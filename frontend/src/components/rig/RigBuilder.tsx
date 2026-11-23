@@ -9,6 +9,8 @@ import type { PositionSaveState } from './RigEditorToolbar';
 import FixturePalette from './FixturePalette';
 import StageView2D from './StageView2D';
 import { paletteClickSpot, roomPlan } from './roomPlan2d';
+import { rowOf, snapshotPositions, withMoves, withSnapshot } from './rowMove2d';
+import type { PlanMove } from './rowMove2d';
 import PatchTable from './PatchTable';
 import FixtureProperties from './FixtureProperties';
 import IdentifyWalkthrough from './IdentifyWalkthrough';
@@ -18,9 +20,6 @@ import type { Rig, RigFixture, Fixture, PatchConflict } from '../../types';
 
 /** Long enough that a drag is one request, short enough to feel immediate. */
 const POSITION_SAVE_DEBOUNCE_MS = 400;
-
-const snapshotPositions = (fixtures: RigFixture[]): FixturePositionSnapshot[] =>
-  fixtures.map((f) => ({ id: f.id, position_x: f.position_x, position_z: f.position_z }));
 
 const roundToMm = (value: number) => Math.round(value * 1000) / 1000;
 
@@ -41,7 +40,7 @@ export default function RigBuilder() {
 
   const {
     viewMode, snapMode, gridSize, selectedFixtureIds,
-    setViewMode, setSnapMode, selectFixture, deselectAll,
+    setViewMode, setSnapMode, selectFixture, selectFixtures, deselectAll,
     undoStack, redoStack, pushUndo, undo, redo, clearHistory,
   } = useRigEditorStore();
 
@@ -193,25 +192,38 @@ export default function RigBuilder() {
   // selection click never leaves an undo step that does nothing.
   const handleFixtureDragStart = () => { pendingUndoRef.current = true; };
 
-  const handleFixtureDrag = (fixtureId: number, x: number, z: number) => {
+  /**
+   * One fixture, or a selected row carried together. Either way it is one
+   * undo step for the whole drag and one batch-update for everything that
+   * moved, and no tag is touched: a guess that is moved is still a guess.
+   */
+  const handleFixturesDrag = (moves: PlanMove[]) => {
     const current = rigRef.current;
     if (!current) return;
-    const moved = current.fixtures.find((f) => f.id === fixtureId);
-    if (!moved || (moved.position_x === x && moved.position_z === z)) return;
+    const next = withMoves(current.fixtures, moves);
+    if (next.changed.length === 0) return;
 
     if (pendingUndoRef.current) {
       pushUndo(snapshotPositions(current.fixtures));
       pendingUndoRef.current = false;
     }
 
-    applyRig({
-      ...current,
-      fixtures: current.fixtures.map((f) =>
-        f.id === fixtureId ? { ...f, position_x: x, position_z: z } : f
-      ),
-    });
-    dirtyIdsRef.current.add(fixtureId);
+    applyRig({ ...current, fixtures: next.fixtures });
+    next.changed.forEach((fixtureId) => dirtyIdsRef.current.add(fixtureId));
     schedulePositionSave();
+  };
+
+  // `y` comes with a drag that snapped onto scanned truss: its hang height.
+  const handleFixtureDrag = (fixtureId: number, x: number, z: number, y?: number) => {
+    handleFixturesDrag([y === undefined ? { id: fixtureId, x, z } : { id: fixtureId, x, z, y }]);
+  };
+
+  /** Selects the whole row a fixture is in: its group, its scanned truss, or its height and depth. */
+  const handleSelectRow = (fixtureId: number) => {
+    const current = rigRef.current;
+    if (!current) return;
+    const row = rowOf(current.fixtures, fixtureId, current.room_shell);
+    if (row.length > 0) selectFixtures(row);
   };
 
   const handleFixtureDragEnd = () => {
@@ -222,20 +234,11 @@ export default function RigBuilder() {
   const applySnapshot = useCallback((snapshot: FixturePositionSnapshot[]) => {
     const current = rigRef.current;
     if (!current) return;
-    const byId = new Map(snapshot.map((s) => [s.id, s]));
-    let changed = false;
-
-    const fixtures = current.fixtures.map((f) => {
-      const target = byId.get(f.id);
-      if (!target) return f;
-      if (target.position_x === f.position_x && target.position_z === f.position_z) return f;
-      changed = true;
-      dirtyIdsRef.current.add(f.id);
-      return { ...f, position_x: target.position_x, position_z: target.position_z };
-    });
-
-    if (!changed) return;
-    applyRig({ ...current, fixtures });
+    // Heights too: a drag that snapped onto scanned truss changed them.
+    const next = withSnapshot(current.fixtures, snapshot);
+    if (next.changed.length === 0) return;
+    next.changed.forEach((fixtureId) => dirtyIdsRef.current.add(fixtureId));
+    applyRig({ ...current, fixtures: next.fixtures });
     void flushPositions();
   }, [applyRig, flushPositions]);
 
@@ -283,7 +286,8 @@ export default function RigBuilder() {
     );
   };
 
-  const addFixtureAt = useCallback(async (fixtureId: number, x: number, z: number) => {
+  // `y` comes with a drop onto scanned truss: the height the truss hangs at.
+  const addFixtureAt = useCallback(async (fixtureId: number, x: number, z: number, y?: number) => {
     const current = rigRef.current;
     if (!current) return;
     await flushPositions();
@@ -311,7 +315,7 @@ export default function RigBuilder() {
         dmx_address: next.address,
         mode_id: mode?.id,
         position_x: roundToMm(x),
-        position_y: hangHeightNear(z),
+        position_y: y === undefined ? hangHeightNear(z) : roundToMm(y),
         position_z: roundToMm(z),
       });
       await fetchRig();
@@ -364,7 +368,10 @@ export default function RigBuilder() {
   if (loading) return <Typography>Loading...</Typography>;
   if (!rig) return <Typography>Rig not found</Typography>;
 
-  const selectedFixture = rig.fixtures.find((f) => selectedFixtureIds.has(f.id));
+  const selectedFixtures = rig.fixtures.filter((f) => selectedFixtureIds.has(f.id));
+  // The properties panel edits one fixture; with several selected there is
+  // no one fixture for it to edit.
+  const selectedFixture = selectedFixtures.length === 1 ? selectedFixtures[0] : undefined;
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 88px)', mx: -3, mt: -3 }}>
@@ -383,6 +390,8 @@ export default function RigBuilder() {
         onIdentify={() => { void handleIdentify(); }}
         onRoomScan={() => { void handleRoomScan(); }}
         hasRoom={rig.room_shell?.source === 'scan'}
+        selectedCount={selectedFixtures.length}
+        onSelectRow={() => { if (selectedFixtures.length > 0) handleSelectRow(selectedFixtures[0].id); }}
         onUndo={handleUndo}
         onRedo={handleRedo}
         canUndo={undoStack.length > 0}
@@ -416,11 +425,18 @@ export default function RigBuilder() {
             onFixtureClick={handleFixtureClick}
             onFixtureDragStart={handleFixtureDragStart}
             onFixtureDrag={handleFixtureDrag}
+            onFixturesDrag={handleFixturesDrag}
             onFixtureDragEnd={handleFixtureDragEnd}
+            onFixtureSelectRow={handleSelectRow}
             onDropFromPalette={addFixtureAt}
           />
 
           {/* Bottom: Properties Panel */}
+          {selectedFixtures.length > 1 && (
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, flexShrink: 0 }}>
+              {`${selectedFixtures.length} fixtures selected. Drag any one of them to move them together.`}
+            </Typography>
+          )}
           {selectedFixture && (
             <Paper sx={{ mt: 1, flexShrink: 0 }}>
               <FixtureProperties
