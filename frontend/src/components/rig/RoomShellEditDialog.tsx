@@ -13,7 +13,7 @@
  *
  * No fixture moves with anything here, and nothing is sent to a light.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -110,17 +110,20 @@ export default function RoomShellEditDialog({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // The room as it is now, for the effect below to read without running again
+  // each time it changes: a room that changes must not wipe what is typed.
+  const shellRef = useRef(shell);
+  shellRef.current = shell;
+
   // A dialog opened again starts clean.
   useEffect(() => {
     if (!open) return;
     setDrafts({});
     setBusyWith(null);
     setAskDeleteKey(null);
-    setAdding(newItemDraft('riser', shell));
+    setAdding(newItemDraft('riser', shellRef.current));
     setError(null);
     setNotice(null);
-    // Not on `shell`: the room as it is when the dialog opens sets the form's
-    // first height, and a room that then changes must not wipe what is typed.
   }, [open, rigId]);
 
   const items = shellItems(shell);

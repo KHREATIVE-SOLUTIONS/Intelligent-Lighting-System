@@ -128,7 +128,8 @@ export function lineHeading(line: { x1: number; z1: number; x2: number; z2: numb
   const runX = line.x2 - line.x1;
   const runZ = line.z2 - line.z1;
   if (runX === 0 && runZ === 0) return null;
-  let degrees = (Math.atan2(runZ, runX) * 180) / Math.PI;
+  // To a tenth first, so that which side of -90 it falls is not left to the last bit of a float.
+  let degrees = Math.round(((Math.atan2(runZ, runX) * 180) / Math.PI) * 10) / 10;
   if (degrees > 90) degrees -= 180;
   else if (degrees <= -90) degrees += 180;
   return Math.round(degrees * 10) / 10 + 0;
