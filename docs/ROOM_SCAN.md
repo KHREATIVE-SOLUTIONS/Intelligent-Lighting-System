@@ -210,6 +210,27 @@ it is open.
   2 m round it: its middle is brought in until it is, and the message says
   where to. One too big to fit at all is refused. It is marked **Resized by
   hand**.
+- **Fixtures follow their truss** (slice 17). Each line's and ring's row has
+  a box, **Move the fixtures hung on it**, ticked to start with. Ticked, a
+  line or ring that is moved, raised, lowered, turned or resized takes the
+  fixtures hung on it along: shifted with a move, raised or lowered by the
+  same amount, swung about a line's middle with a turn (and turned
+  themselves, so a light square to the truss stays square to it), spread
+  out or closed up along a line made longer or shorter, and moved out or in
+  with a ring's radius. The message says how many moved ("2 fixtures hung
+  on it moved with it."), and the 2D plan and the 3D view show them where
+  they now are. A fixture hangs on a truss when it is within 0.3 m of it on
+  the plan and 0.6 m of its underside: the reach "Select row" goes by.
+  Unticked, the truss goes alone, as it did before slice 17, and the box
+  stays unticked for that row until the dialog is opened again, or until a
+  delete or an undo, which may change which row is which. A rename and a
+  raised area never move a fixture.
+- **A change that would carry a fixture out of the room is refused whole**,
+  with the server's words naming the fixtures and where they would have
+  gone: neither the truss nor any fixture moves. "Out" is past the room's
+  box and the 2 m round it, more than 2 m above the ceiling, or below the
+  floor. Change the truss by less, or untick the box and move the fixtures
+  afterwards.
 - **Add what the scan missed**, under the rows: choose a stage, a riser, a
   booth or counter, a truss line or a truss ring, give it a name (left
   empty, it is called what it is), where its middle goes, its size and its
@@ -228,10 +249,17 @@ it is open.
   room, so they are still there after the page is loaded again or the
   dialog is closed. They are **gone once the scan is read again** (the room
   they belong to has been replaced) and when the room is removed. An undo
-  cannot itself be undone.
+  cannot itself be undone. **A truss and the fixtures it took along are one
+  step**: the button says so ("Undo: Truss 1 moved, with 4 fixtures"), and
+  one press puts the truss and the fixtures back exactly where they were. A
+  fixture that somebody has moved since is left where they put it, and the
+  message says how many were left.
 - **One change at a time.** Each stored change, and each one undone, comes
   back as the whole room, which the plan draws and snaps to at once; the rig
-  is not loaded again. A save or an added item keeps what is typed in the
+  is not loaded again, unless the change moved fixtures (a truss that took
+  its fixtures along, or an undo that put them back), when it is, and the
+  editor's own Undo steps are dropped because they hold the old positions.
+  A save or an added item keeps what is typed in the
   other rows; a delete or an undo clears all of it, because rows may have
   changed places.
 - **An item the views cannot draw is still listed** ("Not drawn: ...") and can
@@ -276,12 +304,17 @@ it is open.
 - **Not while a locate walkthrough is running.** Every change here, Undo
   included, is refused until Identify Lights is finished or ended on the
   rig, and the dialog shows the reason.
-- **No fixture moves, no tag changes and nothing is sent to a light.** No
-  fixture's patch is touched. A fixture hung on a truss that is raised,
-  lowered, turned or moved stays where it is. The editor's own Undo does not
-  take a room edit back (the room has its own, above), and "Undo room scan
-  moves" is unaffected. Reading the scan again **replaces every edit made
-  here**.
+- **No tag changes, no patch is touched and nothing is sent to a light.**
+  The only fixtures that move are the ones hung on a truss or ring that is
+  moved, raised, lowered, turned or resized with its box ticked, and only
+  their position and their heading (`rotation_y`) change: not their address,
+  universe, mode, group or tags. A guess that is carried is still a guess,
+  and a tapped fixture is still a tapped one. The editor's own Undo does not
+  take a room edit back (the room has its own, above). "Undo room scan
+  moves" keeps its record, but a fixture a truss has carried no longer
+  stands where the scan put it, so that undo leaves it alone as "moved since
+  the scan". Reading the scan again **replaces every edit made here**, and
+  does not put carried fixtures back.
 
 ## The API
 
@@ -341,7 +374,8 @@ that could be undone. Fixtures are left where they are unless
 ### `PATCH /api/rigs/{rig_id}/room-shell/{kind}/{index}`
 
 Renames, moves, resizes, raises or turns one raised area, overhead line or
-ring of the stored room (`services/room_scan/edit.py`). `kind` is the list it is stored in: `risers`,
+ring of the stored room (`services/room_scan/edit.py`), and takes the
+fixtures hung on a line or ring along (`services/room_scan/carry.py`). `kind` is the list it is stored in: `risers`,
 `truss_lines` or `truss_rings`. `index` is its place in that list, from 0. The
 lists carry no ids, and the views leave out items they cannot draw, so this is
 the place in the stored list and not the place on the plan.
@@ -358,7 +392,38 @@ JSON body, every field optional; anything left out (or `null`) is kept:
 | `heading_deg` | `truss_lines` only: degrees clockwise from across the room seen from above, -360 to 360. Stored over -90 and up to 90, to a tenth: a line has no front |
 | `radius` | `truss_rings` only: to the middle of the truss, from 0.3 m |
 | `height` | a raised area's deck above its base, 0.05 to 3 m with its top under the ceiling; the underside of a line or ring, 0.5 m to the ceiling (`room.height`; 30 m where the room has none) |
+| `carry_fixtures` | `truss_lines` and `truss_rings`: whether the fixtures hung on it go with it. `true` when left out or `null`. Not a change by itself: sent alone it is refused like an empty body |
 
+- **The fixtures hung on a line or ring go with it** (slice 17,
+  `services/room_scan/carry.py`) unless `carry_fixtures` is `false`:
+  - *Hung on it* is within 0.3 m of the line (between its ends) or of the
+    ring's circle on the plan, and within 0.6 m of its `height`: the reach
+    the 2D plan's rows and the 3D view go by (`HANGER_REACH`,
+    `HANGER_HEIGHT_WINDOW`). A fixture within reach of two of the room's
+    lines and rings hangs on the nearer, and on the one listed first (lines
+    before rings) when they are as near. Every fixture of the rig is looked
+    at, whatever its tags or group.
+  - *Where it goes* is worked out from the item as it was stored and as the
+    edit stored it, not from the request, so a middle that was held or
+    brought in is the one followed. A move shifts it by the middle's shift.
+    A height adds the change in height. A turn swings it about the line's
+    middle by the smaller of the two turns that give the new heading (at
+    most 90 degrees either way: a line has no front) and takes that turn
+    off its `rotation_y`, which runs the other way round from a heading. A
+    length scales how far along the line it is from the middle, and keeps
+    how far to the side. A radius keeps its angle round the ring and how
+    far inside or outside the truss it is. Positions are stored to the
+    millimetre; a fixture that would shift by under half a millimetre is
+    left exactly as it was.
+  - **Only `position_x`, `position_y`, `position_z` and (for a turn)
+    `rotation_y` are written.** No address, universe, mode, group or tag.
+  - **Refused whole, with 422**, when any carried fixture would end up past
+    the room's box (`room.width`, `room.depth`) and the 2 m round it, more
+    than 2 m above `room.height`, or below the floor: nothing is written,
+    the item included. The `detail` names up to three of the fixtures and
+    where they would have gone. A room with no size along an axis holds
+    nothing along it.
+  - A rename, a raised area, and an edit that changes nothing carry nothing.
 - The middle is a raised area's or a ring's own centre, and for a line half
   way between its two ends. One of `center_x` and `center_z` given alone keeps
   the other.
@@ -396,8 +461,17 @@ JSON body, every field optional; anything left out (or `null`) is kept:
 
 Answers `rig_id`, `kind`, `index`, `item` (the item as stored), `room_shell`
 (the whole stored room after the change), `changed` (false when what was
-sent is what was stored: nothing is written and no step is left to undo) and
-`undo` (`available`, `label`: see the undo route).
+sent is what was stored: nothing is written and no step is left to undo),
+`undo` (`available`, `label`: see the undo route), `carry_fixtures` (whether
+fixtures were to go with it), `fixtures_moved` (each carried fixture's
+`rig_fixture_id`, `name`, `from` and `to`, each `x`, `y`, `z` and
+`rotation_y`; empty when none moved) and a `message` ("4 fixtures hung on
+Truss 1 moved with it."). When fixtures moved, the undo step's label says so
+("Truss 1 moved, with 4 fixtures"), and a client holding the rig should read
+it again.
+
+Refused with 409 while a locate walkthrough is running on the rig, before
+anything else about the request is looked at, as every room edit is.
 
 ### `POST /api/rigs/{rig_id}/room-shell/{kind}`
 
@@ -435,7 +509,18 @@ Answers `rig_id`, `kind`, `index` (its place: the last), `item`,
 room goes back to what it was before that edit, so a deleted item is in its
 old place in its list and the hanging bands are what they were. No body.
 Answers `rig_id`, `undone` (what was taken back: "Stage renamed"),
-`room_shell`, `undo` and a `message`. An undo cannot itself be undone.
+`room_shell`, `undo`, `fixtures_restored`, `fixtures_skipped`, `outside` and
+a `message`. An undo cannot itself be undone.
+
+**The fixtures the undone edit carried go back with it** (slice 17): each
+to exactly the position and `rotation_y` it had (`fixtures_restored`, with
+`from` where it stood and `to` where it is again). A fixture is put back
+only while it still stands, to 5 mm, where the edit left it. One somebody
+has moved since, or that is no longer in the rig, is left alone and listed
+in `fixtures_skipped` with the `reason` ("it was moved since"), as the
+scan's own undo does: an undo takes back the edit, not what was done after
+it. No tag is touched either way. `outside` is worked out after the
+fixtures are back.
 
 `GET` writes nothing and answers `rig_id`, `available` (how many edits can
 be undone) and `label` (what the next undo takes back, or null). The rig
@@ -445,7 +530,8 @@ the dialog knows what its Undo button does when the page is loaded again.
 The record is `rigs.room_shell_undo` (JSON, migration
 `008_rig_room_shell_undo`; additive and nullable): `steps`, oldest first,
 each with a `label`, an `at` and the whole `shell` as it stood before that
-edit. Whole rooms are kept, not the edits run backwards: a room is a few
+edit, and, where the edit carried fixtures, `fixtures`: the list the edit
+answered as `fixtures_moved`. Whole rooms are kept, not the edits run backwards: a room is a few
 kilobytes, and a delete moves places and can drop a band. Only the last 20
 steps are kept. The rooms are not sent with the rig. The record is
 **emptied when a scan is applied** (a preview leaves it) **and when the room
@@ -563,16 +649,20 @@ sentence and not by a refusal that cannot be written (see below).
 `outline` is not one of the room's lists: `POST .../room-shell/outline` and
 `PATCH .../room-shell/outline/0` are answered 404 by the list routes.
 
-For all of these routes: no fixture is moved or retagged (one hung on a
-moved, raised or deleted truss stays where it is), no fixture's patch is
+For all of these routes: no fixture is retagged, no fixture's patch is
 touched, the scan's undo record (`room_scan_undo`) is left alone, and
-nothing reaches a device.
+nothing reaches a device. The only fixtures moved are the ones hung on a
+line or ring that the item `PATCH` moves, raises, turns or resizes with
+`carry_fixtures` not false, and the ones the undo route puts back (slice
+17). One hung on a deleted truss stays where it is, and a change to the
+walls moves none.
 
 **All of them but the `GET` answer 409 while a locate walkthrough is running
 on the rig** (slice 15), with the `detail` the scan routes give ("A locate
 walkthrough is running on this rig. Finish or end it, then edit the room.").
-No fixture moves with a room edit, but the walkthrough places fixtures
-against the room as it stands. Unlike the scan routes, which refuse only a
+The walkthrough places fixtures against the room as it stands, and holds
+its own copy of each position, which a truss carrying its fixtures would go
+behind. Unlike the scan routes, which refuse only a
 request that would move a fixture, these refuse every one. A walkthrough on
 another rig holds nothing here.
 
@@ -1060,6 +1150,49 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 17 built
+
+Fixtures follow their truss in Edit Room: until now a truss that was moved,
+raised or turned left its lights hanging in the air where it had been.
+
+- **The carry** (`backend/app/services/room_scan/carry.py`, new):
+  `hangs_on` and `hung_fixtures` (which fixtures hang on a line or ring:
+  0.3 m on the plan, 0.6 m in height, the nearer of two trusses),
+  `carried_moves` (where each goes, from the item before and after the
+  edit), `line_turn` (the smaller turn, read from the ends), `refuse_outside`
+  (the 422), `apply_moves`, `put_back` (the undo) and the sentences. Pure
+  apart from the two that set a fixture's position.
+- **The route** (`room_scan.py`): `PATCH .../room-shell/{kind}/{index}`
+  takes `carry_fixtures` (default true) and answers `carry_fixtures`,
+  `fixtures_moved` and a `message`. Every position is worked out and checked
+  before anything is written. Still 409 during a locate walkthrough.
+- **One undo step** (`edit_undo.py`): `push_step` takes the moves and keeps
+  them in the step beside the room (`fixtures`); `POST .../room-shell/undo`
+  puts the room and those fixtures back and answers `fixtures_restored` and
+  `fixtures_skipped`. No migration: the record is the same JSON column.
+- **The heading.** The rig model has `rotation_y`, a yaw about the vertical
+  that turns +Z towards +X; a line's heading turns +X towards +Z. So a line
+  turned by `d` degrees takes `d` off each carried fixture's `rotation_y`
+  (kept over -180 and up to 180). `rotation_x` and `rotation_z` are left.
+- **The helpers** (`utils/roomShellEdit.ts`): `carriesFixtures`,
+  `withCarry` (the flag goes only with a line's or ring's change of place,
+  size, height or heading), `carriedCount`, `carriedText` and `CARRY_LABEL`;
+  `editResultText` takes what became of the fixtures; the answers' new
+  fields are typed (`CarriedFixture`).
+- **The dialog** (`RoomShellEditDialog.tsx`): the box on each line's and
+  ring's row, the count in the notice, and `onFixturesMoved`, called after
+  `onChanged` when a save or an undo moved fixtures.
+- **The editor** (`RigBuilder.tsx`): `handleRoomFixturesMoved` drops the
+  editor's own undo steps and reads the rig again, as it does after a scan
+  is applied; the walls-mode strip's Undo does the same. The 2D plan and the
+  3D view draw from the rig, so neither needed a change.
+- **Three older backend tests changed on purpose**: they asserted that a
+  truss edit moves no fixture. Two now send `carry_fixtures: false`; the
+  undo chain expects the carry and still ends with every fixture exactly
+  where it began.
+- **Nothing here sends Art-Net or DMX or touches a patch, a mode or a tag,**
+  and there is no new network call beyond the app's own API.
 
 ## What slice 16 built
 
@@ -1587,9 +1720,71 @@ are no binary fixtures in the repository.
   editor one request for a drag, the answered walls drawn with no reload, a
   refusal, the list of what is outside, the strip's Undo, and fixtures
   carried again once walls mode is done.
+- **Slice 17 (fixtures follow their truss).**
+  `backend/tests/unit/test_room_scan_carry.py` (run, 22 pass): the reach on
+  the plan and in height, past a line's end, a ring, missing numbers, two
+  crossing trusses each keeping its own; a move, a height, a length, a
+  turn, a ring's radius, move and height; **a light square to the truss
+  still square to it after a turn**, checked against the rig's own rotation
+  matrix; 80 degrees to -80 being 20 degrees on and swapped ends being no
+  turn; the stored middle followed, not the one asked for; a rename, a
+  raised area and a no-op carrying nothing; only position and heading
+  written; the refusal's sentence, the margin itself being inside, the
+  floor and the ceiling; an undo putting back exactly and leaving one moved
+  since or gone; a record that cannot be read; the sentences.
+  `backend/tests/integration/test_api_room_shell_carry.py` (run, 11 pass):
+  a move, a raise, a turn and a shorter line over HTTP with every other
+  field of every fixture unchanged and the other lights untouched, the step
+  stored with its fixtures, `carry_fixtures` false and null, a rename and a
+  raised area, a ring made bigger then moved and raised and undone twice,
+  the 422 writing nothing and the truss alone allowed, one undo restoring
+  truss and fixtures, a dragged fixture left by the undo, and the 409 under
+  a walkthrough for the edit and the undo.
+  `frontend/src/__tests__/RoomShellCarryDialog.test.tsx` and
+  `RigBuilderRoomCarry.test.tsx` (**type-checked, not run**): the box on a
+  line and a ring and not on a raised area, what is sent ticked and
+  unticked, the notice for several, one and none, no flag with a rename,
+  the server's refusal shown, `onFixturesMoved` after a carry and after an
+  undo that restored and not otherwise; and in the editor the rig read
+  again, the plan redrawn, the editor's undo steps dropped, nothing read
+  again when the truss went alone, and both Undo buttons.
 
 ## What is left
 
+- **The frontend tests of slice 17 have not been run either.** `npx vitest
+  run` was refused by the session's permissions in every form, as for
+  slices 15 and 16 below. `npx tsc --noEmit` reports the same 13 errors as
+  before, none in a file this slice touches. The backend suite was run
+  after slice 17: 1898 passed, 10 skipped, 5 xfailed. Nothing of it has
+  been seen in a browser: the box in an already wide row, and the plan and
+  the 3D view redrawing under the open dialog.
+- **Fixtures follow a truss only so far** (slice 17):
+  - **Only from Edit Room's rows.** A deleted truss leaves its fixtures
+    where they hung, a moved wall carries nothing, and a raised area never
+    takes the fixtures standing on it.
+  - **"Hung on it" is by distance, not by a link.** Nothing records which
+    truss a fixture belongs to: one within 0.3 m and 0.6 m of it goes, a
+    floor light that happens to stand that close under a low truss goes
+    too, and one hung on a drop further below the truss does not. Untick
+    the box, or use Undo, when the reach guesses wrong.
+  - **A turn is never more than a quarter turn.** A line has no front, so
+    turning one to 180 degrees is no turn and its fixtures stay put; to
+    swap a row end for end, lay it again.
+  - **A carried fixture is no longer where the scan put it**, so "Undo room
+    scan moves" leaves it alone afterwards. Its tags are not changed: a
+    guess stays a guess though it has been moved by hand, in a way.
+  - **The undo leaves a fixture moved since**, by more than 5 mm; one
+    nudged and nudged back is put back. A fixture whose heading alone was
+    changed since is put back, heading included.
+  - **The room's box, not its walls, is the limit**, as for the truss
+    itself: in an L-shaped room a truss and its fixtures can be carried
+    into the notch, where the Walls section then lists them as outside.
+  - **The editor's own Undo steps are dropped** when fixtures were carried,
+    like after a scan is applied: a drag made before the truss was moved
+    cannot be undone afterwards.
+  - **Only `rotation_y` turns.** A fixture with a tilt or roll stored keeps
+    them, which is right for a hanging light and may not be for one mounted
+    on its side.
 - **The frontend tests and the build of slices 15 and 16 have not been
   run.** Run `npx vitest run` and `npm run build` in `frontend/` before
   relying on them: both were refused by the permissions of the sessions
@@ -1846,8 +2041,9 @@ are no binary fixtures in the repository.
     dialog: the editor's Undo button and Ctrl-Z do not reach it.
   - **Every room edit is refused while a locate walkthrough runs**, even a
     rename. That is stricter than the scan routes, on purpose.
-  - **Fixtures do not follow** a truss that is moved, raised or turned.
-    Select the row and use Lay on truss afterwards.
+  - **Fixtures follow a line or ring** that is moved, raised, turned or
+    resized (slice 17; its limits are above). They do not follow a raised
+    area or a wall.
 - **Crowd and booth in a scanned room** are left out rather than fitted round
   what the scan found.
 - **Photos to a room** (photogrammetry inside this system) is out of scope: the
