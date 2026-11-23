@@ -12,6 +12,9 @@ import {
   boxBetween, boxSelection, fixturesInBox, keysBelongElsewhere, nudgeMoves, nudgeShift, pastDragThreshold,
 } from './planSelect2d';
 import type { ScreenPoint } from './planSelect2d';
+import PlanNudgePad from './PlanNudgePad';
+import { KEYS_HINT_TEXT, LONG_PRESS_MS, isTouchPointer, keysHintDue, padShift, pressPhase } from './planTouch2d';
+import type { PadDirection } from './planTouch2d';
 import { holdRowShift, onPlanTarget, rowReadoutText, snapReadoutText } from './rowMove2d';
 import type { PlanMove, RowShift } from './rowMove2d';
 import type { SnapLine } from './previs/fixtureDrag';
@@ -86,8 +89,30 @@ interface StageView2DProps {
    * as a drag is: `onFixtureDragStart`, one `onFixturesDrag`, `onFixtureDragEnd`.
    */
   keyboard?: boolean;
+  /**
+   * Whether the keys are also offered as buttons over the plan while
+   * something is selected: four arrows, a 1x / 10x switch, Select row and
+   * Lay on truss, for a phone or a tablet. A tap is the matching key. Off
+   * unless asked for, like the keyboard.
+   */
+  nudgePad?: boolean;
+  /**
+   * Lays the selection along the nearest scanned truss: the nudge pad's Lay
+   * on truss button, which is left out when this is.
+   */
+  onLayRow?: () => void;
   /** `y` is given only when the drop landed on a scanned truss line or ring. */
   onDropFromPalette?: (fixtureId: number, x: number, z: number, y?: number) => void;
+}
+
+/** A finger or pen that is down on the plan, until it is lifted. */
+interface TouchSession {
+  /** Which pointer: a second finger is not this one. */
+  pointerId: number;
+  /** Where it went down, on the screen. */
+  down: ScreenPoint;
+  /** Where it is now: what the long-press goes by when its time is up. */
+  last: ScreenPoint;
 }
 
 /** One press on empty floor, until it is let go: a click, or a selection box. */
@@ -102,6 +127,11 @@ interface BoxSession {
   additive: boolean;
   /** True once the pointer has gone past the drag threshold: until then it is a click. */
   started: boolean;
+  /**
+   * A finger held here for a long-press: the box it goes on to draw adds to
+   * the selection, and lifted without drawing one it clears nothing.
+   */
+  armed: boolean;
 }
 
 /** One press on a fixture, until it is let go. */
@@ -122,6 +152,21 @@ interface DragSession {
   moved: boolean;
   /** A plain press on one of several selected fixtures: selects it alone if let go without a move. */
   collapseOnRelease: boolean;
+  /**
+   * True once the drag has been reported as begun (`onFixtureDragStart`). A
+   * mouse press reports it at once. A finger does not until it is dragging,
+   * so a tap or a long-press reports no drag at all.
+   */
+  started: boolean;
+  /**
+   * A finger on a fixture that is not being carried with a selection: it is
+   * selected alone when the press turns into a drag, as a mouse press
+   * selects it at once. Left until then so a long-press can add it to the
+   * selection instead.
+   */
+  selectOnDrag: boolean;
+  /** A long-press has been taken from this press: it moves nothing and selects nothing more. */
+  spent: boolean;
 }
 
 export default function StageView2D({
@@ -141,9 +186,23 @@ export default function StageView2D({
   onFixtureSelectRow,
   onSelectFixtures,
   keyboard = false,
+  nudgePad = false,
+  onLayRow,
   onDropFromPalette,
 }: StageView2DProps) {
   const svgRef = useRef<SVGSVGElement>(null);
+  // The plan's own box: what a press on the plan gives the focus to, so the
+  // keys come back from a text field or a drop-down.
+  const planRef = useRef<HTMLDivElement>(null);
+  // The finger or pen that is down, and the timer that makes it a long-press.
+  const touchRef = useRef<TouchSession | null>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Where a long-press on empty floor was taken, shown until the finger lifts.
+  const [armedAt, setArmedAt] = useState<PlanPoint | null>(null);
+  // The nudge pad's 1x / 10x switch: the touch for Shift with an arrow key.
+  const [tenfold, setTenfold] = useState(false);
+  // True while the focus is somewhere the plan leaves the keys to.
+  const [keysAway, setKeysAway] = useState(false);
   // A press on empty floor, and the box it has drawn once it is a drag.
   const boxRef = useRef<BoxSession | null>(null);
   const [selectionBox, setSelectionBox] = useState<{ from: PlanPoint; to: PlanPoint } | null>(null);
@@ -287,19 +346,40 @@ export default function StageView2D({
     return { ...pos, on };
   };
 
-  const handleMouseDown = (e: React.MouseEvent, fixtureId: number) => {
-    if (readonly) return;
-    e.stopPropagation();
+  // A press on the plan takes the focus, so the keys are the plan's again
+  // after the rig's name was typed or a snap mode chosen. Only where the plan
+  // answers the keyboard: anywhere else it has nothing to take the focus for.
+  const focusPlan = () => {
+    if (!keyboard || readonly) return;
+    const box = planRef.current;
+    if (box && document.activeElement !== box) box.focus({ preventScroll: true });
+  };
+
+  /**
+   * A press on a fixture. `multi` is Shift, Ctrl or Cmd held by a mouse.
+   * `touch` is a finger or a pen, which has no such key: nothing is selected
+   * or reported until the press has shown what it is. Let go at once it is a
+   * tap and selects the fixture alone; carried 5 pixels it is a drag, as the
+   * mouse's; held still for half a second it is a long-press (`takeLongPress`).
+   */
+  const pressFixture = (at: ScreenPoint, fixtureId: number, multi: boolean, touch: boolean) => {
     const fixture = fixtures.find((f) => f.id === fixtureId);
     if (!fixture) return;
     skipBackgroundClick.current = false;
 
     // Shift, Ctrl and Cmd all add to, or take from, the selection.
-    const multi = e.shiftKey || e.ctrlKey || e.metaKey;
     const wasSelected = selectedIds.has(fixtureId);
     let carried = [fixtureId];
     let collapseOnRelease = false;
-    if (multi) {
+    let selectOnDrag = false;
+    if (touch) {
+      // A tap selects it alone, whatever was selected.
+      collapseOnRelease = true;
+      // One of several selected is carried with them; any other is selected
+      // alone once it is being dragged, and carried alone.
+      if (wasSelected && selectedIds.size > 1 && onFixturesDrag) carried = [...selectedIds];
+      else selectOnDrag = true;
+    } else if (multi) {
       onFixtureClick?.(fixtureId, true);
       if (onFixturesDrag) {
         // Taken out of the selection: there is nothing to carry.
@@ -322,9 +402,9 @@ export default function StageView2D({
 
     // Offset is held in unsnapped coordinates; snapping is applied to the final
     // position so grid mode actually lands on the grid.
-    const raw = pointerToStage(e.clientX, e.clientY);
+    const raw = pointerToStage(at.clientX, at.clientY);
     dragRef.current = {
-      down: { clientX: e.clientX, clientY: e.clientY },
+      down: { clientX: at.clientX, clientY: at.clientY },
       leadId: fixtureId,
       members,
       offset: { x: fixture.position_x - raw.x, z: fixture.position_z - raw.z },
@@ -332,9 +412,31 @@ export default function StageView2D({
       heightTouched: false,
       moved: false,
       collapseOnRelease,
+      started: !touch,
+      selectOnDrag,
+      spent: false,
     };
     setDraggingIds(members.map((m) => m.id));
-    onFixtureDragStart?.(fixtureId);
+    if (!touch) onFixtureDragStart?.(fixtureId);
+  };
+
+  const handleMouseDown = (e: React.MouseEvent, fixtureId: number) => {
+    if (readonly) return;
+    e.stopPropagation();
+    pressFixture(e, fixtureId, e.shiftKey || e.ctrlKey || e.metaKey, false);
+  };
+
+  /** A press on empty floor, by a mouse (`additive`: Shift, Ctrl or Cmd held) or a finger. */
+  const pressFloor = (at: ScreenPoint, additive: boolean) => {
+    const from = pointerToStage(at.clientX, at.clientY);
+    boxRef.current = {
+      down: { clientX: at.clientX, clientY: at.clientY },
+      from,
+      to: from,
+      additive,
+      started: false,
+      armed: false,
+    };
   };
 
   // A press on empty floor: a click that clears the selection, unless the
@@ -344,21 +446,21 @@ export default function StageView2D({
   const handleBackgroundMouseDown = (e: React.MouseEvent) => {
     skipBackgroundClick.current = false;
     if (readonly || !onSelectFixtures || e.button !== 0) return;
-    const from = pointerToStage(e.clientX, e.clientY);
-    boxRef.current = {
-      down: { clientX: e.clientX, clientY: e.clientY },
-      from,
-      to: from,
-      additive: e.shiftKey || e.ctrlKey || e.metaKey,
-      started: false,
-    };
+    pressFloor(e, e.shiftKey || e.ctrlKey || e.metaKey);
   };
 
   /** Ends a press on empty floor. A box that was drawn selects what is in it, unless it is `cancelled`. */
   const endBox = (cancelled: boolean) => {
     const boxing = boxRef.current;
     boxRef.current = null;
-    if (!boxing || !boxing.started) return;
+    if (!boxing) return;
+    if (boxing.armed) setArmedAt(null);
+    if (!boxing.started) {
+      // A long-press let go without a box drawn changes nothing: the click
+      // that may follow it must not clear the selection it was to add to.
+      if (boxing.armed) skipBackgroundClick.current = true;
+      return;
+    }
     setSelectionBox(null);
     // The click that follows the release is the end of this drag, not a click
     // on empty floor: it must not clear what was just selected, or kept.
@@ -380,12 +482,20 @@ export default function StageView2D({
     }
 
     const drag = dragRef.current;
-    if (!drag || readonly) return;
+    // A press a long-press was taken from carries nothing, wherever it goes.
+    if (!drag || readonly || drag.spent) return;
     const lead = drag.members.find((m) => m.id === drag.leadId);
     if (!lead) return;
     // A click, or the wobble of one, is not a drag: nothing moves, and so
     // nothing is saved or left to undo, until the pointer is 5 pixels away.
     if (!drag.moved && !pastDragThreshold(drag.down, e)) return;
+    if (!drag.started) {
+      // A finger that has turned out to be dragging: what a mouse press does
+      // at once is done now, the selection first and then the pick-up.
+      if (drag.selectOnDrag) onFixtureClick?.(drag.leadId, false);
+      drag.started = true;
+      onFixtureDragStart?.(drag.leadId);
+    }
     drag.moved = true;
     const raw = pointerToStage(e.clientX, e.clientY);
     // Holding Alt lets go of the scanned truss for this drag, as it does in
@@ -439,15 +549,130 @@ export default function StageView2D({
     endBox(false);
     const drag = dragRef.current;
     if (drag) {
-      if (released && drag.collapseOnRelease && !drag.moved) onFixtureClick?.(drag.leadId, false);
+      if (released && drag.collapseOnRelease && !drag.moved && !drag.spent) onFixtureClick?.(drag.leadId, false);
       if (drag.members.length > 1 && drag.moved) skipBackgroundClick.current = true;
-      onFixtureDragEnd?.(drag.leadId);
+      // A finger's tap or long-press was never reported as a drag begun.
+      if (drag.started) onFixtureDragEnd?.(drag.leadId);
     }
     dragRef.current = null;
     setDraggingIds((ids) => (ids.length === 0 ? ids : []));
     setSnapNote(null);
     dragOriginZ.current = null;
   };
+
+  // ---- A finger or a pen ---------------------------------------------------
+  // Pointer events, for the pointers that have no Shift to hold. A mouse is
+  // left to the mouse events above, which is what keeps it exactly as it was;
+  // a finger's press is prevented, so the browser sends no mouse events of
+  // its own after it and nothing is handled twice.
+
+  const clearLongPress = () => {
+    if (longPressTimer.current !== null) clearTimeout(longPressTimer.current);
+    longPressTimer.current = null;
+  };
+
+  // Made again on every render, like the key handler, so the timer that
+  // calls it sees the selection as it is when the time is up.
+  const takeLongPress = useRef<() => void>(() => {});
+  takeLongPress.current = () => {
+    longPressTimer.current = null;
+    const touch = touchRef.current;
+    if (!touch) return;
+    const held = (phase: 'press' | 'drag') => pressPhase(phase, touch.down, touch.last, LONG_PRESS_MS) === 'long-press';
+
+    const drag = dragRef.current;
+    if (drag) {
+      if (drag.spent || !held(drag.moved ? 'drag' : 'press')) return;
+      // The touch for Shift-click: the fixture is added to the selection, or
+      // taken out of it. The press is then spent: it carries nothing and no
+      // drag was ever reported, so nothing moves and no undo step is left.
+      drag.spent = true;
+      setDraggingIds((ids) => (ids.length === 0 ? ids : []));
+      dragOriginZ.current = null;
+      onFixtureClick?.(drag.leadId, true);
+      return;
+    }
+
+    const boxing = boxRef.current;
+    if (boxing && held(boxing.started ? 'drag' : 'press')) {
+      // The touch for a Shift-drag over empty floor: the box this finger
+      // goes on to draw adds to the selection.
+      boxing.additive = true;
+      boxing.armed = true;
+      setArmedAt(boxing.from);
+    }
+  };
+
+  const startLongPress = () => {
+    clearLongPress();
+    longPressTimer.current = setTimeout(() => takeLongPress.current(), LONG_PRESS_MS);
+  };
+
+  /**
+   * Ends a finger's press. `lifted`: let go, as a mouse button is. `left`:
+   * carried off the plan, as a mouse is, so a box takes what it held.
+   * `cancelled`: the browser took the finger for something of its own, and a
+   * box then selects nothing.
+   */
+  const endTouch = (how: 'lifted' | 'left' | 'cancelled') => {
+    clearLongPress();
+    touchRef.current = null;
+    if (how === 'cancelled') endBox(true);
+    endDrag(how === 'lifted');
+  };
+
+  /** Begins a finger's press: false for one the plan is not to take. */
+  const beginTouch = (e: React.PointerEvent): boolean => {
+    if (!isTouchPointer(e.pointerType) || readonly) return false;
+    // No mouse events after this press, no text selection and no page pan.
+    e.preventDefault();
+    // A second finger while one is down is not a press of its own.
+    if (touchRef.current && e.isPrimary === false) return false;
+    // A press whose end never arrived is ended here, not left to block this one.
+    if (touchRef.current) endTouch('cancelled');
+    const at = { clientX: e.clientX, clientY: e.clientY };
+    touchRef.current = { pointerId: e.pointerId, down: at, last: at };
+    focusPlan();
+    return true;
+  };
+
+  const handleFixturePointerDown = (e: React.PointerEvent, fixtureId: number) => {
+    if (!isTouchPointer(e.pointerType) || readonly) return;
+    e.stopPropagation();
+    if (!beginTouch(e)) return;
+    pressFixture(e, fixtureId, false, true);
+    if (dragRef.current) startLongPress();
+  };
+
+  const handleBackgroundPointerDown = (e: React.PointerEvent) => {
+    if (!beginTouch(e)) return;
+    skipBackgroundClick.current = false;
+    // Where no selection can be set there is no box, as for a mouse: the tap
+    // is the click that follows it.
+    if (!onSelectFixtures) return;
+    pressFloor(e, false);
+    startLongPress();
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    const touch = touchRef.current;
+    if (!touch || e.pointerId !== touch.pointerId) return;
+    touch.last = { clientX: e.clientX, clientY: e.clientY };
+    // Gone 5 pixels before the time was up: a drag, and never a long-press.
+    if (pastDragThreshold(touch.down, touch.last)) clearLongPress();
+    handleMouseMove(e);
+  };
+
+  const handlePointerEnd = (e: React.PointerEvent, how: 'lifted' | 'left' | 'cancelled') => {
+    const touch = touchRef.current;
+    if (!touch || e.pointerId !== touch.pointerId) return;
+    endTouch(how);
+  };
+
+  // A press abandoned when the plan goes away must not fire afterwards.
+  useEffect(() => () => {
+    if (longPressTimer.current !== null) clearTimeout(longPressTimer.current);
+  }, []);
 
   const handleBackgroundClick = () => {
     if (skipBackgroundClick.current) {
@@ -457,6 +682,24 @@ export default function StageView2D({
     if (!readonly) {
       onFixtureClick?.(-1, false); // Deselect
     }
+  };
+
+  /**
+   * Moves the selection by one shift, held inside the room: what an arrow
+   * key does, and a tap on the nudge pad's arrow. One call is one drag
+   * reported, so it is one batch-update and one undo step.
+   */
+  const nudgeBy = (shift: RowShift) => {
+    const moves = nudgeMoves(fixtures, selectedIds, shift, walls, width, depth);
+    // Already against the wall it is pushed at: nothing to move, save or undo.
+    if (moves.length === 0) return;
+    // Reported as a drag is, from pick-up to letting go, so it is saved and
+    // undone as one: a single batch-update and a single undo step.
+    const lead = moves[0].id;
+    onFixtureDragStart?.(lead);
+    if (onFixturesDrag) onFixturesDrag(moves);
+    else moves.forEach((move) => onFixtureDrag?.(move.id, move.x, move.z));
+    onFixtureDragEnd?.(lead);
   };
 
   // The keyboard. The handler is kept in a ref and made again on every
@@ -501,16 +744,7 @@ export default function StageView2D({
     // One press, one step: a key held down does not repeat, or it would fill
     // the undo history and send a save for every repeat. Shift goes further.
     if (e.repeat) return;
-    const moves = nudgeMoves(fixtures, selectedIds, shift, walls, width, depth);
-    // Already against the wall it is pushed at: nothing to move, save or undo.
-    if (moves.length === 0) return;
-    // Reported as a drag is, from pick-up to letting go, so it is saved and
-    // undone as one: a single batch-update and a single undo step.
-    const lead = moves[0].id;
-    onFixtureDragStart?.(lead);
-    if (onFixturesDrag) onFixturesDrag(moves);
-    else moves.forEach((move) => onFixtureDrag?.(move.id, move.x, move.z));
-    onFixtureDragEnd?.(lead);
+    nudgeBy(shift);
   };
 
   useEffect(() => {
@@ -519,6 +753,47 @@ export default function StageView2D({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [keyboard, readonly]);
+
+  // The focus cue: while the focus is in a field or a drop-down the keys are
+  // not the plan's, and the plan says how to get them back. Each focus event
+  // says where the focus is going, so nothing is read back after the fact.
+  useEffect(() => {
+    if (!keyboard || readonly) {
+      setKeysAway(false);
+      return undefined;
+    }
+    setKeysAway(keysHintDue(document.activeElement));
+    const onFocus = (e: FocusEvent) => setKeysAway(keysHintDue(e.target));
+    // Leaving for nowhere (the page itself) is leaving for the plan's keys.
+    const onBlur = (e: FocusEvent) => setKeysAway(keysHintDue(e.relatedTarget));
+    // Both pairs of events, the bubbling and (captured) the plain ones: they
+    // say the same thing, and not every browser has always sent the first.
+    document.addEventListener('focusin', onFocus);
+    document.addEventListener('focusout', onBlur);
+    document.addEventListener('focus', onFocus, true);
+    document.addEventListener('blur', onBlur, true);
+    return () => {
+      document.removeEventListener('focusin', onFocus);
+      document.removeEventListener('focusout', onBlur);
+      document.removeEventListener('focus', onFocus, true);
+      document.removeEventListener('blur', onBlur, true);
+    };
+  }, [keyboard, readonly]);
+
+  // The nudge pad: each button is its key. Nothing is nudged or selected
+  // under a pointer that is holding something, as with the keys.
+  const padFree = () => !dragRef.current && !boxRef.current;
+  const handlePadNudge = (direction: PadDirection) => {
+    const shift = padShift(direction, gridSize, tenfold);
+    if (shift && padFree()) nudgeBy(shift);
+  };
+  const handlePadSelectRow = () => {
+    // The row of the first selected fixture in the rig's order, as R goes by.
+    const first = fixtures.find((f) => selectedIds.has(f.id));
+    if (first && padFree()) onFixtureSelectRow?.(first.id);
+  };
+  const selectedCount = fixtures.filter((f) => selectedIds.has(f.id)).length;
+  const showPad = nudgePad && !readonly && selectedCount > 0;
 
   // A palette drop goes onto scanned truss as a drag does, Alt letting go.
   const handleDragOver = (e: React.DragEvent) => {
@@ -590,12 +865,19 @@ export default function StageView2D({
 
   return (
     <Box
+      ref={planRef}
+      // Able to hold the focus where the plan answers the keyboard, so a
+      // press on it takes the keys back from a field. Not a tab stop.
+      tabIndex={keyboard && !readonly ? -1 : undefined}
       sx={{
         width: '100%',
         aspectRatio: `${view.width} / ${view.height}`,
         bgcolor: '#1a1a2e',
         borderRadius: 1,
         overflow: 'hidden',
+        // What the nudge pad and the focus cue are set against.
+        position: 'relative',
+        outline: 'none',
       }}
     >
       <svg
@@ -604,11 +886,21 @@ export default function StageView2D({
         width="100%"
         height="100%"
         // A box dragged across the plan's labels must not select their text.
-        style={{ userSelect: 'none' }}
+        // A finger on the plan is the plan's: the browser does not pan or
+        // zoom the page with it, or it would take a press away half-way.
+        style={{ userSelect: 'none', touchAction: 'none', WebkitTouchCallout: 'none' }}
+        onMouseDownCapture={focusPlan}
         onMouseDown={handleBackgroundMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={() => endDrag(true)}
         onMouseLeave={() => endDrag(false)}
+        onPointerDown={handleBackgroundPointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={(e) => handlePointerEnd(e, 'lifted')}
+        onPointerLeave={(e) => handlePointerEnd(e, 'left')}
+        onPointerCancel={(e) => handlePointerEnd(e, 'cancelled')}
+        // A finger held down is a long-press here, not the browser's menu.
+        onContextMenu={(e) => { if (touchRef.current) e.preventDefault(); }}
         onClick={handleBackgroundClick}
         onDragOver={handleDragOver}
         onDragLeave={() => setDropPreview(null)}
@@ -846,6 +1138,7 @@ export default function StageView2D({
               key={f.id}
               transform={`translate(${toSvgX(f.position_x)}, ${toSvgY(f.position_z)})`}
               onMouseDown={(e) => handleMouseDown(e, f.id)}
+              onPointerDown={(e) => handleFixturePointerDown(e, f.id)}
               onClick={(e) => {
                 e.stopPropagation();
                 skipBackgroundClick.current = false;
@@ -911,6 +1204,23 @@ export default function StageView2D({
           );
         })()}
 
+        {/* Where a finger was held on empty floor: the box it goes on to
+            draw adds to the selection. Gone once the box is being drawn. */}
+        {armedAt && !selectionBox && (
+          <circle
+            data-testid="long-press-mark"
+            cx={toSvgX(armedAt.x)}
+            cy={toSvgY(armedAt.z)}
+            r={0.3}
+            fill={SELECTION_COLOR}
+            fillOpacity={0.12}
+            stroke={SELECTION_COLOR}
+            strokeWidth={0.04}
+            strokeDasharray="0.15 0.1"
+            style={{ pointerEvents: 'none' }}
+          />
+        )}
+
         {/* Landing spot for a fixture dragged in from the palette */}
         {dropPreview && (
           <g transform={`translate(${toSvgX(dropPreview.x)}, ${toSvgY(dropPreview.z)})`}>
@@ -961,6 +1271,40 @@ export default function StageView2D({
           1m
         </text>
       </svg>
+
+      {/* The focus cue: the keys are going to a field or a drop-down. It
+          takes no press itself, so a click on it is a click on the plan. */}
+      {keysAway && (
+        <div
+          data-testid="plan-keys-hint"
+          role="note"
+          style={{
+            position: 'absolute',
+            left: 8,
+            bottom: 8,
+            padding: '2px 8px',
+            borderRadius: 4,
+            background: 'rgba(26, 26, 46, 0.75)',
+            color: '#b0bec5',
+            fontSize: 12,
+            pointerEvents: 'none',
+          }}
+        >
+          {KEYS_HINT_TEXT}
+        </div>
+      )}
+
+      {/* The keys as buttons, for a finger: after the plan, and not in it. */}
+      {showPad && (
+        <PlanNudgePad
+          tenfold={tenfold}
+          onTenfoldChange={setTenfold}
+          onNudge={handlePadNudge}
+          onSelectRow={onFixtureSelectRow ? handlePadSelectRow : undefined}
+          onLayRow={onLayRow}
+          layRowDisabled={selectedCount < 2}
+        />
+      )}
     </Box>
   );
 }
