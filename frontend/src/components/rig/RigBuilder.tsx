@@ -481,7 +481,9 @@ export default function RigBuilder() {
           {/* Bottom: Properties Panel */}
           {selectedFixtures.length > 1 && (
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, flexShrink: 0 }}>
-              {`${selectedFixtures.length} fixtures selected. Drag any one of them to move them together.`}
+              {`${selectedFixtures.length} fixtures selected. Drag any one of them to move them together${
+                scannedTruss.length > 0 ? ', or use Lay on truss to space them along the nearest scanned truss' : ''
+              }.`}
             </Typography>
           )}
           {selectedFixture && (

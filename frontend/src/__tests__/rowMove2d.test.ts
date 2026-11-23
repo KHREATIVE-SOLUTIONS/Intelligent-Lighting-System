@@ -438,6 +438,8 @@ describe('layRowOnTruss', () => {
   it('moves nothing the second time: a laid row is where it would be laid', () => {
     const first = layRowOnTruss(rig, [1, 2, 3], SHELL, walls, 6, 4);
     if (!first.ok) throw new Error('not laid');
+    // To the millimetre, as the server stores them, so it holds after a reload too.
+    expect(first.moves.map((move) => move.x)).toEqual([-2.667, 0, 2.667]);
     const laid = withMoves(rig, first.moves);
     expect(laid.changed).toEqual([1, 2, 3]);
     const second = layRowOnTruss(laid.fixtures, [1, 2, 3], SHELL, walls, 6, 4);

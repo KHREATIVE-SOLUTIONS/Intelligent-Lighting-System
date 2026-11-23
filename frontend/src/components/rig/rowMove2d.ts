@@ -9,7 +9,7 @@
  */
 import type { RoomShell } from '../../types';
 import type { FixturePositionSnapshot } from '../../stores/rigEditorStore';
-import { nearestOnTarget } from './previs/fixtureDrag';
+import { nearestOnTarget, roundMm } from './previs/fixtureDrag';
 import type { SnapLine } from './previs/fixtureDrag';
 import { HANGER_HEIGHT_WINDOW, HANGER_REACH } from './previs/layout';
 import { holdOnPlan, planTrussTargets } from './roomPlan2d';
@@ -298,7 +298,11 @@ export function layRowOnTruss(
   return {
     ok: true,
     target,
-    moves: row.map((fixture, k) => ({ id: fixture.id, x: spots[k].x, z: spots[k].z, y: target.height })),
+    // To the millimetre, as they are stored: a row read back from the server
+    // and laid again is then where it would be laid, and nothing moves.
+    moves: row.map((fixture, k) => ({
+      id: fixture.id, x: roundMm(spots[k].x), z: roundMm(spots[k].z), y: roundMm(target.height),
+    })),
     spacing: spacingOn(target, row.length),
   };
 }
