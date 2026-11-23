@@ -20,6 +20,9 @@ import type { PlanMove, RowShift } from './rowMove2d';
 import type { LayChoice } from './rowSpace2d';
 import type { SnapLine } from './previs/fixtureDrag';
 import { WALL_LIMITS, wallCorners } from '../../utils/roomWallsEdit';
+import type { ShellItemChanges, ShellItemKind } from '../../utils/roomShellEdit';
+import { dragItem, gripHint, itemHandles, planItems, shapeCentre } from './roomItemDrag2d';
+import type { ItemGrip, ItemShape, PlanItem } from './roomItemDrag2d';
 
 const FIXTURE_TYPE_COLORS: Record<string, string> = {
   moving_head: '#e91e63',
@@ -60,6 +63,22 @@ interface CornerSession {
   offset: { x: number; z: number };
   /** Where the drag has the corner now. */
   at: PlanPoint;
+  /** True once the pointer has gone past the drag threshold. */
+  moved: boolean;
+}
+
+/** One press on a room item or one of its handles, until it is let go. */
+interface ItemSession {
+  /** The item as it stood when it was pressed. */
+  item: PlanItem;
+  /** What the press has hold of: the item itself, or one of its handles. */
+  grip: ItemGrip;
+  /** Where the pointer went down, on the screen: the press is a drag once it is 5 pixels from here. */
+  down: ScreenPoint;
+  /** The grip's position less the pointer's, so the item does not jump to the pointer. */
+  offset: { x: number; z: number };
+  /** What the drag would send as it now stands: null where it has changed nothing. */
+  changes: ShellItemChanges | null;
   /** True once the pointer has gone past the drag threshold. */
   moved: boolean;
 }
@@ -158,6 +177,35 @@ interface StageView2DProps {
    * draws the room it is given: a move that was refused goes back.
    */
   onWallCornerMove?: (index: number, x: number, z: number) => void | Promise<unknown>;
+  /**
+   * Edit Room's "Arrange room items on the plan": each raised area, truss
+   * line and ring the plan draws can be pressed to select it and dragged to
+   * move it; the selected one shows its handles (a line's length and
+   * heading, a ring's radius) and answers the arrow keys. Fixtures take no
+   * press, as in walls mode. Off unless asked for.
+   */
+  itemsEdit?: boolean;
+  /** The item that is selected in that mode, by its key (`risers:0`), or null. */
+  selectedItemKey?: string | null;
+  /** A press on an item selects it; a click on empty floor, or Escape, selects none (null). */
+  onItemSelect?: (key: string | null) => void;
+  /**
+   * An item, or one of its handles, let go somewhere new: called once for a
+   * drag, when it ends, and never for a press that stayed within 5 pixels or
+   * a drag that ended where it began. `kind` and `index` are the item's list
+   * and its place in it as stored. `changes` holds only what the drag set:
+   * the middle for a move, `length`, `heading_deg` or `radius` for a handle.
+   * The plan shows the item where it was dropped until what this returns has
+   * settled, then draws the room it is given: a change refused goes back.
+   */
+  onItemChange?: (kind: ShellItemKind, index: number, changes: ShellItemChanges) => void | Promise<unknown>;
+  /**
+   * An arrow key pressed with an item selected: move it by this shift (the
+   * grid step; ten with Shift). One call for each press; a key held down
+   * does not repeat. The shift is given, not a position, so that the editor
+   * can add it to where the item is once the request before it is answered.
+   */
+  onItemNudge?: (kind: ShellItemKind, index: number, dx: number, dz: number) => void;
 }
 
 /** A finger or pen that is down on the plan, until it is lifted. */
@@ -250,7 +298,17 @@ export default function StageView2D({
   onDropFromPalette,
   wallsEdit = false,
   onWallCornerMove,
+  itemsEdit = false,
+  selectedItemKey = null,
+  onItemSelect,
+  onItemChange,
+  onItemNudge,
 }: StageView2DProps) {
+  // A press on a room item or one of its handles, and where its drag has the item.
+  const itemRef = useRef<ItemSession | null>(null);
+  const [itemPreview, setItemPreview] = useState<{ key: string; shape: ItemShape; readout: string } | null>(null);
+  // Fixtures take no press while the room itself is being edited on the plan.
+  const roomEdit = wallsEdit || itemsEdit;
   // A press on a corner of the walls, and where its drag has the corner.
   const cornerRef = useRef<CornerSession | null>(null);
   const [cornerPreview, setCornerPreview] = useState<{ index: number; x: number; z: number } | null>(null);
@@ -321,6 +379,19 @@ export default function StageView2D({
       index === cornerPreview.index ? { x: cornerPreview.x, z: cornerPreview.z } : corner
     ));
   }, [walls, wallHandles, cornerPreview]);
+
+  // The room's items that can be picked up: none unless the mode is on.
+  const roomItems = useMemo(
+    () => (itemsEdit && !readonly ? planItems(roomShell) : null),
+    [itemsEdit, readonly, roomShell],
+  );
+
+  // The mode turned off under a press: the press is over, and nothing is sent.
+  useEffect(() => {
+    if (itemsEdit) return;
+    itemRef.current = null;
+    setItemPreview(null);
+  }, [itemsEdit]);
 
   // Walls mode turned off under a press: the press is over, and nothing is sent.
   useEffect(() => {
@@ -437,7 +508,7 @@ export default function StageView2D({
   // after the rig's name was typed or a snap mode chosen. Only where the plan
   // answers the keyboard: anywhere else it has nothing to take the focus for.
   const focusPlan = () => {
-    if (!keyboard || readonly) return;
+    if (!(keyboard || itemsEdit) || readonly) return;
     const box = planRef.current;
     if (box && document.activeElement !== box) box.focus({ preventScroll: true });
   };
@@ -508,8 +579,8 @@ export default function StageView2D({
   };
 
   const handleMouseDown = (e: React.MouseEvent, fixtureId: number) => {
-    // In walls mode a fixture takes no press: the walls are what is being moved.
-    if (readonly || wallsEdit) return;
+    // While the walls or the room's items are being moved a fixture takes no press.
+    if (readonly || roomEdit) return;
     e.stopPropagation();
     pressFixture(e, fixtureId, e.shiftKey || e.ctrlKey || e.metaKey, false);
   };
@@ -535,6 +606,34 @@ export default function StageView2D({
     pressCorner(e, index);
   };
 
+  /**
+   * A press on a room item (`grip` 'move') or on one of the selected item's
+   * handles. The item is selected at once; nothing moves until the press has
+   * gone 5 pixels.
+   */
+  const pressItem = (at: ScreenPoint, item: PlanItem, grip: ItemGrip) => {
+    skipBackgroundClick.current = false;
+    if (item.key !== selectedItemKey) onItemSelect?.(item.key);
+    const raw = pointerToStage(at.clientX, at.clientY);
+    const held = grip === 'move'
+      ? shapeCentre(item.shape)
+      : itemHandles(item.shape).find((handle) => handle.grip === grip) ?? shapeCentre(item.shape);
+    itemRef.current = {
+      item,
+      grip,
+      down: { clientX: at.clientX, clientY: at.clientY },
+      offset: { x: held.x - raw.x, z: held.z - raw.z },
+      changes: null,
+      moved: false,
+    };
+  };
+
+  const handleItemMouseDown = (e: React.MouseEvent, item: PlanItem, grip: ItemGrip) => {
+    if (readonly || e.button !== 0) return;
+    e.stopPropagation();
+    pressItem(e, item, grip);
+  };
+
   /** A press on empty floor, by a mouse (`additive`: Shift, Ctrl or Cmd held) or a finger. */
   const pressFloor = (at: ScreenPoint, additive: boolean) => {
     const from = pointerToStage(at.clientX, at.clientY);
@@ -554,8 +653,8 @@ export default function StageView2D({
   // field, which is what hands the keyboard back to the plan.
   const handleBackgroundMouseDown = (e: React.MouseEvent) => {
     skipBackgroundClick.current = false;
-    // No selection box in walls mode: nothing is selected or carried there.
-    if (readonly || wallsEdit || !onSelectFixtures || e.button !== 0) return;
+    // No selection box while the room is being edited: no fixture is selected or carried there.
+    if (readonly || roomEdit || !onSelectFixtures || e.button !== 0) return;
     pressFloor(e, e.shiftKey || e.ctrlKey || e.metaKey);
   };
 
@@ -594,6 +693,23 @@ export default function StageView2D({
       const held = (value: number) => roundMm(Math.min(Math.max(value, -WALL_LIMITS.reach), WALL_LIMITS.reach));
       cornering.at = { x: held(at.x), z: held(at.z) };
       setCornerPreview({ index: cornering.index, ...cornering.at });
+      return;
+    }
+
+    const arranging = itemRef.current;
+    if (arranging && !readonly) {
+      // A click, or the wobble of one, moves no item: nothing is sent and no undo step is left.
+      if (!arranging.moved && !pastDragThreshold(arranging.down, e)) return;
+      arranging.moved = true;
+      const raw = pointerToStage(e.clientX, e.clientY);
+      // Onto the grid, as a corner of the walls goes, unless the snap is off or Alt is held.
+      const dragged = dragItem(
+        arranging.item, arranging.grip,
+        { x: raw.x + arranging.offset.x, z: raw.z + arranging.offset.z },
+        { on: snapMode !== 'none' && !e.altKey, gridSize },
+      );
+      arranging.changes = dragged.changes;
+      setItemPreview({ key: arranging.item.key, shape: dragged.shape, readout: dragged.readout });
       return;
     }
 
@@ -681,6 +797,24 @@ export default function StageView2D({
       const sent = onWallCornerMove?.(cornering.index, cornering.at.x, cornering.at.z);
       // Shown where it was dropped until the answer is in; then the room given is drawn.
       void Promise.resolve(sent).catch(() => undefined).then(() => setCornerPreview(null));
+      return;
+    }
+    const arranging = itemRef.current;
+    if (arranging) {
+      // Let go, or carried off the plan: either way the item is where the drag had it.
+      itemRef.current = null;
+      if (!arranging.moved) return;
+      // The click that follows the release is the end of this drag: the item stays selected.
+      skipBackgroundClick.current = true;
+      // Brought back to where it began: nothing to send, and no undo step.
+      if (!arranging.changes) {
+        setItemPreview(null);
+        return;
+      }
+      // One call for the whole drag: one request, and one step of the room's undo.
+      const sent = onItemChange?.(arranging.item.kind, arranging.item.index, arranging.changes);
+      // Shown where it was dropped until the answer is in; then the room given is drawn.
+      void Promise.resolve(sent).catch(() => undefined).then(() => setItemPreview(null));
       return;
     }
     // Let go, or carried off the plan: either way the box takes what it holds.
@@ -782,8 +916,16 @@ export default function StageView2D({
     pressCorner(e, index);
   };
 
+  /** A finger on a room item or one of its handles: the same drag as a mouse's. */
+  const handleItemPointerDown = (e: React.PointerEvent, item: PlanItem, grip: ItemGrip) => {
+    if (!isTouchPointer(e.pointerType) || readonly) return;
+    e.stopPropagation();
+    if (!beginTouch(e)) return;
+    pressItem(e, item, grip);
+  };
+
   const handleFixturePointerDown = (e: React.PointerEvent, fixtureId: number) => {
-    if (!isTouchPointer(e.pointerType) || readonly || wallsEdit) return;
+    if (!isTouchPointer(e.pointerType) || readonly || roomEdit) return;
     e.stopPropagation();
     if (!beginTouch(e)) return;
     pressFixture(e, fixtureId, false, true);
@@ -794,8 +936,8 @@ export default function StageView2D({
     if (!beginTouch(e)) return;
     skipBackgroundClick.current = false;
     // Where no selection can be set there is no box, as for a mouse: the tap
-    // is the click that follows it. Nor is there one in walls mode.
-    if (!onSelectFixtures || wallsEdit) return;
+    // is the click that follows it. Nor is there one while the room is edited.
+    if (!onSelectFixtures || roomEdit) return;
     pressFloor(e, false);
     startLongPress();
   };
@@ -823,6 +965,11 @@ export default function StageView2D({
   const handleBackgroundClick = () => {
     if (skipBackgroundClick.current) {
       skipBackgroundClick.current = false;
+      return;
+    }
+    // While the room's items are arranged, empty floor lets go of the item, not of a fixture.
+    if (itemsEdit && !readonly) {
+      if (selectedItemKey !== null) onItemSelect?.(null);
       return;
     }
     if (!readonly) {
@@ -908,6 +1055,38 @@ export default function StageView2D({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [keyboard, readonly]);
+
+  // The keys while the room's items are arranged: the arrows move the
+  // selected item by the grid step (Shift: ten steps), one call for each
+  // press, and Escape lets go of it. A listener of its own: the plan's other
+  // keys (`keyboard`) are off in this mode, where no fixture is selected.
+  const itemKeyHandler = useRef<(e: KeyboardEvent) => void>(() => {});
+  itemKeyHandler.current = (e: KeyboardEvent) => {
+    if (e.defaultPrevented) return;
+    if (keysBelongElsewhere(e.target) || keysBelongElsewhere(document.activeElement)) return;
+    const selected = roomItems?.find((item) => item.key === selectedItemKey);
+    if (e.key === 'Escape') {
+      // Not under a drag: the item being carried stays selected.
+      if (selected && !itemRef.current) onItemSelect?.(null);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const shift = nudgeShift(e.key, gridSize, e.shiftKey);
+    // With nothing selected an arrow key is left to scroll the page.
+    if (!shift || !selected) return;
+    e.preventDefault();
+    // One press, one request and one undo step: a key held down does not
+    // repeat. Nothing is nudged under a pointer that is holding an item.
+    if (e.repeat || itemRef.current) return;
+    onItemNudge?.(selected.kind, selected.index, shift.dx, shift.dz);
+  };
+
+  useEffect(() => {
+    if (!itemsEdit || readonly) return undefined;
+    const onKeyDown = (e: KeyboardEvent) => itemKeyHandler.current(e);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [itemsEdit, readonly]);
 
   // The focus cue: while the focus is in a field or a drop-down the keys are
   // not the plan's, and the plan says how to get them back. Each focus event
@@ -1025,7 +1204,7 @@ export default function StageView2D({
       ref={planRef}
       // Able to hold the focus where the plan answers the keyboard, so a
       // press on it takes the keys back from a field. Not a tab stop.
-      tabIndex={keyboard && !readonly ? -1 : undefined}
+      tabIndex={(keyboard || itemsEdit) && !readonly ? -1 : undefined}
       sx={{
         width: '100%',
         aspectRatio: `${view.width} / ${view.height}`,
@@ -1300,8 +1479,8 @@ export default function StageView2D({
                 e.stopPropagation();
                 skipBackgroundClick.current = false;
               }}
-              onDoubleClick={onFixtureSelectRow && !readonly && !wallsEdit ? () => onFixtureSelectRow(f.id) : undefined}
-              style={{ cursor: readonly || wallsEdit ? 'default' : 'grab', opacity: wallsEdit ? 0.45 : undefined }}
+              onDoubleClick={onFixtureSelectRow && !readonly && !roomEdit ? () => onFixtureSelectRow(f.id) : undefined}
+              style={{ cursor: readonly || roomEdit ? 'default' : 'grab', opacity: roomEdit ? 0.45 : undefined }}
             >
               {/* Selection ring */}
               {isSelected && (
@@ -1371,6 +1550,116 @@ export default function StageView2D({
                       style={{ pointerEvents: 'none' }}
                     >
                       {`${corner.x.toFixed(2)}, ${corner.z.toFixed(2)}`}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </g>
+        )}
+
+        {/* Arranging the room's items: each one's footprint again, over the
+            fixtures (a truss is mostly under its own lights), to be pressed
+            and dragged; the selected one's handles; and, while one is
+            dragged, where the drag has it. The room layer underneath still
+            shows where it stands until the server answers. */}
+        {roomItems && (
+          <g data-testid="room-items">
+            {roomItems.map((item) => {
+              const selected = item.key === selectedItemKey;
+              const previewed = itemPreview?.key === item.key ? itemPreview : null;
+              const shape = previewed?.shape ?? item.shape;
+              const stroke = selected || previewed ? WALL_HANDLE : '#cfd8dc';
+              const press = {
+                onMouseDown: (e: React.MouseEvent) => handleItemMouseDown(e, item, 'move'),
+                onPointerDown: (e: React.PointerEvent) => handleItemPointerDown(e, item, 'move'),
+                onClick: (e: React.MouseEvent) => e.stopPropagation(),
+              };
+              const centre = shapeCentre(shape);
+              const shapeId = `room-item-shape-${item.kind}-${item.index}`;
+              return (
+                <g
+                  key={`room-item-${item.key}`}
+                  data-testid={`room-item-${item.kind}-${item.index}`}
+                  data-selected={selected ? 'true' : 'false'}
+                >
+                  <title>{gripHint('move', item.title)}</title>
+                  {shape.type === 'box' && (
+                    <rect
+                      data-testid={shapeId}
+                      x={toSvgX(shape.centerX - shape.width / 2)}
+                      y={toSvgY(shape.centerZ - shape.depth / 2)}
+                      width={shape.width}
+                      height={shape.depth}
+                      fill={WALL_HANDLE}
+                      fillOpacity={selected ? 0.16 : 0.04}
+                      stroke={stroke}
+                      strokeWidth={selected ? 0.07 : 0.04}
+                      strokeDasharray={selected ? undefined : '0.18 0.12'}
+                      style={{ cursor: 'move' }}
+                      {...press}
+                    />
+                  )}
+                  {shape.type === 'line' && (
+                    <line
+                      data-testid={shapeId}
+                      x1={toSvgX(shape.x1)}
+                      y1={toSvgY(shape.z1)}
+                      x2={toSvgX(shape.x2)}
+                      y2={toSvgY(shape.z2)}
+                      stroke={stroke}
+                      // Wide enough to press, whatever the truss measured across.
+                      strokeWidth={0.45}
+                      strokeOpacity={selected ? 0.55 : 0.25}
+                      strokeLinecap="round"
+                      style={{ cursor: 'move' }}
+                      {...press}
+                    />
+                  )}
+                  {shape.type === 'ring' && (
+                    <circle
+                      data-testid={shapeId}
+                      cx={toSvgX(shape.centerX)}
+                      cy={toSvgY(shape.centerZ)}
+                      r={shape.radius}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth={0.45}
+                      strokeOpacity={selected ? 0.55 : 0.25}
+                      // The truss alone: what is inside a ring can still be pressed.
+                      style={{ cursor: 'move', pointerEvents: 'stroke' }}
+                      {...press}
+                    />
+                  )}
+                  {selected && itemHandles(shape).map((handle) => (
+                    <g
+                      key={handle.grip}
+                      data-testid={`room-item-handle-${handle.grip}`}
+                      transform={`translate(${toSvgX(handle.x)}, ${toSvgY(handle.z)})`}
+                      onMouseDown={(e) => handleItemMouseDown(e, item, handle.grip)}
+                      onPointerDown={(e) => handleItemPointerDown(e, item, handle.grip)}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ cursor: handle.grip === 'rotate' ? 'alias' : 'pointer' }}
+                    >
+                      <title>{gripHint(handle.grip, item.title)}</title>
+                      {handle.grip === 'rotate' ? (
+                        <circle r={0.2} fill="#1a1a2e" stroke={WALL_HANDLE} strokeWidth={0.07} />
+                      ) : (
+                        <rect x={-0.18} y={-0.18} width={0.36} height={0.36} fill={WALL_HANDLE} stroke="#1a1a2e" strokeWidth={0.05} />
+                      )}
+                    </g>
+                  ))}
+                  {previewed && previewed.readout && (
+                    <text
+                      data-testid="room-item-readout"
+                      x={toSvgX(centre.x)}
+                      y={toSvgY(centre.z) - 0.45}
+                      textAnchor="middle"
+                      fill={WALL_HANDLE}
+                      fontSize={0.24}
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      {previewed.readout}
                     </text>
                   )}
                 </g>

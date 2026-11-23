@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Box, Button, Typography, Paper, Snackbar, Alert } from '@mui/material';
+import { Box, Button, Checkbox, FormControlLabel, Typography, Paper, Snackbar, Alert } from '@mui/material';
 import axios from 'axios';
 import { rigsApi, fixturesApi, roomScanApi } from '../../services/api';
 import { useRigEditorStore, computeTrussLines } from '../../stores/rigEditorStore';
@@ -24,7 +24,12 @@ import IdentifyWalkthrough from './IdentifyWalkthrough';
 import RoomScanDialog from './RoomScanDialog';
 import { undoCount } from '../../utils/roomScan';
 import RoomShellEditDialog from './RoomShellEditDialog';
-import { carriedCount, shellEditErrorText, shellUndoCount, undoButtonText } from '../../utils/roomShellEdit';
+import {
+  carriedCount, carryBoxName, carryLabel, editResultText, shellEditErrorText, shellItemKey, shellItemTitle, shellItems,
+  shellUndoCount, undoButtonText, withCarry,
+} from '../../utils/roomShellEdit';
+import type { ShellItemChanges, ShellItemKind } from '../../utils/roomShellEdit';
+import { nudgeItem, planItems } from './roomItemDrag2d';
 import { outsideLines, outsideOf } from '../../utils/roomWallsEdit';
 import type { Rig, RigFixture, Fixture, PatchConflict, RoomShell, RoomShellEdits } from '../../types';
 
@@ -58,6 +63,23 @@ export default function RigBuilder() {
   >(null);
   // A change to the walls is out: one at a time, each built on the last one stored.
   const [wallsBusy, setWallsBusy] = useState(false);
+  // Edit Room's "Arrange room items on the plan": the dialog is put away and
+  // the room's raised areas, truss lines and rings are dragged on the plan,
+  // where fixtures then take no press. Never on with walls mode.
+  const [itemsMode, setItemsMode] = useState(false);
+  // What the last drag or nudge of an item did, or why it was refused.
+  const [itemsNote, setItemsNote] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
+  // The item that is selected on the plan in that mode, by its key (`truss_lines:0`).
+  const [selectedItemKey, setSelectedItemKey] = useState<string | null>(null);
+  // The items whose fixtures stay behind, by key: the dialog's unticked
+  // boxes as they were when it handed over, and the strip's box since. Kept
+  // in a ref as well, for a request that is waiting its turn to read.
+  const [itemsLeftAlone, setItemsLeftAlone] = useState<Record<string, boolean>>({});
+  const itemsLeftAloneRef = useRef<Record<string, boolean>>({});
+  // The changes to the room made from the plan, one after another: each is
+  // sent only once the one before it has been answered and, where that one
+  // moved fixtures, the rig has been read again.
+  const roomQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   // How far apart Lay on truss lays a row. The editor's own, not the
   // store's: it starts at Fill truss each time the editor is opened.
   const [layChoice, setLayChoice] = useState<LayChoice>(DEFAULT_LAY_CHOICE);
@@ -250,8 +272,122 @@ export default function RigBuilder() {
     setRoomEditOpen(false);
     deselectAll();
     setWallsNote(null);
+    setItemsMode(false);
     setWallsMode(true);
   };
+
+  const leaveItemsAlone = (next: Record<string, boolean>) => {
+    itemsLeftAloneRef.current = next;
+    setItemsLeftAlone(next);
+  };
+
+  /**
+   * Edit Room's "Arrange room items on the plan": the dialog is in front of
+   * the plan, so it is closed, and the plan lets the room's raised areas,
+   * truss lines and rings be picked up. `leftAlone` is the dialog's unticked
+   * "Move the fixtures ..." boxes, so a drag carries what a save there would.
+   */
+  const handleArrangeItems = (leftAlone: Record<string, boolean>) => {
+    setRoomEditOpen(false);
+    deselectAll();
+    setItemsNote(null);
+    setSelectedItemKey(null);
+    leaveItemsAlone({ ...leftAlone });
+    setWallsMode(false);
+    setItemsMode(true);
+  };
+
+  /** Puts a change to the room behind the ones already out, so each builds on the last one stored. */
+  const queueRoomChange = (task: () => Promise<void>): Promise<void> => {
+    const run = roomQueueRef.current.then(task, task);
+    roomQueueRef.current = run.catch(() => undefined);
+    return run;
+  };
+
+  const itemsError = (err: unknown) => setItemsNote({
+    severity: 'error',
+    text: axios.isAxiosError(err)
+      ? shellEditErrorText(err.response?.status, err.response?.data?.detail)
+      : shellEditErrorText(undefined, undefined),
+  });
+
+  /**
+   * One change to one item of the room, made on the plan: a drag that was
+   * let go, or an arrow key. One PATCH and one step of the room's own undo.
+   * `changesFor` is asked what to send once this change's turn has come,
+   * with the room as the change before it left it, so two quick nudges are
+   * two steps and not the same step twice. The fixtures hung or standing on
+   * the item go with it unless its box is unticked; when any did, the rig is
+   * read again before the next change, and the editor's own undo steps,
+   * which hold the old positions, are dropped. A change the server refuses
+   * (422, or 409 during a locate walkthrough) stores nothing: the plan goes
+   * back to the room as it is, and the strip shows the server's words.
+   */
+  const changeRoomItem = (
+    kind: ShellItemKind, index: number,
+    changesFor: (shell: RoomShell | null | undefined) => ShellItemChanges | null,
+  ) => queueRoomChange(async () => {
+    const current = rigRef.current;
+    if (!current) return;
+    const item = shellItems(current.room_shell).find((entry) => entry.kind === kind && entry.index === index);
+    const changes = changesFor(current.room_shell);
+    if (!item || !changes) return;
+    const carry = !itemsLeftAloneRef.current[shellItemKey(item)];
+    try {
+      const result = await roomScanApi.editShellItem(current.id, kind, index, withCarry(item, changes, carry));
+      handleRoomEdited(result.room_shell, result.undo);
+      const moved = carriedCount(result.fixtures_moved);
+      if (moved > 0) {
+        clearHistory();
+        await fetchRig();
+      }
+      setItemsNote({
+        severity: 'success',
+        // Held where it already was (against the 2 m round the room): nothing was stored.
+        text: result.changed === false
+          ? `${shellItemTitle(item)} is where it was: nothing was changed.`
+          : editResultText(item, changes, result.room_shell, { moved, asked: carry }),
+      });
+    } catch (err) {
+      itemsError(err);
+    }
+  });
+
+  /** An item, or a handle of one, dragged and let go on the plan. */
+  const handleItemChange = (kind: ShellItemKind, index: number, changes: ShellItemChanges) =>
+    changeRoomItem(kind, index, () => changes);
+
+  /** An arrow key: the item's middle, wherever the change before this one left it, shifted by a step. */
+  const handleItemNudge = (kind: ShellItemKind, index: number, dx: number, dz: number) => {
+    void changeRoomItem(kind, index, (shell) => {
+      const item = planItems(shell).find((entry) => entry.kind === kind && entry.index === index);
+      return item ? nudgeItem(item, dx, dz) : null;
+    });
+  };
+
+  /**
+   * The room's own Undo, from the strip over the plan while items are
+   * arranged: the latest change to the room, whatever it was. It may bring
+   * back a deleted item, which moves the ones after it down a place: the
+   * selection and the unticked boxes go by place, so both are let go.
+   */
+  const handleItemsUndo = () => queueRoomChange(async () => {
+    const current = rigRef.current;
+    if (!current) return;
+    try {
+      const result = await roomScanApi.undoShellEdit(current.id);
+      handleRoomEdited(result.room_shell, result.undo);
+      setSelectedItemKey(null);
+      leaveItemsAlone({});
+      if (carriedCount(result.fixtures_restored) > 0) {
+        clearHistory();
+        await fetchRig();
+      }
+      setItemsNote({ severity: 'success', text: result.message });
+    } catch (err) {
+      itemsError(err);
+    }
+  });
 
   const wallsError = (err: unknown) => setWallsNote({
     severity: 'error',
@@ -597,6 +733,12 @@ export default function RigBuilder() {
   // Walls mode is only ever on over a scanned room: a room taken off, or
   // another dialog in front of the plan, is not something to drag walls under.
   const wallsOn = wallsMode && rig.room_shell?.source === 'scan' && !identifyOpen && !roomScanOpen && !roomEditOpen;
+  // Arranging the room's items, on the same terms.
+  const itemsOn = itemsMode && !wallsOn && rig.room_shell?.source === 'scan'
+    && !identifyOpen && !roomScanOpen && !roomEditOpen;
+  const selectedItem = itemsOn
+    ? shellItems(rig.room_shell).find((item) => shellItemKey(item) === selectedItemKey) ?? null
+    : null;
   const layTarget = nearestTruss(
     scannedTruss, selectedFixtures.map((f) => ({ x: f.position_x, z: f.position_z })),
   );
@@ -688,6 +830,65 @@ export default function RigBuilder() {
               )}
             </Alert>
           )}
+          {/* Arranging the room's items: what it is, the selected item's box, what the last change did, and the ways out. */}
+          {itemsOn && (
+            <Alert
+              severity={itemsNote?.severity ?? 'info'}
+              data-testid="items-mode"
+              sx={{ mb: 1, flexShrink: 0 }}
+              action={
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                  <Button
+                    color="inherit"
+                    size="small"
+                    disabled={shellUndoCount(rig.room_shell_edits) === 0}
+                    onClick={() => { void handleItemsUndo(); }}
+                    data-testid="items-mode-undo"
+                  >
+                    {undoButtonText(rig.room_shell_edits)}
+                  </Button>
+                  <Button
+                    color="inherit"
+                    size="small"
+                    onClick={() => { setItemsMode(false); void handleEditRoom(); }}
+                  >
+                    Back to Edit Room
+                  </Button>
+                  <Button color="inherit" size="small" onClick={() => setItemsMode(false)}>
+                    Done arranging
+                  </Button>
+                </Box>
+              }
+            >
+              {itemsNote?.text
+                ?? 'Arranging the room: drag a raised area, a truss line or a ring to move it, or press it and use the arrow keys (Shift for ten steps). A selected truss line has a square handle on one end for its length and a round one past the other for its heading; a ring has a square handle for its radius. Everything goes to the grid unless the snap is off or Alt is held. Fixtures cannot be picked up until you are done.'}
+              {selectedItem && (
+                <Box sx={{ mt: 0.5 }} data-testid="items-mode-selected">
+                  <FormControlLabel
+                    sx={{ mr: 0 }}
+                    control={
+                      <Checkbox
+                        size="small"
+                        sx={{ py: 0 }}
+                        checked={!itemsLeftAlone[shellItemKey(selectedItem)]}
+                        onChange={(e) => {
+                          leaveItemsAlone({ ...itemsLeftAlone, [shellItemKey(selectedItem)]: !e.target.checked });
+                          // The arrow keys are the plan's again, not the box's.
+                          e.target.blur();
+                        }}
+                        inputProps={{ 'aria-label': carryBoxName(selectedItem.kind, shellItemTitle(selectedItem)) }}
+                      />
+                    }
+                    label={
+                      <Typography variant="caption">
+                        {`${shellItemTitle(selectedItem)} is selected. ${carryLabel(selectedItem.kind)}`}
+                      </Typography>
+                    }
+                  />
+                </Box>
+              )}
+            </Alert>
+          )}
           <StageView2D
             width={rig.stage_width}
             depth={rig.stage_depth}
@@ -707,10 +908,19 @@ export default function RigBuilder() {
             // R, the arrow keys and Escape act on the plan only while it is
             // what is shown, and never under a dialog that is in front of it.
             // Nor in walls mode, where nothing is selected or nudged.
-            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn}
+            // Nor while the room's items are arranged, which has keys of its own.
+            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn && !itemsOn}
             // The same keys as buttons over the plan, for a phone or a
             // tablet: shown while something is selected, on the same terms.
-            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn}
+            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn && !itemsOn}
+            // Edit Room's "Arrange room items on the plan": a raised area, a
+            // truss line or a ring is dragged, or nudged with the arrow keys,
+            // each change one request and one step of the room's own undo.
+            itemsEdit={itemsOn}
+            selectedItemKey={selectedItemKey}
+            onItemSelect={setSelectedItemKey}
+            onItemChange={handleItemChange}
+            onItemNudge={handleItemNudge}
             // Edit Room's walls mode: the corners of the walls are dragged,
             // each drag one request and one step of the room's own undo.
             wallsEdit={wallsOn}
@@ -808,6 +1018,7 @@ export default function RigBuilder() {
         onChanged={handleRoomEdited}
         onFixturesMoved={handleRoomFixturesMoved}
         onDragWalls={handleDragWalls}
+        onArrangeItems={handleArrangeItems}
       />
 
       <Snackbar

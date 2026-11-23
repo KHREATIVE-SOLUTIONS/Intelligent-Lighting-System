@@ -117,6 +117,14 @@ interface RoomShellEditDialogProps {
    * Without it the button is left out.
    */
   onDragWalls?: () => void;
+  /**
+   * Asks for the raised areas, truss lines and rings to be dragged on the 2D
+   * plan: the editor closes this dialog and lets them be picked up there.
+   * Called with the rows whose "Move the fixtures ..." box is unticked, by
+   * the row's key, so a drag on the plan carries, or leaves, the same
+   * fixtures a save here would. Without it the button is left out.
+   */
+  onArrangeItems?: (leftAlone: Record<string, boolean>) => void;
 }
 
 function errorText(err: unknown): string {
@@ -142,6 +150,7 @@ export default function RoomShellEditDialog({
   onChanged,
   onFixturesMoved,
   onDragWalls,
+  onArrangeItems,
 }: RoomShellEditDialogProps) {
   // What has been typed against a corner of the walls and not yet saved, by
   // the corner's place in the outline. Cleared by every change to the walls:
@@ -462,6 +471,18 @@ export default function RoomShellEditDialog({
           </Alert>
         ) : (
           <TableContainer>
+            {/* Only what the plan draws can be picked up there. What is typed here and not saved is let go. */}
+            {onArrangeItems && items.some((item) => item.drawn && item.centre) && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1 }}>
+                <Button size="small" variant="outlined" disabled={busy} onClick={() => onArrangeItems(leftAlone)}>
+                  Arrange room items on the plan
+                </Button>
+                <Typography variant="caption" color="text.secondary">
+                  Drag a raised area, a truss or a ring where it goes, or nudge it with the arrow keys.
+                  Each box below is kept as it is ticked here.
+                </Typography>
+              </Box>
+            )}
             <Table size="small" data-testid="room-shell-items">
               <TableHead>
                 <TableRow>
