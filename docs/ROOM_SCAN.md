@@ -26,9 +26,18 @@ Slice 8 makes the rest of it go by **a room that is not a box**: a suggested
 row is held inside the floor outline and not only its box, a 2D drag snaps to
 the scan's truss, the 2D grid is drawn across the room, and a fixture clicked
 in the palette lands inside the room (see "What slice 8 built"). Its backend
-unit tests pass (171 across the room-scan unit files, Nov 22). **Its frontend
-tests are written and type-check but have not been run**, and none of it has
-been seen in a browser (see What is left).
+unit tests pass (171 across the room-scan unit files, Nov 22), and so do its
+frontend tests (vitest 424, Nov 22). None of it has been seen in a browser
+(see What is left).
+
+Slice 9 makes **correcting a suggested layout quicker** in the 2D view: a
+fixture snapped onto scanned truss takes the truss's hang height and a readout
+says what it is on, a palette drop snaps the same way, and a whole row can be
+selected and dragged as one piece, held inside the room (see "Moving a whole
+row" and "What slice 9 built"). No backend change was needed. **Its tests are
+written and type-check but have not been run**: the session that wrote them
+could start `tsc` but neither vitest nor node. None of it has been seen in a
+browser (see What is left).
 
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
@@ -129,7 +138,9 @@ Dragging in the 2D layout view still saves through batch-update and does
 room's walls rather than to the stage deck (see "In the 2D layout view"). That
 limit is tighter than this one: the 2D view stops at the wall, the 3D view and
 the server 2 m beyond it. It snaps to the scan's truss lines and rings on the
-plan as the 3D drag does, but does not take the truss's height.
+plan as the 3D drag does, takes the truss's hang height as the 3D drag does,
+and says what it snapped to. Several fixtures can be selected there and moved
+as one row (see "Moving a whole row").
 
 ### Undoing the moves a scan made
 
@@ -436,12 +447,77 @@ to the room, not to the deck (`holdOnPlan` in `roomPlan2d.ts`):
   plan's own purple truss lines). **Holding Alt** lets go of the scanned
   truss for that drag, and the snap mode **None** lets go of everything.
   Unlike the 3D drag it does not go by height (any truss on the plan is in
-  reach), does not snap to the edges of raised areas, and does not change the
-  fixture's height. The snapped position is then held to the room.
+  reach) and does not snap to the edges of raised areas. The snapped position
+  is then held to the room.
+- **On the truss, the fixture takes its hang height** (`onPlanTarget`,
+  `rowMove2d.ts`), as in the 3D drag: the height is saved with the position,
+  in the same batch-update. Carried off the truss again in the same drag, it
+  goes back to the height it was picked up at, so brushing past a truss does
+  not change a fixture's height. A snapped position the walls then held off
+  the truss (a stored truss that runs out through a wall) does not take it.
+- **A readout says what it snapped to** (`snapReadoutText`): "On Truss 1 ·
+  hangs at 4.20 m", in the scan's teal, just above the fixture under the
+  pointer, for as long as it is on the truss. A ring whose name does not say
+  so is called one: "On Overhead A (ring) · hangs at 4.80 m".
+- **A palette drop snaps the same way**: dropped within 0.4 m of a scanned
+  truss line or ring the new fixture lands on it, at its hang height, and
+  the landing spot shows the same readout while the fixture is held over it.
+  Out of reach it lands on the grid, at the height of the nearest fixture in
+  depth as before. Alt, and the snap mode None, let go as they do for a drag.
 - What holds a drag is the walls the plan draws, so the two cannot disagree.
   A scan with truss or raised areas but no usable room draws no walls, and a
   drag is then held to the deck as with no room; it still snaps to that
   scan's truss.
+
+### Moving a whole row
+
+A scan's suggestion moves a row as one piece, and so can a person
+(`StageView2D.tsx`, `rowMove2d.ts`, `RigBuilder.tsx`):
+
+- **Shift-click, Ctrl-click or Cmd-click** adds a fixture to the selection,
+  or takes a selected one back out. A press without a modifier on a fixture
+  that is not selected selects it alone, as before.
+- **Select row** in the toolbar, or a **double-click on a fixture**, selects
+  every fixture of its row (`rowOf`), read the way `suggest.py` reads one:
+  the fixtures of its **group**; else, for a fixture with no group, the
+  ungrouped fixtures hanging from the **same scanned truss line or ring**
+  (within 0.3 m on the plan and 0.6 m in height, the 3D view's own reach),
+  which is how a row laid along an angled truss or round a ring is found
+  again; else the ungrouped fixtures at the **same height and depth**, to
+  0.1 m. The button goes by the first selected fixture in the rig's order.
+- **Dragging any selected fixture moves them all** by one shift, so spacing
+  and shape are kept exactly. The fixture under the pointer goes where it
+  would alone (the scanned truss snap, then the snap mode), and the others
+  take the same shift.
+- **No member may leave the room** (`holdRowShift`). The shift is cut short
+  by however far the worst-placed member would be past a wall, so the whole
+  row stops when its leading fixture reaches a wall: the walls of a box
+  room, the floor outline of a room that has one (a notch is outside), or
+  the deck where there is no scanned room. A row that fits no nearer the
+  pointer stays where it was.
+- **A member already outside the walls** when the row is picked up (a guess
+  left in a notch) is not held until the row has brought it inside: holding
+  it at once would mean closing the row up or refusing to move it. From
+  then on it is held like the rest.
+- **The row snaps onto scanned truss with the fixture under the pointer.**
+  Each member that is then on that truss line or ring (within 5 cm) takes
+  its hang height; a member off it (a row longer than the truss, or not
+  lying along it) keeps the height it was picked up at. The readout counts
+  them: "Row of 4 on Truss 1 · hangs at 4.20 m", or "3 of 4 on Truss 1 ...".
+- **Moved guesses stay guesses.** The row is saved through batch-update, all
+  of it in one request, which leaves every tag as it is: nothing is
+  confirmed, and the fixtures are still amber in the 3D view.
+- **One undo puts the whole row back**, heights included: the editor's Undo
+  takes one step for the whole drag, as it does for one fixture, and Redo
+  moves it again. (This is the editor's own undo, not "Undo room scan
+  moves": that one will now leave these fixtures alone, as "moved since the
+  scan".)
+- A press on one of several selected fixtures that is let go without moving
+  selects that fixture alone. With several selected the properties panel is
+  put away, since it edits one fixture, and a line says how many are
+  selected.
+
+With one fixture selected, or none, a drag is what it was.
 
 ### Clicking a fixture in the palette
 
@@ -486,6 +562,26 @@ always was.
 A rig with no scanned room (no shell, or a demo preset's shell) draws exactly
 what it did: nothing is added, the view is the size it was, the labels are
 where they were, and a drag or a drop is held to the deck on the deck's grid.
+A drag of one fixture reports a position and no height, and no readout is
+drawn. What is new there needs more than one fixture selected: a row can be
+selected and carried on the deck too, held to the deck's edges.
+
+## What slice 9 built
+
+- **Truss height and readout** (`StageView2D.tsx`, `rowMove2d.ts`): a 2D drag
+  or palette drop that lands on scanned truss takes its hang height and says
+  what it is on. `RigBuilder.tsx` saves the height with the position and
+  hangs a dropped fixture at it.
+- **Multi-selection and rows** (`StageView2D.tsx`, `rigEditorStore.ts`,
+  `RigEditorToolbar.tsx`): Shift, Ctrl and Cmd build a selection; Select row
+  and a double-click select a row (`rowOf`); a drag carries the selection by
+  one shift held to the room (`holdRowShift`).
+- **Save and undo** (`RigBuilder.tsx`): a row move is one batch-update and
+  one undo step. The undo snapshot now keeps heights (`snapshotPositions`,
+  `withSnapshot`), which it did not need to before a 2D drag could change
+  one.
+- **No backend change.** `PUT .../fixtures/batch-update` already took
+  `position_y` and already left tags alone.
 
 ## What slice 8 built
 
@@ -649,33 +745,90 @@ are no binary fixtures in the repository.
 - `frontend/src/__tests__/StageView2D.test.tsx`, added with slice 8
   (**passing, Nov 22**): a drag snapping onto a truss line, an angled line
   and a ring; Alt and the snap mode None letting go; the grid beyond a
-  truss's reach; a snapped position still held to the walls; a palette drop
-  not snapping; no snap with no scanned room; the grid drawn wall to wall,
-  stopped at a notch, and the deck's own with no room.
+  truss's reach; a snapped position still held to the walls; no snap with no
+  scanned room; the grid drawn wall to wall, stopped at a notch, and the
+  deck's own with no room. (Its test that a palette drop does not snap was
+  taken out with slice 9: a drop now does.)
+
+- `frontend/src/__tests__/rowMove2d.test.ts` (**slice 9; type-checked, not
+  run**): the readout's words for a truss line, a ring and a row; what counts
+  as on a truss; which fixtures are a row by group, by scanned truss line,
+  angled line or ring, and by height and depth, with and without a scanned
+  room; a row's shift held to the deck, to a box room and to an L (stopped at
+  the notch, let into the other arm, a member that starts outside); moves
+  put on a rig; the editor's store building a selection and selecting a row;
+  a row move undone in one step with its heights, and redone.
+- `frontend/src/__tests__/StageView2DRowMove.test.tsx` (**slice 9;
+  type-checked, not run**): a drag taking a truss line's and a ring's height,
+  none out of reach, with Alt or with snapping off, and the pick-up height
+  given back off the truss; the readout's text and place, and its going
+  away; a palette drop snapping onto a line and a ring at their height, not
+  out of reach, with Alt or with snapping off, and the readout over the
+  landing spot; Shift, Ctrl and Cmd; a press on one of several selected; a
+  modifier taking one out; a double-click asking for the row; a row moved by
+  one shift, snapped onto a truss, part on it and part off, held at the wall
+  of an L's notch and of a box room, held to the deck with no room, not
+  snapping to its own depth in the Truss mode, and left selected when let go
+  over the background; one fixture with no scanned room reported exactly as
+  before.
 
 ## What is left
 
 - **Checks ran on 2026-11-22, 7:44 PM ET, after slice 8 (outline-held guesses, 2D truss snap, room grid, palette click):** frontend vitest 424 passed (22 files) and the build passed; backend pytest tests/ 1632 passed, 10 skipped, 5 xfailed, including tests/integration/test_api_room_scan.py.
-- **The 2D drag, drop and label work has not had its tests run.** It was
-  written on 2026-11-22 after the run above, in a session that could start
-  `tsc` but not vitest. `npx tsc --noEmit -p .` gives the same 13 errors with
-  it as without, none in the files it touches. Run
-  `npx vitest run src/__tests__/roomPlan2dLayout.test.ts src/__tests__/StageView2D.test.tsx src/__tests__/roomPlan2d.test.ts`
-  from `frontend`, then the whole suite and the build. The palette-drop tests
-  set the pointer position on the event by hand; if they fail and the rest
-  pass, suspect the test's event before the view.
+- **Slice 9 has not had its tests run** (truss height, readout, palette
+  snap, multi-select, row moves). It was written on 2026-11-22 after the run
+  above, in a session that could start `tsc` but not vitest or node, so
+  every expected number in its tests was worked out by hand.
+  `npx tsc --noEmit -p .` gives the same 13 errors with it as without, none
+  in the files it touches. From `frontend` run
+  `npx vitest run src/__tests__/rowMove2d.test.ts src/__tests__/StageView2DRowMove.test.tsx src/__tests__/StageView2D.test.tsx src/__tests__/roomPlan2dLayout.test.ts`,
+  then the whole suite and the build. `rowMove2d.test.ts` has no drawing in
+  it: if it passes and the view's tests fail, suspect the test's events
+  (the palette tests set the pointer position and Alt on the event by hand)
+  before the view. No backend file changed, so the backend run above stands.
+- **The editor's wiring of a row move has no test.** `RigBuilder.tsx`
+  applying a row's moves, saving them in one batch-update, undoing them, the
+  Select row button, and the properties panel put away for several selected
+  are type-checked only. The pieces under them are tested (`withMoves`,
+  `withSnapshot`, `rowOf`, the store), the component is not.
 - **The 2D room layer has not been seen in a browser**: label sizes and
   nudges in a crowded room, a turned label, the tooltips, where UPSTAGE,
   AUDIENCE and the scale bar land round a real room, a drag and a palette
   drop out in the room with the view grown, a drag snapping to a truss line
   and a ring, the grid across an L-shaped floor, and where a palette click
-  lands.
-- **A 2D drag that snaps to truss keeps the fixture's height.** The 3D drag
-  hangs the fixture at the truss's height; the 2D view saves only where it is
-  on the plan. Nothing on the plan says what it snapped to, either: there is
-  no readout or highlight as the 3D view has.
-- **A palette drop does not snap to scanned truss**, only a drag does. A
-  fixture dropped on a truss line lands on the grid next to it.
+  lands. Nor has slice 9: the readout's size and whether it prints over a
+  fixture's name or the truss's own label, a row dragged along a wall and
+  into the notch of an L, a double-click selecting a row, and Ctrl-click on
+  a Mac, where the browser may open its menu instead.
+- **A row is carried, never turned or respaced.** It snaps onto a truss with
+  the fixture under the pointer only, so a row that does not lie along the
+  truss has one fixture on it, and a row longer than the truss overhangs its
+  ends; those fixtures keep their old height while the rest take the
+  truss's, which the readout's count ("3 of 4 on ...") is there to show.
+  There is no "lay this row along this truss" as the scan's suggestion does.
+- **A row is held by its nearest walls, one fixture at a time.** That is
+  exact against the straight walls of a box and of an L. Where two members
+  are pushed opposite ways (a row wider than the room is across, or wedged
+  across a narrow arm) the row stays where it was and does not slide. A
+  member that starts outside the walls is not held until it is inside, so
+  such a row can also be carried further out.
+- **Rows are found by simple rules.** Height and depth are rounded to 0.1 m,
+  so two fixtures 2 cm apart either side of a rounding step are not one
+  row. A fixture hanging near two scanned trusses belongs to the first the
+  scan listed. A grouped fixture's row is its group even when the group is
+  spread over the room. Fix a wrong row with Shift-click.
+- **No box (marquee) selection and no key for Select row.** A selection is
+  built a click at a time, by the button or by a double-click. Modifier
+  keys have no touch equivalent, so on a tablet a row is selected with the
+  button or a double-tap, if the browser sends one.
+- **Shift-press on a selected fixture no longer drags it.** It takes the
+  fixture out of the selection and carries nothing; it used to deselect it
+  and drag it all the same.
+- **The readout names scanned truss only.** A snap to the grid or to the
+  plan's own purple truss lines says nothing, and the truss snapped to is
+  not highlighted.
+- **A row moved in 2D is "moved since the scan".** Like any 2D move, it
+  takes those fixtures out of what "Undo room scan moves" will put back.
 - **The 2D truss snap takes hold on the first move.** There is no 5 pixel
   threshold as in the 3D view, so a press with a wobble next to a truss puts
   the fixture on it (as a press already puts one on the grid). Alt has no
@@ -739,13 +892,15 @@ are no binary fixtures in the repository.
 - **Touch.** The drag uses pointer events, so a finger should work, but Shift
   and Alt have no touch equivalent: on a tablet there is no height drag and no
   way to let go of the snap for one drag other than the Snap button.
-- **One fixture at a time.** No multi-select, no dragging a whole row, and no
-  rotating a fixture in the 3D view.
+- **One fixture at a time in the 3D view.** No multi-select and no dragging a
+  whole row there (the 2D view has both), and no rotating a fixture.
 - **One undo, all the way back.** The record gathers the moves of every scan
   applied since the last undo, so an undo puts a fixture back where it stood
   before the first of them; one scan out of several cannot be undone on its
   own. The record is spent by an undo whether or not anything was skipped, and
   an undo cannot itself be undone. A 3D drag has no undo either: drag it back.
+  (The 2D editor's own Undo is separate and steps back one drag at a time,
+  a row move included.)
 - **Dropping a fixture may move the camera.** Every drop lays the venue out
   again; if the room grows for a fixture put beyond a wall, the camera preset
   may be re-applied. Not checked on screen.
