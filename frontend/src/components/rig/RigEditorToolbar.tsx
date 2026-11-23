@@ -148,7 +148,7 @@ export default function RigEditorToolbar({
           title={
             selectedCount > 0
               ? 'Select every fixture in the same row: its group, its scanned truss, or its height and depth (R on the keyboard, or a double-click on a fixture, does the same). Then drag one, or press an arrow key, to move them all: one grid step, ten with Shift. Shift-click or Ctrl-click adds one at a time; Escape clears the selection'
-              : 'Select a fixture first, then this (or R on the keyboard) selects the rest of its row. Dragging over empty floor draws a box that selects every fixture in it; hold Shift to add to the selection'
+              : 'Select a fixture first, then this (or R on the keyboard) selects the rest of its row. Dragging over empty floor draws a box that selects every fixture in it; hold Shift to add to the selection. On a touch screen, press and hold a fixture to add it to the selection or take it out, and press and hold empty floor before dragging a box that adds to it'
           }
         >
           <span>

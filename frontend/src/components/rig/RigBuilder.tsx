@@ -479,6 +479,10 @@ export default function RigBuilder() {
             // R, the arrow keys and Escape act on the plan only while it is
             // what is shown, and never under a dialog that is in front of it.
             keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen}
+            // The same keys as buttons over the plan, for a phone or a
+            // tablet: shown while something is selected, on the same terms.
+            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen}
+            onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
             onDropFromPalette={addFixtureAt}
           />
 
@@ -487,7 +491,7 @@ export default function RigBuilder() {
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, flexShrink: 0 }}>
               {`${selectedFixtures.length} fixtures selected. Drag any one of them, or press an arrow key, to move them together${
                 scannedTruss.length > 0 ? ', or use Lay on truss to space them along the nearest scanned truss' : ''
-              }. Escape clears the selection.`}
+              }. Escape clears the selection. On a touch screen, use the arrows on the plan, and press and hold a fixture to add it or take it out.`}
             </Typography>
           )}
           {selectedFixture && (
