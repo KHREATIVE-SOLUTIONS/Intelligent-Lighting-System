@@ -495,7 +495,7 @@ are no binary fixtures in the repository.
 
 ## What is left
 
-- **Frontend checks ran on 2026-11-22:** vitest 314 passed and the build passed with slices 4 and the outline work; backend 1608 passed. **That was before the 2D layout view's room layer.** For that work only `tsc` has been run (no errors in the files it touched): its two test files, the lint and the build have not.
+- **Frontend checks ran on 2026-11-22, 7:00 PM ET, after the 2D layout view's room layer:** vitest 344 passed (21 files) and the build passed. Backend was last run with the outline work (1608 passed, 10 skipped, 5 xfailed); this slice is frontend-only.
 - **The 2D room layer has not been seen in a browser**: label sizes and
   overlaps in a crowded room, the tooltips, and a drag with the view grown.
 - **A 2D drag or palette drop is still held to the stage deck.** The grown
