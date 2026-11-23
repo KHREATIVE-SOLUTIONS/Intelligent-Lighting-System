@@ -11,7 +11,10 @@ Every scan is built in code (room_scan_meshes.py). What is checked:
     truss does not;
   * unconfirmed template guesses are laid along an angled line or round a ring,
     evenly, in address order, and nothing else is ever moved;
-  * a shell stored before any of this still moves fixtures as it did.
+  * a shell stored before any of this still moves fixtures as it did;
+  * in a room with a floor outline a suggested row ends inside the outline,
+    not only inside its box, as one piece where it fits; a box room, and an
+    outline that is not one, move a row exactly as before.
 """
 
 import math
@@ -410,4 +413,184 @@ class TestPositionsOnShapes:
             "truss_rings": [{"center_x": 0.0, "center_z": 0.0, "radius": 0.0, "height": 4.0}, "ring"],
         }
         row = [fixture(i, f"Spot {i}", "Truss", -1.0 + i, 4.0, 0.0) for i in range(3)]
+        assert suggest_positions(row, shell)[0] == []
+
+
+# ---------------------------------------------------------------------------
+# Guesses held inside a floor outline, not only inside the box round it
+# ---------------------------------------------------------------------------
+
+def outlined_shell(outline=L_ROOM, **more):
+    """A stored shell for a 12 by 10 room with a floor outline. The notch of L_ROOM is x > 2 with z > 1."""
+    shell = {
+        "source": "scan", "suggested": True,
+        "room": {"width": 12.0, "depth": 10.0, "height": 5.0,
+                 "outline": [{"x": x, "z": z} for x, z in outline]},
+        "risers": [], "truss_lines": [], "truss_rings": [], "hanging_bands": [],
+    }
+    shell.update(more)
+    return shell
+
+
+def stands_inside(shell, fixtures, clear=0.19):
+    """Whether every fixture is inside the shell's floor outline and that far from its walls."""
+    outline = np.array([(p["x"], p["z"]) for p in shell["room"]["outline"]])
+    x = np.array([f.position_x for f in fixtures], dtype=float)
+    z = np.array([f.position_z for f in fixtures], dtype=float)
+    return bool(clear_of_outline(x, z, outline, clear).all())
+
+
+class TestGuessesInsideAnOutline:
+
+    def test_a_floor_row_in_the_notch_of_an_l_comes_inside_as_one_piece(self):
+        shell = outlined_shell()
+        # Inside the room's box, and outside its walls.
+        row = [fixture(i, f"Par {i}", "Floor", 3.0 + i, 0.2, 3.0) for i in range(3)]
+        assert not stands_inside(shell, row, clear=0.0)
+
+        moves, notes = suggest_positions(row, shell)
+
+        assert [m.rig_fixture_id for m in moves] == [0, 1, 2]
+        # The least shift that clears the notch: 2.2 m upstage, to 0.2 m off its wall at z = 1.
+        assert [m.to_position for m in moves] == [(3.0 + i, 0.2, 0.8) for i in range(3)]
+        assert all(m.reason == "Moved inside the walls." for m in moves)
+        assert all(m.to_dict()["suggested"] is True for m in moves)
+        assert notes == []
+        apply(row, moves)
+        assert stands_inside(shell, row)
+        # Still the guesses they were: nothing here confirms a position.
+        assert all(f.tags == GUESS for f in row)
+
+    def test_the_row_keeps_its_spacing_and_its_height(self):
+        shell = outlined_shell()
+        row = [fixture(i, f"Par {i}", "Floor", 2.5 + 0.7 * i, 0.2 + 0.1 * i, 2.0 + 0.5 * i) for i in range(4)]
+        before = [(f.position_x, f.position_y, f.position_z) for f in row]
+        moves, _ = suggest_positions(row, shell)
+        apply(row, moves)
+        after = [(f.position_x, f.position_y, f.position_z) for f in row]
+        assert stands_inside(shell, row)
+        shifts = {(round(a[0] - b[0], 3), round(a[1] - b[1], 3), round(a[2] - b[2], 3)) for a, b in zip(after, before)}
+        assert len(shifts) == 1
+        assert next(iter(shifts))[1] == 0.0
+
+    @pytest.mark.parametrize("label, y, more", [
+        ("a floor row", 0.2, {}),
+        ("an overhead row brought down to the hanging height", 6.0,
+         {"hanging_bands": [{"height": 4.0, "top": 4.3, "lines": 0}]}),
+    ])
+    def test_applying_the_same_scan_again_moves_nothing(self, label, y, more):
+        shell = outlined_shell(**more)
+        row = [fixture(i, f"Spot {i}", "Rig", 3.0 + i, y, 3.0) for i in range(3)]
+        moves, _ = suggest_positions(row, shell)
+        assert len(moves) == 3, label
+        apply(row, moves)
+        assert stands_inside(shell, row), label
+        assert suggest_positions(row, shell)[0] == [], label
+
+    def test_a_row_overhanging_its_truss_into_the_notch_comes_inside_and_stays_put(self):
+        # A truss across the downstage arm of the L, shorter than the row drawn for it.
+        truss = {"name": "Overhead line 1", "x1": -5.0, "z1": 3.0, "x2": 1.0, "z2": 3.0,
+                 "height": 4.0, "top": 4.3, "length": 6.0, "across": 0.3, "axis": "x", "heading_deg": 0.0}
+        shell = outlined_shell(truss_lines=[truss], hanging_bands=[{"height": 4.0, "top": 4.3, "lines": 1}])
+        row = [fixture(i, f"Spot {i}", "Truss", -4.0 + 2.0 * i, 6.0, -2.0) for i in range(5)]
+
+        moves, notes = suggest_positions(row, shell)
+        assert len(moves) == 5
+        assert any("overhangs" in note for note in notes)
+        assert all("inside the walls" in m.reason for m in moves)
+        apply(row, moves)
+        assert stands_inside(shell, row)
+        assert {f.position_y for f in row} == {4.0}
+        steps = [round(b.position_x - a.position_x, 3) for a, b in zip(row, row[1:])]
+        assert steps == [2.0] * 4 and len({f.position_z for f in row}) == 1
+        assert suggest_positions(row, shell)[0] == []
+
+    @pytest.mark.parametrize("tags", [
+        ["position_source:tap"],
+        ["position_source:confirmed"],
+        ["position_source:mvr"],
+        ["position_source:row_fit", "position_unconfirmed"],
+    ])
+    def test_a_placed_fixture_standing_in_the_notch_is_left_there(self, tags):
+        shell = outlined_shell()
+        row = [fixture(i, f"Par {i}", "Floor", 3.0 + i, 0.2, 3.0) for i in range(3)]
+        row[1].tags = list(tags)
+        moves, _ = suggest_positions(row, shell)
+        assert [m.rig_fixture_id for m in moves] == [0, 2]
+        assert (row[1].position_x, row[1].position_y, row[1].position_z) == (4.0, 0.2, 3.0)
+        assert row[1].tags == tags
+
+    def test_a_row_already_inside_the_outline_is_left_alone(self):
+        shell = outlined_shell()
+        # Close to the notch's walls, in both arms of the L, and inside the room.
+        row = [fixture(i, f"Par {i}", "", -1.0 + i, 0.2, 1.1) for i in range(3)]
+        row += [fixture(10 + i, f"Wash {i}", "", 3.0 + i, 0.2, 0.9) for i in range(3)]
+        assert suggest_positions(row, shell) == ([], [])
+
+    def test_a_guess_beyond_a_wall_at_an_angle_comes_inside_it(self):
+        shell = outlined_shell(CUT_ROOM)
+        # The cut corner runs from (6, 1) to (2, 5): (4.5, 3.5) is a metre beyond it, inside the box.
+        row = [fixture(1, "Par 1", "", 4.5, 0.2, 3.5)]
+        moves, _ = suggest_positions(row, shell)
+        assert len(moves) == 1
+        apply(row, moves)
+        assert stands_inside(shell, row)
+        # Brought the short way in, not across the room.
+        assert math.dist(moves[0].from_position, moves[0].to_position) < 1.2
+        assert suggest_positions(row, shell)[0] == []
+
+    def test_a_row_that_fits_nowhere_in_one_piece_has_its_guesses_brought_in_one_by_one(self):
+        shell = outlined_shell()
+        # Corner to corner of the box: its downstage stage-left end is always in the notch.
+        row = [fixture(i, f"Par {i}", "Diagonal", -5.5 + 2.75 * i, 0.2, -4.5 + 2.25 * i) for i in range(5)]
+        moves, notes = suggest_positions(row, shell)
+        assert [m.rig_fixture_id for m in moves] == [3, 4]
+        assert any("Diagonal" in note and "one piece" in note for note in notes)
+        apply(row, moves)
+        assert stands_inside(shell, row)
+        assert suggest_positions(row, shell)[0] == []
+
+    def test_a_scanned_l_shaped_room_holds_its_guesses_as_a_stored_one_does(self):
+        vertices, faces = shaped_room_mesh()
+        shell = scan(vertices, faces).shell
+        row = [fixture(i, f"Par {i}", "Floor", 3.0 + i, 0.2, 3.0) for i in range(3)]
+        moves, _ = suggest_positions(row, shell)
+        assert len(moves) == 3
+        apply(row, moves)
+        assert stands_inside(shell, row, clear=0.1)
+        assert suggest_positions(row, shell)[0] == []
+
+    def test_a_box_room_moves_a_row_exactly_as_it_did(self):
+        box_shell = {"room": {"width": 12.0, "depth": 10.0, "height": 5.0}}
+        row = [fixture(i, f"Par {i}", "Floor", 3.0 + 1.5 * i, 0.2, 3.0) for i in range(3)]
+        moves, notes = suggest_positions(row, box_shell)
+        # 6.0 is on the wall: the row comes 0.2 m in from it, and stays at its depth.
+        assert [m.to_position for m in moves] == [(2.8 + 1.5 * i, 0.2, 3.0) for i in range(3)]
+        assert all(m.reason == "Moved inside the walls." for m in moves)
+        assert notes == []
+
+    @pytest.mark.parametrize("outline", [
+        [],
+        [{"x": 0.0, "z": 0.0}, {"x": 1.0, "z": 0.0}],
+        [{"x": -6.0, "z": -5.0}, {"x": 6.0, "z": -5.0}, {"x": "?", "z": 1.0}, {"x": -6.0, "z": 5.0}],
+        [{"x": 0.0, "z": 0.0}, {"x": 0.5, "z": 0.0}, {"x": 0.5, "z": 0.5}],
+        "an outline",
+    ])
+    def test_an_outline_that_is_not_one_is_a_box(self, outline):
+        shell = {"room": {"width": 12.0, "depth": 10.0, "height": 5.0, "outline": outline}}
+        # In what would be the notch of the L: inside the box, so nothing to do.
+        row = [fixture(i, f"Par {i}", "Floor", 3.0 + i, 0.2, 3.0) for i in range(3)]
+        assert suggest_positions(row, shell) == ([], [])
+
+    def test_a_spot_on_a_ring_that_reaches_into_the_notch_comes_inside(self):
+        # A stored ring the outline cuts through: a scan would not find one hanging there.
+        ring = {"name": "Overhead ring 1", "center_x": 1.0, "center_z": 0.0, "radius": 2.0, "height": 4.0}
+        shell = outlined_shell(truss_rings=[ring])
+        row = [fixture(i, f"Spot {i}", "Ring", 0.0 + 0.5 * i, 4.5, 0.0) for i in range(8)]
+        moves, _ = suggest_positions(row, shell)
+        apply(row, moves)
+        assert stands_inside(shell, row, clear=0.0)
+        brought_in = [m for m in moves if "then inside the walls" in m.reason]
+        # Of the eight places round it, only the one in the notch (downstage stage left) is off the ring.
+        assert len(brought_in) == 1
         assert suggest_positions(row, shell)[0] == []

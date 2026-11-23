@@ -32,7 +32,12 @@ drawn across it cannot be slid under it, so it is laid out along it.
     Floor rows standing where the scan found a stage
         up onto the stage, and in from its edges.
     Every row
-        inside the walls.
+        inside the walls. In a room that is not a box (an L, a cut corner)
+        that is its floor outline and not the box round it: a row with a guess
+        outside the outline, in the notch of an L say, is shifted as one piece
+        by the least that puts every guess of it inside and clear of the
+        walls. Only a row that fits nowhere in one piece has its guesses
+        brought inside one by one, and a note says so.
 
 What comes back is still a guess, and is still tagged as one: flash-and-tap and
 dragging are what turn it into a position.
@@ -42,7 +47,11 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 from app.services.venue_import.apply import SOURCE_TEMPLATE, is_unconfirmed, position_source
+
+from .extract import clear_of_outline, inside_outline, outline_area
 
 # Added to a moved fixture's tags, so a guess that a scan has shifted can be
 # told from one straight off the template.
@@ -59,6 +68,8 @@ ACROSS_WITHIN_DEG = 2.0
 ON_SHAPE_M = 0.05
 # Fixtures closer than this along a line or round a ring are worth a note.
 CROWDED_UNDER = 0.3
+# A row brought inside a floor outline is shifted by a whole number of these.
+OUTLINE_STEP = 0.05
 
 Point = Tuple[float, float, float]
 
@@ -250,6 +261,78 @@ def _spots_on(shape: Dict[str, Any], row: Sequence[Any]) -> Dict[int, Tuple[floa
     return spots
 
 
+# ---------------------------------------------------------------------------
+# A room that is not a box
+# ---------------------------------------------------------------------------
+
+def _floor_outline(room: Dict[str, Any]) -> Optional[np.ndarray]:
+    """The room's floor outline as an N by 2 array of (x, z) corners, or None for a box.
+
+    None as well for an outline that is not one (too few corners, a number
+    missing, no area), which is then a box to this as it is to everything
+    else: the same rule as `position_outline` in fixture_position.py.
+    """
+    raw = room.get("outline")
+    if not isinstance(raw, list) or len(raw) < 3:
+        return None
+    corners: List[Tuple[float, float]] = []
+    for corner in raw:
+        if not isinstance(corner, dict):
+            return None
+        pair = (corner.get("x"), corner.get("z"))
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in pair):
+            return None
+        corners.append((float(pair[0]), float(pair[1])))
+    outline = np.array(corners, dtype=np.float64)
+    if not abs(outline_area(outline)) >= 1.0:
+        return None
+    return outline
+
+
+def _all_inside(xs: Sequence[float], zs: Sequence[float], outline: np.ndarray) -> bool:
+    return bool(inside_outline(np.asarray(xs, dtype=np.float64), np.asarray(zs, dtype=np.float64), outline).all())
+
+
+def _shift_into_outline(
+    xs: Sequence[float], zs: Sequence[float], outline: np.ndarray,
+) -> Optional[Tuple[float, float]]:
+    """The least shift that puts every one of these points inside the outline, clear of its walls.
+
+    One shift for all of them, so a row stays the shape it was. It is a whole
+    number of OUTLINE_STEP each way, and leaves every point WALL_CLEARANCE from
+    the nearest wall, which is further inside than the test that sends a row
+    here asks for: a row brought in once is not brought in again. Of two
+    shifts as short, the one that changes depth less wins, then the one
+    further upstage, then stage right. None when the points fit nowhere.
+    """
+    px, pz = np.asarray(xs, dtype=np.float64), np.asarray(zs, dtype=np.float64)
+    x_min, z_min = outline.min(axis=0)
+    x_max, z_max = outline.max(axis=0)
+    # No shift further than this can help: it would carry a point across the whole room.
+    furthest = max(x_max - px.min(), px.max() - x_min, z_max - pz.min(), pz.max() - z_min, OUTLINE_STEP)
+    clear = WALL_CLEARANCE - 1e-6
+    reach = 1.0
+    while True:
+        steps = int(math.ceil(min(reach, furthest) / OUTLINE_STEP))
+        offsets = np.arange(-steps, steps + 1, dtype=np.float64) * OUTLINE_STEP
+        shift_x, shift_z = (grid.ravel() for grid in np.meshgrid(offsets, offsets, indexing="ij"))
+        fits = np.ones(len(shift_x), dtype=bool)
+        for x, z in zip(px, pz):
+            fits &= clear_of_outline(x + shift_x, z + shift_z, outline, clear)
+            if not fits.any():
+                break
+        if fits.any():
+            fx, fz = shift_x[fits], shift_z[fits]
+            length = np.round(np.hypot(fx, fz), 6)
+            best = np.lexsort((fx, fz, np.abs(fz), length))[0]
+            # Anything nearer than the square's half side has been tried, so this is the nearest there is.
+            if length[best] <= steps * OUTLINE_STEP + 1e-9 or reach >= furthest:
+                return round(float(fx[best]), 2) + 0.0, round(float(fz[best]), 2) + 0.0
+        if reach >= furthest:
+            return None
+        reach *= 2.0
+
+
 def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) -> Tuple[List[SuggestedMove], List[str]]:
     """(moves, notes). Fixtures are rig fixtures, or anything with the same attributes."""
     notes: List[str] = []
@@ -267,6 +350,8 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
     half_width = float(room.get("width") or 0.0) / 2.0
     half_depth = float(room.get("depth") or 0.0) / 2.0
     ceiling = float(room.get("height") or 0.0)
+    # Only a room that is not a box has one. A box room is held to its box, as it always was.
+    outline = _floor_outline(room) if isinstance(room, dict) else None
 
     candidates = [f for f in fixtures if movable(f)]
     skipped = sum(1 for f in fixtures if is_unconfirmed(getattr(f, "tags", None)) and not movable(f))
@@ -316,8 +401,17 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
                         f"are {reach / len(whole_row):.2f} m apart; check that the row belongs there."
                     )
                 for fixture, (x, y, z) in zip(members, points):
-                    to_x, to_z = spots[id(fixture)]
-                    to = (round(to_x, 3) + 0.0, round(max(0.0, height + (y - mean_y)), 3) + 0.0, round(to_z, 3) + 0.0)
+                    to_x, to_z = round(spots[id(fixture)][0], 3), round(spots[id(fixture)][1], 3)
+                    why = reason
+                    # A truss the scan found hangs inside the walls. One in a
+                    # stored shell that reaches beyond the floor outline would
+                    # leave a guess outside the room: that one comes inside.
+                    if outline is not None and not _all_inside([to_x], [to_z], outline):
+                        inward = _shift_into_outline([to_x], [to_z], outline)
+                        if inward is not None:
+                            to_x, to_z = round(to_x + inward[0], 3), round(to_z + inward[1], 3)
+                            why = reason[:-1] + ", then inside the walls."
+                    to = (to_x + 0.0, round(max(0.0, height + (y - mean_y)), 3) + 0.0, to_z + 0.0)
                     if max(abs(to[0] - x), abs(to[1] - y), abs(to[2] - z)) <= MOVED_IF_OVER:
                         continue
                     moves.append(SuggestedMove(
@@ -326,7 +420,7 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
                         group=str(getattr(fixture, "group_name", "") or ""),
                         from_position=(round(x, 3), round(y, 3), round(z, 3)),
                         to_position=to,
-                        reason=reason,
+                        reason=why,
                     ))
                 continue
             if lines:
@@ -395,16 +489,47 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
 
         # One shift for the whole row, to the centimetre: the row stays the shape it was.
         dx, dy, dz = round(dx, 2), round(dy, 2), round(dz, 2)
-        if max(abs(dx), abs(dy), abs(dz)) <= MOVED_IF_OVER:
-            continue
+
+        # The box is not the room when the room has a floor outline: a row
+        # inside the box can still stand in the notch of an L, outside the
+        # walls. It comes inside as one piece where it can.
+        own: Dict[int, Tuple[float, float]] = {}
+        if outline is not None:
+            at_x, at_z = [x + dx for x in xs], [z + dz for z in zs]
+            if not _all_inside(at_x, at_z, outline):
+                inward = _shift_into_outline(at_x, at_z, outline)
+                if inward is not None:
+                    dx, dz = round(dx + inward[0], 2), round(dz + inward[1], 2)
+                else:
+                    # It fits nowhere in one piece: each guess outside the walls comes in on its own.
+                    for index, (x, z) in enumerate(zip(at_x, at_z)):
+                        if _all_inside([x], [z], outline):
+                            continue
+                        alone = _shift_into_outline([x], [z], outline)
+                        if alone is not None:
+                            own[index] = alone
+                    if own:
+                        notes.append(
+                            f"{label}: the row does not fit inside the room's walls in one piece; "
+                            f"{len(own)} of its fixtures were brought inside on their own, "
+                            "so it is no longer a straight row."
+                        )
+                if (inward is not None or own) and "inside the walls" not in reasons:
+                    reasons.append("inside the walls")
+
         reason = "Moved " + ", ".join(reasons) + "."
-        for fixture, (x, y, z) in zip(members, points):
+        for index, (fixture, (x, y, z)) in enumerate(zip(members, points)):
+            # One shift for the whole row, and a guess's own only where the row could not be kept whole.
+            own_x, own_z = own.get(index, (0.0, 0.0))
+            to = (round(x + dx + own_x, 4) + 0.0, round(max(0.0, y + dy), 4) + 0.0, round(z + dz + own_z, 4) + 0.0)
+            if max(abs(to[0] - x), abs(to[1] - y), abs(to[2] - z)) <= MOVED_IF_OVER:
+                continue
             moves.append(SuggestedMove(
                 rig_fixture_id=int(getattr(fixture, "id", 0) or 0),
                 name=str(getattr(fixture, "name", "") or ""),
                 group=str(getattr(fixture, "group_name", "") or ""),
                 from_position=(round(x, 3), round(y, 3), round(z, 3)),
-                to_position=(round(x + dx, 4) + 0.0, round(max(0.0, y + dy), 4) + 0.0, round(z + dz, 4) + 0.0),
+                to_position=to,
                 reason=reason,
             ))
     return moves, notes
