@@ -16,12 +16,17 @@ is a few kilobytes, and putting back the whole of it cannot go wrong the way
 replaying an edit backwards can (a deleted item's place in its list, a
 hanging-height band that was dropped with its last truss).
 
+A step of an edit that carried fixtures with a truss (carry.py) also holds
+`fixtures`: each one's `rig_fixture_id`, `name`, `from` and `to` (x, y, z,
+rotation_y). The caller puts them back when it takes the step back.
+
 It is the caller's to clear when the room is no longer the one the steps were
 taken from: a scan read again, or the room taken off the rig.
 
 Pure: a record goes in and a new one comes out, and the one given is never
 changed. The column is plain JSON, and a change made in place is never written.
-Nothing here touches a fixture, the engine or a device.
+Nothing here touches a fixture, the engine or a device: a step's fixtures are
+kept and handed back, and moving them is the caller's (carry.put_back).
 """
 
 from datetime import datetime, timezone
@@ -40,14 +45,27 @@ def _steps(record: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
-def push_step(record: Optional[Dict[str, Any]], shell_before: Dict[str, Any], label: str) -> Dict[str, Any]:
-    """The record after an edit: the room as it was before it, added as the latest step."""
+def push_step(
+    record: Optional[Dict[str, Any]],
+    shell_before: Dict[str, Any],
+    label: str,
+    fixtures: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """The record after an edit: the room as it was before it, added as the latest step.
+
+    `fixtures` is what the edit carried with it (carry.py): each fixture hung
+    on a moved truss, with where it was and where it went. They are part of
+    the same step, so one undo takes back the truss and its fixtures together.
+    """
     steps = _steps(record)
-    steps.append({
+    step: Dict[str, Any] = {
         "label": label,
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "shell": shell_before,
-    })
+    }
+    if fixtures:
+        step["fixtures"] = fixtures
+    steps.append(step)
     return {"steps": steps[-STEPS_MAX:]}
 
 

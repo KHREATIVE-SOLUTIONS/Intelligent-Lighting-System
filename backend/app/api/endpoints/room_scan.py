@@ -30,11 +30,16 @@ PATCH and DELETE on /api/rigs/{rig_id}/room-shell/{kind}/{index} rename, move,
 resize, raise, turn or take out one raised area, overhead line or ring of the
 stored shell, and POST /api/rigs/{rig_id}/room-shell/{kind} adds one: the scan
 suggested a room, and a person who can see it corrects it
-(services/room_scan/edit.py). No fixture moves with it.
+(services/room_scan/edit.py). The fixtures hung on a line or ring that is
+moved, raised, turned or resized go with it unless the request says not
+(`carry_fixtures`, services/room_scan/carry.py): their positions and headings
+only, never a patch or a tag. Nothing else moves a fixture: not a rename, a
+raised area, an added item or a deleted one.
 
-Each of those edits leaves the room as it was on the rig
-(rigs.room_shell_undo), and POST /api/rigs/{rig_id}/room-shell/undo takes the
-latest one back; GET on the same path says what that would be
+Each of those edits leaves the room as it was on the rig, with what it
+carried (rigs.room_shell_undo), and POST /api/rigs/{rig_id}/room-shell/undo
+takes the latest one back, fixtures included; GET on the same path says what
+that would be
 (services/room_scan/edit_undo.py). The record is emptied when a scan is
 applied again and when the room is taken off. All of them are refused while a
 locate walkthrough is running on the rig.
@@ -61,6 +66,9 @@ from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
 from app.services.room_scan import (
     RoomScanError, ScanOptions, extract_room, read_scan_file, suggest_positions,
+)
+from app.services.room_scan.carry import (
+    apply_moves, carried_moves, carried_words, put_back, put_back_words, refuse_outside,
 )
 from app.services.room_scan.edit import (
     KINDS, ShellEditError, add_item, delete_item, edit_item, edit_words, item_name,
@@ -339,6 +347,12 @@ class ShellItemEdit(BaseModel):
     heading_deg: Optional[float] = None
 
 
+class ShellItemPatch(ShellItemEdit):
+    """A change to one item, and whether the fixtures hung on a line or ring go with it."""
+    # Left out (or null), they do. False leaves every fixture where it is.
+    carry_fixtures: Optional[bool] = True
+
+
 class ShellItemAdd(ShellItemEdit):
     """A raised area, overhead line or ring to put into the stored room by hand."""
     # For a raised area: "stage", "riser" or "booth". A riser when left out.
@@ -355,9 +369,10 @@ async def _rig(db: AsyncSession, rig_id: int) -> Rig:
 def _not_during_locate(rig: Rig, then: str) -> None:
     """Refuse a change to the room while a flash-and-tap walkthrough is running on the rig.
 
-    No fixture moves with a room edit, but the walkthrough places fixtures
-    against the room as it stands (its truss lines and hanging heights), and
-    its operator is looking at the lights, not at this.
+    The walkthrough places fixtures against the room as it stands (its truss
+    lines and hanging heights) and holds its own copy of each position, which
+    a truss carrying its fixtures would go behind; and its operator is looking
+    at the lights, not at this.
     """
     if locate_running(rig.id):
         raise HTTPException(status_code=409, detail=LOCATE_RUNNING.format(then=then))
@@ -533,36 +548,59 @@ async def edit_room_shell_item(
     rig_id: int,
     kind: str,
     index: int,
-    body: ShellItemEdit,
+    body: ShellItemPatch,
     db: AsyncSession = Depends(get_db),
 ):
     """Rename, move, resize, raise or turn one raised area, overhead line or ring of the stored room.
 
     `kind` is the list it is stored in (`risers`, `truss_lines`, `truss_rings`)
     and `index` its place in that list, from 0. A moved line keeps its length
-    and heading. No fixture is moved, the scan's undo record is left alone, and
-    nothing reaches a device (services/room_scan/edit.py). The room as it was
-    is kept, so the edit can be undone (POST .../room-shell/undo); an edit
-    that changes nothing leaves no step behind.
+    and heading (services/room_scan/edit.py).
+
+    The fixtures hung on a line or ring go with it unless `carry_fixtures` is
+    false: shifted with a move, raised with a height, swung about a line's
+    middle with a turn, spread along it with a length, moved out or in with a
+    ring's radius (services/room_scan/carry.py). `fixtures_moved` lists them.
+    Only their positions and headings change: no patch, mode or tag. An edit
+    that would carry one out of the room and the 2 m round it is refused whole
+    (422). A raised area carries nothing.
+
+    The scan's undo record is left alone, and nothing reaches a device. The
+    room as it was is kept with what the edit carried, so both are undone
+    together (POST .../room-shell/undo); an edit that changes nothing leaves
+    no step behind.
     """
-    rig = await _rig(db, rig_id)
+    rig = await _rig_with_fixtures(db, rig_id)
     _not_during_locate(rig, "edit the room")
     before = rig.room_shell
+    carry = body.carry_fixtures is not False
     try:
-        shell, item = edit_item(before, kind, index, **body.model_dump())
+        shell, item = edit_item(before, kind, index, **body.model_dump(exclude={"carry_fixtures"}))
+        done = edit_words(kind, before[kind][index], item)
+        # Where the fixtures hung on it would go, worked out and checked before anything is written:
+        # one that would leave the room refuses the whole edit, the truss's included.
+        moves = carried_moves(before, kind, index, item, rig.fixtures) if carry and done is not None else []
+        refuse_outside(shell, kind, item, moves)
     except ShellEditError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)
-    done = edit_words(kind, before[kind][index], item)
     if done is not None:
+        apply_moves(rig.fixtures, moves)
+        label = f"{done}, with {len(moves)} fixture{'' if len(moves) == 1 else 's'}" if moves else done
         # A new object throughout: the column is plain JSON, so a change made in place is never written.
         rig.room_shell = shell
-        rig.room_shell_undo = push_step(rig.room_shell_undo, before, done)
+        # One step for the truss and what it carried: one undo takes both back.
+        rig.room_shell_undo = push_step(rig.room_shell_undo, before, label, fixtures=moves)
         await db.flush()
-        logger.info("Room shell: rig %s '%s': %s %d: %s", rig.id, rig.name, kind, index, done)
+        logger.info(
+            "Room shell: rig %s '%s': %s %d: %s (%d fixtures carried)", rig.id, rig.name, kind, index, done, len(moves),
+        )
     return {
         "rig_id": rig.id, "kind": kind, "index": index, "item": item, "room_shell": shell,
         "changed": done is not None,
         "undo": undo_summary(rig.room_shell_undo),
+        "carry_fixtures": carry,
+        "fixtures_moved": moves,
+        "message": carried_words(kind, item, len(moves), carry) if done is not None else "Nothing was changed.",
     }
 
 
@@ -616,7 +654,10 @@ async def undo_room_shell_edit(rig_id: int, db: AsyncSession = Depends(get_db)):
 
     The whole room goes back to what it was before that edit: a deleted item
     is in its old place in its list, a renamed one has its old name, and the
-    hanging heights are what they were. No fixture is moved, and the scan's own
+    hanging heights are what they were. The fixtures that edit carried with a
+    truss go back to where they hung (`fixtures_restored`), except one that
+    has been moved since, which is left alone and listed with the reason
+    (`fixtures_skipped`). No other fixture is moved, and the scan's own
     undo record (POST .../room-scan/undo) is left alone. An undo cannot itself
     be undone. `outside` lists what the walls, as they are again, leave
     outside them: an undone change to the walls changes that.
@@ -628,16 +669,27 @@ async def undo_room_shell_edit(rig_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=409, detail="There is no edit to the room left to undo.")
     rig.room_shell = step["shell"]
     rig.room_shell_undo = record
+    # The fixtures the edit carried with its truss go back with it.
+    restored, skipped = put_back(rig.fixtures, step.get("fixtures"))
     await db.flush()
     label = step.get("label") if isinstance(step.get("label"), str) else ""
-    logger.info("Room shell: rig %s '%s': undone: %s", rig.id, rig.name, label)
+    logger.info(
+        "Room shell: rig %s '%s': undone: %s (%d fixtures put back, %d left alone)",
+        rig.id, rig.name, label, len(restored), len(skipped),
+    )
     return {
         "rig_id": rig.id,
         "undone": label,
         "room_shell": step["shell"],
         "undo": undo_summary(record),
+        "fixtures_restored": restored,
+        "fixtures_skipped": skipped,
+        # After the fixtures are back: one that was carried outside the walls is no longer there.
         "outside": outside_report(step["shell"], rig.fixtures),
-        "message": (f"Undone: {label}. " if label else "The last room edit was undone. ") + "No fixture was moved.",
+        "message": (
+            (f"Undone: {label}. " if label else "The last room edit was undone. ")
+            + put_back_words(len(restored), len(skipped))
+        ),
     }
 
 

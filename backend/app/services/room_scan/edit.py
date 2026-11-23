@@ -18,8 +18,10 @@ What an item is addressed by is the list it is stored in and its place in that
 list (`truss_lines`, 1). The lists carry no ids, and the views leave out items
 they cannot draw, so a place on the plan is not a place in the list.
 
-Nothing here moves a fixture. A fixture hung on a truss that is then moved,
-raised or deleted stays where it is.
+Nothing here moves a fixture. Whether the fixtures hung on a truss go with it
+when it is moved, raised, turned or resized is the caller's to decide, with
+carry.py, from the item as it was and as this leaves it. A fixture hung on a
+deleted truss stays where it is.
 
 What is held to the room: a plain move holds the middle of an item to the
 room's box and a margin round it, as it always did. A change of size or
