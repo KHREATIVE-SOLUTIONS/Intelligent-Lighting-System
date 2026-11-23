@@ -164,6 +164,43 @@ Spot 1 (...)"). The stored room stays.
 moved fixtures it asks first: remove the room and put them back, or remove the
 room only. Removing the room only leaves the undo available afterwards.
 
+### Editing the room by hand
+
+A scan guesses; somebody who can see the room knows the "Booth or counter" is
+the bar and the "riser" is a flight case. Rig editor toolbar, **Edit Room**
+(`RoomShellEditDialog.tsx`, `utils/roomShellEdit.ts`). The button is there
+only for a rig with a scanned room stored. Opening it first writes any drag
+still waiting to be saved, and the 2D plan's keys and nudge pad are off while
+it is open.
+
+- **One row for each raised area, overhead line and ring** of the stored
+  room, in that order, with its name, where its middle is and what the scan
+  found (size, height, which way a line runs). **Across** is metres from the
+  centre line (stage left is positive); **Depth** is metres from the middle of
+  the floor (downstage is positive, upstage negative). A comma is taken for a
+  decimal point.
+- **Save** sends that row's changes and only what differs from what is
+  stored, so a rename is never also a move. It is off until something is
+  changed, and while a field cannot be saved (an emptied name, one over 60
+  characters, a position that is not a number), with the reason in the row.
+- **A move keeps the shape.** A line keeps its length and heading. The middle
+  is held to the room's box and 2 m round it; when it was held short, the
+  message says where it was put. A moved item is marked **Moved by hand**.
+- **Delete asks first** ("Keep it" / "Delete it"), in the row. Fixtures hung
+  on a deleted truss stay where they are, and nothing snaps to it or is laid
+  along it afterwards.
+- **One change at a time.** Each stored change comes back as the whole room,
+  which the plan draws and snaps to at once; the rig is not loaded again. A
+  save keeps what is typed in the other rows; a delete clears all of it,
+  because the rows after the deleted one have each moved up a place.
+- **An item the views cannot draw is still listed** ("Not drawn: ...") and can
+  be renamed or deleted. One with no position stored has its Across and Depth
+  fields off.
+- **No fixture moves, no tag changes and nothing is sent to a light.** The
+  editor's Undo does not take a room edit back, and "Undo room scan moves" is
+  unaffected. The only way back is to read the scan again, which **replaces
+  every edit made here**.
+
 ## The API
 
 All routes need the operator login, like every other `/api` route.
@@ -217,6 +254,67 @@ Takes the stored room off the rig. Fixtures are left where they are unless
 `restore_fixtures=true`, which also puts back the ones the scan moved. Answers
 `rig_id`, `removed`, `undo_available` and, when asked to restore,
 `fixtures_restored`, `fixtures_skipped`, `skipped_fixtures` and a `message`.
+
+### `PATCH /api/rigs/{rig_id}/room-shell/{kind}/{index}`
+
+Renames or moves one raised area, overhead line or ring of the stored room
+(`services/room_scan/edit.py`). `kind` is the list it is stored in: `risers`,
+`truss_lines` or `truss_rings`. `index` is its place in that list, from 0. The
+lists carry no ids, and the views leave out items they cannot draw, so this is
+the place in the stored list and not the place on the plan.
+
+JSON body, every field optional; anything left out (or `null`) is kept:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | the new name. Runs of spaces and line breaks become one space and the ends are trimmed; what is left must be 1 to 60 characters |
+| `center_x` | where the middle goes across the room, in metres (the rig's axes) |
+| `center_z` | where the middle goes in depth, in metres, -Z upstage |
+
+- The middle is a raised area's or a ring's own centre, and for a line half
+  way between its two ends. One of `center_x` and `center_z` given alone keeps
+  the other.
+- A position beyond the room is **held, not refused**: to the room's box
+  (`room.width`, `room.depth`; not the floor outline) and 2 m round it. A room
+  with no size holds nothing. The result is stored to the millimetre.
+- A line keeps its length and heading: both ends take the same shift.
+- An item that actually shifts gets `suggested: false` and "Moved by hand."
+  added to its `basis`, once however often it is moved. A rename, and a move
+  to where it already is, change neither.
+
+Answers `rig_id`, `kind`, `index`, `item` (the item as stored) and
+`room_shell` (the whole stored room after the change).
+
+### `DELETE /api/rigs/{rig_id}/room-shell/{kind}/{index}`
+
+Takes one item out, addressed the same way. No body. The items after it in
+its list **move up one place**. A deleted line or ring is also taken out of
+the `hanging_bands` entry that counted it: a band left with nothing in it is
+dropped, and with no line or ring left in the room there are no bands at all.
+Deleting a raised area leaves the bands alone. There is no undo: reading the
+scan again brings the item back, and replaces every other edit with it.
+
+Answers `rig_id`, `kind`, `index`, `removed` (the item taken out),
+`room_shell` and a `message` ("... was taken out of the stored room. No
+fixture was moved.").
+
+For both routes: no fixture is moved or retagged (one hung on a moved or
+deleted truss stays where it is), the scan's undo record (`room_scan_undo`) is
+left alone, and nothing reaches a device. Neither checks for a running locate
+walkthrough, since neither touches a fixture.
+
+Refusals. Nothing is written by a refused request:
+
+| Status | When |
+| --- | --- |
+| 404 | no such rig ("Rig not found"); `kind` is not one of the three lists (`room`, `hanging_bands` and the rest cannot be edited; the `detail` names the three); the rig has no room stored, or its shell is not from a scan (`source` is not `"scan"`, as a demo preset's); or there is no item at `index` (negative, past the end, or not an object). That `detail` says how many the list has and to load the rig again, since the room may have been changed elsewhere. Checked in that order |
+| 409 | `PATCH` only: a centre was given for an item with no usable position stored (a line missing an end, a centre that is not a number). It can still be renamed or deleted |
+| 422, `detail` a sentence | `PATCH` only: a name with nothing in it; a name over 60 characters once trimmed; or a body with no `name`, `center_x` or `center_z` ("Nothing to change: give a name, a centre, or both.") |
+| 422, `detail` FastAPI's list of errors | `index` is not a whole number; and for `PATCH`: no body, a `name` over 200 characters as sent, or a centre that is not a finite number |
+
+The order they are checked in: FastAPI's own 422s first, before the rig is
+looked up (so a bad `index` on a rig that does not exist is 422, not 404);
+then the 404s; then "Nothing to change" and the name; then the 409.
 
 ### `POST /api/rigs/{rig_id}/room-scan/undo`
 
@@ -665,6 +763,24 @@ A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
 
+## What Edit Room built
+
+- **The edit** (`backend/app/services/room_scan/edit.py`, new): `edit_item`,
+  `delete_item`, `clean_name`, `item_centre` and `item_name`. Pure: a shell
+  goes in and a new one comes out, which matters because the column is plain
+  JSON and a change made in place is never written.
+- **The routes** (`room_scan.py`): `PATCH` and `DELETE` on
+  `/api/rigs/{rig_id}/room-shell/{kind}/{index}` (see The API).
+- **The helpers** (`utils/roomShellEdit.ts`, new, no React): `shellItems`,
+  `readDraft`, `draftOf`, and the dialog's wording (`editResultText`,
+  `deleteQuestionText`, `shellEditErrorText`). `roomShellItemPath` in
+  `utils/roomScan.ts`; `editShellItem` and `deleteShellItem` on `roomScanApi`.
+- **The dialog and its wiring** (`RoomShellEditDialog.tsx`, new;
+  `RigEditorToolbar.tsx`, `RigBuilder.tsx`): the Edit Room button, and the
+  answered room put on the rig in the editor with no fixture, save or undo
+  step touched.
+- **No migration**, and nothing here sends Art-Net or DMX.
+
 ## What slice 11 built
 
 - **The helpers** (`components/rig/planSelect2d.ts`, new, no React):
@@ -982,6 +1098,29 @@ are no binary fixtures in the repository.
   and one Undo putting it back. The cue while the rig's name is typed,
   gone after a click on the plan, with the keys working again.
 
+- **Edit Room** (written with it; run Nov 23 2026 with the full suite:  backend pytest 1682 passed, frontend vitest 783 passed, build OK):
+  `backend/tests/unit/test_room_scan_edit.py`: a rename changing nothing
+  else, the shell given left unchanged, blank and over-long names; a move of
+  a raised area, one axis alone, a line keeping its length and heading, a
+  move to where it is, the hold to the room and its margin, a centre that is
+  not a number, an item with no position; a delete moving the rest up, the
+  hanging bands after a deleted line or ring, and a row no longer hung at a
+  deleted truss's height; each refusal.
+  `backend/tests/integration/test_api_room_scan.py`, `TestRoomShellEdit`:
+  the same through the routes, read back from the rig and from the database
+  row; fixtures and the undo record untouched; the 404s (no room, no rig, no
+  such place, a list that cannot be edited) and the 422s (a blank or 61
+  character name, an empty body, a centre or an index that is not a number),
+  but not the 409, a 200 character name or a shell that is not a scan; a
+  scan read again replacing the edits; both routes behind the login.
+  `frontend/src/__tests__/roomShellEdit.test.ts`,
+  `RoomShellEditDialog.test.tsx` and `RigBuilderRoomEdit.test.tsx`: which
+  items are listed and by which place, what a row sends, the wording; the
+  dialog's save, delete question, delete and refusal; the button offered
+  only with a scanned room, a renamed truss on the plan with no reload, a
+  deleted truss gone from the plan and from Lay on truss, and a fixture move
+  and its undo step left as they were.
+
 ## What is left
 
 - **Checks ran on 2026-11-22, 7:44 PM ET, after slice 8 (outline-held guesses, 2D truss snap, room grid, palette click):** frontend vitest 424 passed (22 files) and the build passed; backend pytest tests/ 1632 passed, 10 skipped, 5 xfailed, including tests/integration/test_api_room_scan.py.
@@ -1157,8 +1296,13 @@ are no binary fixtures in the repository.
 - **Binary USDZ** (`.usdc`): not read. Export OBJ.
 - **Ceilings and levels.** Sloped or domed ceilings, balconies and mezzanines
   are still read as a flat ceiling over one floor.
-- **Editing the suggestion.** A raised area or line cannot be renamed, moved or
-  deleted in the UI; the choice is to store the shell or not.
+- **Editing the room goes only so far.** A raised area, line or ring can be
+  renamed, moved or deleted (Edit Room). It cannot be resized, raised or
+  lowered, turned, or changed from a riser to a stage; nothing can be added;
+  and the walls, the outline and the room's size cannot be edited. Positions
+  are typed, not dragged. A move is held to the room's box and 2 m round it,
+  not to the floor outline. There is no undo, and reading the scan again
+  replaces every edit. Fixtures do not follow a moved truss.
 - **Crowd and booth in a scanned room** are left out rather than fitted round
   what the scan found.
 - **Photos to a room** (photogrammetry inside this system) is out of scope: the
