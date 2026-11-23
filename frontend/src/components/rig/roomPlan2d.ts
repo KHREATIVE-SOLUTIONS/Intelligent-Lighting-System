@@ -14,7 +14,13 @@
  */
 import type { RoomShell } from '../../types';
 import { lineRunText } from '../../utils/roomScan';
-import { holdNearOutline, outlineBox, roomOutline, usableRoom } from './previs/outline';
+import { SNAP_RADIUS_M, snapLines, snapToLines } from './previs/fixtureDrag';
+import type { SnapLine } from './previs/fixtureDrag';
+import {
+  holdNearOutline, insetPoint, insideOutline, outlineArea, outlineBox, outlineSpansX, outlineSpansZ, roomOutline,
+  usableRoom,
+} from './previs/outline';
+import type { Span } from './previs/outline';
 import { scanRings, scanRisers, usableLine } from './previs/roomShell';
 
 export type PlanPoint = { x: number; z: number };
@@ -262,6 +268,168 @@ export function snapToRoomGrid(x: number, z: number, gridSize: number): PlanPoin
   if (!(gridSize > 0)) return { x, z };
   // `+ 0` so a position just short of a line through the origin is 0, not -0.
   return { x: Math.round(x / gridSize) * gridSize + 0, z: Math.round(z / gridSize) * gridSize + 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Snapping a drag to the truss a scan found
+// ---------------------------------------------------------------------------
+
+/**
+ * The scanned truss a drag on the plan snaps to: the room's truss lines at
+ * whatever heading and its rings, as the 3D view's drag reads them
+ * (`snapLines`). The edges of raised areas, which the 3D drag also offers,
+ * are left out: on a plan they would catch every fixture set near a stage.
+ * Empty for a rig with no scanned room.
+ */
+export function planTrussTargets(shell: RoomShell | null | undefined): SnapLine[] {
+  return snapLines(shell).filter((target) => target.kind === 'truss');
+}
+
+export type PlanSnap = PlanPoint & {
+  /** The truss line or ring it was put on, or null when it is where it was. */
+  snappedTo: SnapLine | null;
+};
+
+/**
+ * A position moved onto the nearest scanned truss line or ring within
+ * `radius` on the plan, or left where it is. The 3D drag's own `snapToLines`,
+ * without its height window: the plan has no height, and a fixture new from
+ * the palette hangs at none yet. On a ring it goes straight out from or in
+ * towards the centre, and at the very centre it is left alone.
+ */
+export function snapToScannedTruss(
+  x: number, z: number, targets: SnapLine[], radius = SNAP_RADIUS_M,
+): PlanSnap {
+  if (targets.length === 0) return { x, z, snappedTo: null };
+  const snapped = snapToLines({ x, y: 0, z }, targets, radius, Infinity);
+  return { x: snapped.x, z: snapped.z, snappedTo: snapped.snappedTo };
+}
+
+// ---------------------------------------------------------------------------
+// The snap grid, drawn across the room
+// ---------------------------------------------------------------------------
+
+export interface PlanGridLine {
+  x1: number;
+  z1: number;
+  x2: number;
+  z2: number;
+  /** On a whole metre: drawn heavier. */
+  major: boolean;
+}
+
+/** Stretches joined where they touch or overlap, in order. */
+function joinSpans(spans: Span[]): Span[] {
+  const sorted = spans.filter((span) => span[1] > span[0]).sort((a, b) => a[0] - b[0]);
+  const joined: Span[] = [];
+  for (const span of sorted) {
+    const last = joined[joined.length - 1];
+    if (last && span[0] <= last[1] + 1e-9) last[1] = Math.max(last[1], span[1]);
+    else joined.push([span[0], span[1]]);
+  }
+  return joined;
+}
+
+/**
+ * The grid's lines where a scanned room is drawn: on the same multiples of
+ * the grid size a drag snaps to (`snapToRoomGrid`), each drawn for the
+ * stretches of it that are on the room's floor or on the deck. In a room with
+ * a floor outline nothing is drawn in a notch, which is outside the walls. A
+ * line that lies along a wall may or may not be drawn; the wall is drawn over
+ * it either way.
+ */
+export function planGrid(
+  walls: PlanWalls, stageWidth: number, stageDepth: number, gridSize: number,
+): PlanGridLine[] {
+  if (!(gridSize > 0)) return [];
+  const box = outlineBox(walls.points);
+  const halfW = stageWidth / 2;
+  const halfD = stageDepth / 2;
+  const whole = (value: number) => Math.abs(value - Math.round(value)) < 1e-9;
+  const multiples = (low: number, high: number) => {
+    const values: number[] = [];
+    for (let i = Math.ceil(low / gridSize - 1e-9); i * gridSize <= high + 1e-9; i += 1) values.push(i * gridSize + 0);
+    return values;
+  };
+  const lines: PlanGridLine[] = [];
+  // Up and down stage, one at each x.
+  for (const x of multiples(Math.min(box.xMin, -halfW), Math.max(box.xMax, halfW))) {
+    const spans = outlineSpansZ(walls.points, x);
+    if (Math.abs(x) <= halfW + 1e-9) spans.push([-halfD, halfD]);
+    for (const [from, to] of joinSpans(spans)) lines.push({ x1: x, z1: from, x2: x, z2: to, major: whole(x) });
+  }
+  // Across the room, one at each depth.
+  for (const z of multiples(Math.min(box.zMin, -halfD), Math.max(box.zMax, halfD))) {
+    const spans = outlineSpansX(walls.points, z);
+    if (Math.abs(z) <= halfD + 1e-9) spans.push([-halfW, halfW]);
+    for (const [from, to] of joinSpans(spans)) lines.push({ x1: from, z1: z, x2: to, z2: z, major: whole(z) });
+  }
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Where a fixture clicked in the palette goes
+// ---------------------------------------------------------------------------
+
+/** Whether a position is inside the walls the plan draws. */
+export function insideWalls(walls: PlanWalls, x: number, z: number): boolean {
+  if (walls.outlined) return insideOutline(walls.points, x, z);
+  const box = outlineBox(walls.points);
+  return x >= box.xMin && x <= box.xMax && z >= box.zMin && z <= box.zMax;
+}
+
+/** The middle of a floor by area, which for an L is not the middle of its box. */
+function floorCentre(points: PlanPoint[]): PlanPoint {
+  const area = outlineArea(points);
+  if (!(Math.abs(area) > 1e-9)) {
+    const box = outlineBox(points);
+    return { x: (box.xMin + box.xMax) / 2, z: (box.zMin + box.zMax) / 2 };
+  }
+  let x = 0;
+  let z = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const cross = a.x * b.z - b.x * a.z;
+    x += (a.x + b.x) * cross;
+    z += (a.z + b.z) * cross;
+  }
+  return { x: x / (6 * area) + 0, z: z / (6 * area) + 0 };
+}
+
+/**
+ * Where a fixture clicked in the palette, and not dropped anywhere, is put.
+ *
+ * With no scanned room: centre stage, stepped clear of any fixture within
+ * `clearance` of it, inside the deck. As it has always been.
+ *
+ * With a scanned room's walls drawn: centre stage when that is inside the
+ * room, else the middle of the room's floor, brought `clearance` in from the
+ * walls where it is nearer than that (the middle of an L's floor can fall
+ * close to its notch, or in it). Then stepped clear of other fixtures the
+ * same way, each step held to the walls and not to the deck.
+ */
+export function paletteClickSpot(
+  stageWidth: number, stageDepth: number, walls: PlanWalls | null | undefined,
+  fixtures: PlanPoint[], clearance: number,
+): PlanPoint {
+  let start: PlanPoint = { x: 0, z: 0 };
+  if (walls && !insideWalls(walls, 0, 0)) {
+    const centre = floorCentre(walls.points);
+    start = walls.outlined ? insetPoint(walls.points, centre.x, centre.z, clearance) : holdToWalls(walls, centre.x, centre.z);
+  }
+  const taken = (x: number, z: number) =>
+    fixtures.some((fixture) => Math.hypot(fixture.x - x, fixture.z - z) < clearance);
+  if (!taken(start.x, start.z)) return start;
+
+  for (let ring = 1; ring <= 6; ring += 1) {
+    const step = ring * clearance;
+    for (const [dx, dz] of [[step, 0], [-step, 0], [0, step], [0, -step], [step, step], [-step, -step]]) {
+      const spot = holdOnPlan(start.x + dx, start.z + dz, stageWidth, stageDepth, walls);
+      if (!taken(spot.x, spot.z)) return spot;
+    }
+  }
+  return start;
 }
 
 // ---------------------------------------------------------------------------

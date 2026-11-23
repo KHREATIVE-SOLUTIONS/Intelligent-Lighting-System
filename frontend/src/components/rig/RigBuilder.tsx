@@ -8,6 +8,7 @@ import RigEditorToolbar from './RigEditorToolbar';
 import type { PositionSaveState } from './RigEditorToolbar';
 import FixturePalette from './FixturePalette';
 import StageView2D from './StageView2D';
+import { paletteClickSpot, roomPlan } from './roomPlan2d';
 import PatchTable from './PatchTable';
 import FixtureProperties from './FixtureProperties';
 import IdentifyWalkthrough from './IdentifyWalkthrough';
@@ -25,9 +26,6 @@ const roundToMm = (value: number) => Math.round(value * 1000) / 1000;
 
 /** Two icons closer than this on the plan read as one light. */
 const ICON_CLEARANCE_M = 0.6;
-
-const clampSpan = (value: number, span: number) =>
-  Math.min(Math.max(value, -span / 2), span / 2);
 
 export default function RigBuilder() {
   const { id } = useParams<{ id: string }>();
@@ -266,25 +264,23 @@ export default function RigBuilder() {
   }, []);
 
   /**
-   * Nudge a position the app chose (rather than one the owner pointed at) off any
-   * fixture already there, so clicking the palette twice does not stack two icons.
+   * Where a fixture clicked in the palette goes: a position the app chooses
+   * (rather than one the owner pointed at), nudged off any fixture already
+   * there so clicking the palette twice does not stack two icons. Centre stage,
+   * inside the deck; in a rig with a scanned room, inside the room's walls
+   * (`paletteClickSpot`, docs/ROOM_SCAN.md).
    */
-  const clearSpotNear = (x: number, z: number): { x: number; z: number } => {
+  const paletteSpot = (): { x: number; z: number } => {
     const current = rigRef.current;
-    if (!current) return { x, z };
-    const taken = (px: number, pz: number) =>
-      current.fixtures.some((f) => Math.hypot(f.position_x - px, f.position_z - pz) < ICON_CLEARANCE_M);
-    if (!taken(x, z)) return { x, z };
-
-    for (let ring = 1; ring <= 6; ring += 1) {
-      const step = ring * ICON_CLEARANCE_M;
-      for (const [dx, dz] of [[step, 0], [-step, 0], [0, step], [0, -step], [step, step], [-step, -step]]) {
-        const cx = clampSpan(x + dx, rig?.stage_width ?? 0);
-        const cz = clampSpan(z + dz, rig?.stage_depth ?? 0);
-        if (!taken(cx, cz)) return { x: cx, z: cz };
-      }
-    }
-    return { x, z };
+    if (!current) return { x: 0, z: 0 };
+    return paletteClickSpot(
+      rig?.stage_width ?? 0,
+      rig?.stage_depth ?? 0,
+      // The walls the plan draws, so a click lands where a drop there would be let.
+      roomPlan(current.room_shell)?.walls ?? null,
+      current.fixtures.map((f) => ({ x: f.position_x, z: f.position_z })),
+      ICON_CLEARANCE_M,
+    );
   };
 
   const addFixtureAt = useCallback(async (fixtureId: number, x: number, z: number) => {
@@ -400,7 +396,7 @@ export default function RigBuilder() {
             onDragStart={(fixture) => { paletteDragRef.current = fixture; }}
             onFixtureClick={(fixture) => {
               paletteDragRef.current = fixture;
-              const spot = clearSpotNear(0, 0);
+              const spot = paletteSpot();
               void addFixtureAt(fixture.id, spot.x, spot.z);
             }}
           />

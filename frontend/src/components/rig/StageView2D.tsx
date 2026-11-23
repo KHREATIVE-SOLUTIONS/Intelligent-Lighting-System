@@ -4,7 +4,8 @@ import { FIXTURE_DRAG_MIME, computeTrussLines } from '../../stores/rigEditorStor
 import type { SnapMode } from '../../stores/rigEditorStore';
 import type { RigFixture, RoomShell } from '../../types';
 import {
-  holdOnPlan, planFrame, planLabels, planPolygonPoints, planViewBox, roomPlan, snapToRoomGrid,
+  holdOnPlan, planFrame, planGrid, planLabels, planPolygonPoints, planTrussTargets, planViewBox, roomPlan,
+  snapToRoomGrid, snapToScannedTruss,
 } from './roomPlan2d';
 import type { PlanLabel } from './roomPlan2d';
 
@@ -93,6 +94,9 @@ export default function StageView2D({
   const frame = useMemo(() => planFrame(width, depth, padding, walls), [width, depth, padding, walls]);
   // The room layer's labels, nudged clear of each other.
   const labels = useMemo(() => (plan ? planLabels(plan) : null), [plan]);
+  // The truss lines and rings a scan found, which a drag snaps onto. None for
+  // a rig with no scanned room.
+  const scannedTruss = useMemo(() => planTrussTargets(roomShell), [roomShell]);
 
   const acceptsDrop = !readonly && !!onDropFromPalette;
 
@@ -124,8 +128,15 @@ export default function StageView2D({
   );
 
   const applySnap = useCallback(
-    (x: number, z: number) => {
+    (x: number, z: number, ontoScannedTruss = false) => {
       if (snapMode === 'none') return { x, z };
+      // A drag near a truss line or ring the scan found goes onto it, as in
+      // the 3D view, before the grid or the plan's own truss lines are tried.
+      // Out of its reach the snap mode carries on as it always has.
+      if (ontoScannedTruss && scannedTruss.length > 0) {
+        const onTruss = snapToScannedTruss(x, z, scannedTruss);
+        if (onTruss.snappedTo) return { x: onTruss.x, z: onTruss.z };
+      }
       if (snapMode === 'truss') {
         // No truss to hang on yet: leave the position untouched rather than
         // pretending to snap.
@@ -149,7 +160,7 @@ export default function StageView2D({
       };
       return { x: onGrid(x, width / 2), z: onGrid(z, depth / 2) };
     },
-    [snapMode, gridSize, trussLines, width, depth, walls]
+    [snapMode, gridSize, trussLines, width, depth, walls, scannedTruss]
   );
 
   // The deck, and only the deck. The band below the stage is drawn and labelled
@@ -202,7 +213,9 @@ export default function StageView2D({
   const handleMouseMove = (e: React.MouseEvent) => {
     if (draggingId === null || readonly) return;
     const raw = pointerToStage(e.clientX, e.clientY);
-    const snapped = applySnap(raw.x + dragOffset.x, raw.z + dragOffset.z);
+    // Holding Alt lets go of the scanned truss for this drag, as it does in
+    // the 3D view; the snap mode set to none lets go of everything.
+    const snapped = applySnap(raw.x + dragOffset.x, raw.z + dragOffset.z, !e.altKey);
     const pos = clampToPlan(snapped.x, snapped.z);
     onFixtureDrag?.(draggingId, pos.x, pos.z);
   };
@@ -246,8 +259,15 @@ export default function StageView2D({
   // to. Emitting them from the stage edge instead only lines up when half the
   // stage is a whole number of grid squares, and the depth slider steps by 0.5,
   // so half of all reachable stages would snap between two drawn lines.
+  // With a scanned room drawn the grid is the room's instead (`roomGrid`
+  // below): a drag snaps to it everywhere inside the walls, so it is drawn
+  // everywhere inside them.
+  const roomGrid = useMemo(
+    () => (walls ? planGrid(walls, width, depth, gridSize) : null),
+    [walls, width, depth, gridSize],
+  );
   const gridLines = [];
-  for (let i = -Math.floor(width / 2 / gridSize); i * gridSize <= width / 2; i += 1) {
+  for (let i = -Math.floor(width / 2 / gridSize); !roomGrid && i * gridSize <= width / 2; i += 1) {
     const x = i * gridSize;
     gridLines.push(
       <line
@@ -262,7 +282,7 @@ export default function StageView2D({
       />
     );
   }
-  for (let i = -Math.floor(depth / 2 / gridSize); i * gridSize <= depth / 2; i += 1) {
+  for (let i = -Math.floor(depth / 2 / gridSize); !roomGrid && i * gridSize <= depth / 2; i += 1) {
     const z = i * gridSize;
     gridLines.push(
       <line
@@ -321,8 +341,25 @@ export default function StageView2D({
           strokeWidth={0.05}
         />
 
-        {/* Grid */}
+        {/* Grid: the deck's, or with a scanned room drawn the room's, across
+            its floor and the deck and not in a notch outside the walls. */}
         {gridLines}
+        {roomGrid && (
+          <g data-testid="room-plan-grid">
+            {roomGrid.map((line, index) => (
+              <line
+                key={`rg-${index}`}
+                x1={toSvgX(line.x1)}
+                y1={toSvgY(line.z1)}
+                x2={toSvgX(line.x2)}
+                y2={toSvgY(line.z2)}
+                stroke="#333"
+                strokeWidth={line.major ? 0.03 : 0.01}
+                opacity={line.major ? 0.3 : 0.15}
+              />
+            ))}
+          </g>
+        )}
 
         {/* Centre lines (stage origin) */}
         <line
