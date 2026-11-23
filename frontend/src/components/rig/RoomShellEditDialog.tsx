@@ -11,6 +11,12 @@
  * the steps are still there after the page is loaded again, until the scan
  * is read again.
  *
+ * Under those, Walls: the corners of the room's floor, each a row with where
+ * it is, a corner added after it or taken out, the room's height, and a list
+ * of what the walls as they now stand leave outside them. The walls go
+ * through the same Undo. A button hands the corners to the 2D plan to be
+ * dragged there, which this dialog, being in front of the plan, cannot do.
+ *
  * No fixture moves with anything here, and nothing is sent to a light.
  */
 import { useEffect, useRef, useState } from 'react';
@@ -45,6 +51,7 @@ import {
   editResultText,
   newItemDraft,
   newItemKind,
+  positionText,
   quarterTurned,
   readDraft,
   readNewItem,
@@ -58,6 +65,11 @@ import {
 import type {
   NewItemDraft, NewItemWhat, ShellItem, ShellItemDraft, ShellSizeField, ShellUndoInfo,
 } from '../../utils/roomShellEdit';
+import {
+  WALL_LIMITS, cornerDraftOf, outsideHeading, outsideLines, outsideOf, readCorner, readRoomHeight, roomHeight,
+  wallCorners, wallsSizeText,
+} from '../../utils/roomWallsEdit';
+import type { CornerDraft, OutlineAnswer, OutsideReport } from '../../utils/roomWallsEdit';
 
 interface RoomShellEditDialogProps {
   open: boolean;
@@ -74,6 +86,12 @@ interface RoomShellEditDialogProps {
    * said.
    */
   onChanged: (shell: RoomShell, undo?: ShellUndoInfo) => void;
+  /**
+   * Asks for the corners to be dragged on the 2D plan: the editor closes this
+   * dialog, which is in front of the plan, and puts handles on the corners.
+   * Without it the button is left out.
+   */
+  onDragWalls?: () => void;
 }
 
 function errorText(err: unknown): string {
@@ -87,7 +105,7 @@ const planFields = (item: ShellItem): ShellSizeField[] =>
 
 const unitOf = (field: ShellSizeField) => (field === 'heading_deg' ? 'deg' : 'm');
 
-type Busy = { key: string; what: 'save' | 'delete' | 'add' | 'undo' };
+type Busy = { key: string; what: 'save' | 'delete' | 'add' | 'undo' | 'walls' };
 
 export default function RoomShellEditDialog({
   open,
@@ -97,7 +115,16 @@ export default function RoomShellEditDialog({
   undo,
   onClose,
   onChanged,
+  onDragWalls,
 }: RoomShellEditDialogProps) {
+  // What has been typed against a corner of the walls and not yet saved, by
+  // the corner's place in the outline. Cleared by every change to the walls:
+  // a corner added or taken out moves the ones after it.
+  const [cornerDrafts, setCornerDrafts] = useState<Record<number, CornerDraft>>({});
+  // The room height as typed, or null while the field shows what is stored.
+  const [heightDraft, setHeightDraft] = useState<string | null>(null);
+  // What the walls leave outside them, as the server last said. Null until it has.
+  const [outside, setOutside] = useState<OutsideReport | null>(null);
   // What has been typed into a row and not yet saved, by the row's key. A row
   // with nothing typed shows what is stored.
   const [drafts, setDrafts] = useState<Record<string, ShellItemDraft>>({});
@@ -115,15 +142,37 @@ export default function RoomShellEditDialog({
   const shellRef = useRef(shell);
   shellRef.current = shell;
 
+  /**
+   * Asks the server what the walls now leave outside them. The list is a
+   * warning beside the edit, not part of it: when it cannot be read the
+   * dialog carries on without it, as it did before there was one.
+   */
+  const refreshOutside = async (wanted: () => boolean = () => true) => {
+    try {
+      const read = await roomScanApi.getOutline(rigId);
+      if (wanted() && read && typeof read === 'object' && read.outside) setOutside(outsideOf(read.outside));
+    } catch {
+      // Left as it was.
+    }
+  };
+
   // A dialog opened again starts clean.
   useEffect(() => {
-    if (!open) return;
+    if (!open) return undefined;
     setDrafts({});
     setBusyWith(null);
     setAskDeleteKey(null);
     setAdding(newItemDraft('riser', shellRef.current));
     setError(null);
     setNotice(null);
+    setCornerDrafts({});
+    setHeightDraft(null);
+    setOutside(null);
+    if (shellRef.current?.source !== 'scan') return undefined;
+    // The walls may have been dragged on the plan, or a fixture moved, since it was last open.
+    let current = true;
+    void refreshOutside(() => current);
+    return () => { current = false; };
   }, [open, rigId]);
 
   const items = shellItems(shell);
@@ -156,6 +205,8 @@ export default function RoomShellEditDialog({
       });
       setNotice(editResultText(item, reading.changes, result.room_shell));
       onChanged(result.room_shell, result.undo);
+      // A moved or resized item may now reach past a wall, or have come back inside.
+      void refreshOutside();
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -176,6 +227,8 @@ export default function RoomShellEditDialog({
       setDrafts({});
       setNotice(result.message);
       onChanged(result.room_shell, result.undo);
+      // The places of the items after it have changed, and the list goes by place.
+      void refreshOutside();
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -198,6 +251,7 @@ export default function RoomShellEditDialog({
       setAdding(newItemDraft(adding.what, result.room_shell));
       setNotice(result.message);
       onChanged(result.room_shell, result.undo);
+      void refreshOutside();
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -215,6 +269,10 @@ export default function RoomShellEditDialog({
       // The whole room went back a step: a deleted item is in its list again,
       // and what was typed against the places as they were may be on the wrong rows.
       setDrafts({});
+      // The walls may be the ones that went back: so may their corners, and what they leave outside.
+      setCornerDrafts({});
+      setHeightDraft(null);
+      if (result.outside) setOutside(outsideOf(result.outside));
       setNotice(result.message);
       onChanged(result.room_shell, result.undo);
     } catch (err) {
@@ -223,6 +281,68 @@ export default function RoomShellEditDialog({
       setBusyWith(null);
     }
   };
+
+  // --- The walls ---------------------------------------------------------------
+
+  const walls = scanned ? wallCorners(shell) : null;
+  const storedHeight = roomHeight(shell);
+  const heightText = heightDraft ?? (storedHeight === null ? '' : positionText(storedHeight));
+  const heightReading = readRoomHeight(storedHeight, heightText);
+
+  /**
+   * One change to the walls: sent, and answered with the whole room and
+   * what the walls now leave outside. Every change to the walls clears what
+   * is typed against their corners, whose places may have changed.
+   */
+  const changeWalls = async (key: string, send: () => Promise<OutlineAnswer>) => {
+    setAskDeleteKey(null);
+    setError(null);
+    setNotice(null);
+    setBusyWith({ key, what: 'walls' });
+    try {
+      const result = await send();
+      setCornerDrafts({});
+      setHeightDraft(null);
+      setOutside(outsideOf(result.outside));
+      setNotice(result.message);
+      onChanged(result.room_shell, result.undo);
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusyWith(null);
+    }
+  };
+
+  const setCornerField = (index: number, field: keyof CornerDraft, value: string) => {
+    const stored = walls?.corners[index];
+    if (!stored) return;
+    setCornerDrafts((current) => ({ ...current, [index]: { ...(current[index] ?? cornerDraftOf(stored)), [field]: value } }));
+  };
+
+  const handleSaveCorner = (index: number) => {
+    const stored = walls?.corners[index];
+    if (!stored) return;
+    const reading = readCorner(stored, cornerDrafts[index] ?? cornerDraftOf(stored));
+    if (reading.problem || !reading.changes) return;
+    const to = reading.changes;
+    void changeWalls(`corner:${index}`, () => roomScanApi.moveOutlineCorner(rigId, index, to));
+  };
+
+  const handleAddCorner = (after: number) => {
+    void changeWalls(`corner:${after}`, () => roomScanApi.addOutlineCorner(rigId, after));
+  };
+
+  const handleDeleteCorner = (index: number) => {
+    void changeWalls(`corner:${index}`, () => roomScanApi.deleteOutlineCorner(rigId, index));
+  };
+
+  const handleSaveHeight = () => {
+    if (heightReading.problem || heightReading.height === null) return;
+    const height = heightReading.height;
+    void changeWalls('height', () => roomScanApi.setOutline(rigId, { height }));
+  };
+
+  const outsideList = outsideLines(outside);
 
   const busy = busyWith !== null;
   const undoable = shellUndoCount(undo);
@@ -409,6 +529,139 @@ export default function RoomShellEditDialog({
               </TableBody>
             </Table>
           </TableContainer>
+        )}
+
+        {walls && (
+          <Box sx={{ mt: 3 }} data-testid="room-shell-walls">
+            <Typography variant="subtitle2">Walls</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              The corners of the floor, in order round the room; each wall runs from one corner to
+              the next, and the last back to the first. Now: {wallsSizeText(walls.corners, walls.box)}.
+              Move a corner by typing where it goes, add one half way along the wall after a corner
+              and then move it, or take one out. Nothing in the room and no fixture is moved to suit
+              new walls: what they leave outside is listed here for you to deal with.
+            </Typography>
+
+            {outsideList.length > 0 && (
+              <Alert severity="warning" sx={{ mb: 1.5 }} data-testid="room-shell-outside">
+                {outsideHeading(outside)}
+                <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+                  {outsideList.map((line) => <li key={line}>{line}</li>)}
+                </Box>
+              </Alert>
+            )}
+
+            <TableContainer>
+              <Table size="small" data-testid="room-shell-corners">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Corner</TableCell>
+                    <TableCell>Across (m)</TableCell>
+                    <TableCell>Depth (m)</TableCell>
+                    <TableCell />
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {walls.corners.map((corner, index) => {
+                    const number = index + 1;
+                    const draft = cornerDrafts[index] ?? cornerDraftOf(corner);
+                    const reading = readCorner(corner, draft);
+                    const mine = busyWith?.what === 'walls' && busyWith.key === `corner:${index}`;
+                    return (
+                      <TableRow key={index} data-testid={`room-shell-corner-${index}`}>
+                        <TableCell sx={{ width: 90 }}>{number}</TableCell>
+                        <TableCell sx={{ width: 130 }}>
+                          <TextField
+                            size="small"
+                            value={draft.x}
+                            disabled={busy}
+                            onChange={(e) => setCornerField(index, 'x', e.target.value)}
+                            inputProps={{ 'aria-label': `Across of corner ${number}`, inputMode: 'decimal' }}
+                          />
+                        </TableCell>
+                        <TableCell sx={{ width: 130 }}>
+                          <TextField
+                            size="small"
+                            value={draft.z}
+                            disabled={busy}
+                            onChange={(e) => setCornerField(index, 'z', e.target.value)}
+                            inputProps={{ 'aria-label': `Depth of corner ${number}`, inputMode: 'decimal' }}
+                          />
+                        </TableCell>
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                          <Button
+                            size="small"
+                            variant="contained"
+                            disabled={busy || !!reading.problem || !reading.changes}
+                            onClick={() => handleSaveCorner(index)}
+                            aria-label={`Save corner ${number}`}
+                          >
+                            {mine ? 'Saving...' : 'Save'}
+                          </Button>
+                          <Button
+                            size="small"
+                            sx={{ ml: 1 }}
+                            disabled={busy || walls.corners.length >= WALL_LIMITS.cornersMax}
+                            onClick={() => handleAddCorner(index)}
+                            aria-label={`Add a corner after corner ${number}`}
+                          >
+                            Add after
+                          </Button>
+                          <Button
+                            size="small"
+                            color="warning"
+                            sx={{ ml: 1 }}
+                            // A room keeps at least three corners.
+                            disabled={busy || walls.corners.length <= WALL_LIMITS.cornersMin}
+                            onClick={() => handleDeleteCorner(index)}
+                            aria-label={`Delete corner ${number}`}
+                          >
+                            Delete
+                          </Button>
+                          {reading.problem && (
+                            <Typography variant="caption" color="error" display="block" role="alert">
+                              {reading.problem}
+                            </Typography>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap', mt: 1.5 }}>
+              <TextField
+                size="small"
+                label="Room height (m)"
+                value={heightText}
+                disabled={busy}
+                onChange={(e) => setHeightDraft(e.target.value)}
+                inputProps={{ 'aria-label': 'Height of the room', inputMode: 'decimal' }}
+                sx={{ width: 150 }}
+              />
+              <Button
+                size="small"
+                variant="contained"
+                disabled={busy || !!heightReading.problem || heightReading.height === null}
+                onClick={handleSaveHeight}
+                aria-label="Save the height of the room"
+              >
+                {busyWith?.what === 'walls' && busyWith.key === 'height' ? 'Saving...' : 'Set height'}
+              </Button>
+              {onDragWalls && (
+                <Button size="small" disabled={busy} onClick={onDragWalls} sx={{ ml: 'auto' }}>
+                  Drag corners on the plan
+                </Button>
+              )}
+            </Box>
+            {heightReading.problem && (
+              <Typography variant="caption" color="error" display="block" role="alert" sx={{ mt: 0.5 }}>
+                {heightReading.problem}
+              </Typography>
+            )}
+          </Box>
         )}
 
         {scanned && (

@@ -141,6 +141,21 @@ export function roomShellUndoPath(rigId: number): string {
   return `/rigs/${rigId}/room-shell/undo`;
 }
 
+/** The stored room's walls: its floor outline and its height. */
+export function roomOutlinePath(rigId: number): string {
+  return `/rigs/${rigId}/room-shell/outline`;
+}
+
+/** Where a corner is added to the walls. */
+export function roomOutlineCornersPath(rigId: number): string {
+  return `/rigs/${rigId}/room-shell/outline/corners`;
+}
+
+/** One corner of the walls, by its place in the outline, from 0. */
+export function roomOutlineCornerPath(rigId: number, index: number): string {
+  return `/rigs/${rigId}/room-shell/outline/corners/${index}`;
+}
+
 export function roomScanUndoPath(rigId: number): string {
   return `/rigs/${rigId}/room-scan/undo`;
 }

@@ -424,6 +424,15 @@ export interface ShellEditUndone {
   /** The whole stored room as it was before that edit. */
   room_shell: RoomShell;
   undo: ShellUndoInfo;
+  /**
+   * What the walls, as they are again, leave outside them: an undone change
+   * to the walls changes that (utils/roomWallsEdit.ts `OutsideReport`).
+   */
+  outside?: {
+    items: Array<{ kind: ShellItemKind; index: number; name: string; reason: string; already_outside?: boolean }>;
+    fixtures: Array<{ rig_fixture_id: number; name: string; reason: string; already_outside?: boolean }>;
+    count: number;
+  };
   message: string;
 }
 

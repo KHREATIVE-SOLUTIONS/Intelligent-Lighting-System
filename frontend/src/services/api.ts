@@ -36,9 +36,10 @@ import type {
   ConsoleExportTarget,
 } from '../utils/consoleExport';
 import {
-  fixturePositionPath, roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellListPath,
-  roomShellPath, roomShellUndoPath,
+  fixturePositionPath, roomOutlineCornerPath, roomOutlineCornersPath, roomOutlinePath, roomScanParams, roomScanPath,
+  roomScanUndoPath, roomShellItemPath, roomShellListPath, roomShellPath, roomShellUndoPath,
 } from '../utils/roomScan';
+import type { OutlineAnswer, OutlineChanges, OutlineRead } from '../utils/roomWallsEdit';
 // Types only: the module itself reads the 3D view's checks, which this file has no use for.
 import type {
   ShellEditUndone, ShellItemAdd, ShellItemAdded, ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
@@ -1494,6 +1495,46 @@ export const roomScanApi = {
    */
   undoShellEdit: async (rigId: number): Promise<ShellEditUndone> => {
     const response = await api.post(roomShellUndoPath(rigId));
+    return response.data;
+  },
+
+  /**
+   * The stored room's walls as corners (a box room's four), and what they
+   * leave outside them as the room now stands. Writes nothing.
+   */
+  getOutline: async (rigId: number): Promise<OutlineRead> => {
+    const response = await api.get(roomOutlinePath(rigId));
+    return response.data;
+  },
+
+  /**
+   * Redraws the stored room's walls, sets its height, or both. No fixture
+   * and nothing in the room is moved: the answer lists what the new walls
+   * leave outside. One step of the room's undo (`undoShellEdit`).
+   */
+  setOutline: async (rigId: number, changes: OutlineChanges): Promise<OutlineAnswer> => {
+    const response = await api.patch(roomOutlinePath(rigId), changes);
+    return response.data;
+  },
+
+  /** Moves one corner of the walls. `index` is its place in the outline, from 0. */
+  moveOutlineCorner: async (rigId: number, index: number, to: { x?: number; z?: number }): Promise<OutlineAnswer> => {
+    const response = await api.patch(roomOutlineCornerPath(rigId, index), to);
+    return response.data;
+  },
+
+  /**
+   * Adds a corner on the wall that leaves corner `after`: half way along it,
+   * where it changes no wall until it is moved, or at `at`.
+   */
+  addOutlineCorner: async (rigId: number, after: number, at?: { x: number; z: number }): Promise<OutlineAnswer> => {
+    const response = await api.post(roomOutlineCornersPath(rigId), { after, ...(at ?? {}) });
+    return response.data;
+  },
+
+  /** Takes one corner out of the walls: its two walls become one. A room keeps at least three. */
+  deleteOutlineCorner: async (rigId: number, index: number): Promise<OutlineAnswer> => {
+    const response = await api.delete(roomOutlineCornerPath(rigId, index));
     return response.data;
   },
 };
