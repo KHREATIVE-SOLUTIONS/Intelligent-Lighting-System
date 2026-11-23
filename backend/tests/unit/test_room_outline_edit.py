@@ -150,6 +150,8 @@ class TestRedrawingTheWalls:
         ([[0, 0], [4, 0], [4, True]], "Corner 3 must be two numbers"),
         ([[0, 0], [4, 0], [4, 150]], "Corner 3 would be 150 m from the middle"),
         ([[0, 0], [4, 0], [4.05, 0], [4, 4]], "Corners 2 and 3 would be 0.05 m apart"),
+        # Corner to corner of the largest room there can be.
+        ([[-100, -100], [100, 100], [-100, 100]], "A wall is at most 200 m"),
         # A bow tie.
         ([[-3, -3], [3, 3], [3, -3], [-3, 3]], "The walls would cross"),
         # A corner laid on a wall it is not an end of.

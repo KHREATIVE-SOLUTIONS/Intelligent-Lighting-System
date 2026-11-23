@@ -41,8 +41,14 @@ Corner = Tuple[float, float]
 
 CORNERS_MIN = 3
 CORNERS_MAX = 64
-# A wall shorter than this is two corners in one place, not a wall.
+# A wall shorter than this is two corners in one place, not a wall. Well under
+# the shortest a scan traces (it merges runs under 0.4 m, and fitting corners
+# to walls can shorten one further: extract.find_outline), so that a scanned
+# room is never refused for a wall nobody touched.
 WALL_MIN_M = 0.1
+# No one wall longer than a room may be a side. Corner to corner of the
+# largest room is further than this.
+WALL_MAX_M = 2 * ANY_ROOM_SIZE_MAX_M
 # The room, wall to wall, each way: what the views will draw as a room at all
 # (previs/outline.ts `usableRoom`, fixture_position.position_outline).
 ROOM_SIDE_MIN_M = 1.0
@@ -250,6 +256,12 @@ def check_walls(corners: Sequence[Corner]) -> List[Corner]:
                 422,
                 f"Corners {i + 1} and {(i + 1) % count + 1} would be {_metres(length)} m apart. "
                 f"A wall is at least {_metres(WALL_MIN_M)} m long: move one of them, or delete it.",
+            )
+        if length > WALL_MAX_M + _EPS:
+            raise ShellEditError(
+                422,
+                f"The wall from corner {i + 1} to corner {(i + 1) % count + 1} would be {_metres(length)} m long. "
+                f"A wall is at most {_metres(WALL_MAX_M)} m.",
             )
     crossing = crossing_walls(corners)
     if crossing is not None:

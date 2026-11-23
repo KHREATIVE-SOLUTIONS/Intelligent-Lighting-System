@@ -487,7 +487,7 @@ What makes a room, checked in this order, each refusal a sentence (422):
 - 3 to 64 corners, each two finite numbers, to the millimetre;
 - no corner more than 100 m from the origin either way (so the room is at
   most 200 m a side);
-- no two neighbouring corners under 0.1 m apart;
+- no two neighbouring corners under 0.1 m apart, and no wall over 200 m;
 - no wall crossing or touching another, and none doubling back along its
   neighbour. Three corners in a straight line are let through: a corner
   added half way along a wall is exactly that;
@@ -1555,7 +1555,7 @@ are no binary fixtures in the repository.
   and the editor's own undo step alone, and the count kept when the dialog
   is closed and opened again.
 - **Slice 16 (the walls).**
-  `backend/tests/unit/test_room_outline_edit.py` (run, 53 pass): a box
+  `backend/tests/unit/test_room_outline_edit.py` (run, 54 pass): a box
   room's four corners in the plan's order; an outline stored as `{x, z}`
   with the origin-centred box round it; a box still stored as a box; the
   same walls changing nothing; corners turned clockwise; each refusal's
@@ -1602,7 +1602,7 @@ are no binary fixtures in the repository.
   the dialog is now wide and long (seven columns, a table of corners and a
   form), and how it sits on a small screen is unknown; nor have the corner
   handles, how they sit over a fixture at a corner, or the strip over the
-  plan. The backend suite was run after slice 16: 1864 passed, 10 skipped,
+  plan. The backend suite was run after slice 16: 1865 passed, 10 skipped,
   5 xfailed (1794 before it).
 
 - **Checks ran on 2026-11-22, 7:44 PM ET, after slice 8 (outline-held guesses, 2D truss snap, room grid, palette click):** frontend vitest 424 passed (22 files) and the build passed; backend pytest tests/ 1632 passed, 10 skipped, 5 xfailed, including tests/integration/test_api_room_scan.py.
@@ -1789,9 +1789,14 @@ are no binary fixtures in the repository.
     side is no longer centred on the origin, and its stored `width` and
     `depth` are wider than its walls. The dialog shows the walls' own
     size. The 2D plan's tooltip and the scan summary still show the box.
-  - **A wall is at least 0.1 m, not 0.5 m.** A scan can trace a short jog
-    in a wall, and a longer least length would refuse every later edit to
-    such a room for a wall nobody touched.
+  - **A wall is at least 0.1 m, not 0.5 m**, and at most 200 m. A scan
+    merges runs under 0.4 m and can then shorten a wall further when it
+    fits the corners (`find_outline`), so it can store a wall under 0.5 m;
+    a least length of 0.5 m would refuse every later edit to such a room
+    for a wall nobody touched. Raise `WALL_MIN_M` if that is not wanted.
+  - **A corner goes only as far as the plan's edge in one drag.** The plan
+    shows a metre round the room; drag again once it has redrawn, or type
+    the place in the dialog.
   - **Corners are numbered, not named**, and a corner added or deleted
     renumbers the ones after it. Walls turned inside out by a move are
     numbered clockwise again from the same first corner.

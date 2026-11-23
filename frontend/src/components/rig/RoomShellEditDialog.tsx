@@ -125,6 +125,9 @@ export default function RoomShellEditDialog({
   const [heightDraft, setHeightDraft] = useState<string | null>(null);
   // What the walls leave outside them, as the server last said. Null until it has.
   const [outside, setOutside] = useState<OutsideReport | null>(null);
+  // Counts the changes to the room that were answered, so a read of the list
+  // begun before one of them can tell it is out of date.
+  const outsideAsOf = useRef(0);
   // What has been typed into a row and not yet saved, by the row's key. A row
   // with nothing typed shows what is stored.
   const [drafts, setDrafts] = useState<Record<string, ShellItemDraft>>({});
@@ -148,9 +151,14 @@ export default function RoomShellEditDialog({
    * dialog carries on without it, as it did before there was one.
    */
   const refreshOutside = async (wanted: () => boolean = () => true) => {
+    // A list that an answer to a later change has since replaced is the
+    // fresher one: a slow read must not land on top of it.
+    const asked = outsideAsOf.current;
     try {
       const read = await roomScanApi.getOutline(rigId);
-      if (wanted() && read && typeof read === 'object' && read.outside) setOutside(outsideOf(read.outside));
+      if (wanted() && asked === outsideAsOf.current && read && typeof read === 'object' && read.outside) {
+        setOutside(outsideOf(read.outside));
+      }
     } catch {
       // Left as it was.
     }
@@ -272,7 +280,10 @@ export default function RoomShellEditDialog({
       // The walls may be the ones that went back: so may their corners, and what they leave outside.
       setCornerDrafts({});
       setHeightDraft(null);
-      if (result.outside) setOutside(outsideOf(result.outside));
+      if (result.outside) {
+        outsideAsOf.current += 1;
+        setOutside(outsideOf(result.outside));
+      }
       setNotice(result.message);
       onChanged(result.room_shell, result.undo);
     } catch (err) {
@@ -303,6 +314,7 @@ export default function RoomShellEditDialog({
       const result = await send();
       setCornerDrafts({});
       setHeightDraft(null);
+      outsideAsOf.current += 1;
       setOutside(outsideOf(result.outside));
       setNotice(result.message);
       onChanged(result.room_shell, result.undo);
