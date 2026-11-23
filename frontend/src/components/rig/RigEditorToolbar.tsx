@@ -19,6 +19,7 @@ import {
   ViewInAr as View3DIcon,
   GridOn as GridIcon,
   MeetingRoom as RoomScanIcon,
+  EditLocationAlt as EditRoomIcon,
 } from '@mui/icons-material';
 import type { SnapMode } from '../../stores/rigEditorStore';
 import { DEFAULT_LAY_CHOICE, LAY_MODES, LAY_MODE_LABELS, parseSpacing } from './rowSpace2d';
@@ -50,6 +51,11 @@ interface RigEditorToolbarProps {
   onRoomScan?: () => void;
   /** Whether a scanned room is already stored on the rig. */
   hasRoom?: boolean;
+  /**
+   * Opens the dialog that renames, moves or deletes what the scan found. The
+   * button is left out when this is, and for a rig with no scanned room.
+   */
+  onEditRoom?: () => void;
   /** Selects the whole row the selected fixture is in. The button is left out when this is. */
   onSelectRow?: () => void;
   /** How many fixtures are selected: the button needs one to go by. */
@@ -98,6 +104,7 @@ export default function RigEditorToolbar({
   onIdentify,
   onRoomScan,
   hasRoom = false,
+  onEditRoom,
   onSelectRow,
   selectedCount = 0,
   onLayRow,
@@ -312,6 +319,13 @@ export default function RigEditorToolbar({
         >
           <Button size="small" startIcon={<RoomScanIcon />} onClick={onRoomScan}>
             Room Scan
+          </Button>
+        </Tooltip>
+      )}
+      {onEditRoom && hasRoom && (
+        <Tooltip title="Rename, move or delete what the room scan found: a stage, a riser, a truss. No fixture moves with it">
+          <Button size="small" startIcon={<EditRoomIcon />} onClick={onEditRoom}>
+            Edit Room
           </Button>
         </Tooltip>
       )}

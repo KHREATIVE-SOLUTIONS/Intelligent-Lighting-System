@@ -22,7 +22,8 @@ import FixtureProperties from './FixtureProperties';
 import IdentifyWalkthrough from './IdentifyWalkthrough';
 import RoomScanDialog from './RoomScanDialog';
 import { undoCount } from '../../utils/roomScan';
-import type { Rig, RigFixture, Fixture, PatchConflict } from '../../types';
+import RoomShellEditDialog from './RoomShellEditDialog';
+import type { Rig, RigFixture, Fixture, PatchConflict, RoomShell } from '../../types';
 
 /** Long enough that a drag is one request, short enough to feel immediate. */
 const POSITION_SAVE_DEBOUNCE_MS = 400;
@@ -43,6 +44,7 @@ export default function RigBuilder() {
   const [notice, setNotice] = useState<{ severity: 'error' | 'success'; text: string } | null>(null);
   const [identifyOpen, setIdentifyOpen] = useState(false);
   const [roomScanOpen, setRoomScanOpen] = useState(false);
+  const [roomEditOpen, setRoomEditOpen] = useState(false);
   // How far apart Lay on truss lays a row. The editor's own, not the
   // store's: it starts at Fill truss each time the editor is opened.
   const [layChoice, setLayChoice] = useState<LayChoice>(DEFAULT_LAY_CHOICE);
@@ -187,6 +189,24 @@ export default function RigBuilder() {
     // waiting to be written would land after it and put one of them back.
     await flushPositions();
     setRoomScanOpen(true);
+  };
+
+  const handleEditRoom = async () => {
+    // Nothing in the room dialog moves a fixture, but it takes the keys and
+    // the plan away: a drag still waiting to be written is written first.
+    await flushPositions();
+    setRoomEditOpen(true);
+  };
+
+  /**
+   * The stored room after one of its items was renamed, moved or deleted, as
+   * the server answered it. Only the room is replaced: no fixture moved, so
+   * the positions on screen and the undo steps that hold them are still true.
+   * The editor's Undo does not take a room edit back.
+   */
+  const handleRoomEdited = (shell: RoomShell) => {
+    const current = rigRef.current;
+    if (current) applyRig({ ...current, room_shell: shell });
   };
 
   const handleFixtureClick = (fixtureId: number, multi: boolean) => {
@@ -497,6 +517,7 @@ export default function RigBuilder() {
         onIdentify={() => { void handleIdentify(); }}
         onRoomScan={() => { void handleRoomScan(); }}
         hasRoom={rig.room_shell?.source === 'scan'}
+        onEditRoom={() => { void handleEditRoom(); }}
         selectedCount={selectedFixtures.length}
         onSelectRow={() => { if (selectedFixtures.length > 0) handleSelectRow(selectedFixtures[0].id); }}
         onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
@@ -544,10 +565,10 @@ export default function RigBuilder() {
             onSelectFixtures={selectFixtures}
             // R, the arrow keys and Escape act on the plan only while it is
             // what is shown, and never under a dialog that is in front of it.
-            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen}
+            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen}
             // The same keys as buttons over the plan, for a phone or a
             // tablet: shown while something is selected, on the same terms.
-            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen}
+            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen}
             onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
             layChoice={layChoice}
             onLayChoiceChange={setLayChoice}
@@ -625,6 +646,17 @@ export default function RigBuilder() {
           setRoomScanOpen(false);
           navigate(`/rigs/${rig.id}/visualizer`);
         }}
+      />
+
+      {/* What the scan found, corrected by hand. Each stored change comes
+          back as the whole room, which the plan then draws and snaps to. */}
+      <RoomShellEditDialog
+        open={roomEditOpen}
+        rigId={rig.id}
+        rigName={rig.name}
+        shell={rig.room_shell}
+        onClose={() => setRoomEditOpen(false)}
+        onChanged={handleRoomEdited}
       />
 
       <Snackbar
