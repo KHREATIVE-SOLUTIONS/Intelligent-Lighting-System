@@ -45,9 +45,7 @@ box and the keyboard** on the 2D plan. Their tests pass too (frontend vitest
 Slice 12 makes the 2D plan **usable from a phone or a tablet at the venue**:
 a long-press is the touch for Shift, the keys are also buttons over the
 plan, and the plan says when the keys are going to a text field (see
-"Under a finger" and "What slice 12 built"). **Its tests are written and
-type-check but have not been run**: the session that wrote them could run
-`tsc` but not vitest or the build. It has not been tried on a phone, a
+"Under a finger" and "What slice 12 built"). Its tests pass (frontend vitest 654, build OK). It has not been tried on a phone, a
 tablet or in any browser (see What is left).
 
 Everything here is free and local. Nothing is uploaded anywhere but this
