@@ -38,6 +38,13 @@ latest one back; GET on the same path says what that would be
 (services/room_scan/edit_undo.py). The record is emptied when a scan is
 applied again and when the room is taken off. All of them are refused while a
 locate walkthrough is running on the rig.
+
+PATCH /api/rigs/{rig_id}/room-shell/outline redraws the room's walls (every
+corner of its floor) and sets its height; PATCH, POST and DELETE under
+.../room-shell/outline/corners move, add and take out one corner; GET
+.../room-shell/outline reads them (services/room_scan/outline_edit.py). They
+go through the same undo and the same refusal. No fixture and nothing in the
+room is moved to suit new walls: each answer lists what they leave outside.
 """
 
 import asyncio
@@ -59,6 +66,9 @@ from app.services.room_scan.edit import (
     KINDS, ShellEditError, add_item, delete_item, edit_item, edit_words, item_name,
 )
 from app.services.room_scan.edit_undo import pop_step, push_step, undo_summary
+from app.services.room_scan.outline_edit import (
+    corner_points, delete_corner, insert_corner, move_corner, outside_report, outside_words, room_corners, set_outline,
+)
 from app.services.room_scan.suggest import TAG_SCAN_HINT
 from app.services.room_scan.undo import plan_undo, record_moves, restore, undo_count, undo_message
 from app.services.venue_import.apply import SOURCE_TEMPLATE, is_unconfirmed, with_position_source
@@ -353,6 +363,171 @@ def _not_during_locate(rig: Rig, then: str) -> None:
         raise HTTPException(status_code=409, detail=LOCATE_RUNNING.format(then=then))
 
 
+# ---------------------------------------------------------------------------
+# The walls: the floor outline and the room's height
+# ---------------------------------------------------------------------------
+
+class OutlineEdit(BaseModel):
+    """The room's walls, its height, or both. Anything left out is kept."""
+    # Every corner of the floor in order, each [x, z] in metres in the rig's
+    # axes (X across, -Z upstage); the last is joined back to the first. Not
+    # held to numbers here, for the reason given on ShellItemEdit: a raw
+    # Infinity must be refused in a sentence by outline_edit.py, not by a
+    # FastAPI refusal that cannot write it back. Not held to a list either:
+    # `"corners": Infinity` would be refused here, and end the same way.
+    corners: Optional[Any] = None
+    # Floor to ceiling, in metres.
+    height: Optional[float] = None
+
+
+class CornerMove(BaseModel):
+    """Where one corner of the walls goes. One of x and z given alone keeps the other."""
+    x: Optional[float] = None
+    z: Optional[float] = None
+
+
+class CornerInsert(BaseModel):
+    """A new corner on the wall that leaves corner `after` (from 0). With no place given, half way along it."""
+    after: int
+    x: Optional[float] = None
+    z: Optional[float] = None
+
+
+def _walls(shell: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The walls of a stored room as an answer carries them: its corners, whether it is a box, its height."""
+    corners, is_box = room_corners(shell)
+    return {
+        "outline": corner_points(corners),
+        "box": is_box,
+        "height": shell["room"].get("height"),
+        "width": shell["room"].get("width"),
+        "depth": shell["room"].get("depth"),
+    }
+
+
+def _walls_changed(rig: Rig, before: Dict[str, Any], shell: Dict[str, Any], done: Optional[str]) -> Dict[str, Any]:
+    """Store a change to the walls with its undo step, and answer with what the walls now leave outside.
+
+    No fixture and no item of the room is moved to suit the new walls: what
+    they leave outside is listed for a person to deal with. A change that
+    changes nothing is not written and leaves no step.
+    """
+    was = outside_report(before, rig.fixtures)
+    if done is not None:
+        # A new object throughout: the column is plain JSON, so a change made in place is never written.
+        rig.room_shell = shell
+        rig.room_shell_undo = push_step(rig.room_shell_undo, before, done)
+        logger.info("Room shell: rig %s '%s': %s", rig.id, rig.name, done)
+    stored = shell if done is not None else before
+    outside = outside_report(stored, rig.fixtures, before=was)
+    return {
+        "rig_id": rig.id,
+        "room_shell": stored,
+        **_walls(stored),
+        "changed": done is not None,
+        "undo": undo_summary(rig.room_shell_undo),
+        "outside": outside,
+        "message": (f"{done}. " if done else "The walls are as they were. ") + outside_words(outside),
+    }
+
+
+@router.get("/rigs/{rig_id}/room-shell/outline")
+async def read_room_outline(rig_id: int, db: AsyncSession = Depends(get_db)):
+    """The stored room's walls as corners, and what they leave outside. Writes nothing.
+
+    A box room answers its four corners, clockwise seen from above from
+    upstage stage right, with `box` true. `outside` lists the raised areas,
+    lines, rings and fixtures beyond a wall or above the ceiling as the room
+    now stands.
+    """
+    rig = await _rig_with_fixtures(db, rig_id)
+    try:
+        walls = _walls(rig.room_shell)
+    except ShellEditError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    return {"rig_id": rig.id, **walls, "outside": outside_report(rig.room_shell, rig.fixtures)}
+
+
+@router.patch("/rigs/{rig_id}/room-shell/outline")
+async def edit_room_outline(rig_id: int, body: OutlineEdit, db: AsyncSession = Depends(get_db)):
+    """Redraw the stored room's walls, set its height, or both.
+
+    `corners` replaces every corner of the floor. The room's box (`width`,
+    `depth`) is worked out again from them, about the origin, which does not
+    move. No fixture, raised area, truss or ring is moved: `outside` lists
+    what the new walls and ceiling leave outside. One undo step
+    (POST .../room-shell/undo). Nothing reaches a device
+    (services/room_scan/outline_edit.py).
+    """
+    rig = await _rig_with_fixtures(db, rig_id)
+    _not_during_locate(rig, "edit the room")
+    before = rig.room_shell
+    try:
+        shell, done = set_outline(before, corners=body.corners, height=body.height)
+    except ShellEditError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    answer = _walls_changed(rig, before, shell, done)
+    await db.flush()
+    return answer
+
+
+@router.post("/rigs/{rig_id}/room-shell/outline/corners", status_code=201)
+async def add_room_outline_corner(rig_id: int, body: CornerInsert, db: AsyncSession = Depends(get_db)):
+    """Add a corner on the wall that leaves corner `after`: half way along it, or at `x`, `z`.
+
+    Half way along, it changes no wall until it is moved. The corners after
+    it move down one place; `index` is where the new one is.
+    """
+    rig = await _rig_with_fixtures(db, rig_id)
+    _not_during_locate(rig, "edit the room")
+    before = rig.room_shell
+    try:
+        shell, done, index = insert_corner(before, body.after, x=body.x, z=body.z)
+    except ShellEditError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    answer = _walls_changed(rig, before, shell, done)
+    await db.flush()
+    return {**answer, "index": index}
+
+
+@router.patch("/rigs/{rig_id}/room-shell/outline/corners/{index}")
+async def move_room_outline_corner(
+    rig_id: int, index: int, body: CornerMove, db: AsyncSession = Depends(get_db),
+):
+    """Move one corner of the stored room's walls. `index` is its place in the outline, from 0.
+
+    A box room's corners are its four, from upstage stage right clockwise
+    seen from above; moving one makes the room an outline. `index` in the
+    answer is where the corner is afterwards, which differs only when the
+    move turned the walls inside out and they were numbered clockwise again.
+    """
+    rig = await _rig_with_fixtures(db, rig_id)
+    _not_during_locate(rig, "edit the room")
+    before = rig.room_shell
+    try:
+        shell, done, at = move_corner(before, index, x=body.x, z=body.z)
+    except ShellEditError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    answer = _walls_changed(rig, before, shell, done)
+    await db.flush()
+    return {**answer, "index": at}
+
+
+@router.delete("/rigs/{rig_id}/room-shell/outline/corners/{index}")
+async def delete_room_outline_corner(rig_id: int, index: int, db: AsyncSession = Depends(get_db)):
+    """Take one corner out of the stored room's walls: its two walls become one. A room keeps at least three."""
+    rig = await _rig_with_fixtures(db, rig_id)
+    _not_during_locate(rig, "edit the room")
+    before = rig.room_shell
+    try:
+        shell, done = delete_corner(before, index)
+    except ShellEditError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    answer = _walls_changed(rig, before, shell, done)
+    await db.flush()
+    return {**answer, "index": index}
+
+
 @router.patch("/rigs/{rig_id}/room-shell/{kind}/{index}")
 async def edit_room_shell_item(
     rig_id: int,
@@ -443,9 +618,10 @@ async def undo_room_shell_edit(rig_id: int, db: AsyncSession = Depends(get_db)):
     is in its old place in its list, a renamed one has its old name, and the
     hanging heights are what they were. No fixture is moved, and the scan's own
     undo record (POST .../room-scan/undo) is left alone. An undo cannot itself
-    be undone.
+    be undone. `outside` lists what the walls, as they are again, leave
+    outside them: an undone change to the walls changes that.
     """
-    rig = await _rig(db, rig_id)
+    rig = await _rig_with_fixtures(db, rig_id)
     _not_during_locate(rig, "undo the room edit")
     record, step = pop_step(rig.room_shell_undo)
     if step is None:
@@ -460,6 +636,7 @@ async def undo_room_shell_edit(rig_id: int, db: AsyncSession = Depends(get_db)):
         "undone": label,
         "room_shell": step["shell"],
         "undo": undo_summary(record),
+        "outside": outside_report(step["shell"], rig.fixtures),
         "message": (f"Undone: {label}. " if label else "The last room edit was undone. ") + "No fixture was moved.",
     }
 
