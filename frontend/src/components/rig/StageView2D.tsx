@@ -19,6 +19,7 @@ import { holdRowShift, onPlanTarget, rowReadoutText, snapReadoutText } from './r
 import type { PlanMove, RowShift } from './rowMove2d';
 import type { LayChoice } from './rowSpace2d';
 import type { SnapLine } from './previs/fixtureDrag';
+import { WALL_LIMITS, wallCorners } from '../../utils/roomWallsEdit';
 
 const FIXTURE_TYPE_COLORS: Record<string, string> = {
   moving_head: '#e91e63',
@@ -44,6 +45,24 @@ const ROOM_RAISED_TEXT = '#d7ccc8';
 const ROOM_TRUSS = '#4db6ac';
 // The selection's own blue, as the ring round a selected fixture.
 const SELECTION_COLOR = '#4fc3f7';
+// The corners of the walls while they can be dragged: amber, unlike anything else on the plan.
+const WALL_HANDLE = '#ffca28';
+
+const roundMm = (value: number) => Math.round(value * 1000) / 1000 + 0;
+
+/** One press on a corner of the walls, until it is let go. */
+interface CornerSession {
+  /** The corner's place in the outline, from 0: what the server knows it by. */
+  index: number;
+  /** Where the pointer went down, on the screen: the press is a drag once it is 5 pixels from here. */
+  down: ScreenPoint;
+  /** The corner's position less the pointer's, so the corner does not jump to the pointer. */
+  offset: { x: number; z: number };
+  /** Where the drag has the corner now. */
+  at: PlanPoint;
+  /** True once the pointer has gone past the drag threshold. */
+  moved: boolean;
+}
 
 interface StageView2DProps {
   width: number;
@@ -123,6 +142,22 @@ interface StageView2DProps {
   onSpaceEvenly?: () => void;
   /** `y` is given only when the drop landed on a scanned truss line or ring. */
   onDropFromPalette?: (fixtureId: number, x: number, z: number, y?: number) => void;
+  /**
+   * Edit Room's walls mode: each corner of the scanned room's walls gets a
+   * numbered handle that can be dragged, and fixtures take no press, so a
+   * corner under a fixture's icon can still be reached and no light is moved
+   * by mistake. Off unless asked for.
+   */
+  wallsEdit?: boolean;
+  /**
+   * A corner of the walls let go somewhere new: called once for a drag, when
+   * it ends, and never for a press that stayed within 5 pixels. `index` is
+   * the corner's place in the outline, from 0 (a box room's four are numbered
+   * from upstage stage right, clockwise seen from above). The plan shows the
+   * corner where it was dropped until what this returns has settled, then
+   * draws the room it is given: a move that was refused goes back.
+   */
+  onWallCornerMove?: (index: number, x: number, z: number) => void | Promise<unknown>;
 }
 
 /** A finger or pen that is down on the plan, until it is lifted. */
@@ -213,7 +248,12 @@ export default function StageView2D({
   onMirror,
   onSpaceEvenly,
   onDropFromPalette,
+  wallsEdit = false,
+  onWallCornerMove,
 }: StageView2DProps) {
+  // A press on a corner of the walls, and where its drag has the corner.
+  const cornerRef = useRef<CornerSession | null>(null);
+  const [cornerPreview, setCornerPreview] = useState<{ index: number; x: number; z: number } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   // The plan's own box: what a press on the plan gives the focus to, so the
   // keys come back from a text field or a drop-down.
@@ -265,6 +305,29 @@ export default function StageView2D({
   // The truss lines and rings a scan found, which a drag snaps onto. None for
   // a rig with no scanned room.
   const scannedTruss = useMemo(() => planTrussTargets(roomShell), [roomShell]);
+
+  // The corners that can be dragged: the walls' own, numbered as the server
+  // numbers them. None unless walls mode is on and the room's walls are drawn.
+  const wallHandles = useMemo(
+    () => (wallsEdit && !readonly && walls ? wallCorners(roomShell)?.corners ?? null : null),
+    [wallsEdit, readonly, walls, roomShell],
+  );
+  // The walls as drawn: with a corner being dragged, or dropped and not yet
+  // answered for, where the drag has it.
+  const wallPoints = useMemo(() => {
+    if (!walls) return null;
+    if (!cornerPreview || !wallHandles || cornerPreview.index >= wallHandles.length) return wallHandles ?? walls.points;
+    return wallHandles.map((corner, index) => (
+      index === cornerPreview.index ? { x: cornerPreview.x, z: cornerPreview.z } : corner
+    ));
+  }, [walls, wallHandles, cornerPreview]);
+
+  // Walls mode turned off under a press: the press is over, and nothing is sent.
+  useEffect(() => {
+    if (wallsEdit) return;
+    cornerRef.current = null;
+    setCornerPreview(null);
+  }, [wallsEdit]);
 
   const acceptsDrop = !readonly && !!onDropFromPalette;
 
@@ -445,9 +508,31 @@ export default function StageView2D({
   };
 
   const handleMouseDown = (e: React.MouseEvent, fixtureId: number) => {
-    if (readonly) return;
+    // In walls mode a fixture takes no press: the walls are what is being moved.
+    if (readonly || wallsEdit) return;
     e.stopPropagation();
     pressFixture(e, fixtureId, e.shiftKey || e.ctrlKey || e.metaKey, false);
+  };
+
+  /** A press on a corner of the walls: a drag once it has gone 5 pixels, and nothing at all before. */
+  const pressCorner = (at: ScreenPoint, index: number) => {
+    const corner = wallHandles?.[index];
+    if (!corner) return;
+    skipBackgroundClick.current = false;
+    const raw = pointerToStage(at.clientX, at.clientY);
+    cornerRef.current = {
+      index,
+      down: { clientX: at.clientX, clientY: at.clientY },
+      offset: { x: corner.x - raw.x, z: corner.z - raw.z },
+      at: { x: corner.x, z: corner.z },
+      moved: false,
+    };
+  };
+
+  const handleCornerMouseDown = (e: React.MouseEvent, index: number) => {
+    if (readonly || e.button !== 0) return;
+    e.stopPropagation();
+    pressCorner(e, index);
   };
 
   /** A press on empty floor, by a mouse (`additive`: Shift, Ctrl or Cmd held) or a finger. */
@@ -469,7 +554,8 @@ export default function StageView2D({
   // field, which is what hands the keyboard back to the plan.
   const handleBackgroundMouseDown = (e: React.MouseEvent) => {
     skipBackgroundClick.current = false;
-    if (readonly || !onSelectFixtures || e.button !== 0) return;
+    // No selection box in walls mode: nothing is selected or carried there.
+    if (readonly || wallsEdit || !onSelectFixtures || e.button !== 0) return;
     pressFloor(e, e.shiftKey || e.ctrlKey || e.metaKey);
   };
 
@@ -496,6 +582,21 @@ export default function StageView2D({
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
+    const cornering = cornerRef.current;
+    if (cornering && !readonly) {
+      // A click, or the wobble of one, moves no wall: nothing is sent and no undo step is left.
+      if (!cornering.moved && !pastDragThreshold(cornering.down, e)) return;
+      cornering.moved = true;
+      const raw = pointerToStage(e.clientX, e.clientY);
+      let at = { x: raw.x + cornering.offset.x, z: raw.z + cornering.offset.z };
+      // Onto the grid, as a fixture goes, unless the snap is off or Alt is held.
+      if (snapMode !== 'none' && !e.altKey) at = snapToRoomGrid(at.x, at.z, gridSize);
+      const held = (value: number) => roundMm(Math.min(Math.max(value, -WALL_LIMITS.reach), WALL_LIMITS.reach));
+      cornering.at = { x: held(at.x), z: held(at.z) };
+      setCornerPreview({ index: cornering.index, ...cornering.at });
+      return;
+    }
+
     const boxing = boxRef.current;
     if (boxing && !readonly) {
       if (!boxing.started && !pastDragThreshold(boxing.down, e)) return;
@@ -569,6 +670,19 @@ export default function StageView2D({
   };
 
   const endDrag = (released: boolean) => {
+    const cornering = cornerRef.current;
+    if (cornering) {
+      // Let go, or carried off the plan: either way the corner is where the drag had it.
+      cornerRef.current = null;
+      if (!cornering.moved) return;
+      // The click that follows the release is the end of this drag.
+      skipBackgroundClick.current = true;
+      // One call for the whole drag: one request, and one step of the room's undo.
+      const sent = onWallCornerMove?.(cornering.index, cornering.at.x, cornering.at.z);
+      // Shown where it was dropped until the answer is in; then the room given is drawn.
+      void Promise.resolve(sent).catch(() => undefined).then(() => setCornerPreview(null));
+      return;
+    }
     // Let go, or carried off the plan: either way the box takes what it holds.
     endBox(false);
     const drag = dragRef.current;
@@ -660,8 +774,16 @@ export default function StageView2D({
     return true;
   };
 
-  const handleFixturePointerDown = (e: React.PointerEvent, fixtureId: number) => {
+  /** A finger on a corner of the walls: the same drag as a mouse's. */
+  const handleCornerPointerDown = (e: React.PointerEvent, index: number) => {
     if (!isTouchPointer(e.pointerType) || readonly) return;
+    e.stopPropagation();
+    if (!beginTouch(e)) return;
+    pressCorner(e, index);
+  };
+
+  const handleFixturePointerDown = (e: React.PointerEvent, fixtureId: number) => {
+    if (!isTouchPointer(e.pointerType) || readonly || wallsEdit) return;
     e.stopPropagation();
     if (!beginTouch(e)) return;
     pressFixture(e, fixtureId, false, true);
@@ -672,8 +794,8 @@ export default function StageView2D({
     if (!beginTouch(e)) return;
     skipBackgroundClick.current = false;
     // Where no selection can be set there is no box, as for a mouse: the tap
-    // is the click that follows it.
-    if (!onSelectFixtures) return;
+    // is the click that follows it. Nor is there one in walls mode.
+    if (!onSelectFixtures || wallsEdit) return;
     pressFloor(e, false);
     startLongPress();
   };
@@ -945,7 +1067,7 @@ export default function StageView2D({
         {plan?.walls && (
           <polygon
             data-testid="room-plan-floor"
-            points={planPolygonPoints(plan.walls.points, toSvgX, toSvgY)}
+            points={planPolygonPoints(wallPoints ?? plan.walls.points, toSvgX, toSvgY)}
             fill={ROOM_FLOOR}
           />
         )}
@@ -1009,7 +1131,7 @@ export default function StageView2D({
               <polygon
                 data-testid="room-plan-walls"
                 data-outlined={plan.walls.outlined ? 'true' : 'false'}
-                points={planPolygonPoints(plan.walls.points, toSvgX, toSvgY)}
+                points={planPolygonPoints(wallPoints ?? plan.walls.points, toSvgX, toSvgY)}
                 fill="none"
                 stroke={ROOM_WALL}
                 strokeWidth={0.1}
@@ -1178,8 +1300,8 @@ export default function StageView2D({
                 e.stopPropagation();
                 skipBackgroundClick.current = false;
               }}
-              onDoubleClick={onFixtureSelectRow && !readonly ? () => onFixtureSelectRow(f.id) : undefined}
-              style={{ cursor: readonly ? 'default' : 'grab' }}
+              onDoubleClick={onFixtureSelectRow && !readonly && !wallsEdit ? () => onFixtureSelectRow(f.id) : undefined}
+              style={{ cursor: readonly || wallsEdit ? 'default' : 'grab', opacity: wallsEdit ? 0.45 : undefined }}
             >
               {/* Selection ring */}
               {isSelected && (
@@ -1217,6 +1339,45 @@ export default function StageView2D({
             </g>
           );
         })}
+
+        {/* Walls mode: a numbered handle on each corner of the walls, over
+            the fixtures, so a corner under an icon can still be picked up. */}
+        {wallHandles && wallPoints && (
+          <g data-testid="wall-corners">
+            {wallPoints.map((corner, index) => {
+              const held = cornerPreview?.index === index;
+              return (
+                <g
+                  key={`wall-corner-${index}`}
+                  data-testid={`wall-corner-${index}`}
+                  transform={`translate(${toSvgX(corner.x)}, ${toSvgY(corner.z)})`}
+                  onMouseDown={(e) => handleCornerMouseDown(e, index)}
+                  onPointerDown={(e) => handleCornerPointerDown(e, index)}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ cursor: 'move' }}
+                >
+                  <title>{`Corner ${index + 1} of the walls: drag it to move it`}</title>
+                  <circle r={0.24} fill={WALL_HANDLE} fillOpacity={held ? 1 : 0.85} stroke="#1a1a2e" strokeWidth={0.05} />
+                  <text y={0.08} textAnchor="middle" fill="#1a1a2e" fontSize={0.24} fontWeight={700} style={{ pointerEvents: 'none' }}>
+                    {index + 1}
+                  </text>
+                  {held && (
+                    <text
+                      data-testid="wall-corner-readout"
+                      y={-0.42}
+                      textAnchor="middle"
+                      fill={WALL_HANDLE}
+                      fontSize={0.24}
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      {`${corner.x.toFixed(2)}, ${corner.z.toFixed(2)}`}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </g>
+        )}
 
         {/* The selection box being dragged over empty floor: every fixture
             whose centre is inside it is selected when it is let go. */}

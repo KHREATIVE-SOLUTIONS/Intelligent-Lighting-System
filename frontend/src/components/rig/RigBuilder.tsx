@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Box, Typography, Paper, Snackbar, Alert } from '@mui/material';
-import { rigsApi, fixturesApi } from '../../services/api';
+import { Box, Button, Typography, Paper, Snackbar, Alert } from '@mui/material';
+import axios from 'axios';
+import { rigsApi, fixturesApi, roomScanApi } from '../../services/api';
 import { useRigEditorStore, computeTrussLines } from '../../stores/rigEditorStore';
 import type { FixturePositionSnapshot } from '../../stores/rigEditorStore';
 import RigEditorToolbar from './RigEditorToolbar';
@@ -23,6 +24,8 @@ import IdentifyWalkthrough from './IdentifyWalkthrough';
 import RoomScanDialog from './RoomScanDialog';
 import { undoCount } from '../../utils/roomScan';
 import RoomShellEditDialog from './RoomShellEditDialog';
+import { shellEditErrorText, shellUndoCount, undoButtonText } from '../../utils/roomShellEdit';
+import { outsideLines, outsideOf } from '../../utils/roomWallsEdit';
 import type { Rig, RigFixture, Fixture, PatchConflict, RoomShell, RoomShellEdits } from '../../types';
 
 /** Long enough that a drag is one request, short enough to feel immediate. */
@@ -45,6 +48,16 @@ export default function RigBuilder() {
   const [identifyOpen, setIdentifyOpen] = useState(false);
   const [roomScanOpen, setRoomScanOpen] = useState(false);
   const [roomEditOpen, setRoomEditOpen] = useState(false);
+  // Edit Room's walls mode: the dialog is put away and the corners of the
+  // room's walls are dragged on the plan, where fixtures then take no press.
+  const [wallsMode, setWallsMode] = useState(false);
+  // What the last drag of a corner did, or why it was refused, with what the
+  // walls now leave outside them, one line each.
+  const [wallsNote, setWallsNote] = useState<
+    { severity: 'success' | 'warning' | 'error'; text: string; outside: string[] } | null
+  >(null);
+  // A change to the walls is out: one at a time, each built on the last one stored.
+  const [wallsBusy, setWallsBusy] = useState(false);
   // How far apart Lay on truss lays a row. The editor's own, not the
   // store's: it starts at Fill truss each time the editor is opened.
   const [layChoice, setLayChoice] = useState<LayChoice>(DEFAULT_LAY_CHOICE);
@@ -209,6 +222,70 @@ export default function RigBuilder() {
   const handleRoomEdited = (shell: RoomShell, edits?: RoomShellEdits) => {
     const current = rigRef.current;
     if (current) applyRig({ ...current, room_shell: shell, room_shell_edits: edits ?? current.room_shell_edits });
+  };
+
+  /**
+   * Edit Room's "Drag corners on the plan": the dialog is in front of the
+   * plan, so it is closed, and the plan puts a handle on each corner. The
+   * selection is let go: nothing is selected or carried in walls mode.
+   */
+  const handleDragWalls = () => {
+    setRoomEditOpen(false);
+    deselectAll();
+    setWallsNote(null);
+    setWallsMode(true);
+  };
+
+  const wallsError = (err: unknown) => setWallsNote({
+    severity: 'error',
+    text: axios.isAxiosError(err)
+      ? shellEditErrorText(err.response?.status, err.response?.data?.detail)
+      : shellEditErrorText(undefined, undefined),
+    outside: [],
+  });
+
+  /**
+   * A corner of the walls dropped somewhere new on the plan: one request and
+   * one step of the room's own undo for the whole drag. The server decides
+   * whether the walls still make a room; a move it refuses is not kept, and
+   * its words are shown. No fixture is moved: what the walls now leave
+   * outside is listed in the strip over the plan.
+   */
+  const handleWallCornerMove = async (index: number, x: number, z: number) => {
+    const current = rigRef.current;
+    if (!current || wallsBusy) return;
+    setWallsBusy(true);
+    try {
+      const result = await roomScanApi.moveOutlineCorner(current.id, index, { x, z });
+      handleRoomEdited(result.room_shell, result.undo);
+      const outside = outsideOf(result.outside);
+      setWallsNote({
+        severity: outside.count > 0 ? 'warning' : 'success', text: result.message, outside: outsideLines(outside),
+      });
+    } catch (err) {
+      wallsError(err);
+    } finally {
+      setWallsBusy(false);
+    }
+  };
+
+  /** The room's own Undo, from the strip over the plan: the latest change to the room, walls or not. */
+  const handleWallsUndo = async () => {
+    const current = rigRef.current;
+    if (!current || wallsBusy) return;
+    setWallsBusy(true);
+    try {
+      const result = await roomScanApi.undoShellEdit(current.id);
+      handleRoomEdited(result.room_shell, result.undo);
+      const outside = outsideOf(result.outside);
+      setWallsNote({
+        severity: outside.count > 0 ? 'warning' : 'success', text: result.message, outside: outsideLines(outside),
+      });
+    } catch (err) {
+      wallsError(err);
+    } finally {
+      setWallsBusy(false);
+    }
   };
 
   const handleFixtureClick = (fixtureId: number, multi: boolean) => {
@@ -498,6 +575,9 @@ export default function RigBuilder() {
   // "Lay on truss" is offered only where a scan found truss, and names the
   // truss it would use: the one nearest the middle of what is selected.
   const scannedTruss = planTrussTargets(rig.room_shell);
+  // Walls mode is only ever on over a scanned room: a room taken off, or
+  // another dialog in front of the plan, is not something to drag walls under.
+  const wallsOn = wallsMode && rig.room_shell?.source === 'scan' && !identifyOpen && !roomScanOpen && !roomEditOpen;
   const layTarget = nearestTruss(
     scannedTruss, selectedFixtures.map((f) => ({ x: f.position_x, z: f.position_z })),
   );
@@ -549,6 +629,46 @@ export default function RigBuilder() {
 
         {/* Center: Stage View */}
         <Box sx={{ flexGrow: 1, p: 2, display: 'flex', flexDirection: 'column' }}>
+          {/* Walls mode: what it is, what the last drag did, and the ways out of it. */}
+          {wallsOn && (
+            <Alert
+              severity={wallsNote?.severity ?? 'info'}
+              data-testid="walls-mode"
+              sx={{ mb: 1, flexShrink: 0 }}
+              action={
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                  <Button
+                    color="inherit"
+                    size="small"
+                    disabled={wallsBusy || shellUndoCount(rig.room_shell_edits) === 0}
+                    onClick={() => { void handleWallsUndo(); }}
+                    data-testid="walls-mode-undo"
+                  >
+                    {undoButtonText(rig.room_shell_edits)}
+                  </Button>
+                  <Button
+                    color="inherit"
+                    size="small"
+                    disabled={wallsBusy}
+                    onClick={() => { setWallsMode(false); void handleEditRoom(); }}
+                  >
+                    Back to Edit Room
+                  </Button>
+                  <Button color="inherit" size="small" disabled={wallsBusy} onClick={() => setWallsMode(false)}>
+                    Done with walls
+                  </Button>
+                </Box>
+              }
+            >
+              {wallsNote?.text
+                ?? 'Dragging the walls: drag a numbered corner to move it. It goes to the grid unless the snap is off or Alt is held. No fixture is moved, and fixtures cannot be picked up until you are done.'}
+              {wallsNote && wallsNote.outside.length > 0 && (
+                <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }} data-testid="walls-mode-outside">
+                  {wallsNote.outside.map((line) => <li key={line}>{line}</li>)}
+                </Box>
+              )}
+            </Alert>
+          )}
           <StageView2D
             width={rig.stage_width}
             depth={rig.stage_depth}
@@ -567,10 +687,15 @@ export default function RigBuilder() {
             onSelectFixtures={selectFixtures}
             // R, the arrow keys and Escape act on the plan only while it is
             // what is shown, and never under a dialog that is in front of it.
-            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen}
+            // Nor in walls mode, where nothing is selected or nudged.
+            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn}
             // The same keys as buttons over the plan, for a phone or a
             // tablet: shown while something is selected, on the same terms.
-            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen}
+            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn}
+            // Edit Room's walls mode: the corners of the walls are dragged,
+            // each drag one request and one step of the room's own undo.
+            wallsEdit={wallsOn}
+            onWallCornerMove={handleWallCornerMove}
             onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
             layChoice={layChoice}
             onLayChoiceChange={setLayChoice}
@@ -661,6 +786,7 @@ export default function RigBuilder() {
         undo={rig.room_shell_edits}
         onClose={() => setRoomEditOpen(false)}
         onChanged={handleRoomEdited}
+        onDragWalls={handleDragWalls}
       />
 
       <Snackbar
