@@ -614,7 +614,7 @@ are no binary fixtures in the repository.
   height) and under the fixtures; the same markup and view box as before for
   no shell, a null shell and a shell that is not a scan; a drag still read in
   stage metres with the view grown.
-- The same file, added with the drag work (**written, not run**): a fixture
+- The same file, added with the drag work (**passing, Nov 22**): a fixture
   beyond the deck not brought onto it when picked up, in each snap mode; a
   drag held at a box room's wall and to an L-shaped outline; a palette drop
   landing out in the room, on a wall, and out of a notch, and its landing
@@ -622,7 +622,7 @@ are no binary fixtures in the repository.
   held to the deck on its grid; the plan's own labels against the deck and
   against the room; a level label on a truss straight across, a turned one on
   an angled line, and one of two overlapping labels nudged.
-- `frontend/src/__tests__/roomPlan2dLayout.test.ts` (**written, not run**):
+- `frontend/src/__tests__/roomPlan2dLayout.test.ts` (**passing, Nov 22**):
   the same with no drawing. A position held to the deck, to a box room and to
   an L-shaped outline (inside, in the notch, beyond the box, beyond a
   corner); the grid past the deck; what the plan's labels are set against
@@ -640,14 +640,14 @@ are no binary fixtures in the repository.
   one piece; a scanned L; a box room and an outline that is not one moving a
   row exactly as before; a spot on a stored ring that reaches into a notch.
 - `frontend/src/__tests__/roomPlan2dLayout.test.ts`, added with slice 8
-  (**written, not run**): which shapes of a scan are snap targets; snapping to
+  (**passing, Nov 22**): which shapes of a scan are snap targets; snapping to
   a line, its end, an angled line and a ring, the reach, the nearer of two,
   and no height window; the grid in a box room, past a deck, over a deck that
   reaches beyond the room, and cut to an L; where a palette click goes with
   no room (as before), in a box room, and in a room whose notch takes in
   centre stage.
 - `frontend/src/__tests__/StageView2D.test.tsx`, added with slice 8
-  (**written, not run**): a drag snapping onto a truss line, an angled line
+  (**passing, Nov 22**): a drag snapping onto a truss line, an angled line
   and a ring; Alt and the snap mode None letting go; the grid beyond a
   truss's reach; a snapped position still held to the walls; a palette drop
   not snapping; no snap with no scanned room; the grid drawn wall to wall,
@@ -655,7 +655,7 @@ are no binary fixtures in the repository.
 
 ## What is left
 
-- **Frontend checks ran on 2026-11-22, 7:18 PM ET, after the 2D view's room hold and label layout:** vitest 384 passed (22 files) and the build passed. Backend was last run with the outline work (1608 passed, 10 skipped, 5 xfailed); the 2D slices are frontend-only.
+- **Checks ran on 2026-11-22, 7:44 PM ET, after slice 8 (outline-held guesses, 2D truss snap, room grid, palette click):** frontend vitest 424 passed (22 files) and the build passed; backend pytest tests/ 1632 passed, 10 skipped, 5 xfailed, including tests/integration/test_api_room_scan.py.
 - **The 2D drag, drop and label work has not had its tests run.** It was
   written on 2026-11-22 after the run above, in a session that could start
   `tsc` but not vitest. `npx tsc --noEmit -p .` gives the same 13 errors with
@@ -664,14 +664,6 @@ are no binary fixtures in the repository.
   from `frontend`, then the whole suite and the build. The palette-drop tests
   set the pointer position on the event by hand; if they fail and the rest
   pass, suspect the test's event before the view.
-- **Slice 8's frontend tests have not been run either.** Written on
-  2026-11-22 in a session that could start `tsc` but not vitest;
-  `npx tsc --noEmit -p .` gives the same 13 errors with them as without, none
-  in the files touched. Their expected numbers were worked out by hand. Run
-  `npx vitest run src/__tests__/roomPlan2dLayout.test.ts src/__tests__/StageView2D.test.tsx`
-  from `frontend`, then the whole suite and the build. The backend's API
-  tests (`backend/tests/integration/test_api_room_scan.py`) were not run with
-  the outline hold either; only the unit files were.
 - **The 2D room layer has not been seen in a browser**: label sizes and
   nudges in a crowded room, a turned label, the tooltips, where UPSTAGE,
   AUDIENCE and the scale bar land round a real room, a drag and a palette
