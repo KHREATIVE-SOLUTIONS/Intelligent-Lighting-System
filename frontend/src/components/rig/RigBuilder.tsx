@@ -475,15 +475,19 @@ export default function RigBuilder() {
             onFixturesDrag={handleFixturesDrag}
             onFixtureDragEnd={handleFixtureDragEnd}
             onFixtureSelectRow={handleSelectRow}
+            onSelectFixtures={selectFixtures}
+            // R, the arrow keys and Escape act on the plan only while it is
+            // what is shown, and never under a dialog that is in front of it.
+            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen}
             onDropFromPalette={addFixtureAt}
           />
 
           {/* Bottom: Properties Panel */}
           {selectedFixtures.length > 1 && (
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, flexShrink: 0 }}>
-              {`${selectedFixtures.length} fixtures selected. Drag any one of them to move them together${
+              {`${selectedFixtures.length} fixtures selected. Drag any one of them, or press an arrow key, to move them together${
                 scannedTruss.length > 0 ? ', or use Lay on truss to space them along the nearest scanned truss' : ''
-              }.`}
+              }. Escape clears the selection.`}
             </Typography>
           )}
           {selectedFixture && (
