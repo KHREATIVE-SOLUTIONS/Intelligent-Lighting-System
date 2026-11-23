@@ -21,8 +21,17 @@ import {
   MeetingRoom as RoomScanIcon,
 } from '@mui/icons-material';
 import type { SnapMode } from '../../stores/rigEditorStore';
+import { DEFAULT_LAY_CHOICE, LAY_MODES, LAY_MODE_LABELS, parseSpacing } from './rowSpace2d';
+import type { LayChoice, LayMode } from './rowSpace2d';
 
 export type PositionSaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
+
+/** How each spacing lays a row, for the Lay on truss tooltip. */
+const LAY_HOW: Record<LayMode, string> = {
+  fill: 'evenly spaced over its whole length',
+  keep: 'at the spacing they have now, centred on it',
+  set: 'at the spacing typed, centred on it',
+};
 
 interface RigEditorToolbarProps {
   rigName: string;
@@ -49,6 +58,17 @@ interface RigEditorToolbarProps {
   onLayRow?: () => void;
   /** The truss the selection would be laid along, for the tooltip. The button needs one. */
   layTargetName?: string | null;
+  /**
+   * How far apart Lay on truss lays a row: the whole truss shared out, the
+   * row's own spacing, or one typed in metres. The choice is left out when
+   * `onLayChoiceChange` is.
+   */
+  layChoice?: LayChoice;
+  onLayChoiceChange?: (choice: LayChoice) => void;
+  /** Mirrors the selected fixtures left to right. The button is left out when this is. */
+  onMirror?: () => void;
+  /** Spaces the selected fixtures evenly between their ends. The button is left out when this is. */
+  onSpaceEvenly?: () => void;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -82,6 +102,10 @@ export default function RigEditorToolbar({
   selectedCount = 0,
   onLayRow,
   layTargetName = null,
+  layChoice = DEFAULT_LAY_CHOICE,
+  onLayChoiceChange,
+  onMirror,
+  onSpaceEvenly,
   onUndo,
   onRedo,
   canUndo,
@@ -163,13 +187,78 @@ export default function RigEditorToolbar({
         <Tooltip
           title={
             selectedCount > 1 && layTargetName
-              ? `Lay the ${selectedCount} selected fixtures along ${layTargetName}, the scanned truss nearest their middle: evenly spaced in address order, at its hang height. One Undo puts them back`
+              ? `Lay the ${selectedCount} selected fixtures along ${layTargetName}, the scanned truss nearest their middle: ${LAY_HOW[layChoice.mode]}, in address order, at its hang height. One Undo puts them back`
               : 'Select two or more fixtures (Select row, or Shift-click), then this spaces them evenly along the nearest scanned truss'
           }
         >
           <span>
             <Button size="small" onClick={onLayRow} disabled={selectedCount < 2 || !layTargetName}>
               Lay on truss
+            </Button>
+          </span>
+        </Tooltip>
+      )}
+
+      {onLayRow && onLayChoiceChange && (
+        <>
+          <Select
+            native
+            size="small"
+            variant="standard"
+            value={layChoice.mode}
+            onChange={(e) => onLayChoiceChange({ ...layChoice, mode: e.target.value as LayMode })}
+            inputProps={{
+              'aria-label': 'Lay on truss spacing',
+              title: 'Fill truss shares the whole truss out. Keep spacing and Set spacing centre the row on the middle of the truss, and move nothing if it does not fit',
+            }}
+            sx={{ fontSize: '0.8125rem' }}
+          >
+            {LAY_MODES.map((mode) => (
+              <option key={mode} value={mode}>{LAY_MODE_LABELS[mode]}</option>
+            ))}
+          </Select>
+          {layChoice.mode === 'set' && (
+            <TextField
+              size="small"
+              variant="standard"
+              value={layChoice.metres}
+              onChange={(e) => onLayChoiceChange({ ...layChoice, metres: e.target.value })}
+              error={parseSpacing(layChoice.metres) === null}
+              inputProps={{ 'aria-label': 'Spacing in metres', inputMode: 'decimal', style: { textAlign: 'right' } }}
+              InputProps={{ endAdornment: <Typography variant="caption" sx={{ ml: 0.5 }}>m</Typography> }}
+              sx={{ width: 64 }}
+            />
+          )}
+        </>
+      )}
+
+      {onMirror && (
+        <Tooltip
+          title={
+            selectedCount > 0
+              ? `Mirror the selected ${selectedCount === 1 ? 'fixture' : 'fixtures'} left to right about the centre line${hasRoom ? ' of the scanned room' : ''} (M on the keyboard does the same). Heights are kept, and a place that would be outside the room is held at its wall. One Undo puts them back`
+              : 'Select one or more fixtures, then this (or M on the keyboard) mirrors them left to right about the centre line'
+          }
+        >
+          <span>
+            <Button size="small" onClick={onMirror} disabled={selectedCount === 0}>
+              Mirror
+            </Button>
+          </span>
+        </Tooltip>
+      )}
+
+      {onSpaceEvenly && (
+        <Tooltip
+          title={
+            selectedCount > 2
+              ? `Space the ${selectedCount} selected fixtures evenly: the first and the last by DMX address stay where they are, and the rest go at equal steps on the straight line between them, in address order. Heights are kept. One Undo puts them back`
+              : 'Select three or more fixtures, then this spaces them evenly between the first and the last by DMX address'
+          }
+        >
+          <span>
+            <Button size="small" onClick={onSpaceEvenly} disabled={selectedCount < 3}>
+              Space evenly
             </Button>
           </span>
         </Tooltip>

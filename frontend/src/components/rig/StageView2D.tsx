@@ -17,6 +17,7 @@ import { KEYS_HINT_TEXT, LONG_PRESS_MS, isTouchPointer, keysHintDue, padShift, p
 import type { PadDirection } from './planTouch2d';
 import { holdRowShift, onPlanTarget, rowReadoutText, snapReadoutText } from './rowMove2d';
 import type { PlanMove, RowShift } from './rowMove2d';
+import type { LayChoice } from './rowSpace2d';
 import type { SnapLine } from './previs/fixtureDrag';
 
 const FIXTURE_TYPE_COLORS: Record<string, string> = {
@@ -83,8 +84,9 @@ interface StageView2DProps {
   onSelectFixtures?: (ids: number[]) => void;
   /**
    * Whether the plan answers the keyboard: R selects the row of the selected
-   * fixture, the arrow keys nudge the selection by the grid step (Shift: ten
-   * steps) and Escape clears it. Off unless asked for, so a plan shown
+   * fixture, M mirrors the selection (where `onMirror` is given), the arrow
+   * keys nudge the selection by the grid step (Shift: ten steps) and Escape
+   * clears it. Off unless asked for, so a plan shown
    * somewhere it is not being edited never takes a key. A nudge is reported
    * as a drag is: `onFixtureDragStart`, one `onFixturesDrag`, `onFixtureDragEnd`.
    */
@@ -101,6 +103,24 @@ interface StageView2DProps {
    * on truss button, which is left out when this is.
    */
   onLayRow?: () => void;
+  /**
+   * How far apart Lay on truss lays a row, shown in the nudge pad next to
+   * its button and changed there. The choice is left out when
+   * `onLayChoiceChange` is.
+   */
+  layChoice?: LayChoice;
+  onLayChoiceChange?: (choice: LayChoice) => void;
+  /**
+   * Mirrors the selection left to right about the centre line: the M key
+   * (with `keyboard` on) and the nudge pad's Mirror button, which is left
+   * out when this is. The plan only asks; the editor makes the move.
+   */
+  onMirror?: () => void;
+  /**
+   * Spaces the selection evenly between its two ends: the nudge pad's Even
+   * button, which is left out when this is and needs three selected.
+   */
+  onSpaceEvenly?: () => void;
   /** `y` is given only when the drop landed on a scanned truss line or ring. */
   onDropFromPalette?: (fixtureId: number, x: number, z: number, y?: number) => void;
 }
@@ -188,6 +208,10 @@ export default function StageView2D({
   keyboard = false,
   nudgePad = false,
   onLayRow,
+  layChoice,
+  onLayChoiceChange,
+  onMirror,
+  onSpaceEvenly,
   onDropFromPalette,
 }: StageView2DProps) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -737,6 +761,15 @@ export default function StageView2D({
       return;
     }
 
+    if (e.key === 'm' || e.key === 'M') {
+      // One press, one mirror: a key held down would mirror it back and
+      // forth, an undo step and a save each time.
+      if (!onMirror || e.repeat || !fixtures.some((f) => selectedIds.has(f.id))) return;
+      e.preventDefault();
+      onMirror();
+      return;
+    }
+
     const shift = nudgeShift(e.key, gridSize, e.shiftKey);
     // With nothing selected an arrow key is left to scroll the page.
     if (!shift || selectedIds.size === 0) return;
@@ -792,6 +825,8 @@ export default function StageView2D({
     const first = fixtures.find((f) => selectedIds.has(f.id));
     if (first && padFree()) onFixtureSelectRow?.(first.id);
   };
+  const handlePadMirror = () => { if (padFree()) onMirror?.(); };
+  const handlePadSpaceEvenly = () => { if (padFree()) onSpaceEvenly?.(); };
   const selectedCount = fixtures.filter((f) => selectedIds.has(f.id)).length;
   const showPad = nudgePad && !readonly && selectedCount > 0;
 
@@ -1303,6 +1338,11 @@ export default function StageView2D({
           onSelectRow={onFixtureSelectRow ? handlePadSelectRow : undefined}
           onLayRow={onLayRow}
           layRowDisabled={selectedCount < 2}
+          layChoice={layChoice}
+          onLayChoiceChange={onLayChoiceChange}
+          onMirror={onMirror ? handlePadMirror : undefined}
+          onSpaceEvenly={onSpaceEvenly ? handlePadSpaceEvenly : undefined}
+          spaceEvenlyDisabled={selectedCount < 3}
         />
       )}
     </Box>

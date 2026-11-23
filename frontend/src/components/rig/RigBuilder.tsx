@@ -10,10 +10,13 @@ import FixturePalette from './FixturePalette';
 import StageView2D from './StageView2D';
 import { paletteClickSpot, planTrussTargets, roomPlan } from './roomPlan2d';
 import {
-  heightIdsOf, heightsBefore, layNoticeText, layRowOnTruss, nearestTruss, rowOf, snapshotPositions, withMoves,
-  withSnapshot,
+  heightIdsOf, heightsBefore, nearestTruss, rowOf, snapshotPositions, withMoves, withSnapshot,
 } from './rowMove2d';
 import type { PlanMove } from './rowMove2d';
+import {
+  DEFAULT_LAY_CHOICE, evenMoves, evenNoticeText, layRowSpaced, mirrorMoves, mirrorNoticeText, spacedLayNoticeText,
+} from './rowSpace2d';
+import type { LayChoice } from './rowSpace2d';
 import PatchTable from './PatchTable';
 import FixtureProperties from './FixtureProperties';
 import IdentifyWalkthrough from './IdentifyWalkthrough';
@@ -40,6 +43,9 @@ export default function RigBuilder() {
   const [notice, setNotice] = useState<{ severity: 'error' | 'success'; text: string } | null>(null);
   const [identifyOpen, setIdentifyOpen] = useState(false);
   const [roomScanOpen, setRoomScanOpen] = useState(false);
+  // How far apart Lay on truss lays a row. The editor's own, not the
+  // store's: it starts at Fill truss each time the editor is opened.
+  const [layChoice, setLayChoice] = useState<LayChoice>(DEFAULT_LAY_CHOICE);
 
   const {
     viewMode, snapMode, gridSize, selectedFixtureIds,
@@ -233,6 +239,26 @@ export default function RigBuilder() {
   };
 
   /**
+   * Makes a set of moves that a button asked for, all at once: one undo
+   * step, one batch-update sent straight away, the heights the moves change
+   * kept in the step, and no tag touched. Returns how many fixtures moved;
+   * with none, nothing is saved and no step is left.
+   */
+  const commitMoves = (moves: PlanMove[]): number => {
+    const current = rigRef.current;
+    if (!current) return 0;
+    const next = withMoves(current.fixtures, moves);
+    if (next.changed.length === 0) return 0;
+
+    pushUndo(snapshotPositions(current.fixtures));
+    noteUndoHeights(heightsBefore(current.fixtures, moves));
+    applyRig({ ...current, fixtures: next.fixtures });
+    next.changed.forEach((fixtureId) => dirtyIdsRef.current.add(fixtureId));
+    void flushPositions();
+    return next.changed.length;
+  };
+
+  /**
    * Lays the selected fixtures evenly along the scanned truss nearest them
    * (`layRowOnTruss`, docs/ROOM_SCAN.md). Saved as a row move is: one undo
    * step, one batch-update, heights kept in the step where they change, and
@@ -241,24 +267,60 @@ export default function RigBuilder() {
   const handleLayRow = () => {
     const current = rigRef.current;
     if (!current) return;
-    const lay = layRowOnTruss(
+    // Filled, at the row's own spacing or at a typed one: the choice next
+    // to the button. Filled is `layRowOnTruss` itself.
+    const lay = layRowSpaced(
       current.fixtures, selectedFixtureIds, current.room_shell,
       // The walls the plan draws and holds a drag to.
       roomPlan(current.room_shell)?.walls ?? null, current.stage_width, current.stage_depth,
+      layChoice,
     );
     if (!lay.ok) {
-      setNotice({ severity: 'error', text: layNoticeText(lay) });
+      setNotice({ severity: 'error', text: spacedLayNoticeText(lay) });
       return;
     }
-    const next = withMoves(current.fixtures, lay.moves);
-    setNotice({ severity: 'success', text: layNoticeText(lay, next.changed.length) });
-    if (next.changed.length === 0) return;
+    setNotice({ severity: 'success', text: spacedLayNoticeText(lay, commitMoves(lay.moves)) });
+  };
 
-    pushUndo(snapshotPositions(current.fixtures));
-    noteUndoHeights(heightsBefore(current.fixtures, lay.moves));
-    applyRig({ ...current, fixtures: next.fixtures });
-    next.changed.forEach((fixtureId) => dirtyIdsRef.current.add(fixtureId));
-    void flushPositions();
+  /**
+   * Mirrors the selected fixtures left to right about the centre line: the
+   * stage's, or the scanned room's when one is drawn (`mirrorMoves`). One
+   * undo step and one batch-update; heights and tags are not touched.
+   * Nothing on a fixture says which way its pan runs but a tag and an older
+   * flag that names no axis, neither of which a batch-update writes or an
+   * undo step keeps, so those are left as they are.
+   */
+  const handleMirror = () => {
+    const current = rigRef.current;
+    if (!current) return;
+    const walls = roomPlan(current.room_shell)?.walls ?? null;
+    const mirrored = mirrorMoves(
+      current.fixtures, selectedFixtureIds, walls, current.stage_width, current.stage_depth,
+    );
+    const changed = commitMoves(mirrored.moves);
+    setNotice({
+      severity: mirrored.moves.length > 0 ? 'success' : 'error',
+      text: mirrorNoticeText(mirrored, changed, !!walls),
+    });
+  };
+
+  /**
+   * Spaces the selected fixtures evenly between the first and the last of
+   * them by DMX address, which stay where they are (`evenMoves`). One undo
+   * step and one batch-update; heights and tags are not touched.
+   */
+  const handleSpaceEvenly = () => {
+    const current = rigRef.current;
+    if (!current) return;
+    const even = evenMoves(
+      current.fixtures, selectedFixtureIds,
+      roomPlan(current.room_shell)?.walls ?? null, current.stage_width, current.stage_depth,
+    );
+    if (!even.ok) {
+      setNotice({ severity: 'error', text: evenNoticeText(even) });
+      return;
+    }
+    setNotice({ severity: 'success', text: evenNoticeText(even, commitMoves(even.moves)) });
   };
 
   const handleFixtureDragEnd = () => {
@@ -439,6 +501,10 @@ export default function RigBuilder() {
         onSelectRow={() => { if (selectedFixtures.length > 0) handleSelectRow(selectedFixtures[0].id); }}
         onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
         layTargetName={layTarget?.name ?? null}
+        layChoice={layChoice}
+        onLayChoiceChange={setLayChoice}
+        onMirror={handleMirror}
+        onSpaceEvenly={handleSpaceEvenly}
         onUndo={handleUndo}
         onRedo={handleRedo}
         canUndo={undoStack.length > 0}
@@ -483,6 +549,11 @@ export default function RigBuilder() {
             // tablet: shown while something is selected, on the same terms.
             nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen}
             onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
+            layChoice={layChoice}
+            onLayChoiceChange={setLayChoice}
+            // M, and the pad's Mirror and Even buttons: the plan only asks.
+            onMirror={handleMirror}
+            onSpaceEvenly={handleSpaceEvenly}
             onDropFromPalette={addFixtureAt}
           />
 
@@ -491,6 +562,8 @@ export default function RigBuilder() {
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, flexShrink: 0 }}>
               {`${selectedFixtures.length} fixtures selected. Drag any one of them, or press an arrow key, to move them together${
                 scannedTruss.length > 0 ? ', or use Lay on truss to space them along the nearest scanned truss' : ''
+              }. M mirrors them left to right${
+                selectedFixtures.length > 2 ? ', and Space evenly spaces them between the first and the last by address' : ''
               }. Escape clears the selection. On a touch screen, use the arrows on the plan, and press and hold a fixture to add it or take it out.`}
             </Typography>
           )}
