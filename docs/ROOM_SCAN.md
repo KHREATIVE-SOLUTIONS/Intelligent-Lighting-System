@@ -174,32 +174,78 @@ still waiting to be saved, and the 2D plan's keys and nudge pad are off while
 it is open.
 
 - **One row for each raised area, overhead line and ring** of the stored
-  room, in that order, with its name, where its middle is and what the scan
-  found (size, height, which way a line runs). **Across** is metres from the
-  centre line (stage left is positive); **Depth** is metres from the middle of
-  the floor (downstage is positive, upstage negative). A comma is taken for a
-  decimal point.
+  room, in that order, with its name, where its middle is, its size, its
+  height and what is stored (size, height, which way a line runs). **Across**
+  is metres from the centre line (stage left is positive); **Depth** is
+  metres from the middle of the floor (downstage is positive, upstage
+  negative). A comma is taken for a decimal point.
+- **Size and height** (slice 15). A raised area has **Width** (across the
+  room) and **Front to back**, a line has **Length** and **Heading**, a ring
+  has **Radius**, and every row has **Height**: a raised area's deck above
+  the floor, and the underside of a line or ring, which is where fixtures
+  hang from. A heading is degrees clockwise from across the room seen from
+  above: 0 runs across, 90 from upstage to downstage, and a line has no
+  front, so 135 is stored as -45. A size changes about the middle; a line is
+  made longer along the way it runs and turned about its middle.
+- **Turn**, on a raised area's row, swaps its width and its front-to-back: a
+  quarter turn. A raised area stands square to the room in both views, so it
+  has no other heading. The turn is typed into the row, and is saved like
+  any other change.
+- **The limits.** A raised area's sides are at least 0.3 m and its deck 0.05
+  to 3 m, with its top under the ceiling. A line is at least 0.5 m long and
+  a ring 0.3 m in radius; either hangs between 0.5 m and the ceiling. The
+  row says so when a field is under its limit or not a number. Whether a
+  size fits the room is the server's to say, and its words are shown ("...
+  the room and the 2 m round it have room for 16 m").
 - **Save** sends that row's changes and only what differs from what is
-  stored, so a rename is never also a move. It is off until something is
-  changed, and while a field cannot be saved (an emptied name, one over 60
-  characters, a position that is not a number), with the reason in the row.
+  stored, so a rename is never also a move, nor a move a resize. It is off
+  until something is changed, and while a field cannot be saved (an emptied
+  name, one over 60 characters, a position or size that is not a number, a
+  size under its limit), with the reason in the row.
 - **A move keeps the shape.** A line keeps its length and heading. The middle
   is held to the room's box and 2 m round it; when it was held short, the
   message says where it was put. A moved item is marked **Moved by hand**.
+- **A resize keeps the whole item in the room.** The whole of a resized or
+  turned item, not only its middle, is kept inside the room's box and the
+  2 m round it: its middle is brought in until it is, and the message says
+  where to. One too big to fit at all is refused. It is marked **Resized by
+  hand**.
+- **Add what the scan missed**, under the rows: choose a stage, a riser, a
+  booth or counter, a truss line or a truss ring, give it a name (left
+  empty, it is called what it is), where its middle goes, its size and its
+  height, and press **Add to the room**. Each kind starts at a usual size in
+  the middle of the floor. It goes at the end of its list, is drawn and
+  snapped to like anything the scan found, and is marked **Added by hand**:
+  it is stored as a person's, not as a suggestion. A room the scan found
+  nothing in can be added to as well.
 - **Delete asks first** ("Keep it" / "Delete it"), in the row. Fixtures hung
   on a deleted truss stay where they are, and nothing snaps to it or is laid
   along it afterwards.
-- **One change at a time.** Each stored change comes back as the whole room,
-  which the plan draws and snaps to at once; the rig is not loaded again. A
-  save keeps what is typed in the other rows; a delete clears all of it,
-  because the rows after the deleted one have each moved up a place.
+- **Undo**, bottom left, takes back the latest change to the room: a rename,
+  a move, a resize, an added item or a delete. One press, one change, latest
+  first, up to the last 20. The button says what it will take back ("Undo:
+  Stage resized (2 more)"). The steps are kept on the server beside the
+  room, so they are still there after the page is loaded again or the
+  dialog is closed. They are **gone once the scan is read again** (the room
+  they belong to has been replaced) and when the room is removed. An undo
+  cannot itself be undone.
+- **One change at a time.** Each stored change, and each one undone, comes
+  back as the whole room, which the plan draws and snaps to at once; the rig
+  is not loaded again. A save or an added item keeps what is typed in the
+  other rows; a delete or an undo clears all of it, because rows may have
+  changed places.
 - **An item the views cannot draw is still listed** ("Not drawn: ...") and can
-  be renamed or deleted. One with no position stored has its Across and Depth
-  fields off.
-- **No fixture moves, no tag changes and nothing is sent to a light.** The
-  editor's Undo does not take a room edit back, and "Undo room scan moves" is
-  unaffected. The only way back is to read the scan again, which **replaces
-  every edit made here**.
+  be renamed or deleted. One with no position stored has its Across, Depth
+  and size fields off; its height can still be set.
+- **Not while a locate walkthrough is running.** Every change here, Undo
+  included, is refused until Identify Lights is finished or ended on the
+  rig, and the dialog shows the reason.
+- **No fixture moves, no tag changes and nothing is sent to a light.** No
+  fixture's patch is touched. A fixture hung on a truss that is raised,
+  lowered, turned or moved stays where it is. The editor's own Undo does not
+  take a room edit back (the room has its own, above), and "Undo room scan
+  moves" is unaffected. Reading the scan again **replaces every edit made
+  here**.
 
 ## The API
 
@@ -250,15 +296,16 @@ Refusals, each with a `detail` that says what to do:
 
 ### `DELETE /api/rigs/{rig_id}/room-shell`
 
-Takes the stored room off the rig. Fixtures are left where they are unless
+Takes the stored room off the rig, and with it the record of edits to it
+that could be undone. Fixtures are left where they are unless
 `restore_fixtures=true`, which also puts back the ones the scan moved. Answers
 `rig_id`, `removed`, `undo_available` and, when asked to restore,
 `fixtures_restored`, `fixtures_skipped`, `skipped_fixtures` and a `message`.
 
 ### `PATCH /api/rigs/{rig_id}/room-shell/{kind}/{index}`
 
-Renames or moves one raised area, overhead line or ring of the stored room
-(`services/room_scan/edit.py`). `kind` is the list it is stored in: `risers`,
+Renames, moves, resizes, raises or turns one raised area, overhead line or
+ring of the stored room (`services/room_scan/edit.py`). `kind` is the list it is stored in: `risers`,
 `truss_lines` or `truss_rings`. `index` is its place in that list, from 0. The
 lists carry no ids, and the views leave out items they cannot draw, so this is
 the place in the stored list and not the place on the plan.
@@ -270,6 +317,11 @@ JSON body, every field optional; anything left out (or `null`) is kept:
 | `name` | the new name. Runs of spaces and line breaks become one space and the ends are trimmed; what is left must be 1 to 60 characters |
 | `center_x` | where the middle goes across the room, in metres (the rig's axes) |
 | `center_z` | where the middle goes in depth, in metres, -Z upstage |
+| `width`, `depth` | `risers` only: its size along X and along Z, each from 0.3 m |
+| `length` | `truss_lines` only: end to end, from 0.5 m |
+| `heading_deg` | `truss_lines` only: degrees clockwise from across the room seen from above, -360 to 360. Stored over -90 and up to 90, to a tenth: a line has no front |
+| `radius` | `truss_rings` only: to the middle of the truss, from 0.3 m |
+| `height` | a raised area's deck above its base, 0.05 to 3 m with its top under the ceiling; the underside of a line or ring, 0.5 m to the ceiling (`room.height`; 30 m where the room has none) |
 
 - The middle is a raised area's or a ring's own centre, and for a line half
   way between its two ends. One of `center_x` and `center_z` given alone keeps
@@ -277,13 +329,92 @@ JSON body, every field optional; anything left out (or `null`) is kept:
 - A position beyond the room is **held, not refused**: to the room's box
   (`room.width`, `room.depth`; not the floor outline) and 2 m round it. A room
   with no size holds nothing. The result is stored to the millimetre.
-- A line keeps its length and heading: both ends take the same shift.
+- A moved line keeps its length and heading: both ends take the same shift.
 - An item that actually shifts gets `suggested: false` and "Moved by hand."
   added to its `basis`, once however often it is moved. A rename, and a move
   to where it already is, change neither.
+- **A size changes about the middle.** A line is made longer or shorter
+  along the way its two ends run (not along its heading rounded to a tenth),
+  and turned about its middle; its ends are written as a scan writes them,
+  from stage right to stage left, or from upstage to downstage, and its
+  `length`, `heading_deg` and `axis` (`x` within 2 degrees of across, `z`
+  within 2 of upstage to downstage, else `angled`) are written again.
+- **With a size or a heading, the whole item is held**, not only its middle:
+  it may reach no further than the room's box and the 2 m round it. A size
+  that cannot fit there wherever its middle is put is refused (422); else
+  the middle is brought in until the rest fits, which counts as a move. A
+  plain move still holds only the middle, so an item can be moved until half
+  of it is past the margin. A room with no size allows up to 100 m.
+- **A height moves a truss's `top` with it** (it stays as deep as it was),
+  and the truss or ring is counted again in `hanging_bands`: taken out of
+  the band it was in (a band left empty is dropped) and counted in the band
+  whose range takes in the new height, or in a new band of its own
+  (`suggested: false`, `basis` "by hand: ...") where none does. A raised
+  area's height leaves the bands alone, as a size and a move do.
+- An item whose size, height or heading actually changes gets `suggested:
+  false` and "Resized by hand." added to its `basis`, once. A value it
+  already has changes nothing.
+- A size field that is not this list's (`radius` on a raised area) is
+  refused, not ignored. A raised area has no heading: it stands square to
+  the room, and a quarter turn is its `width` and `depth` swapped.
 
-Answers `rig_id`, `kind`, `index`, `item` (the item as stored) and
-`room_shell` (the whole stored room after the change).
+Answers `rig_id`, `kind`, `index`, `item` (the item as stored), `room_shell`
+(the whole stored room after the change), `changed` (false when what was
+sent is what was stored: nothing is written and no step is left to undo) and
+`undo` (`available`, `label`: see the undo route).
+
+### `POST /api/rigs/{rig_id}/room-shell/{kind}`
+
+Adds a raised area, overhead line or ring by hand (slice 15). `kind` is the
+list it goes in. Answers 201.
+
+| Field | Meaning |
+| --- | --- |
+| `center_x`, `center_z` | where its middle goes. Needed |
+| `width`, `depth`, `height` | `risers`: all three needed |
+| `riser_kind` | `risers` only: `stage`, `riser` or `booth`. A riser when left out |
+| `length`, `height` | `truss_lines`: both needed |
+| `heading_deg` | `truss_lines` only: across the room (0) when left out |
+| `radius`, `height` | `truss_rings`: both needed |
+| `name` | as for `PATCH`. Left out, it is called what it is: "Stage", "Riser", "Booth or counter", "Overhead line 3", "Overhead ring 1" |
+
+- The limits are those of `PATCH`, and the whole item is held inside the
+  room's box and the 2 m round it in the same way.
+- It goes **at the end of its list**, so no other item changes place. A
+  shell stored before rings were read gets its `truss_rings` list. A list
+  holds at most 50.
+- It is stored with `added_by_hand: true`, `suggested: false` and `basis`
+  "Added by hand.": a person's, not the scan's. A raised area stands on the
+  floor (`base_height` 0). A truss or ring is taken to be 0.3 m deep and
+  0.3 m across (`top`, `across`), and is counted in `hanging_bands` as a
+  raised one is.
+
+Answers `rig_id`, `kind`, `index` (its place: the last), `item`,
+`room_shell`, `undo` and a `message`.
+
+### `GET` and `POST /api/rigs/{rig_id}/room-shell/undo`
+
+`POST` takes back the latest edit made by the three routes above and the
+`DELETE` below: one edit for each call, latest first (slice 15). The whole
+room goes back to what it was before that edit, so a deleted item is in its
+old place in its list and the hanging bands are what they were. No body.
+Answers `rig_id`, `undone` (what was taken back: "Stage renamed"),
+`room_shell`, `undo` and a `message`. An undo cannot itself be undone.
+
+`GET` writes nothing and answers `rig_id`, `available` (how many edits can
+be undone) and `label` (what the next undo takes back, or null). The rig
+itself carries the same two as read-only `room_shell_edits`, which is how
+the dialog knows what its Undo button does when the page is loaded again.
+
+The record is `rigs.room_shell_undo` (JSON, migration
+`008_rig_room_shell_undo`; additive and nullable): `steps`, oldest first,
+each with a `label`, an `at` and the whole `shell` as it stood before that
+edit. Whole rooms are kept, not the edits run backwards: a room is a few
+kilobytes, and a delete moves places and can drop a band. Only the last 20
+steps are kept. The rooms are not sent with the rig. The record is
+**emptied when a scan is applied** (a preview leaves it) **and when the room
+is taken off**; an edit that is refused, or that changes nothing, leaves no
+step.
 
 ### `DELETE /api/rigs/{rig_id}/room-shell/{kind}/{index}`
 
@@ -291,30 +422,47 @@ Takes one item out, addressed the same way. No body. The items after it in
 its list **move up one place**. A deleted line or ring is also taken out of
 the `hanging_bands` entry that counted it: a band left with nothing in it is
 dropped, and with no line or ring left in the room there are no bands at all.
-Deleting a raised area leaves the bands alone. There is no undo: reading the
-scan again brings the item back, and replaces every other edit with it.
+Deleting a raised area leaves the bands alone. The undo route brings the item
+back to the place it had; reading the scan again brings it back too, and
+replaces every other edit with it.
 
 Answers `rig_id`, `kind`, `index`, `removed` (the item taken out),
-`room_shell` and a `message` ("... was taken out of the stored room. No
-fixture was moved.").
+`room_shell`, `undo` and a `message` ("... was taken out of the stored room.
+No fixture was moved.").
 
-For both routes: no fixture is moved or retagged (one hung on a moved or
-deleted truss stays where it is), the scan's undo record (`room_scan_undo`) is
-left alone, and nothing reaches a device. Neither checks for a running locate
-walkthrough, since neither touches a fixture.
+For all of these routes: no fixture is moved or retagged (one hung on a
+moved, raised or deleted truss stays where it is), no fixture's patch is
+touched, the scan's undo record (`room_scan_undo`) is left alone, and
+nothing reaches a device.
 
-Refusals. Nothing is written by a refused request:
+**All of them but the `GET` answer 409 while a locate walkthrough is running
+on the rig** (slice 15), with the `detail` the scan routes give ("A locate
+walkthrough is running on this rig. Finish or end it, then edit the room.").
+No fixture moves with a room edit, but the walkthrough places fixtures
+against the room as it stands. Unlike the scan routes, which refuse only a
+request that would move a fixture, these refuse every one. A walkthrough on
+another rig holds nothing here.
+
+Refusals. Nothing is written by a refused request, and no undo step is left:
 
 | Status | When |
 | --- | --- |
-| 404 | no such rig ("Rig not found"); `kind` is not one of the three lists (`room`, `hanging_bands` and the rest cannot be edited; the `detail` names the three); the rig has no room stored, or its shell is not from a scan (`source` is not `"scan"`, as a demo preset's); or there is no item at `index` (negative, past the end, or not an object). That `detail` says how many the list has and to load the rig again, since the room may have been changed elsewhere. Checked in that order |
-| 409 | `PATCH` only: a centre was given for an item with no usable position stored (a line missing an end, a centre that is not a number). It can still be renamed or deleted |
-| 422, `detail` a sentence | `PATCH` only: a name with nothing in it; a name over 60 characters once trimmed; or a body with no `name`, `center_x` or `center_z` ("Nothing to change: give a name, a centre, or both.") |
-| 422, `detail` FastAPI's list of errors | `index` is not a whole number; and for `PATCH`: no body, a `name` over 200 characters as sent, or a centre that is not a finite number |
+| 404 | no such rig ("Rig not found"); `kind` is not one of the three lists (`room`, `hanging_bands` and the rest cannot be edited; the `detail` names the three); the rig has no room stored, or its shell is not from a scan (`source` is not `"scan"`, as a demo preset's); or, for `PATCH` and `DELETE`, there is no item at `index` (negative, past the end, or not an object). That `detail` says how many the list has and to load the rig again, since the room may have been changed elsewhere. Checked in that order |
+| 409 | a locate walkthrough is running on the rig. `PATCH` only: a centre, a size or a heading was given for an item with no usable position stored (a line missing an end, a centre that is not a number); it can still be renamed, raised or deleted. `POST` to a list: it already holds 50. `POST .../undo`: there is no edit left to undo |
+| 422, `detail` a sentence | a name with nothing in it, or over 60 characters once trimmed; a number that is not finite; a size, height or heading outside its limits ("The width of a raised area must be between 0.3 m and 100 m; 0.1 m is not."); a size too big for the room ("... the room and the 2 m round it have room for 16 m."); a size field that is not this list's ("A raised area has no radius to set. It takes: width, depth, height."); a heading for a line with both ends at one point and no length given. `PATCH` only: a body with nothing in it ("Nothing to change: give a name, a centre, a size, a height or a heading."). `POST` only: no centre, a size or height the kind needs left out, a `riser_kind` that is not one of the three, or one given for a line or ring |
+| 422, `detail` FastAPI's list of errors | `index` is not a whole number; no body; a `name` over 200 characters as sent; a field that is not a number at all (`"wide"`) |
+
+A number that is not finite is refused by `edit.py`, in a sentence, and not
+by FastAPI's own check: JSON has no infinity, but a client can send
+`Infinity` all the same, and FastAPI's refusal then cannot write the value
+back and the request ends as a 500. (Before slice 15 a centre sent that way
+did.)
 
 The order they are checked in: FastAPI's own 422s first, before the rig is
 looked up (so a bad `index` on a rig that does not exist is 422, not 404);
-then the 404s; then "Nothing to change" and the name; then the 409.
+then "Rig not found"; then the locate walkthrough's 409 (so an edit that
+would have been a 404 or a 422 for another reason is a 409 while one runs);
+then the other 404s; then the fields; then the other 409s.
 
 ### `POST /api/rigs/{rig_id}/room-scan/undo`
 
@@ -370,6 +518,15 @@ the last joined back to the first; the walls are the segments between them, and
 outline. `heading_deg` is degrees clockwise from across the room (0 across, 90
 upstage to downstage). A ring's `radius` is to the middle of the truss and its
 `height` is its underside, as a line's is.
+
+Edit Room writes into the same shape. An item a person has moved or resized
+has `suggested: false` and says so at the end of its `basis` ("Moved by
+hand.", "Resized by hand."). One a person added has `added_by_hand: true`,
+`suggested: false` and `basis` "Added by hand."; nothing the scan found
+carries `added_by_hand`. A hanging band started by a truss or ring set to a
+height where nothing hung has `suggested: false` and a `basis` beginning "by
+hand:". After any edit every line and ring is counted in one band, and no
+band is empty.
 
 A shell stored before slice 4 has no `outline`, `truss_rings`, `heading_deg` or
 `rings`, and needs no migration: every reader goes by a line's two ends, and
@@ -763,6 +920,54 @@ A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
 
+## What slice 15 built
+
+Edit Room, taken from rename, move and delete to correcting anything a scan
+suggested without scanning again.
+
+- **Size, height and heading** (`backend/app/services/room_scan/edit.py`):
+  `edit_item` takes `width` and `depth` for a raised area, `length` and
+  `heading_deg` for a line, `radius` for a ring and `height` for any of
+  them, each with a least and a most, refused when not a finite number or
+  out of range. `_fit` keeps the whole of a resized, turned or added item
+  inside the room's box and the existing 2 m margin, and refuses one too big
+  to be. `clean_heading`, `line_heading` and `height_limits` are there for
+  callers and tests.
+- **Hanging bands kept true** (`_uncount`, `_count`): a truss or ring that is
+  raised, lowered or added leaves the band it was in and is counted in the
+  one its new height is in, or starts one. Bands never hold an empty band
+  or a count that is not the room's.
+- **Add** (`add_item`): a stage, riser, booth, truss line or ring by hand,
+  at the end of its list, marked `added_by_hand`.
+- **Undo** (`backend/app/services/room_scan/edit_undo.py`, new;
+  `rigs.room_shell_undo`, migration `008_rig_room_shell_undo`): the whole
+  room as it stood before each edit, the last 20, one step taken back for
+  each call. The rig carries the count and the latest step's words as
+  read-only `room_shell_edits` (`models/rig.py`, `schemas/rig.py`). Emptied
+  when a scan is applied and when the room is taken off.
+- **The routes** (`room_scan.py`): the wider `PATCH`, `POST
+  .../room-shell/{kind}`, `GET` and `POST .../room-shell/undo` (declared
+  before the route that takes a list's name, or "undo" would be read as
+  one). All of them and the existing `PATCH` and `DELETE` answer 409 while a
+  locate walkthrough is running on the rig. See The API.
+- **A 500 closed on the way.** A raw `Infinity` in the body of the existing
+  `PATCH` made FastAPI's own refusal fail to answer. The numbers are now
+  refused by `edit.py`, in a sentence.
+- **The helpers** (`utils/roomShellEdit.ts`): each listed item's `sizes` and
+  `marks`; `lineHeading`; the wider `draftOf` and `readDraft`, with
+  `sizeProblem` and the least sizes (`SHELL_LIMITS`); `quarterTurned`; the
+  Add form (`newItemDraft`, `readNewItem`, `NEW_ITEM_CHOICES`); the Undo
+  button's words (`undoButtonText`, `shellUndoCount`). `roomShellListPath`
+  and `roomShellUndoPath` in `utils/roomScan.ts`; `addShellItem` and
+  `undoShellEdit` on `roomScanApi`.
+- **The dialog and its wiring** (`RoomShellEditDialog.tsx`,
+  `RigBuilder.tsx`): the size, height and heading fields, Turn, the Add
+  form, the chips for who set what, and Undo. The editor hands the dialog
+  the rig's `room_shell_edits` and puts each answered room and count back on
+  the rig, with no fixture, save or editor undo step touched.
+- **Nothing here sends Art-Net or DMX, moves a fixture or touches a patch,**
+  and there is no new network call beyond the app's own API.
+
 ## What Edit Room built
 
 - **The edit** (`backend/app/services/room_scan/edit.py`, new): `edit_item`,
@@ -1121,7 +1326,60 @@ are no binary fixtures in the repository.
   deleted truss gone from the plan and from Lay on truss, and a fixture move
   and its undo step left as they were.
 
+- **Slice 15** (written with it, Nov 23 2026. **Backend: run and passing**,
+  full suite 1794 passed, 10 skipped, 5 xfailed. **Frontend: type-checked
+  only** — `tsc --noEmit` shows the same 13 errors in untouched files as
+  before and none new, but `npx vitest run` and `npm run build` were refused
+  by the session's permissions, so the three new test files and the changes
+  to the three Edit Room ones **have not been run**):
+  `backend/tests/unit/test_room_scan_adjust.py`: a width, depth, length,
+  radius, height and heading each changing that and nothing else, the shell
+  given left unchanged, a value it already has changing nothing; a line made
+  longer along its own ends and turned about its middle, the heading as it
+  is stored for each way of writing it; the whole of a resized, turned or
+  added item held inside the room and one too big refused, with a plain move
+  still holding only the middle; each limit, a value that is not a number, a
+  size the item does not have, an item with no position; a truss's top going
+  with its height; the bands after a truss is raised within its band, into
+  another, to where nothing hangs, and out of a band it was alone in, with
+  the counts adding up each time, and a row no longer hung at the height a
+  ring left; each kind added, its default name, its marks, a legacy shell
+  with no rings, the 50 limit and each refusal; the words for a step; the
+  undo record pushed, popped, capped at 20, left unchanged, and read from a
+  record that cannot be.
+  `backend/tests/integration/test_api_room_shell_adjust.py`: the same
+  through the routes, read back from the rig and from the database row, with
+  fixtures and the scan's undo record untouched; each refusal writing
+  nothing and leaving no step, a raw `Infinity` among them; five different
+  edits undone one at a time back to the scanned room; the 20 step limit;
+  the steps cleared by a scan applied again (and not by a preview) and by
+  the room taken off; every edit, add and undo refused with 409 under a
+  running locate walkthrough, before any other reason but an unknown rig or
+  an unreadable body, with another rig and a finished walkthrough holding
+  nothing; the new routes behind the login.
+  `backend/tests/integration/test_zones_and_layout.py`: migration 008 adding
+  the column and inventing no step.
+  `frontend/src/__tests__/roomShellAdjust.test.ts`,
+  `RoomShellAdjustDialog.test.tsx` and `RigBuilderRoomAdjust.test.tsx` (**not
+  run**): the sizes a row holds and sends, `lineHeading`, the marks, each
+  problem, a quarter turn, the wording of a resize, the Add form's defaults,
+  bodies and problems, the Undo button's words; the dialog's size fields,
+  Turn, Add (the kind's own fields, the row it makes, a refusal), Undo (one
+  press one step, typed rows cleared, a refusal under a walkthrough); and in
+  the editor, the undo count the rig came with, a raised stage and an added
+  truss on the plan with no reload, the room's Undo leaving a fixture move
+  and the editor's own undo step alone, and the count kept when the dialog
+  is closed and opened again.
+
 ## What is left
+
+- **Slice 15's frontend tests and the build have not been run.** Run `npx
+  vitest run` and `npm run build` in `frontend/` before relying on them. The
+  dialog tests were written against the patterns of the Edit Room tests that
+  pass, but a wrong label or a wrong expected sentence in them would only
+  show when they run. Nothing of slice 15 has been seen in a browser either:
+  the dialog is now wide (seven columns and a form), and how it sits on a
+  small screen is unknown.
 
 - **Checks ran on 2026-11-22, 7:44 PM ET, after slice 8 (outline-held guesses, 2D truss snap, room grid, palette click):** frontend vitest 424 passed (22 files) and the build passed; backend pytest tests/ 1632 passed, 10 skipped, 5 xfailed, including tests/integration/test_api_room_scan.py.
 - **Slices 9 to 12 have had their tests run, and they pass**: frontend
@@ -1297,12 +1555,37 @@ are no binary fixtures in the repository.
 - **Ceilings and levels.** Sloped or domed ceilings, balconies and mezzanines
   are still read as a flat ceiling over one floor.
 - **Editing the room goes only so far.** A raised area, line or ring can be
-  renamed, moved or deleted (Edit Room). It cannot be resized, raised or
-  lowered, turned, or changed from a riser to a stage; nothing can be added;
-  and the walls, the outline and the room's size cannot be edited. Positions
-  are typed, not dragged. A move is held to the room's box and 2 m round it,
-  not to the floor outline. There is no undo, and reading the scan again
-  replaces every edit. Fixtures do not follow a moved truss.
+  renamed, moved, resized, raised or lowered and deleted, a line can be
+  turned, and any of them can be added (Edit Room, slice 15). What is left:
+  - **A raised area cannot stand at an angle.** It has a quarter turn (its
+    sides swapped) and no other heading: the 2D plan, the 3D view, the drag's
+    snap to its edges and a scan's suggestion all take its sides as square
+    to the room. A real heading means drawing and snapping to a turned box
+    in each of them.
+  - **A raised area cannot be changed from a riser to a stage** once it is
+    there, short of deleting it and adding it again. Only the first `stage`
+    in the list is what a scan's suggestion puts floor lights along.
+  - **A ring cannot be made an arc**, and a raised area always stands on the
+    floor: `base_height` cannot be set.
+  - **The walls, the outline and the room's size cannot be edited.**
+  - **Sizes and positions are typed, not dragged.**
+  - **Everything is held to the room's box and 2 m round it, not to the
+    floor outline**, so in an L-shaped room an item can be put in the notch.
+  - **A plain move holds the middle only; a resize holds the whole item.**
+    So an item can be moved until half of it is past the margin, and the
+    next change to its size brings it back in.
+  - **A band's height is not recalculated** when the lowest truss in it is
+    raised to another band: it still starts where the scan found it, though
+    what is left in it hangs a little higher (within the band's own
+    thickness). A new band started by hand is as deep as the truss.
+  - **Undo goes back, not forward**: there is no redo, an undo cannot be
+    undone, only the last 20 edits are kept, and reading the scan again or
+    removing the room clears them all. It is the room's own undo, in the
+    dialog: the editor's Undo button and Ctrl-Z do not reach it.
+  - **Every room edit is refused while a locate walkthrough runs**, even a
+    rename. That is stricter than the scan routes, on purpose.
+  - **Fixtures do not follow** a truss that is moved, raised or turned.
+    Select the row and use Lay on truss afterwards.
 - **Crowd and booth in a scanned room** are left out rather than fitted round
   what the scan found.
 - **Photos to a room** (photogrammetry inside this system) is out of scope: the
