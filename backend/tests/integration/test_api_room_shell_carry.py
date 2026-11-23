@@ -214,9 +214,14 @@ class TestALineCarriesItsFixtures:
         renamed = await client.patch(f"{path}/truss_lines/0", json={"name": "Front truss"})
         assert renamed.status_code == 200 and renamed.json()["fixtures_moved"] == []
         assert renamed.json()["undo"]["label"] == f"{line['name']} renamed"
-        riser = await client.patch(f"{path}/risers/0", json={"center_x": 0.5, "height": 1.2})
+        # Since slice 18 a raised area takes what stands on it (test_api_room_shell_raised.py); told not to, it goes alone.
+        riser = await client.patch(f"{path}/risers/0", json={"center_x": 0.5, "height": 1.2, "carry_fixtures": False})
         assert riser.status_code == 200 and riser.json()["fixtures_moved"] == []
-        assert riser.json()["message"] == "No fixture was moved."
+        assert riser.json()["message"] == (
+            f"The fixtures standing on {scanned['risers'][0]['name']} were left where they are, as asked."
+        )
+        kind = await client.patch(f"{path}/risers/0", json={"riser_kind": "booth"})
+        assert kind.status_code == 200 and kind.json()["fixtures_moved"] == []
         same = await client.patch(f"{path}/truss_lines/0", json={"height": line["height"]})
         assert same.status_code == 200 and same.json()["changed"] is False and same.json()["fixtures_moved"] == []
         # The flag alone is not a change.

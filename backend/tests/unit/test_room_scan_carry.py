@@ -186,7 +186,9 @@ class TestWhereTheyGo:
         lights = [light(1, 0.0, 4.0, -1.0), light(2, 0.0, 0.6, -1.0)]
         assert carried(shell, "truss_lines", 0, lights, name="Front truss")[2] == []
         assert carried(shell, "truss_lines", 0, lights, height=4.0, center_x=0.0)[2] == []
-        assert carried(shell, "risers", 0, lights, center_x=2.0, height=1.0)[2] == []
+        # Since slice 18 a raised area takes what stands on it (test_room_scan_raised.py), never what hangs over it.
+        assert to_of(carried(shell, "risers", 0, lights, center_x=2.0, height=1.0)[2]) == {2: (2.0, 1.0, -1.0)}
+        assert carried(shell, "risers", 0, lights, name="Main stage")[2] == []
 
     def test_only_a_position_and_a_heading_are_written(self):
         shell = room()
@@ -271,7 +273,9 @@ class TestWords:
         assert carried_words("truss_lines", truss, 0, False) == (
             "The fixtures hung on Truss 1 were left where they are, as asked."
         )
-        assert carried_words("risers", {"name": "Stage"}, 0, True) == "No fixture was moved."
+        assert carried_words("risers", {"name": "Stage"}, 0, True) == (
+            "No fixture was moved: none that stands on it had to move."
+        )
         assert put_back_words(0, 0) == "No fixture was moved."
         assert put_back_words(4, 0) == "4 fixtures put back where they hung before it."
         assert put_back_words(1, 2) == (

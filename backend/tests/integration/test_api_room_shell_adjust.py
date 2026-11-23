@@ -68,8 +68,10 @@ class TestResizeHeightHeading:
         scan_undo = (await rig_of(client, rig_id))["room_scan_undo"]
         assert (await rig_of(client, rig_id))["room_shell_edits"] == NO_EDITS
 
+        # The stage alone: what the fixtures standing on it do when they go with it is test_api_room_shell_raised.py's.
         response = await client.patch(
-            f"/api/rigs/{rig_id}/room-shell/risers/0", json={"width": 7.5, "depth": 3.0, "height": 1.1},
+            f"/api/rigs/{rig_id}/room-shell/risers/0",
+            json={"width": 7.5, "depth": 3.0, "height": 1.1, "carry_fixtures": False},
         )
 
         assert response.status_code == 200, response.text
