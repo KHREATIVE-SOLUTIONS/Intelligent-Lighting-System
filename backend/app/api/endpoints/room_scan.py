@@ -33,8 +33,10 @@ suggested a room, and a person who can see it corrects it
 (services/room_scan/edit.py). The fixtures hung on a line or ring that is
 moved, raised, turned or resized go with it unless the request says not
 (`carry_fixtures`, services/room_scan/carry.py): their positions and headings
-only, never a patch or a tag. Nothing else moves a fixture: not a rename, a
-raised area, an added item or a deleted one.
+only, never a patch or a tag. So do the fixtures standing on a raised area
+that is moved, raised, resized or given a quarter turn. Nothing else moves a
+fixture: not a rename, a change of what a raised area is, an added item or a
+deleted one.
 
 Each of those edits leaves the room as it was on the rig, with what it
 carried (rigs.room_shell_undo), and POST /api/rigs/{rig_id}/room-shell/undo
@@ -71,7 +73,7 @@ from app.services.room_scan.carry import (
     apply_moves, carried_moves, carried_words, put_back, put_back_words, refuse_outside,
 )
 from app.services.room_scan.edit import (
-    KINDS, ShellEditError, add_item, delete_item, edit_item, edit_words, item_name,
+    KINDS, ShellEditError, add_item, delete_item, edit_item, edit_words, first_stage, item_name,
 )
 from app.services.room_scan.edit_undo import pop_step, push_step, undo_summary
 from app.services.room_scan.outline_edit import (
@@ -345,18 +347,21 @@ class ShellItemEdit(BaseModel):
     height: Optional[float] = None
     # Which way a line runs: degrees clockwise from across the room, seen from above.
     heading_deg: Optional[float] = None
+    # A raised area's underside above the floor: 0 stands on it, more floats (a balcony, a mezzanine).
+    base_height: Optional[float] = None
+    # What a raised area is: "stage", "riser" or "booth". Added, it is a riser when left out;
+    # edited, it keeps what it is.
+    riser_kind: Optional[str] = Field(default=None, max_length=20)
 
 
 class ShellItemPatch(ShellItemEdit):
-    """A change to one item, and whether the fixtures hung on a line or ring go with it."""
+    """A change to one item, and whether the fixtures hung on it or standing on it go with it."""
     # Left out (or null), they do. False leaves every fixture where it is.
     carry_fixtures: Optional[bool] = True
 
 
 class ShellItemAdd(ShellItemEdit):
     """A raised area, overhead line or ring to put into the stored room by hand."""
-    # For a raised area: "stage", "riser" or "booth". A riser when left out.
-    riser_kind: Optional[str] = Field(default=None, max_length=20)
 
 
 async def _rig(db: AsyncSession, rig_id: int) -> Rig:
@@ -563,7 +568,14 @@ async def edit_room_shell_item(
     ring's radius (services/room_scan/carry.py). `fixtures_moved` lists them.
     Only their positions and headings change: no patch, mode or tag. An edit
     that would carry one out of the room and the 2 m round it is refused whole
-    (422). A raised area carries nothing.
+    (422).
+
+    A raised area takes the fixtures standing on it in the same way: shifted
+    with a move, raised with its height or its `base_height`, kept at the
+    same share of a footprint made bigger or smaller, and swung a quarter
+    turn when its width and depth change places. `riser_kind` makes it a
+    stage, a riser or a booth where it is in its list; `first_stage` in the
+    answer is the place of the stage a suggestion would put floor lights on.
 
     The scan's undo record is left alone, and nothing reaches a device. The
     room as it was is kept with what the edit carried, so both are undone
@@ -589,13 +601,16 @@ async def edit_room_shell_item(
         # A new object throughout: the column is plain JSON, so a change made in place is never written.
         rig.room_shell = shell
         # One step for the truss and what it carried: one undo takes both back.
-        rig.room_shell_undo = push_step(rig.room_shell_undo, before, label, fixtures=moves)
+        rig.room_shell_undo = push_step(rig.room_shell_undo, before, label, fixtures=moves, kind=kind)
         await db.flush()
         logger.info(
             "Room shell: rig %s '%s': %s %d: %s (%d fixtures carried)", rig.id, rig.name, kind, index, done, len(moves),
         )
     return {
         "rig_id": rig.id, "kind": kind, "index": index, "item": item, "room_shell": shell,
+        # For a raised area: what it now is, and which raised area is the room's first stage (or null).
+        "riser_kind": item.get("kind") if kind == "risers" else None,
+        "first_stage": first_stage(shell),
         "changed": done is not None,
         "undo": undo_summary(rig.room_shell_undo),
         "carry_fixtures": carry,
@@ -688,7 +703,7 @@ async def undo_room_shell_edit(rig_id: int, db: AsyncSession = Depends(get_db)):
         "outside": outside_report(step["shell"], rig.fixtures),
         "message": (
             (f"Undone: {label}. " if label else "The last room edit was undone. ")
-            + put_back_words(len(restored), len(skipped))
+            + put_back_words(len(restored), len(skipped), step.get("kind"))
         ),
     }
 

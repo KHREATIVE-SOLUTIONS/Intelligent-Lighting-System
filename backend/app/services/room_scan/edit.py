@@ -18,10 +18,14 @@ What an item is addressed by is the list it is stored in and its place in that
 list (`truss_lines`, 1). The lists carry no ids, and the views leave out items
 they cannot draw, so a place on the plan is not a place in the list.
 
-Nothing here moves a fixture. Whether the fixtures hung on a truss go with it
-when it is moved, raised, turned or resized is the caller's to decide, with
-carry.py, from the item as it was and as this leaves it. A fixture hung on a
-deleted truss stays where it is.
+Nothing here moves a fixture. Whether the fixtures hung on a truss, or standing
+on a raised area, go with it when it is moved, raised, turned or resized is
+the caller's to decide, with carry.py, from the item as it was and as this
+leaves it. A fixture hung on a deleted truss stays where it is.
+
+A raised area can also be made another kind (a riser a stage, a stage a booth)
+and be given a base height, so that a balcony or mezzanine floats: its deck is
+then `base_height + height` above the floor. Its place in its list is kept.
 
 What is held to the room: a plain move holds the middle of an item to the
 room's box and a margin round it, as it always did. A change of size or
@@ -52,6 +56,7 @@ OUTSIDE_MARGIN_M = 2.0
 MOVED_BY_HAND = "Moved by hand."
 RESIZED_BY_HAND = "Resized by hand."
 ADDED_BY_HAND = "Added by hand."
+KIND_BY_HAND = "Kind set by hand."
 
 # Slack when deciding which hanging-height band a truss was counted in: the
 # shell's heights are rounded to the centimetre.
@@ -66,11 +71,14 @@ RISER_KINDS: Dict[str, str] = {
 
 # The size fields each list takes. Any other is refused for that list.
 SIZE_FIELDS: Dict[str, Tuple[str, ...]] = {
-    "risers": ("width", "depth", "height"),
+    "risers": ("width", "depth", "height", "base_height"),
     "truss_lines": ("length", "height", "heading_deg"),
     "truss_rings": ("radius", "height"),
 }
+# The size fields an added item can go without: a line runs across the room, a raised area stands on the floor.
+OPTIONAL_SIZES: Tuple[str, ...] = ("heading_deg", "base_height")
 FIELD_WORDS: Dict[str, str] = {
+    "base_height": "base height",
     "width": "width",
     "depth": "depth",
     "length": "length",
@@ -84,6 +92,7 @@ FIELD_WORDS: Dict[str, str] = {
 SIDE_MIN_M = 0.3            # a raised area's width or depth
 DECK_MIN_M = 0.05           # a raised area's height above its base
 DECK_MAX_M = 3.0
+BASE_MAX_M = 10.0           # how far above the floor a raised area's underside can float
 LINE_MIN_M = 0.5
 RING_MIN_RADIUS_M = 0.3
 HANG_MIN_M = 0.5            # the underside of a truss or ring
@@ -226,6 +235,16 @@ def clean_name(name: str) -> str:
 # Sizes, heights and headings
 # ---------------------------------------------------------------------------
 
+def _riser_kind(kind: str, riser_kind: Any) -> None:
+    """Refuse a kind that is not a raised area's, or that is asked of a truss."""
+    if riser_kind is None:
+        return
+    if kind != "risers":
+        raise ShellEditError(422, f"Only a raised area is a stage, riser or booth; this is a {KINDS[kind]}.")
+    if not isinstance(riser_kind, str) or riser_kind not in RISER_KINDS:
+        raise ShellEditError(422, f"A raised area is one of: {', '.join(RISER_KINDS)}.")
+
+
 def _given_sizes(kind: str, sizes: Dict[str, Any]) -> Dict[str, float]:
     """The size fields that were given, refused when one is not this list's or is not a number."""
     given: Dict[str, float] = {}
@@ -259,6 +278,40 @@ def _in_range(kind: str, key: str, value: float, least: float, most: float) -> f
     return value
 
 
+def base_of(item: Dict[str, Any]) -> float:
+    """How far above the floor a raised area's underside is: 0 for one that stands on it, or says nothing."""
+    base = item.get("base_height")
+    return float(base) if _number(base) and base > 0 else 0.0
+
+
+def deck_top(item: Dict[str, Any]) -> Optional[float]:
+    """A raised area's top surface above the floor (its base and its height), or None with no height stored."""
+    height = item.get("height")
+    return base_of(item) + float(height) if _number(height) else None
+
+
+def first_stage(shell: Optional[Dict[str, Any]]) -> Optional[int]:
+    """The place of the first raised area that is a stage, or None: the one a suggestion puts floor lights on (suggest.py)."""
+    risers = shell.get("risers") if isinstance(shell, dict) else None
+    for place, item in enumerate(risers if isinstance(risers, list) else []):
+        if isinstance(item, dict) and item.get("kind") == "stage":
+            return place
+    return None
+
+
+def _top_under_ceiling(shell: Dict[str, Any], item: Dict[str, Any]) -> None:
+    """Refuse a raised area whose base and height together put its top above the ceiling."""
+    _, _, ceiling = _room(shell)
+    top = deck_top(item)
+    if ceiling is not None and top is not None and top > ceiling + 1e-9:
+        raise ShellEditError(
+            422,
+            f"That would put the top of the raised area {_metres(top)} m above the floor "
+            f"(a base of {_metres(base_of(item))} m and a height of {_metres(item['height'])} m), "
+            f"and the ceiling is at {_metres(ceiling)} m. Give it a lower base or a lower height.",
+        )
+
+
 def height_limits(shell: Dict[str, Any], kind: str, item: Optional[Dict[str, Any]] = None) -> Tuple[float, float]:
     """(least, most) height an item of this list may have in this room.
 
@@ -267,8 +320,7 @@ def height_limits(shell: Dict[str, Any], kind: str, item: Optional[Dict[str, Any
     """
     _, _, ceiling = _room(shell)
     if kind == "risers":
-        base = (item or {}).get("base_height")
-        base = float(base) if _number(base) and base > 0 else 0.0
+        base = base_of(item or {})
         most = DECK_MAX_M if ceiling is None else min(DECK_MAX_M, ceiling - base)
         return DECK_MIN_M, max(DECK_MIN_M, _mm(most))
     most = ANY_ROOM_HEIGHT_MAX_M if ceiling is None else ceiling
@@ -373,6 +425,8 @@ def edit_item(
     radius: Optional[float] = None,
     height: Optional[float] = None,
     heading_deg: Optional[float] = None,
+    base_height: Optional[float] = None,
+    riser_kind: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """(the shell with one item changed, that item). The shell given is not changed.
 
@@ -391,6 +445,12 @@ def edit_item(
     line or ring, whose top moves with it and whose hanging-height band is
     counted again.
 
+    `base_height` is how far above the floor a raised area's underside is (0
+    stands on the floor; up to 10 m, with its top under the ceiling), and
+    `riser_kind` makes it a `stage`, a `riser` or a `booth`. Its place in the
+    list is kept. One still called what its old kind is called ("Riser") is
+    called what its new kind is, unless a name is given.
+
     Everything is stored to the millimetre. An item that actually shifts is no
     longer a suggestion (`suggested` false) and its `basis` says it was moved
     by hand; one whose size, height or heading actually changes says it was
@@ -399,10 +459,13 @@ def edit_item(
     _find(shell, kind, index)
     sizes = _given_sizes(kind, {
         "width": width, "depth": depth, "length": length, "radius": radius,
-        "height": height, "heading_deg": heading_deg,
+        "height": height, "heading_deg": heading_deg, "base_height": base_height,
     })
-    if name is None and center_x is None and center_z is None and not sizes:
-        raise ShellEditError(422, "Nothing to change: give a name, a centre, a size, a height or a heading.")
+    _riser_kind(kind, riser_kind)
+    if name is None and center_x is None and center_z is None and not sizes and riser_kind is None:
+        raise ShellEditError(
+            422, "Nothing to change: give a name, a centre, a size, a height, a heading, a base height or a kind.",
+        )
     for value in (center_x, center_z):
         if value is not None and not _number(value):
             raise ShellEditError(422, "A centre must be a number of metres.")
@@ -414,8 +477,24 @@ def edit_item(
     if name is not None:
         item["name"] = clean_name(name)
 
-    shaped = {key: value for key, value in sizes.items() if key != "height"}
+    if riser_kind is not None and item.get("kind") != riser_kind:
+        had = item.get("kind")
+        item["kind"] = riser_kind
+        # One still called what it was ("Riser") would be a stage called Riser.
+        if name is None and item.get("name") == RISER_KINDS.get(had if isinstance(had, str) else ""):
+            item["name"] = RISER_KINDS[riser_kind]
+        _mark(item, KIND_BY_HAND)
+
+    shaped = {key: value for key, value in sizes.items() if key not in ("height", "base_height")}
     resized = False
+    rebased = False
+
+    if "base_height" in sizes:
+        # Before the height: how high a deck may be depends on where it starts.
+        value = _in_range(kind, "base_height", sizes["base_height"], 0.0, BASE_MAX_M)
+        if _mm(base_of(item)) != value:
+            item["base_height"] = value
+            resized = rebased = True
 
     if center_x is not None or center_z is not None or shaped:
         centre = item_centre(kind, item)
@@ -518,6 +597,9 @@ def edit_item(
                     item["top"] = _mm(value + (top - had))
                 _uncount(edited, kind, before)
                 _count(edited, kind, item)
+
+    if rebased:
+        _top_under_ceiling(edited, item)
 
     if resized:
         _mark(item, RESIZED_BY_HAND)
@@ -642,6 +724,7 @@ def add_item(
     height: Optional[float] = None,
     heading_deg: Optional[float] = None,
     riser_kind: Optional[str] = None,
+    base_height: Optional[float] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], int]:
     """(the shell with one more item, that item, its place in its list). The shell given is not changed.
 
@@ -661,18 +744,16 @@ def add_item(
     _editable(shell, kind)
     sizes = _given_sizes(kind, {
         "width": width, "depth": depth, "length": length, "radius": radius,
-        "height": height, "heading_deg": heading_deg,
+        "height": height, "heading_deg": heading_deg, "base_height": base_height,
     })
-    if riser_kind is not None and kind != "risers":
-        raise ShellEditError(422, f"Only a raised area is a stage, riser or booth; this is a {KINDS[kind]}.")
-    if kind == "risers" and (riser_kind or "riser") not in RISER_KINDS:
-        raise ShellEditError(422, f"A raised area is one of: {', '.join(RISER_KINDS)}.")
+    # An empty kind is no kind given, as it always was: a riser.
+    _riser_kind(kind, riser_kind or None)
     for key, value in (("center_x", center_x), ("center_z", center_z)):
         if value is None:
             raise ShellEditError(422, "Say where its middle goes: center_x and center_z, in metres.")
         if not _number(value):
             raise ShellEditError(422, "A centre must be a number of metres.")
-    needed = [key for key in SIZE_FIELDS[kind] if key != "heading_deg" and key not in sizes]
+    needed = [key for key in SIZE_FIELDS[kind] if key not in OPTIONAL_SIZES and key not in sizes]
     if needed:
         raise ShellEditError(
             422, f"A new {KINDS[kind]} needs a {' and a '.join(FIELD_WORDS[key] for key in needed)}, in metres."
@@ -687,8 +768,11 @@ def add_item(
             409, f"The stored room already has {len(items)} of these, which is as many as it can hold. Delete one first."
         )
 
-    least, most = height_limits(edited, kind)
+    base = _in_range(kind, "base_height", sizes.get("base_height", 0.0), 0.0, BASE_MAX_M) if kind == "risers" else 0.0
+    least, most = height_limits(edited, kind, {"base_height": base})
     high = _in_range(kind, "height", sizes["height"], least, most)
+    if kind == "risers":
+        _top_under_ceiling(edited, {"base_height": base, "height": high})
     x, z = float(center_x), float(center_z)
 
     if kind == "risers":
@@ -698,7 +782,7 @@ def add_item(
         x, z = _fit(edited, kind, x, z, wide / 2.0, deep / 2.0)
         item: Dict[str, Any] = {
             "center_x": _mm(x), "center_z": _mm(z), "width": wide, "depth": deep,
-            "height": high, "base_height": 0.0,
+            "height": high, "base_height": base,
             "name": clean_name(name) if name is not None else RISER_KINDS[what],
             "kind": what,
         }
@@ -764,6 +848,14 @@ def edit_words(kind: str, before: Dict[str, Any], after: Dict[str, Any]) -> Opti
         done.append("resized")
     if kind == "truss_lines" and line_heading(before) != line_heading(after):
         done.append("turned")
+    if kind == "risers":
+        if _mm(base_of(before)) != _mm(base_of(after)):
+            done.append("raised" if base_of(after) > base_of(before) else "lowered")
+        if before.get("kind") != after.get("kind") and after.get("kind") in RISER_KINDS:
+            # A riser that was called "Riser" and is now a stage called "Stage" was not renamed by anybody.
+            if "renamed" in done and after.get("name") == RISER_KINDS[after["kind"]]:
+                done.remove("renamed")
+            done.append(f"made a {after['kind']}")
     if not done:
         done.append("changed")
     words = done[0] if len(done) == 1 else f"{', '.join(done[:-1])} and {done[-1]}"

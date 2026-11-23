@@ -50,12 +50,15 @@ def push_step(
     shell_before: Dict[str, Any],
     label: str,
     fixtures: Optional[List[Dict[str, Any]]] = None,
+    kind: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The record after an edit: the room as it was before it, added as the latest step.
 
     `fixtures` is what the edit carried with it (carry.py): each fixture hung
-    on a moved truss, with where it was and where it went. They are part of
-    the same step, so one undo takes back the truss and its fixtures together.
+    on a moved truss, or standing on a moved raised area, with where it was
+    and where it went. They are part of the same step, so one undo takes back
+    the item and its fixtures together. `kind` is the list the item is in,
+    kept with them so the undo can say whether they hung or stood.
     """
     steps = _steps(record)
     step: Dict[str, Any] = {
@@ -65,6 +68,8 @@ def push_step(
     }
     if fixtures:
         step["fixtures"] = fixtures
+        if kind:
+            step["kind"] = kind
     steps.append(step)
     return {"steps": steps[-STEPS_MAX:]}
 

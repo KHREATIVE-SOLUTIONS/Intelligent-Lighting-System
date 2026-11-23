@@ -451,12 +451,18 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
             sz0 = float(stage["center_z"]) - float(stage["depth"]) / 2.0
             sz1 = float(stage["center_z"]) + float(stage["depth"]) / 2.0
             centre_x = (min(xs) + max(xs)) / 2.0
+            # Its top: a stage that floats (`base_height`, set by hand) starts above the floor.
+            stage_base = stage.get("base_height")
+            stage_top = float(stage["height"]) + (
+                float(stage_base) if isinstance(stage_base, (int, float)) and not isinstance(stage_base, bool)
+                and stage_base > 0 else 0.0
+            )
             if mean_z <= sz1 and sx0 <= centre_x <= sx1:
                 # Drawn lower than the stage's own top: it was standing on a
                 # floor that is not there. Once lifted it is above the top, so
                 # a second scan does not lift it again.
-                if mean_y < float(stage["height"]):
-                    dy = float(stage["height"])
+                if mean_y < stage_top:
+                    dy = stage_top
                 edge = STAGE_EDGE_CLEARANCE
                 shift = _fit(min(zs), max(zs), sz0 + edge, sz1 - edge)
                 dz = shift if shift is not None else (sz1 - edge) - max(zs)
@@ -468,7 +474,7 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
                     )
                 else:
                     dx = shift
-                reasons.append(f"onto the {stage.get('name', 'stage').lower()} ({float(stage['height']):.2f} m up)")
+                reasons.append(f"onto the {stage.get('name', 'stage').lower()} ({stage_top:.2f} m up)")
 
         # Whatever else happened, a row belongs inside the room.
         if half_width > 0 and half_depth > 0:
