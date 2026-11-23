@@ -358,10 +358,177 @@ describe('StageView2D: a drag and a drop with no scanned room', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Snapping a drag to the truss a scan found
+// ---------------------------------------------------------------------------
+
+/** Pick Spot 1 up at (0, 0) and carry it to (x, z); what the drag reported. */
+function dragSpotTo(
+  shell: RoomShell | null | undefined,
+  to: { clientX: number; clientY: number },
+  from: { clientX: number; clientY: number },
+  extra: Partial<Parameters<typeof StageView2D>[0]> = {},
+  keys: { altKey?: boolean } = {},
+) {
+  const onFixtureDrag = vi.fn();
+  const { container } = view(shell, { ...extra, onFixtureDrag });
+  const svg = container.querySelector('svg')!;
+  drawnAtTenPixelsAMetre(svg);
+  fireEvent.mouseDown(screen.getByText('Spot 1').parentElement!, from);
+  fireEvent.mouseMove(svg, { ...to, ...keys });
+  expect(onFixtureDrag).toHaveBeenCalledTimes(1);
+  const [, x, z] = onFixtureDrag.mock.calls[0];
+  return { x: x as number, z: z as number };
+}
+
+describe('StageView2D: a drag near scanned truss', () => {
+  afterEach(cleanup);
+
+  // SCANNED has Truss 1 straight across at z = -3 from x = -4 to 4, Truss 2
+  // from (-6, 0) to (-2, 4), and Ring 1 of radius 2 round (5, -2).
+
+  it('snaps onto a truss line within reach, keeping its place along it', () => {
+    // 0.3 m downstage of Truss 1. On the grid alone this would go to (1, -2.5).
+    const at = dragSpotTo(SCANNED, onScreen(1.2, -2.7), onScreen(0, 0));
+    expect(at.x).toBeCloseTo(1.2);
+    expect(at.z).toBeCloseTo(-3);
+  });
+
+  it('snaps onto a truss at an angle and onto a ring', () => {
+    const angled = dragSpotTo(SCANNED, onScreen(-3.8, 1.8), onScreen(0, 0));
+    expect(angled.x).toBeCloseTo(-4);
+    expect(angled.z).toBeCloseTo(2);
+    cleanup();
+    // 0.3 m outside the ring's downstage side at (5, 0).
+    const ring = dragSpotTo(SCANNED, onScreen(5, 0.3), onScreen(0, 0), { snapMode: 'truss' });
+    expect(ring.x).toBeCloseTo(5);
+    expect(ring.z).toBeCloseTo(0);
+  });
+
+  it('lets go of the truss while Alt is held, and goes by the grid', () => {
+    const at = dragSpotTo(SCANNED, onScreen(1.2, -2.7), onScreen(0, 0), {}, { altKey: true });
+    expect(at.x).toBeCloseTo(1);
+    expect(at.z).toBeCloseTo(-2.5);
+  });
+
+  it('does not snap at all with the snap mode set to none', () => {
+    const at = dragSpotTo(SCANNED, onScreen(1.2, -2.7), onScreen(0, 0), { snapMode: 'none' });
+    expect(at.x).toBeCloseTo(1.2);
+    expect(at.z).toBeCloseTo(-2.7);
+  });
+
+  it('goes by the grid beyond a truss\'s reach', () => {
+    // 0.6 m from Truss 1: on the grid, which here is not on the truss.
+    const at = dragSpotTo(SCANNED, onScreen(1.2, -2.4), onScreen(0, 0));
+    expect(at.x).toBeCloseTo(1);
+    expect(at.z).toBeCloseTo(-2.5);
+  });
+
+  it('still holds a snapped position to the walls', () => {
+    // A stored truss that runs out through the wall at x = 10.
+    const shell: RoomShell = {
+      ...SCANNED,
+      truss_lines: [{ name: 'Long', x1: 0, z1: 5, x2: 14, z2: 5, height: 4, across: 0.3 }],
+      truss_rings: [],
+    };
+    const at = dragSpotTo(shell, onScreen(11.5, 5.2), onScreen(0, 0));
+    expect(at.x).toBeCloseTo(10);
+    expect(at.z).toBeCloseTo(5);
+  });
+
+  it('snaps to the truss of a scan that found no room, held to the deck', () => {
+    const shell: RoomShell = {
+      source: 'scan',
+      truss_lines: [{ name: 'Truss 1', x1: -4, z1: -3, x2: 4, z2: -3, height: 4.2, across: 0.3 }],
+    };
+    // No walls, so the view is the deck's: 12 m by 10 m from the origin.
+    const onDeck = (x: number, z: number) => ({ clientX: (x + 6) * 10, clientY: (z + 5) * 10 });
+    const at = dragSpotTo(shell, onDeck(1.2, -2.7), onDeck(0, 0));
+    expect(at.x).toBeCloseTo(1.2);
+    expect(at.z).toBeCloseTo(-3);
+  });
+
+  it('does not snap a palette drop: that lands on the grid', () => {
+    const onDropFromPalette = vi.fn();
+    const { container } = view(SCANNED, { onDropFromPalette });
+    const svg = container.querySelector('svg')!;
+    drawnAtTenPixelsAMetre(svg);
+    const where = onScreen(1.2, -2.7);
+    paletteEvent('drop', svg, where.clientX, where.clientY);
+    expect(onDropFromPalette.mock.calls[0][1]).toBeCloseTo(1);
+    expect(onDropFromPalette.mock.calls[0][2]).toBeCloseTo(-2.5);
+  });
+
+  it('snaps nothing to truss with no scanned room', () => {
+    const onDeck = (x: number, z: number) => ({ clientX: (x + 6) * 10, clientY: (z + 5) * 10 });
+    for (const shell of [undefined, null, PRESET]) {
+      const at = dragSpotTo(shell, onDeck(1.2, -2.7), onDeck(0, 0));
+      expect(at.x).toBeCloseTo(1);
+      expect(at.z).toBeCloseTo(-2.5);
+      cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The grid, across the room
+// ---------------------------------------------------------------------------
+
+describe('StageView2D: the grid', () => {
+  afterEach(cleanup);
+
+  /** The grid's lines that run up and down the plan at stage x, as [y1, y2] in the view's units. */
+  const upAndDownAt = (x: number) =>
+    Array.from(screen.getByTestId('room-plan-grid').querySelectorAll('line'))
+      .filter((line) => Number(line.getAttribute('x1')) === x + 6 && Number(line.getAttribute('x2')) === x + 6)
+      .map((line) => [Number(line.getAttribute('y1')), Number(line.getAttribute('y2'))]);
+
+  it('is the deck\'s own with no scanned room', () => {
+    const { container } = view();
+    expect(screen.queryByTestId('room-plan-grid')).toBeNull();
+    // Every line the plan draws stays between the deck's edges at 1 and 11 across.
+    const lines = Array.from(container.querySelectorAll('svg > line'));
+    expect(lines.length).toBeGreaterThan(20);
+    for (const line of lines) {
+      expect(Number(line.getAttribute('x1'))).toBeGreaterThanOrEqual(1);
+      expect(Number(line.getAttribute('x2'))).toBeLessThanOrEqual(11);
+    }
+  });
+
+  it('runs from wall to wall of a scanned room, past the deck', () => {
+    view(SCANNED);
+    // The deck ends at x = 5; the room's walls are at z = -8 and 8, which is -3 and 13 down the view.
+    expect(upAndDownAt(8)).toEqual([[-3, 13]]);
+    expect(upAndDownAt(0)).toEqual([[-3, 13]]);
+    // On the half metre too, as the default grid is.
+    expect(upAndDownAt(8.5)).toEqual([[-3, 13]]);
+  });
+
+  it('stops at the wall of a notch, and is not drawn in it', () => {
+    // OUTLINE walls off x > 4 with z > 2: z = 2 is 7 down the view.
+    view({ ...SCANNED, room: { width: 20, depth: 16, height: 6, outline: OUTLINE } });
+    expect(upAndDownAt(8)).toEqual([[-3, 7]]);
+    expect(upAndDownAt(0)).toEqual([[-3, 13]]);
+    // Across the room at z = 5, a line stops at the notch's wall at x = 4: 10 in the view.
+    const across = Array.from(screen.getByTestId('room-plan-grid').querySelectorAll('line'))
+      .filter((line) => Number(line.getAttribute('y1')) === 10 && Number(line.getAttribute('y2')) === 10)
+      .map((line) => [Number(line.getAttribute('x1')), Number(line.getAttribute('x2'))]);
+    expect(across).toEqual([[-4, 10]]);
+  });
+
+  it('is under the room\'s shapes and the fixtures', () => {
+    view(SCANNED);
+    const grid = screen.getByTestId('room-plan-grid');
+    const room = screen.getByTestId('room-plan');
+    expect(grid.compareDocumentPosition(room) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(grid.querySelectorAll('line').length).toBeGreaterThan(40);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Labels
 // ---------------------------------------------------------------------------
 
-const numbers = (element: Element, ...names: string[]) => names.map((name) => Number(element.getAttribute(name)));
+const numbers =(element: Element, ...names: string[]) => names.map((name) => Number(element.getAttribute(name)));
 
 describe('StageView2D: the plan\'s own labels', () => {
   afterEach(cleanup);
