@@ -2,7 +2,8 @@
  * Correcting a suggested layout on the 2D plan a row at a time: which fixtures
  * are one row, how far a row may be carried before one of them would leave
  * the room, what a snap onto scanned truss says and which of a row take its
- * height, and positions put on and taken back off a rig's fixtures.
+ * height, a row laid out evenly along scanned truss, and positions put on
+ * and taken back off a rig's fixtures.
  *
  * Numbers and words only: no React and no drawing. docs/ROOM_SCAN.md.
  */
@@ -163,6 +164,167 @@ export function holdRowShift(
 export type PlanMove = { id: number; x: number; z: number; y?: number };
 
 type Positioned = { id: number; position_x: number; position_y: number; position_z: number };
+
+// ---------------------------------------------------------------------------
+// A row laid along scanned truss
+// ---------------------------------------------------------------------------
+
+/** A fixture with the DMX address a row is counted along a truss by. */
+export type AddressedFixture = Positioned & { universe?: number | null; dmx_address?: number | null };
+
+/** Fixtures closer than this along a line or round a ring are worth a word, as in `suggest.py`. */
+export const CROWDED_UNDER_M = 0.3;
+
+/** Universe, then address, then id: the order a room scan's suggestion counts a row in. */
+export function addressOrder<F extends AddressedFixture>(row: F[]): F[] {
+  return [...row].sort((a, b) => (
+    (a.universe ?? 0) - (b.universe ?? 0) || (a.dmx_address ?? 0) - (b.dmx_address ?? 0) || a.id - b.id
+  ));
+}
+
+/**
+ * The scanned truss line or ring a row belongs on: the nearest to the middle
+ * of the row on the plan, the first listed where two are as near. A row
+ * drawn straight through a ring's middle belongs on the ring as much as one
+ * under its arc, so a ring is as near as its centre or its circle, whichever
+ * is nearer (`_nearest_shape` in `suggest.py`). Height is not asked about:
+ * any truss on the plan is in reach, as for a 2D drag. Null with no truss or
+ * no row.
+ */
+export function nearestTruss(targets: SnapLine[], row: PlanPoint[]): SnapLine | null {
+  if (row.length === 0) return null;
+  const x = row.reduce((sum, p) => sum + p.x, 0) / row.length;
+  const z = row.reduce((sum, p) => sum + p.z, 0) / row.length;
+  let best: SnapLine | null = null;
+  let nearest = Infinity;
+  for (const target of targets) {
+    let off: number;
+    if (target.ring) {
+      const middle = Math.hypot(x - target.ring.centerX, z - target.ring.centerZ);
+      off = Math.min(middle, Math.abs(middle - target.ring.radius));
+    } else {
+      off = nearestOnTarget(x, z, target)?.distance ?? Infinity;
+    }
+    if (off < nearest - 1e-9) {
+      best = target;
+      nearest = off;
+    }
+  }
+  return best;
+}
+
+/**
+ * Where each fixture of a row goes on a truss line or ring: evenly spaced,
+ * in the order given, by the rule a room scan's suggestion lays a row out by
+ * (`_spots_on` in `suggest.py`), so the two agree.
+ *
+ * Along a line the row is spread over its whole length with half a space at
+ * each end, and keeps the sense it had: if the first of the row was nearer
+ * the line's second end than the last was, it still is. Round a ring the
+ * first is upstage and the rest follow clockwise seen from above.
+ */
+export function spotsOn(target: SnapLine, row: PlanPoint[]): PlanPoint[] {
+  const count = row.length;
+  if (target.ring) {
+    const { centerX, centerZ, radius } = target.ring;
+    return row.map((_, k) => ({
+      x: centerX + radius * Math.sin((2 * Math.PI * k) / count) + 0,
+      z: centerZ - radius * Math.cos((2 * Math.PI * k) / count) + 0,
+    }));
+  }
+  const runX = target.x2 - target.x1;
+  const runZ = target.z2 - target.z1;
+  const along = row.map((p) => (p.x - target.x1) * runX + (p.z - target.z1) * runZ);
+  const middle = (count - 1) / 2;
+  const meanAlong = along.reduce((sum, a) => sum + a, 0) / count;
+  const backwards = along.reduce((sum, a, k) => sum + (k - middle) * (a - meanAlong), 0) < -1e-9;
+  return row.map((_, k) => {
+    const share = backwards ? 1 - (k + 0.5) / count : (k + 0.5) / count;
+    return { x: target.x1 + runX * share + 0, z: target.z1 + runZ * share + 0 };
+  });
+}
+
+/** How far apart a row of `count` hangs on a truss line, or round a ring (along its circle). */
+export function spacingOn(target: SnapLine, count: number): number {
+  const length = target.ring
+    ? 2 * Math.PI * target.ring.radius
+    : Math.hypot(target.x2 - target.x1, target.z2 - target.z1);
+  return count > 0 ? length / count : 0;
+}
+
+/** What laying a row along scanned truss comes to: the moves to make, or why none are made. */
+export type RowLay =
+  | { ok: true; target: SnapLine; moves: PlanMove[]; spacing: number }
+  | {
+      ok: false;
+      /** `too-few`: under two fixtures. `no-truss`: no scanned truss. `beyond-walls`: a place on the truss is outside the room. */
+      why: 'too-few' | 'no-truss' | 'beyond-walls';
+      target?: SnapLine;
+      /** For `beyond-walls`: how many of the row's places are outside. */
+      beyond?: number;
+    };
+
+/**
+ * Lays the fixtures `ids` along the scanned truss nearest their middle:
+ * evenly spaced in address order (`spotsOn`), each at the truss's hang
+ * height. This is the one move that respaces a row; a drag only carries it.
+ *
+ * All of the row is laid or none of it is. A truss the scan stored running
+ * out through a wall may have places beyond the walls the plan holds a drag
+ * to (`holdOnPlan`: the room's walls, or with no usable room the deck); the
+ * row is then left where it is, not closed up to fit.
+ *
+ * The moves come back in address order. A fixture already on its place and
+ * at the height is still listed: `withMoves` is what tells a change.
+ */
+export function layRowOnTruss(
+  fixtures: AddressedFixture[], ids: Iterable<number>, shell: RoomShell | null | undefined,
+  walls: PlanWalls | null | undefined, stageWidth: number, stageDepth: number,
+): RowLay {
+  const wanted = new Set(ids);
+  const row = addressOrder(fixtures.filter((fixture) => wanted.has(fixture.id)));
+  if (row.length < 2) return { ok: false, why: 'too-few' };
+  const points = row.map((fixture) => ({ x: fixture.position_x, z: fixture.position_z }));
+  const target = nearestTruss(planTrussTargets(shell), points);
+  if (!target) return { ok: false, why: 'no-truss' };
+
+  const spots = spotsOn(target, points);
+  const beyond = spots.filter((spot) => {
+    const held = holdOnPlan(spot.x, spot.z, stageWidth, stageDepth, walls);
+    return Math.hypot(held.x - spot.x, held.z - spot.z) > INSIDE_WITHIN_M;
+  }).length;
+  if (beyond > 0) return { ok: false, why: 'beyond-walls', target, beyond };
+
+  return {
+    ok: true,
+    target,
+    moves: row.map((fixture, k) => ({ id: fixture.id, x: spots[k].x, z: spots[k].z, y: target.height })),
+    spacing: spacingOn(target, row.length),
+  };
+}
+
+/**
+ * What to tell the person about a row that was laid, or was not: "Laid 4
+ * fixtures along Truss 1, 2.00 m apart, at 4.20 m." `changed` is how many
+ * of them it moved; none means the row was already there.
+ */
+export function layNoticeText(lay: RowLay, changed = 1): string {
+  if (!lay.ok) {
+    if (lay.why === 'too-few') return 'Select two or more fixtures to lay along a truss.';
+    if (lay.why === 'no-truss' || !lay.target) return 'This rig has no scanned truss to lay a row along.';
+    return `${targetWords(lay.target)} runs beyond the walls: ${lay.beyond} of the row's places on it are outside the room. Nothing was moved.`;
+  }
+  const count = lay.moves.length;
+  const where = lay.target.ring ? 'round' : 'along';
+  const apart = `${lay.spacing.toFixed(2)} m apart, at ${lay.target.height.toFixed(2)} m`;
+  if (changed === 0) return `The ${count} fixtures are already laid ${where} ${targetWords(lay.target)}, ${apart}.`;
+  const crowded = lay.spacing < CROWDED_UNDER_M ? ' That is close: check they fit side by side.' : '';
+  return `Laid ${count} fixtures ${where} ${targetWords(lay.target)}, ${apart}.${crowded}`;
+}
+
+// ---------------------------------------------------------------------------
+// Moves applied, and undone
+// ---------------------------------------------------------------------------
 
 /**
  * Fixtures with `moves` applied, and the ids of those that changed: what to
