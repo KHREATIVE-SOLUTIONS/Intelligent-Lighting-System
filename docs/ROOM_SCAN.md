@@ -519,6 +519,60 @@ A scan's suggestion moves a row as one piece, and so can a person
 
 With one fixture selected, or none, a drag is what it was.
 
+### Clicks, a selection box and the keyboard
+
+Correcting guesses means a lot of clicking, so a click must never move
+anything, and a selection should be quick to build and to shift
+(`planSelect2d.ts`, `StageView2D.tsx`, `RigBuilder.tsx`):
+
+- **A press is a drag only from 5 screen pixels** (`pastDragThreshold`).
+  Until the pointer is that far from where it went down, nothing moves, so
+  a click, a press with a wobble or a double-click that slips moves no
+  fixture and no row, puts no off-grid guess on the grid or a truss, saves
+  nothing and adds no undo step. Once past it the drag is what it was,
+  back near where it began too. A press that never gets that far is a
+  click: on one of several selected fixtures it selects that one alone.
+  A palette drop has no press and is unchanged.
+- **A drag over empty floor draws a selection box**, past the same 5
+  pixels. Let go, every fixture whose marker centre is inside it is
+  selected (`fixturesInBox`), whichever way the box was dragged; a centre
+  on its edge is inside. **Shift, Ctrl or Cmd** held at the press adds
+  them to the selection and takes nothing out (`boxSelection`). A plain
+  box over nothing selects nothing. A box carried off the plan takes what
+  it held when it left. Under 5 pixels it is still a click on empty floor,
+  which clears the selection as before.
+- **Escape** clears the selection, or lets go of a box being drawn and
+  leaves the selection as it was.
+- **R** selects the row of the selected fixture, as the Select row button
+  does (the first selected fixture in the rig's order).
+- **The arrow keys nudge the selection** by the grid step, ten steps with
+  Shift (`nudgeShift`): left and right across the plan, up upstage, down
+  downstage. Every selected fixture takes the one shift, cut short where
+  any of them would leave the room, by the rule a row drag is held by
+  (`nudgeMoves`, which calls `holdRowShift`): the walls, the floor outline,
+  or the deck with no scanned room. Spacing is kept. A selection already
+  against the wall it is pushed at does not move, and nothing is saved.
+- **A nudge is a step, not a snap.** It adds the step to where the fixture
+  is and does not put it on the grid or on a truss, and it **never changes
+  a height**. Positions are kept to the millimetre.
+- **One press is one batch-update and one undo step.** The plan reports a
+  nudge the way it reports a drag (picked up, moved once, let go), so the
+  editor saves and undoes it by the same code. Tags are not touched:
+  nudged guesses stay guesses. **A key held down does not repeat**: it
+  would fill the 50-step undo history in a couple of seconds and send a
+  request for each repeat. Shift is the way to go further.
+- **Whose key it is** (`keysBelongElsewhere`). Keys are ignored while the
+  focus is in an input, a textarea, a select or a contenteditable element,
+  in a drawn drop-down or menu (the snap mode's), or in a dialog; with
+  Ctrl, Cmd or Alt held (Ctrl+R reloads, Alt+Left goes back); and while
+  the pointer is holding a fixture or drawing a box. With nothing selected
+  an arrow key is left to scroll the page. The plan only listens when the
+  editor says so (`keyboard`): while the 2D view is shown and neither the
+  Identify walkthrough nor the Room Scan dialog is open.
+
+With no scanned room and one fixture, a drag past 5 pixels reports exactly
+what it did.
+
 ### Laying a row along a truss
 
 A drag carries a row and never respaces it. **Lay on truss** in the toolbar
@@ -601,6 +655,24 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 11 built
+
+- **The helpers** (`components/rig/planSelect2d.ts`, new, no React):
+  `pastDragThreshold`, `boxBetween`, `fixturesInBox`, `boxSelection`,
+  `nudgeShift`, `nudgeMoves` and `keysBelongElsewhere`.
+- **The plan** (`StageView2D.tsx`): the 5 pixel threshold on a press; a
+  selection box over empty floor, reported through the new
+  `onSelectFixtures`; and, with the new `keyboard` prop on, Escape, R and
+  the arrow keys. A nudge is sent through the drag's own three calls, so
+  there is no second way of saving a move.
+- **The editor** (`RigBuilder.tsx`, `RigEditorToolbar.tsx`): hands the plan
+  the store's `selectFixtures`, turns the keyboard on while the 2D view is
+  shown and no dialog is open, and says what the keys do in the Select row
+  tooltip and the line under the plan. `rigEditorStore.ts` is unchanged.
+- **One existing test changed**: `StageView2D.test.tsx` dragged a fixture
+  3 pixels and expected it to move; it now drags it 7.
+- **No backend change**, and nothing here sends Art-Net or DMX.
 
 ## What slice 10 built
 
@@ -830,6 +902,36 @@ are no binary fixtures in the repository.
   over the background; one fixture with no scanned room reported exactly as
   before.
 
+- `frontend/src/__tests__/planSelect2d.test.ts` (**slice 11; type-checked,
+  not run**): the threshold under, at and over 5 pixels in each direction;
+  a box's corners in any order, what it takes in dragged each of the four
+  ways, a centre on its edge, an empty box; a plain and an additive
+  selection; an arrow key's shift, with Shift, and for other keys; a nudge
+  of one fixture and of several, held at the deck's edge, at a box room's
+  wall and at the notch of an L, going nowhere against an edge, and giving
+  no height; which elements keep their keys.
+- `frontend/src/__tests__/StageView2DSelectKeys.test.tsx` (**slice 11;
+  type-checked, not run**): a click and a wobble moving nothing, for one
+  fixture and for a row; a drag from exactly 5 pixels; a slipped
+  double-click leaving an off-grid guess off the grid; a palette drop
+  unchanged; a box drawn and let go, in each direction, plain and with
+  Shift, Ctrl and Cmd, over nothing, under 5 pixels, carried off the plan,
+  not from a press on a fixture, not on a read-only plan, and in a scanned
+  room; Escape clearing the selection and letting go of a box; R; each
+  arrow key, the grid step, Shift, a whole selection, the clamp at the
+  deck, a room's wall and an L's notch, one drag reported for each press
+  and none for a held key; keys left alone in an input, a textarea, a
+  select, a contenteditable element and a dialog, with a modifier, with
+  the keyboard off, and on a read-only plan.
+- `frontend/src/__tests__/RigBuilderSelectKeys.test.tsx` (**slice 11;
+  type-checked, not run**): the editor itself, with its side panels left
+  out and the API a stand-in. A click or a wobble adds no undo step and
+  sends nothing; a drag is one undo step and one batch-update; a box
+  selects, and adds with Shift; Escape; each arrow press is one undo step
+  and one batch-update; R then Shift+arrow moves the row whole to the
+  deck's edge and no further; one Undo puts it back; keys typed in the
+  rig's name do nothing.
+
 ## What is left
 
 - **Checks ran on 2026-11-22, 7:44 PM ET, after slice 8 (outline-held guesses, 2D truss snap, room grid, palette click):** frontend vitest 424 passed (22 files) and the build passed; backend pytest tests/ 1632 passed, 10 skipped, 5 xfailed, including tests/integration/test_api_room_scan.py.
@@ -844,11 +946,45 @@ are no binary fixtures in the repository.
   it: if it passes and the view's tests fail, suspect the test's events
   (the palette tests set the pointer position and Alt on the event by hand)
   before the view. No backend file changed, so the backend run above stands.
-- **The editor's wiring of a row move has no test.** `RigBuilder.tsx`
-  applying a row's moves, saving them in one batch-update, undoing them, the
-  Select row button, and the properties panel put away for several selected
-  are type-checked only. The pieces under them are tested (`withMoves`,
-  `withSnapshot`, `rowOf`, the store), the component is not.
+- **Slice 11 has not had its tests run** (drag threshold, selection box,
+  keys). It was written on 2026-11-22 in a session where `tsc` ran and
+  vitest and the build needed an approval nobody was there to give, so its
+  expected numbers were worked out by hand too. `npx tsc --noEmit -p .`
+  gives the same 13 errors, none in its files. From `frontend` run
+  `npx vitest run src/__tests__/planSelect2d.test.ts src/__tests__/StageView2DSelectKeys.test.tsx src/__tests__/RigBuilderSelectKeys.test.tsx src/__tests__/StageView2D.test.tsx src/__tests__/StageView2DRowMove.test.tsx`,
+  then `npx vitest run` and `npm run build`. If `planSelect2d.test.ts`
+  passes and the others fail, suspect the test's events first.
+  `RigBuilderSelectKeys.test.tsx` is the first test to draw the editor
+  itself: it finds the Undo button by the icon's `data-testid="UndoIcon"`
+  and the plan by a fixture's label, and stands in for five side panels.
+  None of slice 11 has been seen in a browser: the box's look, whether a
+  box drag selects text elsewhere on the page, and the keys with the focus
+  left on a toolbar button.
+- **The editor's wiring is tested only where slice 11 touched it.**
+  `RigBuilderSelectKeys.test.tsx` covers a drag, a nudge and a row nudge
+  saved in one batch-update and undone in one step. A row *dragged* through
+  the editor, the Select row and Lay on truss buttons, Redo, a height
+  changed by a snap and undone, and the properties panel put away for
+  several selected are still type-checked only.
+- **A held arrow key moves one step.** Auto-repeat is ignored so that one
+  press is one undo step and one request. There is no finer step than the
+  grid's: for less, drag with the snap mode set to Free, or type the
+  position in the properties panel.
+- **A nudge does not snap.** It never puts a fixture on the grid or on a
+  truss and never changes a height, so an off-grid guess nudged stays
+  off-grid by the same amount. Quick presses each send their own
+  batch-update, a few milliseconds apart.
+- **A fixture outside the walls is not held by a nudge** until a nudge has
+  brought it inside, as in a row drag; a single fixture *dragged* from
+  outside comes to the wall at once. The two differ.
+- **A selection box goes by marker centres and by the box alone.** It does
+  not take in a fixture whose icon it only touches, cannot be dragged
+  beyond the plan's edge (it ends there with what it held), and has no way
+  to take fixtures *out* of a selection; Shift-click does that.
+- **The keys need the focus off a field.** After typing the rig's name or
+  choosing a snap mode, the focus stays there and the plan ignores keys
+  until something else is clicked. Nothing on screen says so. Escape,
+  R and the arrows have no touch equivalent.
 - **The 2D room layer has not been seen in a browser**: label sizes and
   nudges in a crowded room, a turned label, the tooltips, where UPSTAGE,
   AUDIENCE and the scale bar land round a real room, a drag and a palette
@@ -899,10 +1035,10 @@ are no binary fixtures in the repository.
   row. A fixture hanging near two scanned trusses belongs to the first the
   scan listed. A grouped fixture's row is its group even when the group is
   spread over the room. Fix a wrong row with Shift-click.
-- **No box (marquee) selection and no key for Select row.** A selection is
-  built a click at a time, by the button or by a double-click. Modifier
-  keys have no touch equivalent, so on a tablet a row is selected with the
-  button or a double-tap, if the browser sends one.
+- **Modifier keys have no touch equivalent**, so on a tablet a row is
+  selected with the button or a double-tap, if the browser sends one, and
+  a box cannot add to a selection. The plan listens for mouse events: a
+  finger may not draw a box at all.
 - **Shift-press on a selected fixture no longer drags it.** It takes the
   fixture out of the selection and carries nothing; it used to deselect it
   and drag it all the same.
@@ -911,13 +1047,12 @@ are no binary fixtures in the repository.
   not highlighted.
 - **A row moved in 2D is "moved since the scan".** Like any 2D move, it
   takes those fixtures out of what "Undo room scan moves" will put back.
-- **The 2D truss snap takes hold on the first move.** There is no 5 pixel
-  threshold as in the 3D view, so a press with a wobble next to a truss puts
-  the fixture on it (as a press already puts one on the grid). Alt has no
-  touch equivalent. The same wobble now moves a whole row: a double-click to
-  select a row, or a press on a selected row, that slips can put every
-  off-grid guess of it onto the grid. Undo takes it back; the Select row
-  button selects without touching the plan.
+- **The 2D snap takes hold as soon as a press is a drag.** Since slice 11
+  that is 5 screen pixels, as in the 3D view, so a wobble no longer moves a
+  fixture or a row. Past it, a fixture next to a truss goes onto it and an
+  off-grid guess goes to the grid, as before. Five pixels is on the screen:
+  in a large room drawn small it is more of the floor. Alt has no touch
+  equivalent.
 - **An undone height can be an old one.** An undo step keeps the height a
   fixture had before the drag snapped it onto truss. If that height is then
   changed in the properties panel, undoing the drag puts the older one back.
