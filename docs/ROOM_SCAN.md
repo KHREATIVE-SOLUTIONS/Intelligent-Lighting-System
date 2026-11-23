@@ -237,6 +237,42 @@ it is open.
 - **An item the views cannot draw is still listed** ("Not drawn: ...") and can
   be renamed or deleted. One with no position stored has its Across, Depth
   and size fields off; its height can still be set.
+- **Walls** (slice 16), under the rows: one row for each corner of the room's
+  floor, in order round the room. Each wall runs from one corner to the
+  next, and the last back to the first. A box room has four, numbered from
+  upstage stage right, clockwise seen from above. Type where a corner goes
+  (**Across** and **Depth**, as above) and press **Save**; **Add after**
+  puts a new corner half way along the wall that leaves that corner, where
+  it changes nothing until it is moved; **Delete** takes a corner out, and
+  is off once the room is down to three. **Room height** and **Set height**
+  set the ceiling (1.5 to 30 m). The section says how big the walls are,
+  wall to wall, measured from the corners.
+- **Walls that are not a room are refused**, with the server's words: walls
+  that would cross or touch each other ("the wall from corner 2 to corner 3
+  would meet the wall from corner 5 to corner 6"), two corners under 0.1 m
+  apart, a room under 1 m either way or with less than 1 m2 of floor, a
+  corner more than 100 m from the middle of the floor, more than 64 corners.
+- **Nothing is moved to suit new walls.** No fixture, raised area, truss or
+  ring moves when a wall does. What the walls and ceiling as they now stand
+  leave outside them is **listed in the Walls section** instead, one line
+  each: "Ring 1 (overhead ring) is partly outside the walls.", "Spot 4
+  (fixture) is outside the walls and above the ceiling." One that was
+  already outside before the change says so. On a wall, to the centimetre,
+  is inside. The list is read when the dialog opens and after every change.
+- **The middle of the floor stays where it was.** Every position in the rig
+  is measured from it, so a room drawn out to one side is not centred again.
+- **Drag corners on the plan** closes the dialog and puts a numbered handle
+  on each corner in the 2D plan (**walls mode**). Drag a handle to move the
+  corner: it goes to the grid unless the snap mode is None or Alt is held.
+  A press that stays within 5 pixels moves nothing, as with a fixture. Each
+  drag is one request and **one undo step**. A move the server refuses goes
+  back, and the strip over the plan says why. While walls mode is on,
+  fixtures are drawn faint and take no press, there is no selection box,
+  and the keys and the nudge pad are off. The strip over the plan says what
+  the last drag did and what is now outside the walls, and has **Undo** (the
+  room's own), **Back to Edit Room** and **Done with walls**.
+- **The walls share the room's Undo**: a moved, added or deleted corner and
+  a changed height are each one step, with the other edits, latest first.
 - **Not while a locate walkthrough is running.** Every change here, Undo
   included, is refused until Identify Lights is finished or ended on the
   rig, and the dialog shows the reason.
@@ -430,6 +466,103 @@ Answers `rig_id`, `kind`, `index`, `removed` (the item taken out),
 `room_shell`, `undo` and a `message` ("... was taken out of the stored room.
 No fixture was moved.").
 
+### The walls: `/api/rigs/{rig_id}/room-shell/outline`
+
+Five routes on the room's walls (slice 16, `services/room_scan/outline_edit.py`).
+A corner is `[x, z]` in metres in the rig's axes (X across, -Z upstage);
+`{ "x": .., "z": .. }` is taken too. A corner's `index` is its place in the
+outline, from 0. A box room, which stores no outline, has four: from
+upstage stage right, clockwise seen from above.
+
+| Route | Body | What it does |
+| --- | --- | --- |
+| `GET .../room-shell/outline` | none | The walls and what they leave outside. Writes nothing |
+| `PATCH .../room-shell/outline` | `corners` (every corner, in order), `height` (floor to ceiling); either may be left out | Redraws the walls, sets the height, or both |
+| `PATCH .../room-shell/outline/corners/{index}` | `x`, `z`; one given alone keeps the other | Moves one corner |
+| `POST .../room-shell/outline/corners` | `after` (a corner's index), and `x` and `z` together or neither | Adds a corner on the wall that leaves corner `after`: at `x`, `z`, or half way along it. Answers 201 |
+| `DELETE .../room-shell/outline/corners/{index}` | none | Takes one corner out: its two walls become one |
+
+What makes a room, checked in this order, each refusal a sentence (422):
+
+- 3 to 64 corners, each two finite numbers, to the millimetre;
+- no corner more than 100 m from the origin either way (so the room is at
+  most 200 m a side);
+- no two neighbouring corners under 0.1 m apart;
+- no wall crossing or touching another, and none doubling back along its
+  neighbour. Three corners in a straight line are let through: a corner
+  added half way along a wall is exactly that;
+- at least 1 m2 of floor, and at least 1 m wall to wall each way (below
+  that the views do not take it for a room);
+- a `height` from 1.5 to 30 m.
+
+What is stored:
+
+- **`room.outline`**, as `{x, z}` corners running clockwise seen from above.
+  Corners sent the other way round are turned, the first staying first; the
+  `index` in a corner route's answer is where the corner is afterwards.
+- **`room.width` and `room.depth` are worked out again**, as a scan works
+  them out from the outline it traced: the box round the walls. The origin
+  does not move, so it is the box **centred on the origin**: twice the
+  furthest a wall reaches either side. For walls that are centred, as a
+  scan's are, that is their own size; for walls drawn out to one side it is
+  wider than they are, and it is what holds a position by the far wall
+  (`position_limits`, `_held`, `_fit` all go by this box).
+- **A box is still a box.** Four corners square to the room and centred on
+  the origin are stored as a width and a depth with no outline, so a room
+  that was a box is drawn and held as one after its height is set or its
+  walls are moved out evenly.
+- `room.suggested` becomes false and its `basis` says "Walls set by hand."
+  or "Height set by hand.", once.
+- **Nothing else.** No raised area, truss, ring or fixture moves.
+  `hanging_bands` are counted from the trusses and rings, which have not
+  moved, so they stand as they were; the outline reaches them in a scan
+  only through which scanned points count as hanging clear of a wall, and
+  there are no points here to read again.
+
+Each change answers `rig_id`, `room_shell` (the whole room), `outline` (the
+corners as they now are), `box`, `height`, `width`, `depth`, `changed`
+(false when what was sent is what was stored: nothing is written and no
+step is left to undo), `undo`, `message` and, for the corner routes,
+`index`. And **`outside`**: what the walls and ceiling leave outside them.
+
+```
+outside: { count,
+  items:    [ { kind, index, name, reason, already_outside } ],
+  fixtures: [ { rig_fixture_id, name, position: {x, y, z}, reason, already_outside } ] }
+```
+
+- An item is listed by the list it is stored in and its place there. Its
+  `reason` is "partly outside the walls" when some of it is beyond a wall
+  (a raised area's middle and four corners; a line walked every 0.25 m; a
+  ring's middle and 24 points round it), "outside the walls" when all of
+  those are, "above the ceiling" when a raised area's top or a truss's
+  underside is, or two of them joined with "and".
+- A fixture is listed when its place on the plan is beyond a wall or its
+  height is above the ceiling.
+- Within 1 cm of a wall is inside: a 2D drag holds a fixture exactly on the
+  wall, and that is not worth a warning.
+- `already_outside` is true for what was outside before this change too.
+  `GET` and the undo route, which have no "before", say false.
+
+A change to the walls is one step of the room's undo, with a label of its
+own ("Walls redrawn", "Walls: corner 3 moved", "Walls: corner added after
+corner 2", "Walls: corner 4 deleted", "Room height set to 4.5 m"), and is
+replaced by reading the scan again like any other edit. `POST
+.../room-shell/undo` now also answers `outside`.
+
+Refusals beyond the 422s above: 404 for no such rig, a rig with no scanned
+room, and a corner `index` (or `after`) that is not there ("The room has no
+corner number 7 (it has 6)"); 409 while a locate walkthrough is running (all
+but the `GET`), for a `DELETE` that would leave two corners, a `POST` to a
+room that has 64, and a room with neither an outline nor a size; FastAPI's
+own 422 list for an `index` or `after` that is not a whole number and an
+`x`, `z` or `height` that is not a number at all. `corners` is not typed in
+the request model, so that a raw `Infinity` anywhere in it is refused in a
+sentence and not by a refusal that cannot be written (see below).
+
+`outline` is not one of the room's lists: `POST .../room-shell/outline` and
+`PATCH .../room-shell/outline/0` are answered 404 by the list routes.
+
 For all of these routes: no fixture is moved or retagged (one hung on a
 moved, raised or deleted truss stays where it is), no fixture's patch is
 touched, the scan's undo record (`room_scan_undo`) is left alone, and
@@ -518,6 +651,14 @@ the last joined back to the first; the walls are the segments between them, and
 outline. `heading_deg` is degrees clockwise from across the room (0 across, 90
 upstage to downstage). A ring's `radius` is to the middle of the truss and its
 `height` is its underside, as a line's is.
+
+Walls drawn by hand (slice 16) are stored the same way, to the millimetre,
+with two differences from a scan's. The origin is not moved to the middle of
+the new walls, so `width` and `depth` are the box round the outline that is
+*centred on the origin*, which for walls drawn out to one side is wider than
+the walls are. And a room whose walls are made a centred box again loses its
+`outline`. The room then has `suggested: false` and a `basis` ending "Walls
+set by hand." or "Height set by hand.".
 
 Edit Room writes into the same shape. An item a person has moved or resized
 has `suggested: false` and says so at the end of its `basis` ("Moved by
@@ -919,6 +1060,49 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 16 built
+
+The room's walls, corrected by hand: the one part of a scanned room slices
+14 and 15 left alone.
+
+- **The edit** (`backend/app/services/room_scan/outline_edit.py`, new):
+  `set_outline` (every corner, the height, or both), `move_corner`,
+  `insert_corner`, `delete_corner`, and `room_corners`, which reads the
+  walls of any scanned room, a box's four included. `check_walls` is what a
+  room has to be; `crossing_walls` finds walls that cross, touch or double
+  back. Pure, like `edit.py`: a shell in, a new shell out.
+- **What is outside** (`outside_report`, `outside_words`): the raised areas,
+  lines, rings and fixtures beyond a wall or above the ceiling. Nothing is
+  moved; this is what a change to the walls answers with instead.
+- **The routes** (`room_scan.py`): `GET` and `PATCH .../room-shell/outline`,
+  and `PATCH`, `POST` and `DELETE` under `.../room-shell/outline/corners`.
+  Each change is one step of the existing `room_shell_undo` record and is
+  refused during a locate walkthrough, by the helpers the other edit routes
+  use. `POST .../room-shell/undo` now answers `outside` too. No migration.
+- **The helpers** (`utils/roomWallsEdit.ts`, new, no React): `wallCorners`
+  (the corners as the server numbers them), `readCorner`, `readRoomHeight`,
+  `wallsSizeText`, and the warning list's words (`outsideLines`,
+  `outsideHeading`, `outsideOf`). `roomOutlinePath`,
+  `roomOutlineCornersPath` and `roomOutlineCornerPath` in
+  `utils/roomScan.ts`; `getOutline`, `setOutline`, `moveOutlineCorner`,
+  `addOutlineCorner` and `deleteOutlineCorner` on `roomScanApi`.
+- **The Walls section** (`RoomShellEditDialog.tsx`): the table of corners,
+  Add after and Delete, the room height, the warning list, and the button
+  that hands the corners to the plan (`onDragWalls`).
+- **The plan** (`StageView2D.tsx`): with the new `wallsEdit` prop on, a
+  numbered handle on each corner, a drag past the 5 pixel threshold drawn
+  as it goes and reported once, when it ends, through `onWallCornerMove`;
+  fixtures take no press meanwhile. With the prop off the plan is as it was.
+- **The editor** (`RigBuilder.tsx`): walls mode, its strip over the plan
+  (what the last drag did, what is outside, Undo, Back to Edit Room, Done
+  with walls), one `moveOutlineCorner` for each drag, and the answered room
+  put on the rig with no fixture, save or editor undo step touched.
+- **The 3D view needed no change.** It reads `room.outline` and the room's
+  box through `roomOutline` and `buildVenue`, as does the 2D plan through
+  `roomPlan`, so both draw new walls as soon as the rig carries them.
+- **Nothing here sends Art-Net or DMX, moves a fixture or touches a patch,**
+  and there is no new network call beyond the app's own API.
 
 ## What slice 15 built
 
@@ -1370,16 +1554,56 @@ are no binary fixtures in the repository.
   truss on the plan with no reload, the room's Undo leaving a fixture move
   and the editor's own undo step alone, and the count kept when the dialog
   is closed and opened again.
+- **Slice 16 (the walls).**
+  `backend/tests/unit/test_room_outline_edit.py` (run, 53 pass): a box
+  room's four corners in the plan's order; an outline stored as `{x, z}`
+  with the origin-centred box round it; a box still stored as a box; the
+  same walls changing nothing; corners turned clockwise; each refusal's
+  sentence (count, a number missing or infinite, reach, two corners
+  together, a bow tie, a corner on another wall, a spike, too little floor,
+  too narrow, the height); three corners in a line let through; one corner
+  moved, added (half way, at a place, after the last) and deleted, the
+  three-corner and 64-corner limits, a triangle turned inside out; and the
+  outside report (on a wall is inside, the notch of an L, part against all
+  of an item, a lowered ceiling, `already_outside`, a broken item left out).
+  `backend/tests/integration/test_api_room_outline.py` (run, 17 pass): each
+  route stored and read back from the rig and the database row, nothing
+  else in the room and no fixture changed, the fixtures and the riser the
+  new walls cut off listed, the height, a no-op leaving no step, a box kept
+  a box, **a fixture placed by a wall 10 m from the origin not shifted**,
+  five edits undone one by one back to the scanned room, the undo's own
+  `outside`, the 404s and 409s, every 422 with a raw `Infinity` and `NaN`
+  among them, the list routes not taking `outline` for a list, the locate
+  walkthrough's 409 on all five, a scan read again replacing the walls and
+  their undo, and the login.
+  `frontend/src/__tests__/roomWallsEdit.test.ts`,
+  `RoomShellWallsDialog.test.tsx`, `StageView2DWalls.test.tsx` and
+  `RigBuilderWalls.test.tsx` (**type-checked, not run**): the helpers; the
+  Walls section's rows, a corner saved, added and deleted, the height, a
+  refusal, the warning list on opening, after a change and after Undo, the
+  hand-over button; the plan's handles, the 5 pixel threshold, one call for
+  a drag, the grid and Alt, the corner held where it was dropped until the
+  answer and put back when refused, fixtures taking no press; and in the
+  editor one request for a drag, the answered walls drawn with no reload, a
+  refusal, the list of what is outside, the strip's Undo, and fixtures
+  carried again once walls mode is done.
 
 ## What is left
 
-- **Slice 15's frontend tests and the build have not been run.** Run `npx
-  vitest run` and `npm run build` in `frontend/` before relying on them. The
-  dialog tests were written against the patterns of the Edit Room tests that
-  pass, but a wrong label or a wrong expected sentence in them would only
-  show when they run. Nothing of slice 15 has been seen in a browser either:
-  the dialog is now wide (seven columns and a form), and how it sits on a
-  small screen is unknown.
+- **The frontend tests and the build of slices 15 and 16 have not been
+  run.** Run `npx vitest run` and `npm run build` in `frontend/` before
+  relying on them: both were refused by the permissions of the sessions
+  that wrote these slices, and only `npx tsc --noEmit` could be run (it
+  reports the 13 errors it reported before, none in a file these slices
+  touch). The tests were written against the patterns of the Edit Room
+  tests that pass, but a wrong label, a wrong expected sentence, or a
+  state update that lands a tick later than a test waits for would only
+  show when they run. Nothing of either slice has been seen in a browser:
+  the dialog is now wide and long (seven columns, a table of corners and a
+  form), and how it sits on a small screen is unknown; nor have the corner
+  handles, how they sit over a fixture at a corner, or the strip over the
+  plan. The backend suite was run after slice 16: 1864 passed, 10 skipped,
+  5 xfailed (1794 before it).
 
 - **Checks ran on 2026-11-22, 7:44 PM ET, after slice 8 (outline-held guesses, 2D truss snap, room grid, palette click):** frontend vitest 424 passed (22 files) and the build passed; backend pytest tests/ 1632 passed, 10 skipped, 5 xfailed, including tests/integration/test_api_room_scan.py.
 - **Slices 9 to 12 have had their tests run, and they pass**: frontend
@@ -1554,6 +1778,39 @@ are no binary fixtures in the repository.
 - **Binary USDZ** (`.usdc`): not read. Export OBJ.
 - **Ceilings and levels.** Sloped or domed ceilings, balconies and mezzanines
   are still read as a flat ceiling over one floor.
+- **Editing the walls goes only so far** (slice 16):
+  - **Nothing follows a wall.** A fixture, raised area, truss or ring the
+    new walls leave outside is listed and left where it is. There is no
+    "bring them inside" button: move each by hand, or undo the wall.
+  - **The list is a warning, not a lock.** Walls can be saved with things
+    outside them, and nothing stops a show running that way. A fixture a
+    scan left up to 2 m beyond a wall on purpose is listed like any other.
+  - **The middle of the floor does not move**, so a room drawn out to one
+    side is no longer centred on the origin, and its stored `width` and
+    `depth` are wider than its walls. The dialog shows the walls' own
+    size. The 2D plan's tooltip and the scan summary still show the box.
+  - **A wall is at least 0.1 m, not 0.5 m.** A scan can trace a short jog
+    in a wall, and a longer least length would refuse every later edit to
+    such a room for a wall nobody touched.
+  - **Corners are numbered, not named**, and a corner added or deleted
+    renumbers the ones after it. Walls turned inside out by a move are
+    numbered clockwise again from the same first corner.
+  - **A drag moves one corner.** There is no dragging a whole wall, no
+    adding a corner by clicking a wall on the plan (use Add after in the
+    dialog, then drag it), no typing while in walls mode, and a corner
+    snaps to the grid only: not to another corner, to square, or to a
+    scanned truss. Escape does not cancel a drag; Undo takes it back.
+  - **Walls mode is the 2D plan's.** The 3D view draws the new walls and
+    has no handles.
+  - **One outline, no holes, straight walls, one height**, as before: a
+    pillar, a curved wall and a sloped ceiling cannot be drawn by hand
+    either.
+  - **Hanging heights are not recounted against new walls.** A truss the
+    walls now cut through is listed as outside and still counted in its
+    band, so a scan's suggestion can still hang a row along it.
+  - **What is outside is worked out by the server alone**, when the dialog
+    opens and after each change to the room. A fixture dragged outside the
+    walls in the 3D view while the dialog is open is not listed until then.
 - **Editing the room goes only so far.** A raised area, line or ring can be
   renamed, moved, resized, raised or lowered and deleted, a line can be
   turned, and any of them can be added (Edit Room, slice 15). What is left:
@@ -1567,8 +1824,8 @@ are no binary fixtures in the repository.
     in the list is what a scan's suggestion puts floor lights along.
   - **A ring cannot be made an arc**, and a raised area always stands on the
     floor: `base_height` cannot be set.
-  - **The walls, the outline and the room's size cannot be edited.**
-  - **Sizes and positions are typed, not dragged.**
+  - **Sizes and positions of items are typed, not dragged.** Only the
+    corners of the walls can be dragged (slice 16).
   - **Everything is held to the room's box and 2 m round it, not to the
     floor outline**, so in an L-shaped room an item can be put in the notch.
   - **A plain move holds the middle only; a resize holds the whole item.**
