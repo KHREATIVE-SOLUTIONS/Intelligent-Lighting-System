@@ -521,9 +521,11 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
         for index, (fixture, (x, y, z)) in enumerate(zip(members, points)):
             # One shift for the whole row, and a guess's own only where the row could not be kept whole.
             own_x, own_z = own.get(index, (0.0, 0.0))
-            to = (round(x + dx + own_x, 4) + 0.0, round(max(0.0, y + dy), 4) + 0.0, round(z + dz + own_z, 4) + 0.0)
-            if max(abs(to[0] - x), abs(to[1] - y), abs(to[2] - z)) <= MOVED_IF_OVER:
+            # Told by the shift itself, never by where it lands: every fixture
+            # of a row shifted whole moves or none does.
+            if max(abs(dx + own_x), abs(dy), abs(dz + own_z)) <= MOVED_IF_OVER:
                 continue
+            to = (round(x + dx + own_x, 4) + 0.0, round(max(0.0, y + dy), 4) + 0.0, round(z + dz + own_z, 4) + 0.0)
             moves.append(SuggestedMove(
                 rig_fixture_id=int(getattr(fixture, "id", 0) or 0),
                 name=str(getattr(fixture, "name", "") or ""),

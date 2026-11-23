@@ -569,6 +569,18 @@ class TestGuessesInsideAnOutline:
         assert all(m.reason == "Moved inside the walls." for m in moves)
         assert notes == []
 
+    @pytest.mark.parametrize("label, row", [
+        # 5.81 is a centimetre past the 0.2 m kept from the wall at 6: too little to be a move.
+        ("a centimetre over", [(1.0, 0.2), (3.0, 0.2), (5.81, 0.2)]),
+        ("patched below the floor", [(1.0, -0.5), (3.0, 0.2), (5.0, 0.2)]),
+    ])
+    @pytest.mark.parametrize("outlined", [False, True])
+    def test_a_row_with_nothing_to_move_gives_no_moves_for_any_of_it(self, label, row, outlined):
+        # In an outlined room too: at z = -2 the whole row is in the upstage arm of the L.
+        shell = outlined_shell() if outlined else {"room": {"width": 12.0, "depth": 10.0, "height": 5.0}}
+        fixtures = [fixture(i, f"Par {i}", "Floor", x, y, -2.0) for i, (x, y) in enumerate(row)]
+        assert suggest_positions(fixtures, shell) == ([], []), label
+
     @pytest.mark.parametrize("outline", [
         [],
         [{"x": 0.0, "z": 0.0}, {"x": 1.0, "z": 0.0}],

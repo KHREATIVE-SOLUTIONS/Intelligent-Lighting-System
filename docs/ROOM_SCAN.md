@@ -26,7 +26,7 @@ Slice 8 makes the rest of it go by **a room that is not a box**: a suggested
 row is held inside the floor outline and not only its box, a 2D drag snaps to
 the scan's truss, the 2D grid is drawn across the room, and a fixture clicked
 in the palette lands inside the room (see "What slice 8 built"). Its backend
-unit tests pass (167 across the room-scan unit files, Nov 22). **Its frontend
+unit tests pass (171 across the room-scan unit files, Nov 22). **Its frontend
 tests are written and type-check but have not been run**, and none of it has
 been seen in a browser (see What is left).
 
