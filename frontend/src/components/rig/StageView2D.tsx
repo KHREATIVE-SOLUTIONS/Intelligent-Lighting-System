@@ -2,7 +2,8 @@ import { useState, useCallback, useMemo, useRef } from 'react';
 import { Box } from '@mui/material';
 import { FIXTURE_DRAG_MIME, computeTrussLines } from '../../stores/rigEditorStore';
 import type { SnapMode } from '../../stores/rigEditorStore';
-import type { RigFixture } from '../../types';
+import type { RigFixture, RoomShell } from '../../types';
+import { planPolygonPoints, planViewBox, roomPlan } from './roomPlan2d';
 
 const FIXTURE_TYPE_COLORS: Record<string, string> = {
   moving_head: '#e91e63',
@@ -18,12 +19,25 @@ const FIXTURE_TYPE_COLORS: Record<string, string> = {
 
 const AUDIENCE_COLOR = '#ffb74d';
 const TRUSS_COLOR = '#7e57c2';
+// The scanned room: what a phone scan found, not what anybody placed. Grey,
+// brown and teal, so its truss is not taken for the purple lines fixtures
+// snap to.
+const ROOM_FLOOR = '#141a2c';
+const ROOM_WALL = '#90a4ae';
+const ROOM_RAISED = '#8d6e63';
+const ROOM_RAISED_TEXT = '#d7ccc8';
+const ROOM_TRUSS = '#4db6ac';
 
 interface StageView2DProps {
   width: number;
   depth: number;
   height: number;
   fixtures: RigFixture[];
+  /**
+   * The rig's stored room. Only one read from a room scan is drawn: its walls,
+   * raised areas and overhead truss, under the fixtures (docs/ROOM_SCAN.md).
+   */
+  roomShell?: RoomShell | null;
   selectedIds: Set<number>;
   gridSize?: number;
   snapMode?: SnapMode;
@@ -39,6 +53,7 @@ export default function StageView2D({
   width,
   depth,
   fixtures,
+  roomShell,
   selectedIds,
   gridSize = 0.5,
   snapMode = 'grid',
@@ -58,8 +73,15 @@ export default function StageView2D({
   const dragOriginZ = useRef<number | null>(null);
 
   const padding = 1;
-  const viewWidth = width + padding * 2;
-  const viewDepth = depth + padding * 2;
+
+  // The scanned room, and the part of the plan to show: the stage and its
+  // margin, grown to take in a room that reaches beyond it. With no scanned
+  // room the box starts at the origin and is the stage's, as it always was.
+  const plan = useMemo(() => roomPlan(roomShell), [roomShell]);
+  const view = useMemo(
+    () => planViewBox(width, depth, padding, plan?.bounds),
+    [width, depth, padding, plan],
+  );
 
   const acceptsDrop = !readonly && !!onDropFromPalette;
 
@@ -80,14 +102,14 @@ export default function StageView2D({
     (clientX: number, clientY: number) => {
       if (!svgRef.current) return { x: 0, z: 0 };
       const rect = svgRef.current.getBoundingClientRect();
-      const scaleX = viewWidth / rect.width;
-      const scaleY = viewDepth / rect.height;
+      const scaleX = view.width / rect.width;
+      const scaleY = view.height / rect.height;
       return {
-        x: (clientX - rect.left) * scaleX - padding - width / 2,
-        z: (clientY - rect.top) * scaleY - padding - depth / 2,
+        x: view.minX + (clientX - rect.left) * scaleX - padding - width / 2,
+        z: view.minY + (clientY - rect.top) * scaleY - padding - depth / 2,
       };
     },
-    [viewWidth, viewDepth, width, depth, padding]
+    [view, width, depth, padding]
   );
 
   const applySnap = useCallback(
@@ -230,7 +252,7 @@ export default function StageView2D({
     <Box
       sx={{
         width: '100%',
-        aspectRatio: `${viewWidth} / ${viewDepth}`,
+        aspectRatio: `${view.width} / ${view.height}`,
         bgcolor: '#1a1a2e',
         borderRadius: 1,
         overflow: 'hidden',
@@ -238,7 +260,7 @@ export default function StageView2D({
     >
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${viewWidth} ${viewDepth}`}
+        viewBox={`${view.minX} ${view.minY} ${view.width} ${view.height}`}
         width="100%"
         height="100%"
         onMouseMove={handleMouseMove}
@@ -249,6 +271,15 @@ export default function StageView2D({
         onDragLeave={() => setDropPreview(null)}
         onDrop={handleDrop}
       >
+        {/* The scanned room's floor, under the stage */}
+        {plan?.walls && (
+          <polygon
+            data-testid="room-plan-floor"
+            points={planPolygonPoints(plan.walls.points, toSvgX, toSvgY)}
+            fill={ROOM_FLOOR}
+          />
+        )}
+
         {/* Stage floor */}
         <rect
           x={padding}
@@ -282,6 +313,115 @@ export default function StageView2D({
           strokeWidth={0.03}
           strokeDasharray="0.2 0.1"
         />
+
+        {/* The scanned room: walls, raised areas and the truss found overhead.
+            Under the fixtures, so a fixture is always what a press lands on. */}
+        {plan && (
+          <g data-testid="room-plan">
+            {plan.walls && (
+              <polygon
+                data-testid="room-plan-walls"
+                data-outlined={plan.walls.outlined ? 'true' : 'false'}
+                points={planPolygonPoints(plan.walls.points, toSvgX, toSvgY)}
+                fill="none"
+                stroke={ROOM_WALL}
+                strokeWidth={0.1}
+              >
+                <title>{plan.walls.tooltip}</title>
+              </polygon>
+            )}
+
+            {plan.raised.map((area, index) => (
+              <g key={`raised-${index}`} data-testid="room-plan-raised" data-kind={area.kind}>
+                <title>{area.tooltip}</title>
+                <rect
+                  x={toSvgX(area.x)}
+                  y={toSvgY(area.z)}
+                  width={area.width}
+                  height={area.depth}
+                  fill={ROOM_RAISED}
+                  fillOpacity={0.28}
+                  stroke={ROOM_RAISED}
+                  strokeWidth={0.05}
+                />
+                <text
+                  x={toSvgX(area.centerX)}
+                  y={toSvgY(area.centerZ) + 0.08}
+                  textAnchor="middle"
+                  fill={ROOM_RAISED_TEXT}
+                  fontSize={0.24}
+                >
+                  {area.label}
+                </text>
+              </g>
+            ))}
+
+            {plan.trussLines.map((line, index) => (
+              <g key={`scan-truss-${index}`} data-testid="room-plan-truss-line">
+                <title>{line.tooltip}</title>
+                {/* Its width as scanned, faint, and its centre line over that. */}
+                <line
+                  x1={toSvgX(line.x1)}
+                  y1={toSvgY(line.z1)}
+                  x2={toSvgX(line.x2)}
+                  y2={toSvgY(line.z2)}
+                  stroke={ROOM_TRUSS}
+                  strokeWidth={line.across}
+                  strokeOpacity={0.35}
+                />
+                <line
+                  x1={toSvgX(line.x1)}
+                  y1={toSvgY(line.z1)}
+                  x2={toSvgX(line.x2)}
+                  y2={toSvgY(line.z2)}
+                  stroke={ROOM_TRUSS}
+                  strokeWidth={0.05}
+                />
+                <text
+                  x={toSvgX((line.x1 + line.x2) / 2)}
+                  y={toSvgY((line.z1 + line.z2) / 2) - line.across / 2 - 0.1}
+                  textAnchor="middle"
+                  fill={ROOM_TRUSS}
+                  fontSize={0.22}
+                >
+                  {line.label}
+                </text>
+              </g>
+            ))}
+
+            {plan.trussRings.map((ring, index) => (
+              <g key={`scan-ring-${index}`} data-testid="room-plan-truss-ring">
+                <title>{ring.tooltip}</title>
+                <circle
+                  cx={toSvgX(ring.centerX)}
+                  cy={toSvgY(ring.centerZ)}
+                  r={ring.radius}
+                  fill="none"
+                  stroke={ROOM_TRUSS}
+                  strokeWidth={ring.across}
+                  strokeOpacity={0.35}
+                />
+                <circle
+                  cx={toSvgX(ring.centerX)}
+                  cy={toSvgY(ring.centerZ)}
+                  r={ring.radius}
+                  fill="none"
+                  stroke={ROOM_TRUSS}
+                  strokeWidth={0.05}
+                />
+                <text
+                  x={toSvgX(ring.centerX)}
+                  y={toSvgY(ring.centerZ - ring.radius) - ring.across / 2 - 0.1}
+                  textAnchor="middle"
+                  fill={ROOM_TRUSS}
+                  fontSize={0.22}
+                >
+                  {ring.label}
+                </text>
+              </g>
+            ))}
+          </g>
+        )}
 
         {/* Truss lines, shown whenever they can be snapped to */}
         {snapMode === 'truss' &&

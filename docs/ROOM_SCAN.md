@@ -15,6 +15,10 @@ view draws them and a drag snaps to them (see "What slice 4 built"). Its
 backend tests pass. Its frontend tests (273) and the bundle build pass too, but none of it has
 been seen in a browser (see What is left).
 
+The **2D layout view** now draws the stored scanned room under the fixtures
+(see "In the 2D layout view"). That work type-checks, but **its tests have not
+been run and it has not been seen in a browser** (see What is left).
+
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
 
@@ -110,7 +114,8 @@ room, and between the floor and 2 m over the top. The view applies the same
 limit the server does; the server has the last word.
 
 Dragging in the 2D layout view is unchanged: it saves through batch-update and
-does **not** confirm a position.
+does **not** confirm a position. It is still held to the stage deck, not to
+the scanned room drawn round it, and does not snap to the scan's truss.
 
 ### Undoing the moves a scan made
 
@@ -343,6 +348,38 @@ For a rig with a scanned room (`room_shell.source == "scan"`):
   a real wall that nobody saw. The ceiling's beams and duct are still the
   view's own.
 
+## In the 2D layout view
+
+The rig editor's plan (`StageView2D.tsx`) draws the same stored shell, by the
+same rule as the 3D view (`room_shell.source == "scan"`) and in the same axes:
+metres, origin at the centre of the floor, X across, -Z upstage at the top.
+What is fit to draw is decided by the 3D view's own checks (`roomOutline`,
+`scanRisers`, `usableLine`, `scanRings`), so the two views agree. The shapes
+come from `roomPlan` in `components/rig/roomPlan2d.ts`, which has no React in
+it.
+
+- **Walls**: the room's box, or the floor outline when the room has one, as a
+  grey line with a darker floor inside it. The outline is the stored one: a
+  wall is not moved out for a fixture beyond it, as the 3D view's is.
+- **Raised areas**: a brown rectangle each, labelled with its name (or
+  "Stage", "Riser", "Booth or counter" from its kind) and the height of its
+  top above the floor.
+- **Truss lines**: teal, between the line's two ends at whatever heading, as
+  wide as the scan measured, labelled with the height it hangs at. The purple
+  dashed TRUSS lines are still the plan's own, worked out from the fixtures.
+- **Rings of truss**: a teal circle, labelled the same way.
+- **Tooltips**: resting the pointer on any of them gives the longer wording
+  the Room Scan dialog uses (size, underside height, which way a line runs).
+- **The view grows to take the room in.** The plan used to show the stage
+  and a metre round it. A scanned room that reaches beyond that is shown
+  whole, with the same metre round it, so the stage is drawn smaller. The
+  stage, its grid and the fixtures keep their coordinates.
+- **Fixtures are drawn last**, on top of all of it, and are what a press lands
+  on.
+
+A rig with no scanned room (no shell, or a demo preset's shell) draws exactly
+what it did: nothing is added and the view is the size it was.
+
 ## What slice 4 built
 
 - **Reader** (`extract.py`): the floor outline of a room that is not a box,
@@ -429,8 +466,7 @@ are no binary fixtures in the repository.
   and its walls, the box drawn with a warning when a scan stops short of a
   corner, the line's heading, the ring, and rows laid along each in address
   order with placed fixtures keeping their places.
-- `frontend/src/__tests__/roomShapes.test.ts` (**written and type-checked, not
-  yet run**): an angled bar lying on its line whichever end it is written
+- `frontend/src/__tests__/roomShapes.test.ts` (**passing: frontend vitest 344 passed, Nov 22 2026**): an angled bar lying on its line whichever end it is written
   from; a ring's geometry; fixtures clamped to a line or ring with no truss of
   the view's own; which outlines are taken for one; a wall per segment facing
   into the room, for corners in either order; the floor cut to the outline;
@@ -441,14 +477,39 @@ are no binary fixtures in the repository.
 - `backend/tests/unit/test_fixture_position_outline.py`: which rooms have an
   outline, a position held to within the margin of an L-shaped room and then
   to the box, and a box room held as it always was.
-- `frontend/src/__tests__/outlineBounds.test.ts` (**written, not yet run**):
+- `frontend/src/__tests__/outlineBounds.test.ts` (**passing: frontend vitest 344 passed, Nov 22 2026**):
   a beam stopping on the wall of a notch and landing as the box does when the
   outline is a box; mounts and truss against a notch; walls moving out, and
   not for a guess; drag limits; the cameras; the ceiling's beams and duct.
 
+- `frontend/src/__tests__/roomPlan2d.test.ts` (**passing: frontend vitest 344 passed, Nov 22 2026**): the plan shapes for a box room, an outlined room, an angled
+  truss, a ring of truss and a shell with nothing to draw (none, a demo
+  preset's, an empty scan); a shell stored before headings and rings; the
+  labels and tooltips; the view box with no room, a room inside the stage and
+  a room beyond it.
+- `frontend/src/__tests__/StageView2D.test.tsx` (**passing: frontend vitest 344 passed, Nov 22 2026**): the room layer drawn for a scanned room (walls, outline,
+  raised areas, lines, a ring, each with its height) and under the fixtures;
+  the same markup and view box as before for no shell, a null shell and a
+  shell that is not a scan; a drag still read in stage metres with the view
+  grown.
+
 ## What is left
 
-- **Frontend checks ran on 2026-11-22:** vitest 314 passed and the build passed with slices 4 and the outline work; backend 1608 passed.
+- **Frontend checks ran on 2026-11-22:** vitest 314 passed and the build passed with slices 4 and the outline work; backend 1608 passed. **That was before the 2D layout view's room layer.** For that work only `tsc` has been run (no errors in the files it touched): its two test files, the lint and the build have not.
+- **The 2D room layer has not been seen in a browser**: label sizes and
+  overlaps in a crowded room, the tooltips, and a drag with the view grown.
+- **A 2D drag or palette drop is still held to the stage deck.** The grown
+  view shows fixtures a scan hung beyond the deck; picking one up in the 2D
+  view brings it onto the deck on the first move, and a fixture dropped from
+  the palette out in the room lands on the deck's edge. Use the 3D view's
+  Move fixtures for a fixture out in the room.
+- **The 2D plan's own labels still go by the stage.** With a room drawn, the
+  deck's upstage edge still reads "UPSTAGE — BACK WALL" though the scanned
+  wall is elsewhere, and AUDIENCE and the scale bar sit inside the room's
+  floor.
+- **Labels on the 2D plan are not laid out.** Each sits on its own shape, so
+  two trusses close together can print over each other, and a label is not
+  turned to an angled line.
 - **Nothing of slice 4 has been seen in a browser**: an outlined room's walls
   from each camera, an angled bar, a ring, and a drag snapping to either.
 - **Nothing of the outline work has been seen in a browser**: a beam stopping
@@ -491,7 +552,6 @@ are no binary fixtures in the repository.
 - **Binary USDZ** (`.usdc`): not read. Export OBJ.
 - **Ceilings and levels.** Sloped or domed ceilings, balconies and mezzanines
   are still read as a flat ceiling over one floor.
-- **The 2D layout view** does not draw the scanned room; only the 3D view does.
 - **Editing the suggestion.** A raised area or line cannot be renamed, moved or
   deleted in the UI; the choice is to store the shell or not.
 - **Crowd and booth in a scanned room** are left out rather than fitted round

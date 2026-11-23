@@ -413,6 +413,7 @@ export default function RigBuilder() {
             depth={rig.stage_depth}
             height={rig.stage_height}
             fixtures={rig.fixtures}
+            roomShell={rig.room_shell}
             selectedIds={selectedFixtureIds}
             gridSize={gridSize}
             snapMode={snapMode}
