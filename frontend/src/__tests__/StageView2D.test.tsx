@@ -221,9 +221,10 @@ describe('StageView2D: a drag in a scanned room', () => {
       const svg = container.querySelector('svg')!;
       drawnAtTenPixelsAMetre(svg);
       fireEvent.mouseDown(screen.getByText('Spot 1').parentElement!, onScreen(8, 6));
-      fireEvent.mouseMove(svg, onScreen(8.3, 6));
+      // 0.7 m is 7 pixels here: a press is only a drag from 5 pixels on.
+      fireEvent.mouseMove(svg, onScreen(8.7, 6));
       const [, x, z] = onFixtureDrag.mock.calls[0];
-      expect(x).toBeCloseTo(8.3);
+      expect(x).toBeCloseTo(8.7);
       // On truss it stays on its own depth, which is a truss line while it is held.
       expect(z).toBeCloseTo(6);
       cleanup();

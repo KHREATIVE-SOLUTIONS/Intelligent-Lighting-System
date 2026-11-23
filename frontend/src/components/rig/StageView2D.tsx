@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Box } from '@mui/material';
 import { FIXTURE_DRAG_MIME, computeTrussLines } from '../../stores/rigEditorStore';
 import type { SnapMode } from '../../stores/rigEditorStore';
@@ -7,7 +7,11 @@ import {
   holdOnPlan, planFrame, planGrid, planLabels, planPolygonPoints, planTrussTargets, planViewBox, roomPlan,
   snapToRoomGrid, snapToScannedTruss,
 } from './roomPlan2d';
-import type { PlanLabel } from './roomPlan2d';
+import type { PlanLabel, PlanPoint } from './roomPlan2d';
+import {
+  boxBetween, boxSelection, fixturesInBox, keysBelongElsewhere, nudgeMoves, nudgeShift, pastDragThreshold,
+} from './planSelect2d';
+import type { ScreenPoint } from './planSelect2d';
 import { holdRowShift, onPlanTarget, rowReadoutText, snapReadoutText } from './rowMove2d';
 import type { PlanMove, RowShift } from './rowMove2d';
 import type { SnapLine } from './previs/fixtureDrag';
@@ -34,6 +38,8 @@ const ROOM_WALL = '#90a4ae';
 const ROOM_RAISED = '#8d6e63';
 const ROOM_RAISED_TEXT = '#d7ccc8';
 const ROOM_TRUSS = '#4db6ac';
+// The selection's own blue, as the ring round a selected fixture.
+const SELECTION_COLOR = '#4fc3f7';
 
 interface StageView2DProps {
   width: number;
@@ -66,12 +72,42 @@ interface StageView2DProps {
   onFixtureDragEnd?: (id: number) => void;
   /** A double-click on a fixture: select the whole row it is in. */
   onFixtureSelectRow?: (id: number) => void;
+  /**
+   * Makes these the selection: what a box dragged over empty floor took in
+   * (with Shift, Ctrl or Cmd, added to what was selected). Without this a
+   * drag over empty floor draws no box, as it never did.
+   */
+  onSelectFixtures?: (ids: number[]) => void;
+  /**
+   * Whether the plan answers the keyboard: R selects the row of the selected
+   * fixture, the arrow keys nudge the selection by the grid step (Shift: ten
+   * steps) and Escape clears it. Off unless asked for, so a plan shown
+   * somewhere it is not being edited never takes a key. A nudge is reported
+   * as a drag is: `onFixtureDragStart`, one `onFixturesDrag`, `onFixtureDragEnd`.
+   */
+  keyboard?: boolean;
   /** `y` is given only when the drop landed on a scanned truss line or ring. */
   onDropFromPalette?: (fixtureId: number, x: number, z: number, y?: number) => void;
 }
 
+/** One press on empty floor, until it is let go: a click, or a selection box. */
+interface BoxSession {
+  /** Where the pointer went down, on the screen. */
+  down: ScreenPoint;
+  /** The same place on the plan: the box's first corner. */
+  from: PlanPoint;
+  /** Where the pointer is now on the plan: the opposite corner. */
+  to: PlanPoint;
+  /** Shift, Ctrl or Cmd was held at the press: the box adds to the selection. */
+  additive: boolean;
+  /** True once the pointer has gone past the drag threshold: until then it is a click. */
+  started: boolean;
+}
+
 /** One press on a fixture, until it is let go. */
 interface DragSession {
+  /** Where the pointer went down, on the screen: the press is a drag once it is 5 pixels from here. */
+  down: ScreenPoint;
   /** The fixture under the pointer. */
   leadId: number;
   /** Where each fixture being carried stood when it was picked up; the lead alone unless a row is. */
@@ -82,7 +118,7 @@ interface DragSession {
   shift: RowShift;
   /** True once the drag has put a fixture on scanned truss: from then on heights are reported. */
   heightTouched: boolean;
-  /** True once the pointer has moved with the fixture held. */
+  /** True once the pointer has gone past the drag threshold with the fixture held. */
   moved: boolean;
   /** A plain press on one of several selected fixtures: selects it alone if let go without a move. */
   collapseOnRelease: boolean;
@@ -103,9 +139,14 @@ export default function StageView2D({
   onFixturesDrag,
   onFixtureDragEnd,
   onFixtureSelectRow,
+  onSelectFixtures,
+  keyboard = false,
   onDropFromPalette,
 }: StageView2DProps) {
   const svgRef = useRef<SVGSVGElement>(null);
+  // A press on empty floor, and the box it has drawn once it is a drag.
+  const boxRef = useRef<BoxSession | null>(null);
+  const [selectionBox, setSelectionBox] = useState<{ from: PlanPoint; to: PlanPoint } | null>(null);
   // The fixtures being carried: one, or a selected row. Empty when none is held.
   const [draggingIds, setDraggingIds] = useState<number[]>([]);
   const dragRef = useRef<DragSession | null>(null);
@@ -283,6 +324,7 @@ export default function StageView2D({
     // position so grid mode actually lands on the grid.
     const raw = pointerToStage(e.clientX, e.clientY);
     dragRef.current = {
+      down: { clientX: e.clientX, clientY: e.clientY },
       leadId: fixtureId,
       members,
       offset: { x: fixture.position_x - raw.x, z: fixture.position_z - raw.z },
@@ -295,11 +337,55 @@ export default function StageView2D({
     onFixtureDragStart?.(fixtureId);
   };
 
+  // A press on empty floor: a click that clears the selection, unless the
+  // pointer goes past the drag threshold, when it draws a selection box.
+  // Nothing is prevented here: the press still takes the focus out of a text
+  // field, which is what hands the keyboard back to the plan.
+  const handleBackgroundMouseDown = (e: React.MouseEvent) => {
+    skipBackgroundClick.current = false;
+    if (readonly || !onSelectFixtures || e.button !== 0) return;
+    const from = pointerToStage(e.clientX, e.clientY);
+    boxRef.current = {
+      down: { clientX: e.clientX, clientY: e.clientY },
+      from,
+      to: from,
+      additive: e.shiftKey || e.ctrlKey || e.metaKey,
+      started: false,
+    };
+  };
+
+  /** Ends a press on empty floor. A box that was drawn selects what is in it, unless it is `cancelled`. */
+  const endBox = (cancelled: boolean) => {
+    const boxing = boxRef.current;
+    boxRef.current = null;
+    if (!boxing || !boxing.started) return;
+    setSelectionBox(null);
+    // The click that follows the release is the end of this drag, not a click
+    // on empty floor: it must not clear what was just selected, or kept.
+    skipBackgroundClick.current = true;
+    if (cancelled) return;
+    onSelectFixtures?.(
+      boxSelection(selectedIds, fixturesInBox(fixtures, boxing.from, boxing.to), boxing.additive),
+    );
+  };
+
   const handleMouseMove = (e: React.MouseEvent) => {
+    const boxing = boxRef.current;
+    if (boxing && !readonly) {
+      if (!boxing.started && !pastDragThreshold(boxing.down, e)) return;
+      boxing.started = true;
+      boxing.to = pointerToStage(e.clientX, e.clientY);
+      setSelectionBox({ from: boxing.from, to: boxing.to });
+      return;
+    }
+
     const drag = dragRef.current;
     if (!drag || readonly) return;
     const lead = drag.members.find((m) => m.id === drag.leadId);
     if (!lead) return;
+    // A click, or the wobble of one, is not a drag: nothing moves, and so
+    // nothing is saved or left to undo, until the pointer is 5 pixels away.
+    if (!drag.moved && !pastDragThreshold(drag.down, e)) return;
     drag.moved = true;
     const raw = pointerToStage(e.clientX, e.clientY);
     // Holding Alt lets go of the scanned truss for this drag, as it does in
@@ -349,6 +435,8 @@ export default function StageView2D({
   };
 
   const endDrag = (released: boolean) => {
+    // Let go, or carried off the plan: either way the box takes what it holds.
+    endBox(false);
     const drag = dragRef.current;
     if (drag) {
       if (released && drag.collapseOnRelease && !drag.moved) onFixtureClick?.(drag.leadId, false);
@@ -370,6 +458,67 @@ export default function StageView2D({
       onFixtureClick?.(-1, false); // Deselect
     }
   };
+
+  // The keyboard. The handler is kept in a ref and made again on every
+  // render, so the one listener on the window always sees the selection and
+  // the positions as they are now.
+  const keyHandler = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyHandler.current = (e: KeyboardEvent) => {
+    if (e.defaultPrevented) return;
+    // Typing in a field, choosing in a drop-down, or anything in a dialog.
+    if (keysBelongElsewhere(e.target) || keysBelongElsewhere(document.activeElement)) return;
+
+    if (e.key === 'Escape') {
+      // A box being drawn is let go of first, and the selection is left as it was.
+      if (boxRef.current) {
+        endBox(true);
+        return;
+      }
+      if (dragRef.current) return;
+      if (selectedIds.size > 0) onFixtureClick?.(-1, false);
+      return;
+    }
+
+    // Ctrl+R reloads the page and Alt+Left goes back: those are the browser's.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // Nothing is selected or nudged under a pointer that is holding something.
+    if (dragRef.current || boxRef.current) return;
+
+    if (e.key === 'r' || e.key === 'R') {
+      // The row of the first selected fixture in the rig's order, as the
+      // Select row button goes by.
+      const first = fixtures.find((f) => selectedIds.has(f.id));
+      if (!first || !onFixtureSelectRow || e.repeat) return;
+      e.preventDefault();
+      onFixtureSelectRow(first.id);
+      return;
+    }
+
+    const shift = nudgeShift(e.key, gridSize, e.shiftKey);
+    // With nothing selected an arrow key is left to scroll the page.
+    if (!shift || selectedIds.size === 0) return;
+    e.preventDefault();
+    // One press, one step: a key held down does not repeat, or it would fill
+    // the undo history and send a save for every repeat. Shift goes further.
+    if (e.repeat) return;
+    const moves = nudgeMoves(fixtures, selectedIds, shift, walls, width, depth);
+    // Already against the wall it is pushed at: nothing to move, save or undo.
+    if (moves.length === 0) return;
+    // Reported as a drag is, from pick-up to letting go, so it is saved and
+    // undone as one: a single batch-update and a single undo step.
+    const lead = moves[0].id;
+    onFixtureDragStart?.(lead);
+    if (onFixturesDrag) onFixturesDrag(moves);
+    else moves.forEach((move) => onFixtureDrag?.(move.id, move.x, move.z));
+    onFixtureDragEnd?.(lead);
+  };
+
+  useEffect(() => {
+    if (!keyboard || readonly) return undefined;
+    const onKeyDown = (e: KeyboardEvent) => keyHandler.current(e);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [keyboard, readonly]);
 
   // A palette drop goes onto scanned truss as a drag does, Alt letting go.
   const handleDragOver = (e: React.DragEvent) => {
@@ -454,6 +603,9 @@ export default function StageView2D({
         viewBox={`${view.minX} ${view.minY} ${view.width} ${view.height}`}
         width="100%"
         height="100%"
+        // A box dragged across the plan's labels must not select their text.
+        style={{ userSelect: 'none' }}
+        onMouseDown={handleBackgroundMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={() => endDrag(true)}
         onMouseLeave={() => endDrag(false)}
@@ -737,6 +889,27 @@ export default function StageView2D({
             </g>
           );
         })}
+
+        {/* The selection box being dragged over empty floor: every fixture
+            whose centre is inside it is selected when it is let go. */}
+        {selectionBox && (() => {
+          const box = boxBetween(selectionBox.from, selectionBox.to);
+          return (
+            <rect
+              data-testid="selection-box"
+              x={toSvgX(box.minX)}
+              y={toSvgY(box.minZ)}
+              width={box.maxX - box.minX}
+              height={box.maxZ - box.minZ}
+              fill={SELECTION_COLOR}
+              fillOpacity={0.12}
+              stroke={SELECTION_COLOR}
+              strokeWidth={0.04}
+              strokeDasharray="0.15 0.1"
+              style={{ pointerEvents: 'none' }}
+            />
+          );
+        })()}
 
         {/* Landing spot for a fixture dragged in from the palette */}
         {dropPreview && (
