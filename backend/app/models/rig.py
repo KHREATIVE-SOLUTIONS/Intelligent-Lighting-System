@@ -54,7 +54,8 @@ class Rig(Base):
 
     # What the stored room was before each edit made to it by hand, latest
     # last, so an edit can be undone one at a time: `steps` (label, at,
-    # shell). Emptied when a scan is read again or the room is taken off: the
+    # shell, and `fixtures` where the edit carried the fixtures hung on a
+    # truss: each one's from and to). Emptied when a scan is read again or the room is taken off: the
     # steps are of a room that is no longer there. Written by the room-scan
     # endpoint only (services/room_scan/edit_undo.py). Not sent with the rig:
     # `room_shell_edits` below is what a reader gets.

@@ -1779,6 +1779,14 @@ are no binary fixtures in the repository.
   - **The room's box, not its walls, is the limit**, as for the truss
     itself: in an L-shaped room a truss and its fixtures can be carried
     into the notch, where the Walls section then lists them as outside.
+  - **A fixture already outside the limit blocks every carry on its
+    truss**, even a change of height or a move back towards the room: the
+    refusal looks at where each fixture would end up, not at whether it got
+    worse. Untick the box, change the truss, and place that fixture by hand.
+  - **The limit is the scanned room's box**, not the larger of the room and
+    the stage that a dragged fixture is held to
+    (`fixture_position.position_limits`). On a rig whose stage is drawn
+    wider than its scanned room the two differ.
   - **The editor's own Undo steps are dropped** when fixtures were carried,
     like after a scan is applied: a drag made before the truss was moved
     cannot be undone afterwards.
