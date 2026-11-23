@@ -255,6 +255,30 @@ export interface ShellItemChanges {
   radius?: number;
   height?: number;
   heading_deg?: number;
+  /**
+   * Whether the fixtures hung on a line or ring go with it when it is moved,
+   * raised, turned or resized. Left out, the server takes them along.
+   */
+  carry_fixtures?: boolean;
+}
+
+/** Whether fixtures hang on this kind of item: a truss line or a ring, never a raised area. */
+export function carriesFixtures(kind: ShellItemKind): boolean {
+  return kind === 'truss_lines' || kind === 'truss_rings';
+}
+
+/** The label of the box that says whether a truss takes its fixtures along. */
+export const CARRY_LABEL = 'Move the fixtures hung on it';
+
+/**
+ * What is sent for a row's changes, with whether its fixtures go along. The
+ * flag goes only with a change that could move one: a line or ring whose
+ * place, size, height or heading changes. A rename and a raised area are sent
+ * as they were.
+ */
+export function withCarry(item: Pick<ShellItem, 'kind'>, changes: ShellItemChanges, carry: boolean): ShellItemChanges {
+  const reshapes = Object.keys(changes).some((key) => key !== 'name' && key !== 'carry_fixtures');
+  return carriesFixtures(item.kind) && reshapes ? { ...changes, carry_fixtures: carry } : changes;
 }
 
 /** A position as a field shows it: to the millimetre, with no trailing noughts and no -0. */
@@ -380,6 +404,22 @@ export function quarterTurned(item: ShellItem, draft: ShellItemDraft): ShellItem
 /** How many edits to the room can be undone, and what the next undo takes back. */
 export type ShellUndoInfo = RoomShellEdits;
 
+/** Where a fixture is and which way it is turned, as a carried move records it. */
+export interface CarriedPlace {
+  x: number;
+  y: number;
+  z: number;
+  rotation_y?: number | null;
+}
+
+/** One fixture that went with its truss, or went back with it. */
+export interface CarriedFixture {
+  rig_fixture_id: number;
+  name: string;
+  from: CarriedPlace;
+  to: CarriedPlace;
+}
+
 /** The answer to PATCH /api/rigs/{id}/room-shell/{kind}/{index}. */
 export interface ShellItemEdited {
   rig_id: number;
@@ -391,6 +431,16 @@ export interface ShellItemEdited {
   /** False when what was sent is what was stored: nothing was written and there is no step to undo. */
   changed?: boolean;
   undo?: ShellUndoInfo;
+  /** Whether the fixtures hung on it were to go with it. */
+  carry_fixtures?: boolean;
+  /** The fixtures hung on a line or ring that moved with it. The rig's positions are stale once this is not empty. */
+  fixtures_moved?: CarriedFixture[];
+  message?: string;
+}
+
+/** How many fixtures an answer says moved: with their truss, or back with it. */
+export function carriedCount(list: unknown): number {
+  return Array.isArray(list) ? list.length : 0;
 }
 
 /** The answer to DELETE /api/rigs/{id}/room-shell/{kind}/{index}. */
@@ -424,6 +474,10 @@ export interface ShellEditUndone {
   /** The whole stored room as it was before that edit. */
   room_shell: RoomShell;
   undo: ShellUndoInfo;
+  /** The fixtures the undone edit had carried with a truss, put back. The rig's positions are stale once this is not empty. */
+  fixtures_restored?: CarriedFixture[];
+  /** The ones left where they are, because they were moved since or are no longer in the rig. */
+  fixtures_skipped?: Array<{ rig_fixture_id: number; name: string; reason: string }>;
   /**
    * What the walls, as they are again, leave outside them: an undone change
    * to the walls changes that (utils/roomWallsEdit.ts `OutsideReport`).
@@ -443,8 +497,17 @@ const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1
  * read from the room the server answered with: a position beyond the room is
  * held to 2 m outside its walls, and a resized item is brought in until the
  * whole of it is; the words then say where it was put.
+ *
+ * `carried` is what became of the fixtures hung on a line or ring: how many
+ * the server said moved with it, and whether they were asked to. Left out,
+ * none did.
  */
-export function editResultText(before: ShellItem, changes: ShellItemChanges, shell: RoomShell): string {
+export function editResultText(
+  before: ShellItem,
+  changes: ShellItemChanges,
+  shell: RoomShell,
+  carried?: { moved: number; asked: boolean },
+): string {
   const after = shellItems(shell).find((item) => item.kind === before.kind && item.index === before.index);
   const title = shellItemTitle(after ?? before);
   const moved = changes.center_x !== undefined || changes.center_z !== undefined;
@@ -471,8 +534,19 @@ export function editResultText(before: ShellItem, changes: ShellItemChanges, she
       );
     }
   }
-  if ((moved && after?.centre) || (resized && after)) parts.push('No fixture was moved with it.');
+  if ((moved && after?.centre) || (resized && after)) parts.push(carriedText(before.kind, carried));
   return parts.join(' ') || `${title} was saved.`;
+}
+
+/** What became of the fixtures hung on a changed item, in a sentence: the moved-count notice. */
+export function carriedText(kind: ShellItemKind, carried?: { moved: number; asked: boolean }): string {
+  if (carried && carriesFixtures(kind)) {
+    if (carried.moved > 0) {
+      return `${carried.moved} fixture${carried.moved === 1 ? '' : 's'} hung on it moved with it.`;
+    }
+    if (!carried.asked) return 'The fixtures hung on it were left where they are.';
+  }
+  return 'No fixture was moved with it.';
 }
 
 /** What the Delete button asks before anything is taken out. */

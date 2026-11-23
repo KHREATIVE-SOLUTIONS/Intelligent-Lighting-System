@@ -24,7 +24,7 @@ import IdentifyWalkthrough from './IdentifyWalkthrough';
 import RoomScanDialog from './RoomScanDialog';
 import { undoCount } from '../../utils/roomScan';
 import RoomShellEditDialog from './RoomShellEditDialog';
-import { shellEditErrorText, shellUndoCount, undoButtonText } from '../../utils/roomShellEdit';
+import { carriedCount, shellEditErrorText, shellUndoCount, undoButtonText } from '../../utils/roomShellEdit';
 import { outsideLines, outsideOf } from '../../utils/roomWallsEdit';
 import type { Rig, RigFixture, Fixture, PatchConflict, RoomShell, RoomShellEdits } from '../../types';
 
@@ -205,8 +205,9 @@ export default function RigBuilder() {
   };
 
   const handleEditRoom = async () => {
-    // Nothing in the room dialog moves a fixture, but it takes the keys and
-    // the plan away: a drag still waiting to be written is written first.
+    // A truss edited in the room dialog takes its fixtures along on the
+    // server, and the dialog takes the keys and the plan away: a drag still
+    // waiting to be written is written first, or it would land on top.
     await flushPositions();
     setRoomEditOpen(true);
   };
@@ -214,14 +215,30 @@ export default function RigBuilder() {
   /**
    * The stored room after one of its items was changed, added or deleted, or
    * after such an edit was undone, as the server answered it. Only the room
-   * and the count of its edits that can be undone are replaced: no fixture
-   * moved, so the positions on screen and the undo steps that hold them are
-   * still true. The editor's own Undo does not take a room edit back; the
+   * and the count of its edits that can be undone are replaced here. Where
+   * the edit also moved fixtures the dialog says so next
+   * (`handleRoomFixturesMoved`); where it did not, the positions on screen
+   * and the undo steps that hold them are still true, and the rig is not
+   * read again. The editor's own Undo does not take a room edit back; the
    * room has an Undo of its own in the dialog, kept on the server.
    */
   const handleRoomEdited = (shell: RoomShell, edits?: RoomShellEdits) => {
     const current = rigRef.current;
     if (current) applyRig({ ...current, room_shell: shell, room_shell_edits: edits ?? current.room_shell_edits });
+  };
+
+  /**
+   * A room edit moved fixtures on the server: a truss or ring took the ones
+   * hung on it along, or an undo put them back. The positions on screen are
+   * stale, and so is any step of the editor's own undo that would write the
+   * old ones back, as after a scan is applied: the steps are dropped and the
+   * rig is read again, which is what the 2D plan and the 3D view draw from.
+   * Nothing is waiting to be written: Edit Room writes any pending drag
+   * before it opens, and walls mode carries no fixture.
+   */
+  const handleRoomFixturesMoved = () => {
+    clearHistory();
+    void fetchRig();
   };
 
   /**
@@ -277,6 +294,8 @@ export default function RigBuilder() {
     try {
       const result = await roomScanApi.undoShellEdit(current.id);
       handleRoomEdited(result.room_shell, result.undo);
+      // The latest change may be a truss that took its fixtures along: they went back with it.
+      if (carriedCount(result.fixtures_restored) > 0) handleRoomFixturesMoved();
       const outside = outsideOf(result.outside);
       setWallsNote({
         severity: outside.count > 0 ? 'warning' : 'success', text: result.message, outside: outsideLines(outside),
@@ -777,7 +796,8 @@ export default function RigBuilder() {
 
       {/* What the scan found, corrected by hand. Each stored change, and each
           one undone, comes back as the whole room, which the plan then draws
-          and snaps to. */}
+          and snaps to. A truss that took its fixtures along, or brought them
+          back, has the rig read again as well. */}
       <RoomShellEditDialog
         open={roomEditOpen}
         rigId={rig.id}
@@ -786,6 +806,7 @@ export default function RigBuilder() {
         undo={rig.room_shell_edits}
         onClose={() => setRoomEditOpen(false)}
         onChanged={handleRoomEdited}
+        onFixturesMoved={handleRoomFixturesMoved}
         onDragWalls={handleDragWalls}
       />
 

@@ -1460,8 +1460,11 @@ export const roomScanApi = {
   /**
    * Renames, moves, resizes, raises or turns one raised area, overhead line
    * or ring of the stored room. `index` is its place in the stored list, not
-   * on the plan. No fixture moves with it. Answers the whole room as it now
-   * is, and how many edits can be undone.
+   * on the plan. The fixtures hung on a line or ring go with it unless
+   * `carry_fixtures` is false, and come back in `fixtures_moved`: the rig is
+   * then to be read again. Answers the whole room as it now is, and how many
+   * edits can be undone. One that would carry a fixture out of the room is
+   * refused (422) and changes nothing.
    */
   editShellItem: async (
     rigId: number,
@@ -1490,8 +1493,10 @@ export const roomScanApi = {
 
   /**
    * Takes back the latest edit made to the stored room by hand: one edit for
-   * each call. Answers the whole room as it was before that edit. No fixture
-   * moves, and the scan's own undo (`undoMoves`) is a different thing.
+   * each call. Answers the whole room as it was before that edit. The
+   * fixtures that edit carried with a truss go back too (`fixtures_restored`;
+   * one moved since is left, in `fixtures_skipped`): the rig is then to be
+   * read again. The scan's own undo (`undoMoves`) is a different thing.
    */
   undoShellEdit: async (rigId: number): Promise<ShellEditUndone> => {
     const response = await api.post(roomShellUndoPath(rigId));

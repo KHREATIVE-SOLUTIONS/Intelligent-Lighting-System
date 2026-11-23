@@ -17,18 +17,24 @@
  * through the same Undo. A button hands the corners to the 2D plan to be
  * dragged there, which this dialog, being in front of the plan, cannot do.
  *
- * No fixture moves with anything here, and nothing is sent to a light.
+ * A truss line or ring that is moved, raised, turned or resized takes the
+ * fixtures hung on it along, unless its "Move the fixtures hung on it" box is
+ * unticked; the notice says how many moved, and the editor is told to read
+ * the rig again (`onFixturesMoved`). Nothing else here moves a fixture, and
+ * nothing is sent to a light.
  */
 import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   Table,
   TableBody,
   TableCell,
@@ -42,10 +48,13 @@ import axios from 'axios';
 import { roomScanApi } from '../../services/api';
 import type { RoomShell } from '../../types';
 import {
+  CARRY_LABEL,
   NEW_ITEM_CHOICES,
   SHELL_FIELD_LABELS,
   SHELL_NAME_MAX,
   SHELL_SIZE_FIELDS,
+  carriedCount,
+  carriesFixtures,
   deleteQuestionText,
   draftOf,
   editResultText,
@@ -61,6 +70,7 @@ import {
   shellItems,
   shellUndoCount,
   undoButtonText,
+  withCarry,
 } from '../../utils/roomShellEdit';
 import type {
   NewItemDraft, NewItemWhat, ShellItem, ShellItemDraft, ShellSizeField, ShellUndoInfo,
@@ -86,6 +96,13 @@ interface RoomShellEditDialogProps {
    * said.
    */
   onChanged: (shell: RoomShell, undo?: ShellUndoInfo) => void;
+  /**
+   * Called, after `onChanged`, when a change moved fixtures on the server: a
+   * truss or ring took the ones hung on it along, or an undo put them back.
+   * The positions the editor holds are then stale, and the rig is to be read
+   * again.
+   */
+  onFixturesMoved?: () => void;
   /**
    * Asks for the corners to be dragged on the 2D plan: the editor closes this
    * dialog, which is in front of the plan, and puts handles on the corners.
@@ -115,6 +132,7 @@ export default function RoomShellEditDialog({
   undo,
   onClose,
   onChanged,
+  onFixturesMoved,
   onDragWalls,
 }: RoomShellEditDialogProps) {
   // What has been typed against a corner of the walls and not yet saved, by
@@ -131,6 +149,9 @@ export default function RoomShellEditDialog({
   // What has been typed into a row and not yet saved, by the row's key. A row
   // with nothing typed shows what is stored.
   const [drafts, setDrafts] = useState<Record<string, ShellItemDraft>>({});
+  // The lines and rings whose "Move the fixtures hung on it" box is unticked, by the row's key.
+  // A row not here takes its fixtures along, which is how every row starts.
+  const [leftAlone, setLeftAlone] = useState<Record<string, boolean>>({});
   // The request that is out: one change at a time, each built on the last one stored.
   const [busyWith, setBusyWith] = useState<Busy | null>(null);
   // The row whose Delete was pressed and is waiting for an answer.
@@ -168,6 +189,7 @@ export default function RoomShellEditDialog({
   useEffect(() => {
     if (!open) return undefined;
     setDrafts({});
+    setLeftAlone({});
     setBusyWith(null);
     setAskDeleteKey(null);
     setAdding(newItemDraft('riser', shellRef.current));
@@ -204,15 +226,22 @@ export default function RoomShellEditDialog({
     setNotice(null);
     setBusyWith({ key, what: 'save' });
     try {
-      const result = await roomScanApi.editShellItem(rigId, item.kind, item.index, reading.changes);
+      // A truss or ring that is moved, raised, turned or resized takes the fixtures hung on it, unless its box is unticked.
+      const carry = !leftAlone[key];
+      const result = await roomScanApi.editShellItem(
+        rigId, item.kind, item.index, withCarry(item, reading.changes, carry),
+      );
       // This row now shows what was stored; what is typed in the others is kept.
       setDrafts((current) => {
         const next = { ...current };
         delete next[key];
         return next;
       });
-      setNotice(editResultText(item, reading.changes, result.room_shell));
+      const moved = carriedCount(result.fixtures_moved);
+      setNotice(editResultText(item, reading.changes, result.room_shell, { moved, asked: carry }));
       onChanged(result.room_shell, result.undo);
+      // Fixtures stand somewhere new on the server: the rig on screen is to be read again.
+      if (moved > 0) onFixturesMoved?.();
       // A moved or resized item may now reach past a wall, or have come back inside.
       void refreshOutside();
     } catch (err) {
@@ -231,8 +260,9 @@ export default function RoomShellEditDialog({
     try {
       const result = await roomScanApi.deleteShellItem(rigId, item.kind, item.index);
       // The items after it have each moved up a place: what was typed against
-      // the old places would land on the wrong rows.
+      // the old places would land on the wrong rows. So would an unticked box.
       setDrafts({});
+      setLeftAlone({});
       setNotice(result.message);
       onChanged(result.room_shell, result.undo);
       // The places of the items after it have changed, and the list goes by place.
@@ -277,6 +307,7 @@ export default function RoomShellEditDialog({
       // The whole room went back a step: a deleted item is in its list again,
       // and what was typed against the places as they were may be on the wrong rows.
       setDrafts({});
+      setLeftAlone({});
       // The walls may be the ones that went back: so may their corners, and what they leave outside.
       setCornerDrafts({});
       setHeightDraft(null);
@@ -284,8 +315,10 @@ export default function RoomShellEditDialog({
         outsideAsOf.current += 1;
         setOutside(outsideOf(result.outside));
       }
+      // The server's words say how many fixtures went back with their truss, and how many were left.
       setNotice(result.message);
       onChanged(result.room_shell, result.undo);
+      if (carriedCount(result.fixtures_restored) > 0) onFixturesMoved?.();
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -400,9 +433,11 @@ export default function RoomShellEditDialog({
           there. Across is metres from the centre line (stage left is positive). Depth is metres from
           the middle of the floor (downstage is positive, upstage negative). A heading is degrees
           clockwise from across the room, seen from above: 0 runs across, 90 from upstage to
-          downstage. A moved line keeps its length and the way it runs. No fixture moves with
-          anything here. Undo takes back one change at a time; reading the scan again replaces every
-          change, and then there is nothing left to undo.
+          downstage. A moved line keeps its length and the way it runs. The fixtures hung on a truss
+          or a ring go with it when it is moved, raised, turned or resized, unless its box is
+          unticked; nothing else here moves a fixture. Undo takes back one change at a time, with
+          the fixtures it moved; reading the scan again replaces every change, and then there is
+          nothing left to undo.
         </Typography>
 
         {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
@@ -490,6 +525,23 @@ export default function RoomShellEditDialog({
                         {item.marks.map((mark) => (
                           <Chip key={mark} size="small" label={mark} sx={{ mt: 0.5, mr: 0.5 }} />
                         ))}
+                        {carriesFixtures(item.kind) && (
+                          // Fixtures hang on a line or a ring: when it is moved, raised, turned or
+                          // resized they go with it, unless this is unticked.
+                          <FormControlLabel
+                            sx={{ display: 'flex', mt: 0.5, mr: 0 }}
+                            control={
+                              <Checkbox
+                                size="small"
+                                checked={!leftAlone[key]}
+                                disabled={busy}
+                                onChange={(e) => setLeftAlone((current) => ({ ...current, [key]: !e.target.checked }))}
+                                inputProps={{ 'aria-label': `Move the fixtures hung on ${title}` }}
+                              />
+                            }
+                            label={<Typography variant="caption">{CARRY_LABEL}</Typography>}
+                          />
+                        )}
                         {reading.problem && (
                           <Typography variant="caption" color="error" display="block" role="alert">
                             {reading.problem}
