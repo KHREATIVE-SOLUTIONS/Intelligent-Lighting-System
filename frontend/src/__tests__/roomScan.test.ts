@@ -22,8 +22,12 @@ import {
   roomScanPath,
   roomShellPath,
   roomSizeText,
+  NO_TURN_TEXT,
+  turnSummaryText,
+  turnText,
+  turnedCount,
 } from '../utils/roomScan';
-import type { RoomScanPreview } from '../utils/roomScan';
+import type { RoomScanMove, RoomScanPreview } from '../utils/roomScan';
 import type { RoomShell, RoomShellLine } from '../types';
 
 // The room backend/tests/unit/room_scan_meshes.py builds, as the scan reader
@@ -230,6 +234,79 @@ describe('room scan wording', () => {
       .toContain('None would be moved');
     expect(fixtureMoveText(preview({ fixtures: { total: 4, unconfirmed: 2, would_move: 0, moves: [] } })))
       .toContain('None of the 2 unconfirmed fixtures would be moved');
+  });
+
+  describe('the turn of a move', () => {
+    const move = (id: number, turn?: unknown): RoomScanMove => ({
+      rig_fixture_id: id, name: `Par ${id}`, group: 'Floor Pars',
+      from: { x: 0, y: 0, z: 0 }, to: { x: 1, y: 0.9, z: -3 }, reason: 'Moved onto Stage.',
+      ...(turn === undefined ? {} : { turn_deg: turn as number }),
+    });
+
+    it('writes a turn in degrees, to a tenth, with its sign', () => {
+      expect(turnText(move(1, 30))).toBe('30 deg');
+      expect(turnText(move(1, -12.5))).toBe('-12.5 deg');
+      expect(turnText(move(1, 44.96))).toBe('45 deg');
+      expect(turnText(move(1, 7.25))).toBe('7.3 deg');
+    });
+
+    it('writes a dash where the fixture is not turned: 0, no key, or not a number', () => {
+      expect(NO_TURN_TEXT).toBe('-');
+      expect(turnText(move(1, 0))).toBe('-');
+      expect(turnText(move(1))).toBe('-');
+      expect('turn_deg' in move(1)).toBe(false);
+      expect(turnText(move(1, -0))).toBe('-');
+      expect(turnText(move(1, null))).toBe('-');
+      expect(turnText(move(1, '30'))).toBe('-');
+      expect(turnText(move(1, Number.NaN))).toBe('-');
+      expect(turnText(move(1, Number.POSITIVE_INFINITY))).toBe('-');
+      // Too small to show as a tenth, either way round: no "0 deg" and no "-0 deg".
+      expect(turnText(move(1, 0.04))).toBe('-');
+      expect(turnText(move(1, -0.04))).toBe('-');
+    });
+
+    it('counts the moves that turn, which are the ones whose cell is not a dash', () => {
+      expect(turnedCount([move(1, 30), move(2, 0), move(3), move(4, -30), move(5, 0.01)])).toBe(2);
+      expect(turnedCount([move(1), move(2, 0)])).toBe(0);
+      expect(turnedCount([])).toBe(0);
+      expect(turnedCount(null)).toBe(0);
+      expect(turnedCount(undefined)).toBe(0);
+    });
+
+    it('says how many will be turned, and nothing when none are', () => {
+      expect(turnSummaryText([move(1), move(2, 0)])).toBe('');
+      expect(turnSummaryText([])).toBe('');
+      expect(turnSummaryText(undefined)).toBe('');
+      expect(turnSummaryText([move(1, 30), move(2, 30), move(3)]))
+        .toBe('2 of them will also be turned with the stage, which stands at a heading.');
+      expect(turnSummaryText([move(1, 30), move(2), move(3)]))
+        .toBe('1 of them will also be turned with the stage, which stands at a heading.');
+      expect(turnSummaryText([move(1, 30), move(2, 30), move(3, 30)]))
+        .toBe('All 3 will also be turned with the stage, which stands at a heading.');
+      expect(turnSummaryText([move(1, 30), move(2, 30)]))
+        .toBe('Both will also be turned with the stage, which stands at a heading.');
+      expect(turnSummaryText([move(1, 30)]))
+        .toBe('It will also be turned with the stage, which stands at a heading.');
+    });
+
+    it('says it in the past once the scan is applied', () => {
+      expect(turnSummaryText([move(1, 30), move(2, 30), move(3)], true))
+        .toBe('2 of them were also turned with the stage, which stands at a heading.');
+      expect(turnSummaryText([move(1, 30), move(2), move(3)], true))
+        .toBe('1 of them was also turned with the stage, which stands at a heading.');
+      expect(turnSummaryText([move(1, 30), move(2, 30), move(3, 30)], true))
+        .toBe('All 3 were also turned with the stage, which stands at a heading.');
+      expect(turnSummaryText([move(1, 30)], true))
+        .toBe('It was also turned with the stage, which stands at a heading.');
+      expect(turnSummaryText([move(1), move(2)], true)).toBe('');
+    });
+
+    it('leaves the sentence about the moves as it was', () => {
+      const moves = [move(1, 30), move(2, 30)];
+      expect(fixtureMoveText(preview({ fixtures: { total: 11, unconfirmed: 8, would_move: 7, moves } }))).toBe(
+        '7 unconfirmed fixtures of 11 would be moved to agree with the scan; the other 4 stay exactly where they are.',
+      );
+    });
   });
 
   it('writes a move as where from and where to', () => {

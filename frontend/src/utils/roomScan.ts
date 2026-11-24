@@ -40,6 +40,11 @@ export interface RoomScanMove {
   from: RoomScanPoint;
   to: RoomScanPoint;
   reason: string;
+  /**
+   * Degrees the fixture is turned with a stage that stands at a heading, clockwise seen from above.
+   * The server sends it only where a fixture is turned: absent means not turned.
+   */
+  turn_deg?: number;
   /** Always true: the fixture goes from one guess to a better one, and stays unconfirmed. */
   suggested?: boolean;
 }
@@ -261,6 +266,45 @@ export function fixtureMoveText(preview: RoomScanPreview): string {
   const kept = total - wouldMove;
   return `${count(wouldMove, 'unconfirmed fixture')} of ${total} would be moved to agree with the scan`
     + (kept > 0 ? `; the other ${kept} stay exactly where they are.` : '.');
+}
+
+/** The turn of a move in degrees, or 0 where it has none: absent, 0, or not a number at all. */
+function turnOf(move: RoomScanMove): number {
+  const turn = move.turn_deg;
+  return typeof turn === 'number' && Number.isFinite(turn) ? turn : 0;
+}
+
+/** What a turn is written as where there is none. */
+export const NO_TURN_TEXT = '-';
+
+/**
+ * The Turn cell of a move: "30 deg", "-12.5 deg", or a dash for a fixture that is not turned.
+ * To a tenth of a degree, which is what a heading is stored to; a turn too small to show is a dash.
+ */
+export function turnText(move: RoomScanMove): string {
+  const tenths = Math.round(turnOf(move) * 10) / 10;
+  return tenths === 0 ? NO_TURN_TEXT : `${tenths} deg`;
+}
+
+/** How many of the moves turn their fixture: the ones whose Turn cell is not a dash. */
+export function turnedCount(moves: RoomScanMove[] | null | undefined): number {
+  return (moves ?? []).filter((move) => turnText(move) !== NO_TURN_TEXT).length;
+}
+
+/**
+ * "3 of them will also be turned to face the way the stage does." for a preview, "3 of them were
+ * also turned ..." once applied, and '' when no move turns anything, so a room standing square
+ * reads as it always did.
+ */
+export function turnSummaryText(moves: RoomScanMove[] | null | undefined, applied = false): string {
+  const turned = turnedCount(moves);
+  if (turned === 0) return '';
+  const total = (moves ?? []).length;
+  const verb = applied ? (turned === 1 ? 'was' : 'were') : 'will';
+  const tail = `also ${applied ? '' : 'be '}turned with the stage, which stands at a heading.`;
+  if (turned < total) return `${turned} of them ${verb} ${tail}`;
+  if (total === 1) return `It ${verb} ${tail}`;
+  return `${total === 2 ? 'Both' : `All ${total}`} ${verb} ${tail}`;
 }
 
 const point = (p: RoomScanPoint) => `${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}`;
