@@ -36,6 +36,7 @@ import { createOutputFeed, ingestOutput, summariseFeed } from './previs/outputFe
 import type { FeedSummary, OutputFeed } from './previs/outputFeed';
 import { roomOutline, scanHangers, scanRisers, scannedRoom, usableDisc, usableDome } from './previs/roomShell';
 import type { OutlinePoint } from './previs/roomShell';
+import { boxHeading } from './previs/raisedArea';
 import { boxFloor, placeScanBooth, placeScanCrowd } from './previs/scanFloor';
 import type { FloorCamera } from './previs/scanFloor';
 import { RoomShellView } from './previs/RoomShellView';
@@ -964,6 +965,8 @@ function Scene({
         depth: riser.depth,
         height: riser.height,
         base_height: riser.base_height ?? 0,
+        // One at a heading stands turned (slice 21); one that is not says nothing, as before.
+        ...(boxHeading(riser) !== 0 ? { heading_deg: boxHeading(riser) } : {}),
       })),
       camera: { x: stand[0], z: stand[2], clearRadius: layout.floorCamera.clearRadius },
     });

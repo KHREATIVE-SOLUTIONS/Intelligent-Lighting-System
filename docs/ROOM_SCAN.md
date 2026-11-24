@@ -76,6 +76,14 @@ not been type-checked or built**: the session that wrote it had no
 `node_modules` and was refused `npx vitest run`, `npm run build`, `npm ci`
 and `tsc`. The backend suite was run and passes (see What is left).
 
+Slice 23 fits **the booth and the crowd to a scanned room** in the 3D view:
+the desk, decks and DJ on the raised area the room calls a booth (or, marked
+as a guess, on its first stage), and the crowd on the floor left open round
+the stage, the risers and the booth, inside the walls. A raised area at a
+heading (slice 21) is read as it stands turned (see "What slice 23 built").
+Frontend only. Its tests, the type-check and the build have been run and
+pass; it has not been seen in a browser (see What is left).
+
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
 
@@ -1143,14 +1151,15 @@ For a rig with a scanned room (`room_shell.source == "scan"`):
   invents are **left out**: they would stand through the stage and risers the
   scan found, or claim things about a real wall that nobody saw. The ceiling's
   beams and duct are still the view's own;
-- **the booth and the crowd are fitted to the room** (slice 21,
+- **the booth and the crowd are fitted to the room** (slice 23,
   `scanFloor.ts`). The desk, decks and DJ stand on the raised area the room
   calls a booth, facing the open floor. A room with no booth and a stage gets
   them at the downstage middle of the first stage, marked in amber as a guess;
   a room with neither gets none. The crowd stands on the open floor: inside
   the walls, 0.5 m from them and from every raised area, and out of the metre
-  in front of the booth. Both are placed again when the room is edited. See
-  "What slice 21 built".
+  in front of the booth. A raised area at a heading (slice 21) is read as it
+  stands turned, and the booth on it is turned with it. Both are placed again
+  when the room is edited. See "What slice 23 built".
 
 ## In the 2D layout view
 
@@ -1432,18 +1441,41 @@ they would have stood through the stage and risers the scan found.
   is drawn there), `facingOpenFloor` (which way it faces), `openFloorAt`
   (whether somebody can stand at a point), `openFloorCells` (the open floor on
   a 0.25 m grid), `scanCrowdCapacity` and `placeScanCrowd` (who stands where),
-  with `boxFloor`, `footprint` and `rectDistance`.
+  with `boxFloor`, `footprint`, `rectDistance` and `areaDistance`.
 - **The booth.** On the first raised area whose kind is `booth`, `source:
   'scan'`. A room with none gets no booth made up, unless it has a stage:
   then it goes at the middle of the front edge of the first one, `source:
   'guess'`. A room with neither has no booth.
-  - *Facing.* A raised area's sides are square to the room, so a booth faces
-    one of four ways: the one that looks most nearly at the middle of the
-    open floor, never one with a wall within 0.75 m in front of it while
-    another has none. With no open floor at all, away from the nearest wall.
-    Of two the same, downstage. A guessed booth on a stage faces downstage
-    whichever way most of the floor is, and goes by this rule only when a
-    wall is within 0.75 m of the stage's downstage edge.
+  - *Facing.* A booth faces the way one of the four sides of its raised area
+    does: the one that looks most nearly at the middle of the open floor,
+    never one with a wall within 0.75 m in front of it while another has
+    none. With no open floor at all, away from the nearest wall. Of two the
+    same, downstage. A guessed booth on a stage faces downstage whichever
+    way most of the floor is, and goes by this rule only when a wall is
+    within 0.75 m of the stage's downstage edge.
+  - *At a heading* (`heading_deg`, slice 21). A raised area that is turned is
+    read as it stands: its width along its heading and its depth square to
+    it, about its middle, from the same helpers the plan and the drag use
+    (`boxAxes`, `boxCorners`, `boxHeading` and `sideFacing` in
+    `raisedArea.ts`). Its four sides then face along its own width and
+    depth, not along the room. A guessed booth goes on the side that is
+    downstage as the stage stands turned (the side `sideFacing` calls
+    downstage: an end of the width once it is turned past 45 degrees). A
+    booth the room has is drawn at its own heading: `ScanBooth.heading` is
+    the raised area's, and `yaw` is the turn `buildRisers` gives its box
+    when it faces along its depth. The metre kept clear in front is a box
+    at the same heading (`ScanBooth.strip`; `clear` is then only the box
+    round it). The crowd keeps 0.5 m from every raised area's turned
+    footprint (`areaDistance`: inside its turned corners is 0, otherwise the
+    distance to the nearest of its sides, by `insideOutline` and
+    `nearestOnOutline`), and where the DJ can stand is checked the same way.
+    `scanFloorKey` carries a heading that is not 0, so turning a raised
+    area places the booth and the crowd again.
+  - *No heading, or 0, is exactly what it was.* Those raised areas go
+    through the sums they always did (`footprint` and `rectDistance`), the
+    booth's `clear` is the same rectangle with `strip` null, the view's key
+    is the same text and the crowd's seed the same number, so the same room
+    has the same booth and the same people as before headings were read.
   - *A counter or a platform.* A booth 0.6 m high or more is the counter
     itself: the decks and mixer go on its top, on the DJ's side, and the DJ
     stands on the floor 0.25 m behind it. That is the height from which a
@@ -1490,15 +1522,29 @@ they would have stood through the stage and risers the scan found.
   either, the guessed booth and its DJ, a riser on the stage where the DJ
   would stand), no floor left, the booth's strip and the DJ's room, a booth
   on a side wall and in the arm of an L, a low platform, the floor camera,
-  the same crowd twice and another after an edit.
-- **What was run.** `npx tsc --noEmit -p .` (the 13 errors it had before,
-  none new). **`npx vitest --run` and `npm run build` could not be run in
-  this session** (both were refused), so the new tests are written and
-  type-checked and each was traced by hand, but none has been seen to pass,
-  and the view has not been looked at in a browser. Run them before relying
-  on this slice.
+  the same crowd twice and another after an edit. For a raised area at a
+  heading (the last `describe`): `areaDistance` against a distance worked
+  out in the test from the angle alone; a heading of 0 giving the same
+  booth, the same cells and the same crowd as none; a guessed booth on a
+  stage turned 30 degrees (where it is, its facing, yaw, DJ and strip), on
+  one turned 90 (where the same stage standing square has it, with the same
+  open floor) and on one turned -60 (an end of its width is downstage); a
+  wall in front of a turned stage's downstage side; a booth the room has
+  turned 30 and 90 degrees (its heading, yaw, DJ and strip); the open floor
+  off a turned stage and on the floor it turned away from; a crowd in an
+  L-shaped room round a turned stage, riser and booth, nobody within 0.5 m
+  of any turned footprint, in the turned strip or outside the walls; and
+  another crowd once a raised area is turned.
+- **What was run** (Nov 24, with the heading support): in `frontend/`,
+  `npx vitest run` 55 files, 1163 passed (35 of them in
+  `scanFloor.test.ts`: the 24 written first, unchanged, and 11 for a
+  heading); `npx tsc --noEmit` the 13 errors it had before, none new and
+  none in a file this slice touches; `npm run build` OK. When the slice was
+  first written vitest and the build were refused and its tests were only
+  type-checked. **The view has still not been looked at in a browser.**
 - **Frontend only.** No backend change, no new field, no migration; nothing
   here sends Art-Net or DMX, and there is no network call.
+
 ## What slice 22 built
 
 Heights set by dragging. Until now every height and base height was typed
@@ -2462,6 +2508,24 @@ are no binary fixtures in the repository.
   undo that restored and not otherwise; and in the editor the rig read
   again, the plan redrawn, the editor's undo steps dropped, nothing read
   again when the truss went alone, and both Undo buttons.
+- **Slice 23 (the booth and the crowd in a scanned room).** Frontend only.
+  **Run (Nov 24):** `npx vitest run` 1163 passed in 55 files, `npm run build`
+  OK, `npx tsc --noEmit` only the 13 older errors.
+  `frontend/src/__tests__/scanFloor.test.ts` (35 tests): no booth made up
+  for a room with no booth and no stage; a guessed booth at the downstage
+  middle of the first stage, kept there in a corner and turned only for a
+  wall right in front; no DJ where a riser stands behind the desk; the
+  room's own booth before the stage; a counter against a wall and one out
+  from it, one on a side wall, one in the arm of an L, and a low platform;
+  the open floor less its margins from the walls and the raised areas; an
+  L-shaped room without its notch; the same crowd twice and another after
+  an edit; never more people than asked for or than fit; the crowd clear of
+  a stage, a riser and each other, denser near the booth and facing it; the
+  booth's strip, the DJ's room and the Floor camera's; nobody where no
+  floor is left. And for a raised area at a heading (slice 21): what is
+  listed under Tests in "What slice 23 built" (a stage turned 30, 90 and
+  -60 degrees, a booth turned 30 and 90, the crowd kept off every turned
+  footprint, and a heading of 0 changing nothing).
 - **Slice 22 (heights by dragging).** Frontend only. **Run afterwards (Nov 24,
   ~1:10 AM ET, by the overnight Grok run):** `npx vitest run` 1128 passed
   (1084 on its base), `npm run build` OK, `npx tsc --noEmit` only the 13 older
@@ -3168,11 +3232,13 @@ are no binary fixtures in the repository.
     resized (slice 17), **and a raised area** (slice 18), **and a raised
     area follows the one it stands on** (slice 20); the limits of each are
     above. Nothing follows a wall.
-- **Crowd and booth in a scanned room** are fitted to it (slice 21). What that
+- **Crowd and booth in a scanned room** are fitted to it (slice 23). What that
   leaves:
-  - **The slice's tests have not been run**, nor the build, nor the view
-    looked at: vitest and the build were refused in the session that wrote
-    it. `npx vitest --run src/__tests__/scanFloor.test.ts` first.
+  - **It has not been seen in a browser.** Its tests, the type-check and the
+    build pass (see its entry in "What the tests cover"), and nobody has
+    looked at the view: a booth on a real scan, a booth on a turned raised
+    area sitting square on the box drawn under it, the amber mark, or the
+    crowd round a turned stage.
   - **The DJ and Floor cameras still aim at the booth the view makes up**,
     against the upstage wall on the centre line. In a scanned room whose
     booth is elsewhere they look at a wall. The crowd does keep clear of
@@ -3189,9 +3255,11 @@ are no binary fixtures in the repository.
     is at the middle of the stage's front edge even where a riser stands
     there; only the DJ is left out then. A desk is never narrower than 1.3 m,
     so it overhangs a platform narrower than that.
-  - **One of four ways.** A booth faces along X or Z, since a raised area is
-    square to the room. In a room whose walls run at an angle it does not
-    turn to them.
+  - **One of four ways.** A booth faces the way a side of its raised area
+    does: along X or Z on one square to the room, along its own width or
+    depth on one at a heading. It does not turn to a wall that runs at an
+    angle, or to the floor, any further than its raised area is turned; and
+    a scan finds no heading, so that turn is one set by hand.
   - **No dance floor is drawn** in a scanned room: the crowd stands on the
     plain floor. No speaker stacks either.
   - **Raised areas are all obstacles**, whatever their base: nobody stands

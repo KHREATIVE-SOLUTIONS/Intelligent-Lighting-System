@@ -46,7 +46,7 @@ export function boxHeading(box: { heading_deg?: number | null } | null | undefin
 }
 
 /** The way a box's width runs and the way its depth runs, as unit steps on the plan. */
-function boxAxes(heading: number): { ux: number; uz: number; vx: number; vz: number } {
+export function boxAxes(heading: number): { ux: number; uz: number; vx: number; vz: number } {
   if (heading === 0) return { ux: 1, uz: 0, vx: 0, vz: 1 };
   const turn = (heading * Math.PI) / 180;
   const cos = Math.cos(turn);

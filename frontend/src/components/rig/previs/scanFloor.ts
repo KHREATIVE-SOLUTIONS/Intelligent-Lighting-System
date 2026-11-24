@@ -1,11 +1,16 @@
 /**
- * The DJ booth and the crowd in a scanned room (docs/ROOM_SCAN.md, slice 21).
+ * The DJ booth and the crowd in a scanned room (docs/ROOM_SCAN.md, slice 23).
  *
  * A room the view makes up has its booth against the upstage wall and a square
  * dance floor in front of it. A scanned room has neither: it has a floor of its
  * own shape, and a stage, risers and a booth wherever the scan found them. So
  * the booth goes on the raised area that is one, and the crowd fills whatever
  * floor is left open round all of it.
+ *
+ * A raised area may stand at a heading (`heading_deg`, raisedArea.ts): it is
+ * then read as it stands, turned about its middle, and the booth on it faces
+ * the way one of its own sides does. One with no heading is read by the plain
+ * sums it always was, so a room with nothing turned comes out exactly the same.
  *
  * Pure numbers on the plan: no React, and nothing drawn here. Axes are the
  * rig's: metres, X across, -Z upstage.
@@ -17,8 +22,10 @@ import {
 import type { CrowdPerson } from './crowdLayout';
 import { seededRandom } from './geometryKit';
 import { DESK_DEPTH, DESK_HEIGHT } from './layout';
-import { nearestOnOutline, outlineBox, outlineClearance } from './outline';
+import { insideOutline, nearestOnOutline, outlineBox, outlineClearance } from './outline';
 import type { OutlinePoint } from './outline';
+import { boxAxes, boxCorners, boxHeading, sideFacing } from './raisedArea';
+import type { Footprint } from './raisedArea';
 
 /** Nobody stands nearer a wall than this. */
 export const WALL_CLEAR = 0.5;
@@ -55,8 +62,8 @@ export function boxFloor(xMin: number, xMax: number, zMin: number, zMax: number)
   return [{ x: xMin, z: zMin }, { x: xMax, z: zMin }, { x: xMax, z: zMax }, { x: xMin, z: zMax }];
 }
 
-/** A raised area's footprint on the plan. */
-export function footprint(shape: RoomShellBox): FloorRect {
+/** The footprint on the plan of a raised area that stands square to the room. */
+export function footprint(shape: Footprint): FloorRect {
   return {
     xMin: shape.center_x - shape.width / 2,
     xMax: shape.center_x + shape.width / 2,
@@ -72,13 +79,24 @@ export function rectDistance(rect: FloorRect, x: number, z: number): number {
   return Math.hypot(dx, dz);
 }
 
+/**
+ * How far a point on the plan is from a raised area as it stands: 0 on it.
+ * One at a heading is measured to its turned corners (`boxCorners`); one
+ * square to the room by its plain rectangle, as before a heading could be set.
+ */
+export function areaDistance(shape: Footprint, x: number, z: number): number {
+  if (boxHeading(shape) === 0) return rectDistance(footprint(shape), x, z);
+  const corners = boxCorners(shape);
+  return insideOutline(corners, x, z) ? 0 : nearestOnOutline(corners, x, z).distance;
+}
+
 const topOf = (shape: RoomShellBox) => (shape.base_height ?? 0) + shape.height;
 
 /** How high the surface under a point is: the top of the tallest raised area it is on, or the floor. */
 function standingHeight(risers: RoomShellBox[], x: number, z: number): number {
   let height = 0;
   for (const riser of risers) {
-    if (rectDistance(footprint(riser), x, z) === 0) height = Math.max(height, topOf(riser));
+    if (areaDistance(riser, x, z) === 0) height = Math.max(height, topOf(riser));
   }
   return height;
 }
@@ -103,6 +121,8 @@ export type ScanBooth = {
   faceX: number;
   faceZ: number;
   yaw: number;
+  /** The heading of the raised area it stands on, in degrees: 0 for one square to the room. */
+  heading: number;
   /** Along the front face. */
   width: number;
   /**
@@ -119,8 +139,13 @@ export type ScanBooth = {
   gearBack: number;
   /** Where the DJ stands, feet at `y`, `back` behind the front face. Null where there is nowhere to stand. */
   dj: { x: number; y: number; z: number; back: number } | null;
-  /** The floor in front of it that the crowd keeps out of. */
+  /**
+   * The floor in front of it that the crowd keeps out of. For a booth at a
+   * heading this is only the box round that floor: `strip` is the floor itself.
+   */
   clear: FloorRect;
+  /** That floor as a box at the booth's heading. Null for a booth square to the room: `clear` is it. */
+  strip: Footprint | null;
 };
 
 /** Downstage first: the way a booth faces when nothing says otherwise. */
@@ -128,18 +153,43 @@ const FACINGS: Array<[number, number]> = [[0, 1], [0, -1], [1, 0], [-1, 0]];
 /** A wall this close in front of a raised area's edge means it does not face that way. */
 const FRONT_PROBE = 0.75;
 
+/** A side of a raised area: the way it faces on the plan, and how far from the middle it is. */
+type Side = {
+  fx: number;
+  fz: number;
+  half: number;
+  /** True for the two sides the depth runs between: the front and back of one that stands square. */
+  depthSide: boolean;
+};
+
 /**
- * Which way a raised area faces: towards the open floor. Its sides are square
- * to the room, so it is one of four ways. The one that looks most nearly at
- * the middle of the open floor wins, unless a wall stands right in front of
- * it; with no open floor at all, the one away from the nearest wall. Of two
- * the same, downstage first.
+ * The four sides of a raised area as it stands, the downstage one first. One
+ * square to the room faces straight down, up and across the room (`FACINGS`).
+ * One at a heading faces along its own width and depth (`boxAxes`), and its
+ * downstage side is the one `sideFacing` calls that: past 45 degrees it is an
+ * end of its width.
  */
-export function facingOpenFloor(
-  outline: OutlinePoint[],
-  shape: RoomShellBox,
-  open: OutlinePoint[],
-): [number, number] {
+function sidesOf(shape: RoomShellBox): Side[] {
+  const heading = boxHeading(shape);
+  if (heading === 0) {
+    return FACINGS.map(([fx, fz]) => ({
+      fx, fz, half: (fz !== 0 ? shape.depth : shape.width) / 2, depthSide: fz !== 0,
+    }));
+  }
+  const { ux, uz, vx, vz } = boxAxes(heading);
+  const sides: Side[] = [
+    { fx: vx, fz: vz, half: shape.depth / 2, depthSide: true },
+    { fx: 0 - vx, fz: 0 - vz, half: shape.depth / 2, depthSide: true },
+    { fx: ux, fz: uz, half: shape.width / 2, depthSide: false },
+    { fx: 0 - ux, fz: 0 - uz, half: shape.width / 2, depthSide: false },
+  ];
+  const down = sides.findIndex((side) => sideFacing(side.fx, side.fz, side.depthSide) === 'downstage');
+  if (down > 0) sides.unshift(...sides.splice(down, 1));
+  return sides;
+}
+
+/** The side of a raised area that faces the open floor (see `facingOpenFloor`). */
+function sideToOpenFloor(outline: OutlinePoint[], shape: RoomShellBox, open: OutlinePoint[]): Side {
   let towardX = 0;
   let towardZ = 0;
   if (open.length > 0) {
@@ -154,17 +204,18 @@ export function facingOpenFloor(
     towardX = shape.center_x - wall.x;
     towardZ = shape.center_z - wall.z;
   }
-  let best = FACINGS[0];
+  const sides = sidesOf(shape);
+  let best = sides[0];
   let bestScore = -Infinity;
   let bestBlocked = true;
-  for (const facing of FACINGS) {
-    const [fx, fz] = facing;
-    const reach = (fz !== 0 ? shape.depth : shape.width) / 2 + FRONT_PROBE;
+  for (const side of sides) {
+    const { fx, fz } = side;
+    const reach = side.half + FRONT_PROBE;
     const blocked = !(outlineClearance(outline, shape.center_x + fx * reach, shape.center_z + fz * reach) > 0);
     const score = towardX * fx + towardZ * fz;
     const better = bestBlocked !== blocked ? !blocked : score > bestScore + 1e-9;
     if (better) {
-      best = facing;
+      best = side;
       bestScore = score;
       bestBlocked = blocked;
     }
@@ -173,10 +224,31 @@ export function facingOpenFloor(
 }
 
 /**
+ * Which way a raised area faces: towards the open floor. It faces the way one
+ * of its four sides does: straight along or across the room when it stands
+ * square to it, and along its own width or depth when it is at a heading. The
+ * side that looks most nearly at the middle of the open floor wins, unless a
+ * wall stands right in front of it; with no open floor at all, the one away
+ * from the nearest wall. Of two the same, downstage first.
+ */
+export function facingOpenFloor(
+  outline: OutlinePoint[],
+  shape: RoomShellBox,
+  open: OutlinePoint[],
+): [number, number] {
+  const side = sideToOpenFloor(outline, shape, open);
+  return [side.fx, side.fz];
+}
+
+/**
  * The booth of a scanned room. On the first raised area the room calls a
  * booth, facing the open floor ('scan'). A room with none has no booth made up
  * for it, unless it has a stage: then the booth goes at the middle of the
  * front edge of the first one ('guess'). Null for a room with neither.
+ *
+ * A raised area at a heading has its booth at that heading: on the side of it
+ * that faces the open floor, or, for a guess, on its downstage side, both as
+ * it stands turned.
  *
  * `outline` is the room's floor and `risers` its raised areas that can be
  * drawn (`scanRisers`). Any other booth or counter is left as the scan found it.
@@ -188,15 +260,22 @@ export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]):
   if (index < 0) index = risers.findIndex((riser) => riser.kind === 'stage');
   if (index < 0) return null;
   const shape = risers[index];
+  const heading = boxHeading(shape);
 
   // A booth put on a stage goes at the stage's downstage edge, as a stage is
   // played: only a wall right in front of that edge turns it to the open floor.
-  const downstageOpen = outlineClearance(outline, shape.center_x, shape.center_z + shape.depth / 2 + FRONT_PROBE) > 0;
-  const [faceX, faceZ] = source === 'guess' && downstageOpen
-    ? FACINGS[0]
-    : facingOpenFloor(outline, shape, openFloorCells(outline, risers).cells);
-  const deep = faceZ !== 0 ? shape.depth : shape.width;
-  const wide = faceZ !== 0 ? shape.width : shape.depth;
+  const downstage = sidesOf(shape)[0];
+  const probe = downstage.half + FRONT_PROBE;
+  const downstageOpen = outlineClearance(
+    outline, shape.center_x + downstage.fx * probe, shape.center_z + downstage.fz * probe,
+  ) > 0;
+  const side = source === 'guess' && downstageOpen
+    ? downstage
+    : sideToOpenFloor(outline, shape, openFloorCells(outline, risers).cells);
+  const faceX = side.fx;
+  const faceZ = side.fz;
+  const deep = side.depthSide ? shape.depth : shape.width;
+  const wide = side.depthSide ? shape.width : shape.depth;
   const base = shape.base_height ?? 0;
   const top = topOf(shape);
   // The middle of the raised area's own front face.
@@ -245,9 +324,23 @@ export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]):
   const half = (source === 'scan' ? Math.max(wide, width) : width) / 2;
   const aheadX = frontX + faceX * BOOTH_FRONT_CLEAR;
   const aheadZ = frontZ + faceZ * BOOTH_FRONT_CLEAR;
-  const clear: FloorRect = faceZ !== 0
-    ? { xMin: frontX - half, xMax: frontX + half, zMin: Math.min(frontZ, aheadZ), zMax: Math.max(frontZ, aheadZ) }
-    : { xMin: Math.min(frontX, aheadX), xMax: Math.max(frontX, aheadX), zMin: frontZ - half, zMax: frontZ + half };
+  let clear: FloorRect;
+  let strip: Footprint | null = null;
+  if (heading === 0) {
+    clear = faceZ !== 0
+      ? { xMin: frontX - half, xMax: frontX + half, zMin: Math.min(frontZ, aheadZ), zMax: Math.max(frontZ, aheadZ) }
+      : { xMin: Math.min(frontX, aheadX), xMax: Math.max(frontX, aheadX), zMin: frontZ - half, zMax: frontZ + half };
+  } else {
+    // A box of its own at the raised area's heading, a metre out from the front face.
+    strip = {
+      center_x: (frontX + aheadX) / 2,
+      center_z: (frontZ + aheadZ) / 2,
+      width: side.depthSide ? half * 2 : BOOTH_FRONT_CLEAR,
+      depth: side.depthSide ? BOOTH_FRONT_CLEAR : half * 2,
+      heading_deg: heading,
+    };
+    clear = outlineBox(boxCorners(strip));
+  }
 
   return {
     source,
@@ -258,6 +351,7 @@ export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]):
     faceZ,
     // A turn of `a` about Y takes +Z to (sin a, cos a) on the plan.
     yaw: Math.atan2(faceX, faceZ),
+    heading,
     width,
     desk: !counter,
     deskTopY: counter ? top : top + DESK_HEIGHT,
@@ -266,6 +360,7 @@ export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]):
     gearBack,
     dj: canStand ? { x: djX, y: standY, z: djZ, back: djBack } : null,
     clear,
+    strip,
   };
 }
 
@@ -274,8 +369,8 @@ export type FloorCamera = { x: number; z: number; clearRadius: number };
 
 /**
  * Whether somebody can stand at a point: on the floor, inside the outline,
- * `WALL_CLEAR` from every wall and `RAISED_CLEAR` from every raised area, out
- * of the strip in front of the booth, and not on top of the DJ or the camera.
+ * `WALL_CLEAR` from every wall and `RAISED_CLEAR` from every raised area as it
+ * stands (turned, if it is at a heading), out of the strip in front of the booth, and not on top of the DJ or the camera.
  */
 export function openFloorAt(
   outline: OutlinePoint[],
@@ -287,10 +382,10 @@ export function openFloorAt(
 ): boolean {
   if (!(outlineClearance(outline, x, z) >= WALL_CLEAR)) return false;
   for (const riser of risers) {
-    if (rectDistance(footprint(riser), x, z) < RAISED_CLEAR) return false;
+    if (areaDistance(riser, x, z) < RAISED_CLEAR) return false;
   }
   if (booth) {
-    if (rectDistance(booth.clear, x, z) === 0) return false;
+    if ((booth.strip ? areaDistance(booth.strip, x, z) : rectDistance(booth.clear, x, z)) === 0) return false;
     if (booth.dj && Math.hypot(booth.dj.x - x, booth.dj.z - z) < DJ_CLEAR) return false;
   }
   if (camera && Math.hypot(camera.x - x, camera.z - z) < camera.clearRadius) return false;
@@ -365,6 +460,9 @@ export function placeScanCrowd(
   for (const point of outline) seedValues.push(point.x, point.z);
   for (const riser of risers) {
     seedValues.push(riser.center_x, riser.center_z, riser.width, riser.depth, riser.height, riser.base_height ?? 0);
+    // Only one that is turned adds its heading: a room with nothing turned keeps the crowd it had.
+    const heading = boxHeading(riser);
+    if (heading !== 0) seedValues.push(heading);
   }
   if (booth) seedValues.push(booth.x, booth.z, booth.faceX, booth.faceZ);
   const random = seededRandom(seedOf(seedValues));
