@@ -195,6 +195,13 @@ describe('room scan requests', () => {
     expect(fileProblem({ name: 'club.obj', size: ROOM_SCAN_MAX_BYTES + 1 })).toContain('200 MB');
     expect(fileProblem({ name: 'club.obj', size: 0 })).toContain('empty');
   });
+
+  it('lets the file picker choose a glTF, which is what most scanning apps export', () => {
+    const endings = ROOM_SCAN_ACCEPT.split(',');
+    expect(endings).toEqual(expect.arrayContaining(['.glb', '.gltf', '.obj', '.ply', '.usdz', '.usda', '.json']));
+    expect(endings.every((ending) => /^\.[a-z]+$/.test(ending))).toBe(true);
+    expect(fileProblem({ name: 'club.glb', size: 1024 })).toBeNull();
+  });
 });
 
 describe('room scan wording', () => {

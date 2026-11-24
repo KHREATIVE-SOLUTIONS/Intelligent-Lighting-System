@@ -308,7 +308,8 @@ class TestWhatCannotBeRead:
 
     @pytest.mark.parametrize("name, content, says", [
         ("empty.obj", b"", "empty"),
-        ("scan.glb", b"glTF" + bytes(32), "GLB"),
+        ("scan.glb", b"glTF" + bytes(32), "GLB"),       # the first four bytes of one, and nothing after
+        ("scan.glb", b"glTF" + bytes(32), "glTF 2.0"),
         ("notes.txt", b"this is not a scan\n", "OBJ, PLY"),
         ("room.json", b'{"rooms": []}', "walls"),
         ("room.usdz", b"PK\x03\x04 not really a zip", "archive"),

@@ -16,8 +16,11 @@ export interface RoomScanOptions {
 
 export const DEFAULT_SCAN_OPTIONS: RoomScanOptions = { units: 'auto', upAxis: 'auto', rotate: 0 };
 
-/** The file endings the server reads. A .usdz is read whether its layer is binary USD (USDC), text or RoomPlan JSON. */
-export const ROOM_SCAN_ACCEPT = '.obj,.ply,.usdz,.usdc,.usda,.json';
+/**
+ * The file endings the server reads. A .usdz is read whether its layer is binary USD (USDC), text or
+ * RoomPlan JSON; a .gltf must hold its data inside it (a .glb always does).
+ */
+export const ROOM_SCAN_ACCEPT = '.obj,.ply,.glb,.gltf,.usdz,.usdc,.usda,.json';
 
 /** The server's own limit (room_scan.MAX_UPLOAD_BYTES). Checked here first so a huge file is not sent to be refused. */
 export const ROOM_SCAN_MAX_BYTES = 200 * 1024 * 1024;

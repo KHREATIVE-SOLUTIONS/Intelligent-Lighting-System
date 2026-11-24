@@ -10,15 +10,23 @@ not say: an OBJ has no signature, so a file is taken for one when it is named
 
 from pathlib import PurePath
 
+from .gltf import GLB_MAGIC, looks_like_gltf, parse_glb, parse_gltf
 from .mesh import RoomScanError, ScanMesh, parse_obj, parse_ply
 from .usd import USDA_MAGIC, USDC_MAGIC, parse_roomplan_bytes, parse_usda, parse_usdz
 from .usdc import parse_usdc
 
-SUPPORTED = "OBJ, PLY (ASCII or binary), USDZ, USD (USDA text or USDC binary), or RoomPlan JSON"
+SUPPORTED = (
+    "OBJ, PLY (ASCII or binary), glTF (.glb, or a .gltf with its data inside it), "
+    "USDZ, USD (USDA text or USDC binary), or RoomPlan JSON"
+)
 
 
 def detect_scan_format(filename: str, content: bytes) -> str:
-    """obj, ply, usdz, usda, usdc, roomplan, glb or '' when nothing fits."""
+    """obj, ply, usdz, usda, usdc, roomplan, glb, gltf or '' when nothing fits.
+
+    A .gltf is JSON, as RoomPlan's file is. It is told apart by its name, or
+    by the `asset` every glTF must carry when it is named something else.
+    """
     head = content[:4096]
     stripped = head.lstrip()
     suffix = PurePath(filename or "").suffix.lower()
@@ -31,12 +39,18 @@ def detect_scan_format(filename: str, content: bytes) -> str:
         return "usda"
     if head.startswith(USDC_MAGIC):
         return "usdc"
-    if head.startswith(b"glTF"):
+    if head.startswith(GLB_MAGIC):
         return "glb"
-    if stripped.startswith(b"{"):
+    if stripped.startswith(b"{") or head.startswith(b"\xef\xbb\xbf{"):
+        if suffix in (".gltf", ".glb") or looks_like_gltf(content):
+            return "gltf"
         return "roomplan"
     if suffix == ".obj":
         return "obj"
+    if suffix == ".glb":
+        return "glb"
+    if suffix == ".gltf":
+        return "gltf"
     if any(line.startswith((b"v ", b"f ")) for line in head.splitlines()):
         return "obj"
     return ""
@@ -62,7 +76,7 @@ def read_scan_file(filename: str, content: bytes) -> ScanMesh:
     if fmt == "usdc":
         return parse_usdc(content, name)
     if fmt == "glb":
-        raise RoomScanError(
-            "This is a GLB (binary glTF), which is not read yet. Export the scan as OBJ or PLY instead."
-        )
+        return parse_glb(content, name)
+    if fmt == "gltf":
+        return parse_gltf(content, name)
     raise RoomScanError(f"This does not look like a room scan this can read. Send {SUPPORTED}.")

@@ -15,6 +15,7 @@ and one truss across the room.
                 -Z upstage
 """
 
+import base64
 import io
 import json
 import math
@@ -291,6 +292,103 @@ def Xform "Room" (
     }}
 }}
 '''
+
+
+GLTF_INDEX_TYPES = {"B": 5121, "H": 5123, "I": 5125}
+
+
+def gltf_scene(
+    parts: Sequence[Tuple[np.ndarray, np.ndarray, dict]],
+    indexed: bool = True,
+    interleaved: bool = False,
+    index_format: str = "I",
+    mode: int = 4,
+) -> Tuple[dict, bytes]:
+    """(the glTF JSON as a dict, its one buffer) for a scene of meshes.
+
+    Each part is (points, triangles, node): one mesh with one primitive, drawn
+    by one node at the top of the scene. `node` is what places it (`matrix`,
+    or `translation`, `rotation` and `scale`), or {} to leave it where it is.
+    The points are written as they are given: glTF's own axes are Y-up, metres.
+
+    `indexed=False` writes each triangle's three corners out in turn, with no
+    index list. `interleaved=True` writes each point after twelve bytes of a
+    made-up normal, so its buffer view has a byteStride of 24 and its accessor
+    a byteOffset of 12. A test changes the dict to make a file that is wrong.
+    """
+    doc = {
+        "asset": {"version": "2.0", "generator": "synthetic room"},
+        "scene": 0, "scenes": [{"nodes": []}],
+        "nodes": [], "meshes": [], "accessors": [], "bufferViews": [], "buffers": [],
+    }
+    data = bytearray()
+
+    def view(raw: bytes, stride: Optional[int] = None) -> int:
+        while len(data) % 4:
+            data.append(0)
+        entry = {"buffer": 0, "byteOffset": len(data), "byteLength": len(raw)}
+        if stride:
+            entry["byteStride"] = stride
+        data.extend(raw)
+        doc["bufferViews"].append(entry)
+        return len(doc["bufferViews"]) - 1
+
+    for number, (vertices, faces, node) in enumerate(parts):
+        points = np.asarray(vertices, dtype=np.float64)
+        triangles = np.asarray(faces, dtype=np.int64)
+        if not indexed:
+            points = points[triangles.reshape(-1)]
+        primitive = {"attributes": {}, "mode": mode}
+
+        low, high = points.min(axis=0).tolist(), points.max(axis=0).tolist()
+        accessor = {"componentType": 5126, "count": len(points), "type": "VEC3", "min": low, "max": high}
+        if interleaved:
+            table = np.zeros((len(points), 6), dtype="<f4")
+            table[:, 1] = 1.0
+            table[:, 3:] = points
+            accessor.update(bufferView=view(table.tobytes(), stride=24), byteOffset=12)
+        else:
+            accessor["bufferView"] = view(points.astype("<f4").tobytes())
+        doc["accessors"].append(accessor)
+        primitive["attributes"]["POSITION"] = len(doc["accessors"]) - 1
+
+        if indexed:
+            flat = [int(i) for i in triangles.reshape(-1)]
+            raw = struct.pack(f"<{len(flat)}{index_format}", *flat)
+            doc["accessors"].append({
+                "bufferView": view(raw), "componentType": GLTF_INDEX_TYPES[index_format],
+                "count": len(flat), "type": "SCALAR",
+            })
+            primitive["indices"] = len(doc["accessors"]) - 1
+
+        doc["meshes"].append({"name": f"part {number}", "primitives": [primitive]})
+        doc["nodes"].append({"name": f"node {number}", "mesh": number, **node})
+        doc["scenes"][0]["nodes"].append(number)
+
+    doc["buffers"].append({"byteLength": len(data)})
+    return doc, bytes(data)
+
+
+def write_glb(doc: dict, data: bytes = b"") -> bytes:
+    """A .glb: the 12-byte header, the JSON chunk padded with spaces, the BIN chunk padded with zeros."""
+    text = json.dumps(doc).encode()
+    text += b" " * (-len(text) % 4)
+    chunks = struct.pack("<II", len(text), 0x4E4F534A) + text
+    if data:
+        padded = data + bytes(-len(data) % 4)
+        chunks += struct.pack("<II", len(padded), 0x004E4942) + padded
+    return b"glTF" + struct.pack("<II", 2, 12 + len(chunks)) + chunks
+
+
+def write_gltf(doc: dict, data: bytes = b"") -> bytes:
+    """A .gltf with its buffer inside it as a base64 data URI. `doc` is not changed.
+
+    A buffer the test has already given a `uri` keeps it.
+    """
+    whole = json.loads(json.dumps(doc))
+    if data and "uri" not in whole["buffers"][0]:
+        whole["buffers"][0]["uri"] = "data:application/octet-stream;base64," + base64.b64encode(data).decode()
+    return json.dumps(whole, indent=1).encode()
 
 
 def write_zip(members: Sequence[Tuple[str, bytes]]) -> bytes:
