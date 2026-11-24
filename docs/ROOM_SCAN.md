@@ -638,6 +638,7 @@ JSON body, every field optional; anything left out (or `null`) is kept:
 | `height` | a raised area's deck above its base, 0.05 to 3 m with its top under the ceiling; the underside of a line or ring, 0.5 m to the ceiling (`room.height`; 30 m where the room has none) |
 | `base_height` | `risers` only (slice 18): how far its underside is above the floor, 0 to 10 m, with its top (`base_height + height`) under the ceiling. 0 stands on the floor |
 | `riser_kind` | `risers` only (slice 18): `stage`, `riser` or `booth`. Its place in the list is kept |
+| `is_dj_booth` | `risers` only (slice 28): `true` marks it as the DJ's booth and takes the mark off any other; `false` takes it off this one. A change of `riser_kind` sent without it takes the mark off |
 | `carry_fixtures` | whether the fixtures hung on a line or ring, or standing on a raised area (slice 18), go with it. `true` when left out or `null`. Not a change by itself: sent alone it is refused like an empty body |
 
 - **The fixtures hung on a line or ring go with it** (slice 17,
@@ -827,6 +828,7 @@ list it goes in. Answers 201.
 | `center_x`, `center_z` | where its middle goes. Needed |
 | `width`, `depth`, `height` | `risers`: all three needed |
 | `riser_kind` | `risers` only: `stage`, `riser` or `booth`. A riser when left out or empty |
+| `is_dj_booth` | `risers` only (slice 28): `true` adds it as the DJ's booth and takes the mark off any other. The answer, like the DELETE's, carries `dj_booth`: the marked place or null |
 | `base_height` | `risers` only (slice 18): as for `PATCH`. On the floor (0) when left out |
 | `length`, `height` | `truss_lines`: both needed |
 | `heading_deg` | `truss_lines`: across the room (0) when left out. `risers` (slice 21): square to the room when left out or 0, and then not stored |
@@ -1649,19 +1651,19 @@ makes up against the upstage wall whatever the room had.
   the undo, delete and add, the stack, the refusals, the round trip through
   `GET /api/rigs/{id}` and the database column, three undo steps walked
   back, and the locate walkthrough. Frontend: `boothPick.test.ts` (the
-  pick, the scanFloor choice, the plan's tag), `boothCamera.test.ts`
+  pick, the scanFloor choice, the plan's tag in numbers),
+  `StageView2DDjBooth.test.tsx` (the tag drawn), `boothCamera.test.ts`
   (heading 0, a booth elsewhere, turned 30, -60 and 90 against the heading-0
   result turned in the test, a booth `placeScanBooth` placed, the view's own
   booth, a room with no scan) and `RoomShellDjBoothDialog.test.tsx` (the
-  box, what it sends, Undo, one at a time, the helpers, the plan's tag
-  drawn).
+  box, what it sends, Undo, one at a time, the helpers).
 - **What was run** (Nov 24). Backend, with the main checkout's venv:
   `python -m pytest tests/ -q` **2562 passed, 10 skipped, 5 xfailed** (2531
   before the slice; the 31 new ones are the two files above). **Nothing of
   the frontend was run.** This worktree has no `frontend/node_modules`, and
   `npm ci`, `npx vitest run`, and `node` on the main checkout's `tsc` were
   each refused in the session; `npx tsc` ran and found no compiler. So the
-  three new test files, the changed files, the type-check (13 older errors
+  four new test files, the changed files, the type-check (13 older errors
   expected) and the build are all unchecked by any tool: the expected
   numbers in the tests were worked out by hand. See "What is left".
 - **No Art-Net, no DMX, no network call, no new dependency.**
@@ -2939,8 +2941,9 @@ Pixar's USD library from the same rooms (slice 24).
 - `backend/tests/unit/test_room_scan_dj_booth.py` and
   `backend/tests/integration/test_api_room_shell_dj_booth.py`: the DJ booth
   mark (slice 28). Run. The frontend's `boothPick.test.ts`,
-  `boothCamera.test.ts` and `RoomShellDjBoothDialog.test.tsx` are written and
-  **have not been run** (see "What slice 28 built").
+  `boothCamera.test.ts`, `RoomShellDjBoothDialog.test.tsx` and
+  `StageView2DDjBooth.test.tsx` are written and **have not been run** (see
+  "What slice 28 built").
 - `backend/tests/unit/test_room_scan.py`: the parsers (OBJ, PLY in three
   encodings, USDA, USDZ, RoomPlan JSON), the same room recovered whatever the
   units, axes and heading, a point cloud with no normals, a scan leaking through
@@ -3560,8 +3563,8 @@ Pixar's USD library from the same rooms (slice 24).
   errors are expected, none in `boothPick.ts`, `boothCamera.ts`,
   `scanFloor.ts`, `roomPlan2d.ts`, `roomShellEdit.ts`, `StageView2D.tsx`,
   `RoomShellEditDialog.tsx` or `RigVisualizer.tsx`) and `npm run build`. Its
-  test files are `boothPick.test.ts`, `boothCamera.test.ts` and
-  `RoomShellDjBoothDialog.test.tsx`. Expect a first run to find something: a
+  test files are `boothPick.test.ts`, `boothCamera.test.ts`,
+  `RoomShellDjBoothDialog.test.tsx` and `StageView2DDjBooth.test.tsx`. Expect a first run to find something: a
   type error is as likely as a failed expectation, and one expectation
   (a booth by the stage right wall facing stage left, in `boothPick.test.ts`)
   rests on where the middle of the open floor falls, which was reasoned and

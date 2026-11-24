@@ -1,15 +1,14 @@
 // Edit Room's "DJ booth" box on a raised area's row (docs/ROOM_SCAN.md, slice
 // 28): what it shows, what it sends, that one row at a time is the booth, and
-// that the room's own Undo takes it back. Then the helpers under it, and the
-// tag the 2D plan prints on the booth. The API is a stand-in: nothing here
-// reaches a backend.
+// that the room's own Undo takes it back. Then the helpers under it. The API
+// is a stand-in: nothing here reaches a backend. The tag the 2D plan prints on
+// the booth is in StageView2DDjBooth.test.tsx.
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import RoomShellEditDialog from '../components/rig/RoomShellEditDialog';
-import StageView2D from '../components/rig/StageView2D';
 import { roomScanApi } from '../services/api';
-import type { RigFixture, RoomShell, RoomShellEdits } from '../types';
+import type { RoomShell, RoomShellEdits } from '../types';
 import {
   DJ_BOOTH_LABEL, djBoothBoxName, djBoothShown, draftOf, editResultText, readDraft, shellItems, withCarry,
 } from '../utils/roomShellEdit';
@@ -297,61 +296,5 @@ describe('the DJ booth box, read from a row', () => {
     const staged = shell(2);
     staged.risers![2] = { ...staged.risers![2], kind: 'stage' };
     expect(editResultText(booth, { riser_kind: 'stage', is_dj_booth: true }, staged)).toBe('Decks is now a stage.');
-  });
-});
-
-describe('StageView2D: the tag on the DJ booth', () => {
-  afterEach(cleanup);
-
-  const fixture = {
-    id: 1, name: 'Spot 1', dmx_address: 1, position_x: 0, position_y: 4, position_z: 0, rotation_y: 0,
-  } as unknown as RigFixture;
-  const view = (roomShell?: RoomShell) =>
-    render(<StageView2D width={10} depth={8} height={5} fixtures={[fixture]} selectedIds={new Set<number>()} roomShell={roomShell} />);
-  /** The tag's own words, without its tooltip's. */
-  const words = (tag: Element) => tag.lastChild!.textContent;
-
-  it('is on the first booth of a room nobody marked one in', () => {
-    view(shell());
-    const raised = screen.getAllByTestId('room-plan-raised');
-    const tag = screen.getByTestId('room-plan-dj-booth');
-    expect(raised[1].contains(tag)).toBe(true);
-    expect(words(tag)).toBe('DJ');
-    expect(tag.getAttribute('data-source')).toBe('scan');
-    expect(tag.querySelector('title')!.textContent).toContain('the first booth the scan found');
-    // Each raised area's own label is still the first text in its group.
-    expect(raised[1].querySelector('text')!.textContent).toBe('Bar · 1.10 m high');
-  });
-
-  it('is on the marked one, and only on that one', () => {
-    view(shell(2));
-    const raised = screen.getAllByTestId('room-plan-raised');
-    expect(screen.getAllByTestId('room-plan-dj-booth')).toHaveLength(1);
-    const tag = screen.getByTestId('room-plan-dj-booth');
-    expect(raised[2].contains(tag)).toBe(true);
-    expect(words(tag)).toBe('DJ');
-    expect(tag.getAttribute('data-source')).toBe('marked');
-    expect(tag.getAttribute('fill')).not.toBe('#ffb74d');
-  });
-
-  it('is an amber DJ? on the stage of a room with no booth: a guess', () => {
-    const guessed = shell();
-    guessed.risers = [guessed.risers![0]];
-    view(guessed);
-    const tag = screen.getByTestId('room-plan-dj-booth');
-    expect(words(tag)).toBe('DJ?');
-    expect(tag.getAttribute('data-source')).toBe('guess');
-    expect(tag.getAttribute('fill')).toBe('#ffb74d');
-  });
-
-  it('is not drawn with no scanned room, or in one with no booth and no stage', () => {
-    view();
-    expect(screen.queryByTestId('room-plan-dj-booth')).toBeNull();
-    cleanup();
-    const bare = shell();
-    bare.risers = [{ center_x: 0, center_z: 0, width: 2, depth: 2, height: 0.3, kind: 'riser' }];
-    view(bare);
-    expect(screen.getAllByTestId('room-plan-raised')).toHaveLength(1);
-    expect(screen.queryByTestId('room-plan-dj-booth')).toBeNull();
   });
 });

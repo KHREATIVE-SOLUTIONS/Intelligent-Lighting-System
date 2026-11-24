@@ -233,6 +233,14 @@ class TestDeletingAndAdding:
         assert on_stage.status_code == 201, on_stage.text
         riser_at = on_stage.json()["index"]
 
+        # Carried with the stage and nothing said of the mark, the riser is still the booth where it went.
+        carried = await client.patch(f"{room}/risers/{stage_at}", json={"center_z": stage["center_z"] + 0.25})
+        assert carried.status_code == 200, carried.text
+        assert riser_at in [entry["index"] for entry in carried.json()["items_moved"]]
+        assert carried.json()["dj_booth"] == riser_at and marked(carried.json()["room_shell"]) == [riser_at]
+        assert carried.json()["room_shell"]["risers"][riser_at]["center_z"] == pytest.approx(stage["center_z"] + 0.25)
+        assert marked((await rig_of(client, rig_id))["room_shell"]) == [riser_at]
+
         # The stage is moved, which carries the riser, and made the booth in the same request.
         moved = await client.patch(
             f"{room}/risers/{stage_at}", json={"center_x": stage["center_x"] + 0.5, KEY: True},
