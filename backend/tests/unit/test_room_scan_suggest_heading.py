@@ -299,9 +299,11 @@ class TestUngroupedFixtures:
         assert places(row) == before
 
     @pytest.mark.parametrize("heading", HEADINGS)
-    def test_a_swung_ungrouped_row_is_still_one_row_where_a_rounded_depth_could_split_it(self, heading):
-        # 0.25 m upstage of the stage's middle: a place stored to the millimetre reads as 0.249 or 0.251.
-        row = [fixture(i, -3.9 + 0.78 * i, 0.2, -2.25, group="") for i in range(11)]
+    @pytest.mark.parametrize("depth_mm", range(-2260, -2239))
+    def test_a_swung_ungrouped_row_is_still_one_row_where_a_rounded_depth_could_split_it(self, heading, depth_mm):
+        # About 0.25 m upstage of the stage's middle, a millimetre at a time: a place stored to the
+        # millimetre reads a little either side of its depth, wherever a rounding would cut it.
+        row = [fixture(i, -3.9 + 0.78 * i, 0.2, depth_mm / 1000.0, group="") for i in range(11)]
         shell = box_shell(stage(heading))
         apply(row, suggest_positions(row, shell)[0])
         before = places(row)

@@ -81,6 +81,9 @@ ON_SHAPE_M = 0.05
 CROWDED_UNDER = 0.3
 # A row brought inside a floor outline is shifted by a whole number of these.
 OUTLINE_STEP = 0.05
+# Ungrouped fixtures a scan has swung onto a turned stage are one row while
+# each is within this of the next, from the stage's back to its front.
+SWUNG_ROW_GAP = 0.05
 # What a stage must store, as numbers, for a row to be put onto it.
 STAGE_NUMBERS = ("center_x", "center_z", "width", "depth", "height")
 
@@ -578,6 +581,7 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
         return [], notes
 
     rows: Dict[str, List[Any]] = {}
+    swung_loose: List[Tuple[float, float, int, Any]] = []
     for fixture in candidates:
         x, y, z = _position(fixture)
         group = (getattr(fixture, "group_name", None) or "").strip()
@@ -586,18 +590,32 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
         # One already hanging on such a line is where a scan would put it.
         if not group and any(_on_shape(shape, fixture) for shape in angled + rings):
             continue
-        key = group or f"@ y{round(y, 1)} z{round(z, 1)}"
         # A floor row a scan has swung onto a stage at a heading stands at one
-        # depth of the stage, not of the room: it is still one row, told by
-        # its depth from the stage's back to its front. (To the centimetre
-        # first: a stored place is rounded, and a row is not split by that.)
+        # depth of the stage, not of the room: it is still one row, told below
+        # by its depth from the stage's back to its front.
         if (
             not group and stage is not None and stage_heading != 0.0 and y < OVERHEAD_FROM
             and TAG_SCAN_HINT in (getattr(fixture, "tags", None) or [])
         ):
             own_depth = _swung(x - float(stage["center_x"]), z - float(stage["center_z"]), -stage_heading)[1]
-            key = f"@ y{round(y, 1)} on the stage at {round(round(own_depth, 2), 1) + 0.0}"
+            swung_loose.append((round(y, 1), own_depth, len(swung_loose), fixture))
+            continue
+        key = group or f"@ y{round(y, 1)} z{round(z, 1)}"
         rows.setdefault(key, []).append(fixture)
+
+    # Those are rows by standing together, not by a rounded depth: a stored
+    # place is rounded to the millimetre, and wherever a rounding cuts, a row
+    # at that depth would be read as two. A new row starts at a gap.
+    previous: Optional[Tuple[float, float]] = None
+    swung_rows: List[List[Tuple[int, Any]]] = []
+    for height, own_depth, order, fixture in sorted(swung_loose, key=lambda item: item[:3]):
+        if previous is None or height != previous[0] or own_depth - previous[1] > SWUNG_ROW_GAP:
+            swung_rows.append([])
+        previous = (height, own_depth)
+        swung_rows[-1].append((order, fixture))
+    for number, row in enumerate(swung_rows):
+        # In the order the rig gave them, as every other row is.
+        rows[f"@ swung onto the stage, row {number}"] = [fixture for _, fixture in sorted(row, key=lambda item: item[0])]
 
     moves: List[SuggestedMove] = []
     for key, members in rows.items():

@@ -115,7 +115,7 @@ and stores its heading; a floor row suggested onto it is laid parallel to
 its turned edges, as far in from them, and each fixture is turned as far;
 and the scan's undo turns them back (see "What slice 27 built"). A stage
 standing square is read and suggested for exactly as before. Backend only.
-Its tests pass (pytest 2459 passed, 10 skipped, 5 xfailed, Nov 24). **No
+Its tests pass (pytest 2531 passed, 10 skipped, 5 xfailed, Nov 24). **No
 turned stage from a real phone has been read**, and the preview table does
 not show the turn (see What is left).
 
@@ -1594,7 +1594,7 @@ walls, and partly off the deck. Backend only.
   - *A row that is not the stage's* (downstage of its turned front, or off
     its width) falls through to the walls, as before. Overhead rows never
     read the stage.
-  - *The corner and the ungrouped row.* A stage across a corner is written one way (heading over -45, up to 45, never dropped at -45), and ungrouped floor fixtures a scan has swung are one row by their depth on the stage, not in the room, so a row wider than the stage is not closed up a fixture at a time on the next scan.
+  - *The corner and the ungrouped row.* A stage across a corner is written one way (heading over -45, up to 45, never dropped at -45), and ungrouped floor fixtures a scan has swung are one row by their depth on the stage, not in the room (each within 0.05 m of the next, `SWUNG_ROW_GAP`, not by a rounded depth), so a row wider than the stage is not closed up a fixture at a time on the next scan.
 - **The route** (`POST .../room-scan`). Apply writes `rotation_y` for a move
   with a `turn_deg`, and the fixture's entry in the undo record keeps
   `rotation_y_before` and `rotation_y_after`. The answer's moves have
@@ -3520,6 +3520,7 @@ Pixar's USD library from the same rooms (slice 24).
     0.9, 0.8) were chosen on built rooms. Expect the first real one to be
     read square when it is turned, which is the old behaviour, more often
     than turned when it is square. Keep the scan either way.
+  - **An ungrouped row moved while the stage stood square is not kept whole once the stage is turned by hand without its box ticked.** Ungrouped fixtures a scan has moved are a row by their depth on the turned stage (within 0.05 m of the next); ones still lying along the room are read a fixture at a time. Give the row a group.
   - **The preview table does not show the turn.** The move's `reason`
     says it ("... which stands turned 30 degrees and turned with it") and
     the answer has `turn_deg`, but the Room Scan dialog has no column for
