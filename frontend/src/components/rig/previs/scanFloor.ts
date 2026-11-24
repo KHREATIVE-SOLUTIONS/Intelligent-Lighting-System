@@ -32,8 +32,10 @@ const DJ_CLEAR = 0.9;
 /**
  * A booth this tall or taller is the counter itself: the decks go on its top
  * and the DJ stands behind it. A lower one is a platform, with a desk on it.
+ * It is the height from which a scan calls a small raised area a booth, so
+ * every booth a scan found is a counter; a platform is one made lower by hand.
  */
-export const COUNTER_MIN_HEIGHT = 0.7;
+export const COUNTER_MIN_HEIGHT = 0.6;
 /** Nobody is drawn working at a counter taller than this. */
 const COUNTER_MAX_HEIGHT = 1.3;
 /** How far behind a desk or a counter the DJ stands. */
@@ -121,7 +123,10 @@ export type ScanBooth = {
   clear: FloorRect;
 };
 
+/** Downstage first: the way a booth faces when nothing says otherwise. */
 const FACINGS: Array<[number, number]> = [[0, 1], [0, -1], [1, 0], [-1, 0]];
+/** A wall this close in front of a raised area's edge means it does not face that way. */
+const FRONT_PROBE = 0.75;
 
 /**
  * Which way a raised area faces: towards the open floor. Its sides are square
@@ -154,7 +159,7 @@ export function facingOpenFloor(
   let bestBlocked = true;
   for (const facing of FACINGS) {
     const [fx, fz] = facing;
-    const reach = (fz !== 0 ? shape.depth : shape.width) / 2 + 0.75;
+    const reach = (fz !== 0 ? shape.depth : shape.width) / 2 + FRONT_PROBE;
     const blocked = !(outlineClearance(outline, shape.center_x + fx * reach, shape.center_z + fz * reach) > 0);
     const score = towardX * fx + towardZ * fz;
     const better = bestBlocked !== blocked ? !blocked : score > bestScore + 1e-9;
@@ -184,7 +189,12 @@ export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]):
   if (index < 0) return null;
   const shape = risers[index];
 
-  const [faceX, faceZ] = facingOpenFloor(outline, shape, openFloorCells(outline, risers).cells);
+  // A booth put on a stage goes at the stage's downstage edge, as a stage is
+  // played: only a wall right in front of that edge turns it to the open floor.
+  const downstageOpen = outlineClearance(outline, shape.center_x, shape.center_z + shape.depth / 2 + FRONT_PROBE) > 0;
+  const [faceX, faceZ] = source === 'guess' && downstageOpen
+    ? FACINGS[0]
+    : facingOpenFloor(outline, shape, openFloorCells(outline, risers).cells);
   const deep = faceZ !== 0 ? shape.depth : shape.width;
   const wide = faceZ !== 0 ? shape.width : shape.depth;
   const base = shape.base_height ?? 0;

@@ -1441,12 +1441,16 @@ they would have stood through the stage and risers the scan found.
     one of four ways: the one that looks most nearly at the middle of the
     open floor, never one with a wall within 0.75 m in front of it while
     another has none. With no open floor at all, away from the nearest wall.
-    Of two the same, downstage.
-  - *A counter or a platform.* A booth 0.7 m high or more is the counter
-    itself (it is what a scan calls "Booth or counter"): the decks and mixer
-    go on its top, on the DJ's side, and the DJ stands on the floor 0.25 m
-    behind it. A lower one, and a stage, is a platform: the view's own desk
-    stands at its front edge with the DJ behind the desk.
+    Of two the same, downstage. A guessed booth on a stage faces downstage
+    whichever way most of the floor is, and goes by this rule only when a
+    wall is within 0.75 m of the stage's downstage edge.
+  - *A counter or a platform.* A booth 0.6 m high or more is the counter
+    itself: the decks and mixer go on its top, on the DJ's side, and the DJ
+    stands on the floor 0.25 m behind it. That is the height from which a
+    scan calls a small raised area "Booth or counter", so every booth a scan
+    found is a counter. A lower one (made so by hand), and a stage, is a
+    platform: the view's own desk stands at its front edge with the DJ
+    behind the desk.
   - *The DJ is drawn only where there is somewhere to stand*: in the room,
     0.1 m from a wall, on a surface at the right height with nothing else
     standing there, and not behind a counter over 1.3 m. A counter right
