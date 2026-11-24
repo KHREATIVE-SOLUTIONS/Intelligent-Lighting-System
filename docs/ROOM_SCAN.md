@@ -1138,11 +1138,19 @@ For a rig with a scanned room (`room_shell.source == "scan"`):
   would otherwise put a short stub of it over every fixture round a ring.
   This is the one thing an old stored room draws differently: one with a line
   running upstage to downstage used to get those stubs over its fixtures;
-- the booth, speaker stacks, square dance floor, crowd, and the bar counter and
-  door on the rear wall that the view otherwise invents are **left out**: they
-  would stand through the stage and risers the scan found, or claim things about
-  a real wall that nobody saw. The ceiling's beams and duct are still the
-  view's own.
+- the booth against the upstage wall, the speaker stacks, the square dance
+  floor, and the bar counter and door on the rear wall that the view otherwise
+  invents are **left out**: they would stand through the stage and risers the
+  scan found, or claim things about a real wall that nobody saw. The ceiling's
+  beams and duct are still the view's own;
+- **the booth and the crowd are fitted to the room** (slice 21,
+  `scanFloor.ts`). The desk, decks and DJ stand on the raised area the room
+  calls a booth, facing the open floor. A room with no booth and a stage gets
+  them at the downstage middle of the first stage, marked in amber as a guess;
+  a room with neither gets none. The crowd stands on the open floor: inside
+  the walls, 0.5 m from them and from every raised area, and out of the metre
+  in front of the booth. Both are placed again when the room is edited. See
+  "What slice 21 built".
 
 ## In the 2D layout view
 
@@ -1412,6 +1420,81 @@ A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
 
+## What slice 23 built
+
+The booth and the crowd in a scanned room, so that the 3D view of a scanned
+venue looks like a club with people in it. Until now a scanned room was drawn
+empty: the booth and the crowd the view makes up were left out of it, because
+they would have stood through the stage and risers the scan found.
+
+- **The numbers** (`frontend/src/components/rig/previs/scanFloor.ts`, no
+  React and nothing drawn): `placeScanBooth` (where the booth is and how it
+  is drawn there), `facingOpenFloor` (which way it faces), `openFloorAt`
+  (whether somebody can stand at a point), `openFloorCells` (the open floor on
+  a 0.25 m grid), `scanCrowdCapacity` and `placeScanCrowd` (who stands where),
+  with `boxFloor`, `footprint` and `rectDistance`.
+- **The booth.** On the first raised area whose kind is `booth`, `source:
+  'scan'`. A room with none gets no booth made up, unless it has a stage:
+  then it goes at the middle of the front edge of the first one, `source:
+  'guess'`. A room with neither has no booth.
+  - *Facing.* A raised area's sides are square to the room, so a booth faces
+    one of four ways: the one that looks most nearly at the middle of the
+    open floor, never one with a wall within 0.75 m in front of it while
+    another has none. With no open floor at all, away from the nearest wall.
+    Of two the same, downstage.
+  - *A counter or a platform.* A booth 0.7 m high or more is the counter
+    itself (it is what a scan calls "Booth or counter"): the decks and mixer
+    go on its top, on the DJ's side, and the DJ stands on the floor 0.25 m
+    behind it. A lower one, and a stage, is a platform: the view's own desk
+    stands at its front edge with the DJ behind the desk.
+  - *The DJ is drawn only where there is somewhere to stand*: in the room,
+    0.1 m from a wall, on a surface at the right height with nothing else
+    standing there, and not behind a counter over 1.3 m. A counter right
+    against a wall has its decks and no DJ.
+  - *It is marked.* A guessed booth has an amber frame on the stage round it
+    and an amber diamond over it, the colour of a guessed fixture position
+    (`GUESS_COLOR`). One on the room's own booth has no mark.
+- **The crowd.** On the floor inside the outline (a box room's four walls
+  otherwise), `WALL_CLEAR` 0.5 m from every wall and `RAISED_CLEAR` 0.5 m
+  from every raised area, out of the `BOOTH_FRONT_CLEAR` 1 m strip in front
+  of the booth, 0.9 m from a DJ standing on the floor, and clear of where the
+  Floor camera stands. The template crowd's figures, spacing and density: at
+  most 4 a square metre of open floor, and never more than the quality mode
+  asks for (80, 180 or 320). Tightest in front of the booth, thinning out
+  away from it, everybody facing it; with no booth they are spread evenly and
+  face every way. No floor left gives nobody.
+- **Seeded from the room**, to the centimetre: the corners of the floor, the
+  raised areas and the booth. The same room is the same crowd on every
+  render; an edit to the walls or to a raised area (slices 14 to 20) places
+  the booth and the crowd again. Moving a fixture does not: the view writes
+  the floor and the raised areas out as text and places again only when that
+  text changes (`scanFloorKey` in `RigVisualizer.tsx`).
+- **Drawing** (`DJBooth.tsx`, `Crowd.tsx`, `ClubRoom.tsx`): `DJBooth` takes
+  `placed` (a `ScanBooth`) and builds the same desk, decks and DJ about the
+  middle of the booth's front face, turned and moved there, with no riser
+  and no speaker stacks of its own; the raised area under it is still the
+  box `RoomShellView` draws. `PlacedCrowd` draws people whose places are
+  given. `ClubRoom` takes `boothLight`, so the work light that was over the
+  made-up booth is over the real one; the light count is unchanged.
+- **A room with no scan stored is drawn as it was.** The template booth is
+  built through the same code from the same numbers, and the template
+  crowd's people are made by `crowdPerson`, which draws the same random
+  numbers in the same order.
+- **Tests** (`frontend/src/__tests__/scanFloor.test.ts`): an L-shaped
+  outline (nobody in the notch, both arms filled, capacity without the
+  notch), a room with a stage and a riser (nobody on or within 0.5 m of
+  either, the guessed booth and its DJ, a riser on the stage where the DJ
+  would stand), no floor left, the booth's strip and the DJ's room, a booth
+  on a side wall and in the arm of an L, a low platform, the floor camera,
+  the same crowd twice and another after an edit.
+- **What was run.** `npx tsc --noEmit -p .` (the 13 errors it had before,
+  none new). **`npx vitest --run` and `npm run build` could not be run in
+  this session** (both were refused), so the new tests are written and
+  type-checked and each was traced by hand, but none has been seen to pass,
+  and the view has not been looked at in a browser. Run them before relying
+  on this slice.
+- **Frontend only.** No backend change, no new field, no migration; nothing
+  here sends Art-Net or DMX, and there is no network call.
 ## What slice 22 built
 
 Heights set by dragging. Until now every height and base height was typed
@@ -3081,7 +3164,38 @@ are no binary fixtures in the repository.
     resized (slice 17), **and a raised area** (slice 18), **and a raised
     area follows the one it stands on** (slice 20); the limits of each are
     above. Nothing follows a wall.
-- **Crowd and booth in a scanned room** are left out rather than fitted round
-  what the scan found.
+- **Crowd and booth in a scanned room** are fitted to it (slice 21). What that
+  leaves:
+  - **The slice's tests have not been run**, nor the build, nor the view
+    looked at: vitest and the build were refused in the session that wrote
+    it. `npx vitest --run src/__tests__/scanFloor.test.ts` first.
+  - **The DJ and Floor cameras still aim at the booth the view makes up**,
+    against the upstage wall on the centre line. In a scanned room whose
+    booth is elsewhere they look at a wall. The crowd does keep clear of
+    where the Floor camera stands.
+  - **Which booth.** Only the first raised area of kind `booth` gets the
+    desk. A scan calls a bar counter a booth too ("Booth or counter"), so
+    where the bar comes first in the list the decks are on the bar: change
+    its kind in Edit Room, or remove and add the booth so it comes first.
+    Nothing says "this one is the DJ's".
+  - **A counter against a wall has no DJ**, and neither has a platform under
+    0.95 m deep or a counter over 1.3 m high: there is nowhere to draw one
+    standing. A scan that took the DJ's standing room into the box gives this.
+  - **The desk does not fit itself to what is on the stage.** A guessed booth
+    is at the middle of the stage's front edge even where a riser stands
+    there; only the DJ is left out then. A desk is never narrower than 1.3 m,
+    so it overhangs a platform narrower than that.
+  - **One of four ways.** A booth faces along X or Z, since a raised area is
+    square to the room. In a room whose walls run at an angle it does not
+    turn to them.
+  - **No dance floor is drawn** in a scanned room: the crowd stands on the
+    plain floor. No speaker stacks either.
+  - **Raised areas are all obstacles**, whatever their base: nobody stands
+    under a balcony added as a floating platform, or on a stage.
+  - **The mark is only in the 3D view.** Nothing in the 2D plan or in Edit
+    Room says where the booth was put or that it was a guess.
+  - **A big edit moves everybody**: the crowd is seeded from the room, so
+    any change to the floor or a raised area is a new crowd, not the old one
+    stepping aside.
 - **Photos to a room** (photogrammetry inside this system) is out of scope: the
   phone apps already do it for free.
