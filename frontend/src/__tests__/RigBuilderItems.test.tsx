@@ -410,6 +410,130 @@ describe('RigBuilder: arranging the items of a scanned room on the plan', () => 
     expect(shape('truss_rings-0').getAttribute('r')).toBe('2');
   });
 
+  it('resizes a raised area from an edge handle and a corner handle, one request each, with the flag', async () => {
+    const sized = (width: number, depth: number): RoomShell => {
+      const next = SHELL();
+      next.risers![0] = { ...next.risers![0], width, depth };
+      return next;
+    };
+    roomApi.editShellItem.mockResolvedValueOnce({
+      ...edited(sized(8, 3), 'Stage resized'), kind: 'risers', carry_fixtures: true,
+    });
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    // The stage is 6 m by 3 m about (0, -3.5): its stage left edge is at 3.
+    pick('risers-0', [0, -3.5]);
+
+    await drag(grip('e'), [3, -3.5], [4.1, -3.5]);
+
+    expect(roomApi.editShellItem).toHaveBeenCalledTimes(1);
+    // The width alone, about the middle: no centre is sent, and its fixtures are asked to go with it.
+    expect(roomApi.editShellItem).toHaveBeenLastCalledWith(7, 'risers', 0, { width: 8, carry_fixtures: true });
+    expect(shape('risers-0').getAttribute('width')).toBe('8');
+    expect(grip('e').getAttribute('transform')).toBe('translate(10, 1.5)');
+    expect(strip()!.textContent).toContain('Stage is now 8.0 m by 3.0 m');
+    expect(screen.queryByTestId('room-item-readout')).toBeNull();
+
+    roomApi.editShellItem.mockResolvedValueOnce({
+      ...edited(sized(10, 4), 'Stage resized'), kind: 'risers', carry_fixtures: true,
+    });
+    // Now 8 m wide: its downstage stage left corner is at (4, -2).
+    await drag(grip('se'), [4, -2], [5, -1.5]);
+
+    expect(roomApi.editShellItem).toHaveBeenCalledTimes(2);
+    expect(roomApi.editShellItem).toHaveBeenLastCalledWith(
+      7, 'risers', 0, { width: 10, depth: 4, carry_fixtures: true },
+    );
+    expect(shape('risers-0').getAttribute('height')).toBe('4');
+  });
+
+  it('leaves the fixtures where they are when a resized raised area\'s box is unticked', async () => {
+    roomApi.editShellItem.mockResolvedValue({ ...edited(SHELL(), 'Stage resized'), kind: 'risers' });
+    await editor(rigAt(1, SHELL()));
+    await arrange(() => {
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Move the fixtures standing on Stage' }));
+    });
+    pick('risers-0', [0, -3.5]);
+
+    await drag(grip('s'), [0, -2], [0, -1.5]);
+
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { depth: 4, carry_fixtures: false });
+  });
+
+  it('sends nothing for a press on a resize handle that stays within 5 pixels', async () => {
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('risers-0', [0, -3.5]);
+    const svg = planSvg();
+    // The east handle is at (100, 25) on screen.
+    fireEvent.mouseDown(grip('e'), inRoom(3, -3.5));
+    fireEvent.mouseMove(svg, { clientX: 103, clientY: 27 });
+    fireEvent.mouseUp(svg, { clientX: 103, clientY: 27 });
+    await flush();
+    expect(roomApi.editShellItem).not.toHaveBeenCalled();
+    expect(shape('risers-0').getAttribute('width')).toBe('6');
+  });
+
+  it('puts a refused resize back and shows the server\'s words (422, and 409 during a walkthrough)', async () => {
+    const detail = 'That would carry 1 fixture standing on Stage out of the room and the 2 m round it, or through the '
+      + 'floor (Par 3 to 9, 1.1, -4.2; across, height, depth in metres). Nothing was changed.';
+    roomApi.editShellItem.mockRejectedValueOnce(refusal(422, detail));
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('risers-0', [0, -3.5]);
+
+    await drag(grip('e'), [3, -3.5], [6, -3.5]);
+
+    expect(roomApi.editShellItem).toHaveBeenCalledTimes(1);
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { width: 12, carry_fixtures: true });
+    expect(strip()!.textContent).toContain(detail);
+    // Back as the room has it, handles and all, and nothing read again.
+    expect(shape('risers-0').getAttribute('width')).toBe('6');
+    expect(shape('risers-0').getAttribute('x')).toBe('3');
+    expect(grip('e').getAttribute('transform')).toBe('translate(9, 1.5)');
+    expect(screen.queryByTestId('room-item-readout')).toBeNull();
+    expect(api.get).toHaveBeenCalledTimes(1);
+
+    const running = 'The room cannot be edited while Identify Lights is running on this rig. Finish or end it first.';
+    roomApi.editShellItem.mockRejectedValueOnce(refusal(409, running));
+    await drag(grip('nw'), [-3, -5], [-4, -5.5]);
+    expect(strip()!.textContent).toContain(running);
+    expect(shape('risers-0').getAttribute('width')).toBe('6');
+    expect(shape('risers-0').getAttribute('height')).toBe('3');
+  });
+
+  it('says that a riser standing on a moved stage went with it', async () => {
+    const stacked = (stageZ: number): RoomShell => {
+      const next = SHELL();
+      next.risers![0] = { ...next.risers![0], center_z: stageZ };
+      next.risers!.push({
+        center_x: 1, center_z: stageZ, width: 2, depth: 2, height: 0.3, base_height: 0.6, name: 'Drum riser', kind: 'riser',
+      });
+      return next;
+    };
+    roomApi.editShellItem.mockResolvedValue({
+      ...edited(stacked(-3), 'Stage moved, with 1 raised area'), kind: 'risers', carry_fixtures: true,
+      items_moved: [{
+        kind: 'risers', index: 1, name: 'Drum riser',
+        from: { center_x: 1, center_z: -3.5, width: 2, depth: 2, base_height: 0.6 },
+        to: { center_x: 1, center_z: -3, width: 2, depth: 2, base_height: 0.6 },
+      }],
+    });
+    await editor(rigAt(1, stacked(-3.5)));
+    await arrange();
+
+    // Picked up by the stage where the riser does not cover it.
+    await drag(shape('risers-0'), [-2, -3.5], [-2, -3]);
+
+    // One request, for the stage: the server carries the riser, and the plan draws it where it went.
+    expect(roomApi.editShellItem).toHaveBeenCalledTimes(1);
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { center_x: 0, center_z: -3, carry_fixtures: true });
+    expect(shape('risers-1').getAttribute('y')).toBe('1');
+    expect(strip()!.textContent).toContain(
+      'Stage was moved to 0, -3. No fixture was moved with it. 1 raised area standing on it moved with it too.',
+    );
+  });
+
   it('takes the change back with the room\'s Undo from the strip, fixtures and all', async () => {
     const label = 'Truss 1 moved, with 2 fixtures';
     roomApi.undoShellEdit.mockResolvedValue({

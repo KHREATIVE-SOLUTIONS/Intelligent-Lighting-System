@@ -4,9 +4,9 @@
 // docs/ROOM_SCAN.md.
 import { describe, expect, it } from 'vitest';
 import {
-  ROTATE_STALK_M, dragItem, itemHandles, nudgeItem, planItems, shapeCentre,
+  ROTATE_STALK_M, dragItem, gripHint, isBoxGrip, itemHandles, nudgeItem, planItems, shapeCentre,
 } from '../components/rig/roomItemDrag2d';
-import type { PlanItem } from '../components/rig/roomItemDrag2d';
+import type { ItemGrip, PlanItem } from '../components/rig/roomItemDrag2d';
 import type { RoomShell } from '../types';
 
 const SHELL: RoomShell = {
@@ -56,9 +56,89 @@ describe('itemHandles', () => {
     expect(handles[1].z).toBeCloseTo(2);
   });
 
-  it('puts a radius handle on the stage left side of a ring, and none on a raised area', () => {
+  it('puts a radius handle on the stage left side of a ring', () => {
     expect(itemHandles(item('truss_rings:0').shape)).toEqual([{ grip: 'radius', x: 7.5, z: -4 }]);
-    expect(itemHandles(item('risers:1').shape)).toEqual([]);
+  });
+
+  it('puts a handle on each corner and each edge of a raised area', () => {
+    // A stage 6 m by 3 m about (0, -5): upstage is the top of the plan.
+    expect(itemHandles(item('risers:1').shape)).toEqual([
+      { grip: 'nw', x: -3, z: -6.5 },
+      { grip: 'n', x: 0, z: -6.5 },
+      { grip: 'ne', x: 3, z: -6.5 },
+      { grip: 'e', x: 3, z: -5 },
+      { grip: 'se', x: 3, z: -3.5 },
+      { grip: 's', x: 0, z: -3.5 },
+      { grip: 'sw', x: -3, z: -3.5 },
+      { grip: 'w', x: -3, z: -5 },
+    ]);
+  });
+
+  it('knows a raised area\'s grips from the others, and words each', () => {
+    expect(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].every((grip) => isBoxGrip(grip as ItemGrip))).toBe(true);
+    expect((['move', 'length', 'rotate', 'radius'] as ItemGrip[]).some(isBoxGrip)).toBe(false);
+    expect(gripHint('e', 'Stage')).toBe('Stage: drag this edge to make it wider or narrower about its middle');
+    expect(gripHint('n', 'Stage')).toBe('Stage: drag this edge to change its front to back about its middle');
+    expect(gripHint('sw', 'Stage')).toBe(
+      'Stage: drag this corner to change its width and its front to back about its middle',
+    );
+  });
+});
+
+describe('dragItem: a raised area\'s corners and edges', () => {
+  const stage = () => item('risers:1');
+
+  it('makes it wider from either side edge, about its middle: twice how far out the pointer is', () => {
+    const dragged = dragItem(stage(), 'e', { x: 4.1, z: -5 }, GRID);
+    expect(dragged.changes).toEqual({ width: 8 });
+    expect(dragged.shape).toEqual({ type: 'box', centerX: 0, centerZ: -5, width: 8, depth: 3 });
+    expect(dragged.readout).toBe('8.00 by 3.00 m');
+    // The other side, pulled in: the pointer's depth says nothing to a side edge.
+    expect(dragItem(stage(), 'w', { x: -2, z: 9 }, GRID).changes).toEqual({ width: 4 });
+  });
+
+  it('changes its front to back from the upstage or downstage edge', () => {
+    expect(dragItem(stage(), 's', { x: 7, z: -3 }, GRID).changes).toEqual({ depth: 4 });
+    const dragged = dragItem(stage(), 'n', { x: 0, z: -6 }, GRID);
+    expect(dragged.changes).toEqual({ depth: 2 });
+    expect(dragged.shape).toEqual({ type: 'box', centerX: 0, centerZ: -5, width: 6, depth: 2 });
+  });
+
+  it('changes both from a corner, in one change, and sends only the one that changed', () => {
+    expect(dragItem(stage(), 'se', { x: 4, z: -3 }, GRID).changes).toEqual({ width: 8, depth: 4 });
+    expect(dragItem(stage(), 'nw', { x: -2, z: -6 }, GRID).changes).toEqual({ width: 4, depth: 2 });
+    // Dragged along the upstage edge: the front to back is what it was.
+    expect(dragItem(stage(), 'ne', { x: 4, z: -6.5 }, GRID).changes).toEqual({ width: 8 });
+  });
+
+  it('never sends the middle: the server resizes about it', () => {
+    for (const grip of ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const) {
+      const changes = dragItem(stage(), grip, { x: 5, z: -1 }, GRID).changes ?? {};
+      expect(Object.keys(changes).every((key) => key === 'width' || key === 'depth')).toBe(true);
+    }
+  });
+
+  it('goes to the grid\'s step with the snap on and to the millimetre with it off', () => {
+    expect(dragItem(stage(), 'e', { x: 3.3, z: -5 }, GRID).changes).toEqual({ width: 6.5 });
+    expect(dragItem(stage(), 'e', { x: 3.2504, z: -5 }, FREE).changes).toEqual({ width: 6.501 });
+  });
+
+  it('never makes a side shorter than a side can be', () => {
+    expect(dragItem(stage(), 'e', { x: 0.05, z: -5 }, FREE).changes).toEqual({ width: 0.3 });
+    expect(dragItem(stage(), 'se', { x: 0, z: -5 }, GRID).changes).toEqual({ width: 0.3, depth: 0.3 });
+  });
+
+  it('sends nothing for a handle let go where it stood', () => {
+    const held = stage();
+    const still = dragItem(held, 'e', { x: 3.1, z: -5 }, GRID);
+    expect(still.changes).toBeNull();
+    expect(still.shape).toBe(held.shape);
+    expect(dragItem(stage(), 'sw', { x: -3, z: -3.5 }, FREE).changes).toBeNull();
+  });
+
+  it('is not a grip of a line or a ring', () => {
+    expect(dragItem(item('truss_lines:0'), 'e', { x: 9, z: 9 }, GRID).changes).toBeNull();
+    expect(dragItem(item('truss_rings:0'), 'nw', { x: 9, z: 9 }, GRID).changes).toBeNull();
   });
 });
 

@@ -38,10 +38,36 @@ export interface PlanItem {
 
 /**
  * What a press on the plan has hold of: the item itself (a move), the end of
- * a line (its length), the stalk past its other end (its heading), or the
- * side of a ring (its radius).
+ * a line (its length), the stalk past its other end (its heading), the
+ * side of a ring (its radius), or a corner or an edge of a raised area (its
+ * width, its front to back, or both).
  */
-export type ItemGrip = 'move' | 'length' | 'rotate' | 'radius';
+export type ItemGrip = 'move' | 'length' | 'rotate' | 'radius' | BoxGrip;
+
+/**
+ * A corner or the middle of an edge of a raised area, by the compass of the
+ * plan as it is drawn: `n` is the upstage edge (the top of the plan), `e`
+ * the stage left one.
+ */
+export type BoxGrip = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+
+/** Which way each of a raised area's grips pulls: -1, 0 or 1 across the room and from upstage to downstage. */
+const BOX_PULL: Record<BoxGrip, { x: -1 | 0 | 1; z: -1 | 0 | 1 }> = {
+  nw: { x: -1, z: -1 },
+  n: { x: 0, z: -1 },
+  ne: { x: 1, z: -1 },
+  e: { x: 1, z: 0 },
+  se: { x: 1, z: 1 },
+  s: { x: 0, z: 1 },
+  sw: { x: -1, z: 1 },
+  w: { x: -1, z: 0 },
+};
+const BOX_GRIPS = Object.keys(BOX_PULL) as BoxGrip[];
+
+/** Whether a grip is one of a raised area's corners or edges. */
+export function isBoxGrip(grip: ItemGrip): grip is BoxGrip {
+  return grip in BOX_PULL;
+}
 
 /** How far past a line's first end its rotate handle stands, in metres. */
 export const ROTATE_STALK_M = 0.6;
@@ -111,7 +137,12 @@ export function itemHandles(shape: ItemShape): Array<{ grip: Exclude<ItemGrip, '
   }
   // On the stage left side of the ring.
   if (shape.type === 'ring') return [{ grip: 'radius', x: shape.centerX + shape.radius, z: shape.centerZ }];
-  return [];
+  // A raised area: its four corners and the middle of each edge.
+  return BOX_GRIPS.map((grip) => ({
+    grip,
+    x: shape.centerX + (BOX_PULL[grip].x * shape.width) / 2,
+    z: shape.centerZ + (BOX_PULL[grip].z * shape.depth) / 2,
+  }));
 }
 
 /** What a drag has an item at: the shape to draw, what to send for it, and the words over it. */
@@ -145,6 +176,11 @@ const toStep = (value: number, snap: ItemSnap) =>
  *   front, so the heading is folded as the server stores it.
  * - **radius**: a ring's radius is how far the pointer is from its middle,
  *   to the grid's step, and never under the least a ring can be.
+ * - **a corner or an edge of a raised area**: its width, its front to back
+ *   or both, about its middle, which stays where it is: twice how far the
+ *   pointer is from the middle along each axis the grip pulls, to the grid's
+ *   step, and never under the least a side can be. An edge changes one of
+ *   the two and a corner both; only what changed is sent.
  *
  * A grip that is not this shape's changes nothing.
  */
@@ -221,6 +257,23 @@ export function dragItem(item: PlanItem, grip: ItemGrip, at: PlanPoint, snap: It
     };
   }
 
+  if (shape.type === 'box' && isBoxGrip(grip)) {
+    const pull = BOX_PULL[grip];
+    const side = (pulled: number, stored: number, out: number) =>
+      (pulled === 0 ? stored : roundMm(Math.max(SHELL_LIMITS.side, toStep(Math.abs(out) * 2, snap))));
+    const width = side(pull.x, shape.width, at.x - centre.x);
+    const depth = side(pull.z, shape.depth, at.z - centre.z);
+    const changes: ShellItemChanges = {};
+    if (Math.abs(width - shape.width) >= 0.0005) changes.width = width;
+    if (Math.abs(depth - shape.depth) >= 0.0005) changes.depth = depth;
+    const changed = Object.keys(changes).length > 0;
+    return {
+      shape: changed ? { ...shape, width, depth } : shape,
+      changes: changed ? changes : null,
+      readout: `${width.toFixed(2)} by ${depth.toFixed(2)} m`,
+    };
+  }
+
   return same;
 }
 
@@ -242,6 +295,14 @@ export function gripHint(grip: ItemGrip, title: string): string {
     case 'length': return `${title}: drag this end to make it longer or shorter about its middle`;
     case 'rotate': return `${title}: drag to turn it about its middle`;
     case 'radius': return `${title}: drag to change its radius`;
+    case 'e':
+    case 'w': return `${title}: drag this edge to make it wider or narrower about its middle`;
+    case 'n':
+    case 's': return `${title}: drag this edge to change its front to back about its middle`;
+    case 'nw':
+    case 'ne':
+    case 'se':
+    case 'sw': return `${title}: drag this corner to change its width and its front to back about its middle`;
     default: return `${title}: drag to move it, or press an arrow key`;
   }
 }

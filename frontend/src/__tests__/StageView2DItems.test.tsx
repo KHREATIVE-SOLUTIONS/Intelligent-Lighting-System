@@ -182,9 +182,114 @@ describe('StageView2D: arranging the room\'s items', () => {
     expect(at(grip('radius'))).toEqual([13.5, 1]);
     cleanup();
 
-    // A raised area stands square to the room: it is moved, and sized in Edit Room.
+    // A raised area stands square to the room: a handle on each corner and each edge, and none to turn it.
     plan({ itemsEdit: true, selectedItemKey: 'risers:1' });
-    expect(screen.queryByTestId(/^room-item-handle-/)).toBeNull();
+    expect(screen.getAllByTestId(/^room-item-handle-/).map((handle) => handle.getAttribute('data-testid'))).toEqual(
+      ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((name) => `room-item-handle-${name}`),
+    );
+    // The stage is 6 m by 3 m about (0, -5), drawn at (x + 6, z + 5).
+    expect(at(grip('nw'))).toEqual([3, -1.5]);
+    expect(at(grip('e'))).toEqual([9, 0]);
+    expect(at(grip('s'))).toEqual([6, 1.5]);
+    expect(screen.queryByTestId('room-item-handle-rotate')).toBeNull();
+  });
+
+  it('has no resize handles on a raised area that is not selected', () => {
+    plan({ itemsEdit: true, selectedItemKey: 'truss_lines:0' });
+    expect(screen.queryByTestId('room-item-handle-e')).toBeNull();
+    expect(screen.queryByTestId('room-item-handle-nw')).toBeNull();
+  });
+
+  it('makes a raised area wider from an edge handle: drawn as it goes, one call with the width when let go', async () => {
+    const onItemChange = vi.fn();
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange });
+    fireEvent.mouseDown(grip('e'), inRoom(3, -5));
+    fireEvent.mouseMove(svg, inRoom(3.6, -5));
+    fireEvent.mouseMove(svg, inRoom(4.1, -4));
+    // About its middle, to the grid's step: 8 m wide, and no deeper for a pointer that wandered downstage.
+    expect(onItemChange).not.toHaveBeenCalled();
+    expect(shape('risers-1').getAttribute('width')).toBe('8');
+    expect(shape('risers-1').getAttribute('x')).toBe('2');
+    expect(shape('risers-1').getAttribute('height')).toBe('3');
+    expect(screen.getByTestId('room-item-readout').textContent).toBe('8.00 by 3.00 m');
+    // The handle goes with the edge it has hold of.
+    expect(at(grip('e'))).toEqual([10, 0]);
+
+    fireEvent.mouseUp(svg, inRoom(4.1, -4));
+
+    expect(onItemChange).toHaveBeenCalledTimes(1);
+    expect(onItemChange).toHaveBeenCalledWith('risers', 1, { width: 8 });
+    await flush();
+  });
+
+  it('changes the width and the front to back together from a corner handle, in one call', async () => {
+    const onItemChange = vi.fn();
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange });
+    fireEvent.mouseDown(grip('se'), inRoom(3, -3.5));
+    fireEvent.mouseMove(svg, inRoom(4, -3));
+    expect(shape('risers-1').getAttribute('width')).toBe('8');
+    expect(shape('risers-1').getAttribute('height')).toBe('4');
+    expect(shape('risers-1').getAttribute('y')).toBe('-2');
+    fireEvent.mouseUp(svg, inRoom(4, -3));
+    expect(onItemChange).toHaveBeenCalledTimes(1);
+    expect(onItemChange).toHaveBeenCalledWith('risers', 1, { width: 8, depth: 4 });
+    await flush();
+  });
+
+  it('makes it shallower from the upstage edge, and sends the front to back alone', async () => {
+    const onItemChange = vi.fn();
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange });
+    fireEvent.mouseDown(grip('n'), inRoom(0, -6.5));
+    fireEvent.mouseMove(svg, inRoom(0, -5.5));
+    fireEvent.mouseUp(svg, inRoom(0, -5.5));
+    expect(onItemChange).toHaveBeenCalledWith('risers', 1, { depth: 1 });
+    await flush();
+  });
+
+  it('sends nothing for a press on a resize handle that stays within 5 pixels, or is brought back', () => {
+    const onItemChange = vi.fn();
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange });
+    // The east handle is at (140, 40) on screen: 3 across and 2 down is 3.6 pixels.
+    fireEvent.mouseDown(grip('e'), inRoom(3, -5));
+    fireEvent.mouseMove(svg, { clientX: 143, clientY: 42 });
+    fireEvent.mouseUp(svg, { clientX: 143, clientY: 42 });
+    expect(onItemChange).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('room-item-readout')).toBeNull();
+
+    fireEvent.mouseDown(grip('e'), inRoom(3, -5));
+    fireEvent.mouseMove(svg, inRoom(5, -5));
+    fireEvent.mouseMove(svg, inRoom(3.1, -5));
+    fireEvent.mouseUp(svg, inRoom(3.1, -5));
+    expect(onItemChange).not.toHaveBeenCalled();
+    expect(shape('risers-1').getAttribute('width')).toBe('6');
+  });
+
+  it('keeps a resized raised area as it was dropped until the change is answered, then puts it back if it was refused', async () => {
+    let answered: () => void = () => {};
+    const onItemChange = vi.fn(() => new Promise<void>((resolve) => { answered = resolve; }));
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange });
+    fireEvent.mouseDown(grip('w'), inRoom(-3, -5));
+    fireEvent.mouseMove(svg, inRoom(-5, -5));
+    fireEvent.mouseUp(svg, inRoom(-5, -5));
+    await flush();
+    expect(shape('risers-1').getAttribute('width')).toBe('10');
+
+    // Refused: the room given is the one it had, and the stage is 6 m wide again with its handles round it.
+    await act(async () => { answered(); });
+    await flush();
+    expect(shape('risers-1').getAttribute('width')).toBe('6');
+    expect(shape('risers-1').getAttribute('x')).toBe('3');
+    expect(at(grip('w'))).toEqual([3, 0]);
+  });
+
+  it('still moves a selected raised area by its body, with its handles on it', async () => {
+    const onItemChange = vi.fn();
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange });
+    fireEvent.mouseDown(shape('risers-1'), inRoom(1, -5));
+    fireEvent.mouseMove(svg, inRoom(3, -5));
+    fireEvent.mouseUp(svg, inRoom(3, -5));
+    expect(onItemChange).toHaveBeenCalledWith('risers', 1, { center_x: 2, center_z: -5 });
+    await flush();
   });
 
   it('changes a line\'s length from the handle on its end, about its middle', () => {

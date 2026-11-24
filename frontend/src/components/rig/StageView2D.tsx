@@ -21,7 +21,7 @@ import type { LayChoice } from './rowSpace2d';
 import type { SnapLine } from './previs/fixtureDrag';
 import { WALL_LIMITS, wallCorners } from '../../utils/roomWallsEdit';
 import type { ShellItemChanges, ShellItemKind } from '../../utils/roomShellEdit';
-import { dragItem, gripHint, itemHandles, planItems, shapeCentre } from './roomItemDrag2d';
+import { dragItem, gripHint, isBoxGrip, itemHandles, planItems, shapeCentre } from './roomItemDrag2d';
 import type { ItemGrip, ItemShape, PlanItem } from './roomItemDrag2d';
 
 const FIXTURE_TYPE_COLORS: Record<string, string> = {
@@ -65,6 +65,16 @@ interface CornerSession {
   at: PlanPoint;
   /** True once the pointer has gone past the drag threshold. */
   moved: boolean;
+}
+
+/** The pointer over a handle: which way a raised area's edge or corner goes, a turn for the rotate handle. */
+function gripCursor(grip: ItemGrip): string {
+  if (grip === 'rotate') return 'alias';
+  if (grip === 'e' || grip === 'w') return 'ew-resize';
+  if (grip === 'n' || grip === 's') return 'ns-resize';
+  if (grip === 'nw' || grip === 'se') return 'nwse-resize';
+  if (grip === 'ne' || grip === 'sw') return 'nesw-resize';
+  return 'pointer';
 }
 
 /** One press on a room item or one of its handles, until it is let go. */
@@ -1643,11 +1653,14 @@ export default function StageView2D({
                       onMouseDown={(e) => handleItemMouseDown(e, item, handle.grip)}
                       onPointerDown={(e) => handleItemPointerDown(e, item, handle.grip)}
                       onClick={(e) => e.stopPropagation()}
-                      style={{ cursor: handle.grip === 'rotate' ? 'alias' : 'pointer' }}
+                      style={{ cursor: gripCursor(handle.grip) }}
                     >
                       <title>{gripHint(handle.grip, item.title)}</title>
                       {handle.grip === 'rotate' ? (
                         <circle r={0.2} fill="#1a1a2e" stroke={WALL_HANDLE} strokeWidth={0.07} />
+                      ) : isBoxGrip(handle.grip) ? (
+                        // Eight of them round one raised area: smaller, so a small riser can still be pressed between them.
+                        <rect x={-0.12} y={-0.12} width={0.24} height={0.24} fill={WALL_HANDLE} stroke="#1a1a2e" strokeWidth={0.04} />
                       ) : (
                         <rect x={-0.18} y={-0.18} width={0.36} height={0.36} fill={WALL_HANDLE} stroke="#1a1a2e" strokeWidth={0.05} />
                       )}
