@@ -1486,6 +1486,21 @@ layer was read.
   - *Placing.* By the transform ops of the prim and of every prim above it,
     in each one's `xformOpOrder`: translate, scale, orient, rotateX/Y/Z and
     the three-axis orders, and a 4x4 transform, with any `:suffix`.
+- **A three-axis rotate was wrong, and is fixed** (found by the `variety`
+  fixture below, which put half points 0.72 m from where Pixar's library
+  puts them). The value of `rotateZYX` is the degrees about X, about Y and
+  about Z, in that order, whatever the op is called; the name is the order
+  they are turned in (Z first, then Y, then X; as row vectors, Rz Ry Rx).
+  `_op_matrix_numbers` had paired the first letter of the name with the
+  first number, which is only right for `rotateXYZ`, the one order a
+  fixture had held. It now takes each axis's degrees by axis. The fix is
+  in `usd.py`, so text and binary layers both have it. A rotate op whose
+  name is not one axis or all three once each (`rotateXY`, `rotateXXY`) is
+  not guessed at: it counts as an op that could not be read. Tests: each
+  of the six orders in a text layer against the turns worked out in the
+  test and against the same turns as three one-axis ops
+  (`test_room_scan.py`); `rotateZYX` in binary against Pixar's numbers,
+  and a text layer with the same op against them too.
 - **The same code as a text layer.** `usd.py` now has the prims
   (`_Prim`), the op-to-matrix sums (`_op_matrix_numbers`) and the building
   of the mesh (`_mesh_from_prims`) in one place for both, so a text layer
@@ -1522,7 +1537,16 @@ layer was read.
   for each wall placed by a 4x4, a four-sided floor placed by translate and
   scale, a table by translate, orient, scale and rotateXYZ, in nested
   groups, with normals, a primvar and custom data to step over.
-- **Tests** (`backend/tests/unit/test_room_scan_usdc.py`, 177): every
+  A second one, `variety.usdc`, holds what a plain export does not: points
+  as doubles (`point3d[]`) under a translate and a double orient; points as
+  halves (`point3h[]`) under a translate and `rotateZYX = (10, 20, 0)`;
+  points held only as time samples at 1 and 2 (the JSON has the sample at
+  1); an identity 4x4 on `/Room`, which the file holds in place of an
+  offset; and an `over`, a `class` and an inactive prim with points at 500
+  and -500 that are not part of the room. The reader matches Pixar's
+  numbers on all of it (doubles and samples to 1e-6, halves to 1e-3), and
+  none of the three prims is read.
+- **Tests** (`backend/tests/unit/test_room_scan_usdc.py`, 180): every
   fixture's points to 1e-4 and its triangles exactly, in Pixar's order, with
   its up axis and units; the room from `room_y_metres.usdc` and
   `room_z_cm.usdc` is the room from the text layer of the same stage, shell
@@ -1554,8 +1578,19 @@ layer was read.
   before; the 180 more are this slice's). Before the tests were written, every
   truncation of a fixture and 3000 random damages of it were run by hand:
   no exception other than the refusal, the slowest 0.002 s once the path
-  tree stopped trusting the file's count (1.8 s before).
-- **Backend only.** No frontend change, no new field, no migration, no new
+  tree stopped trusting the file's count (1.8 s before). After the variety
+  fixture and the rotate fix, the same three files: 274 passed (3 more in
+  `test_room_scan_usdc.py`, 6 in `test_room_scan.py`).
+- **The dialog.** `ROOM_SCAN_ACCEPT` in `frontend/src/utils/roomScan.ts`
+  now has `.usdc`, so the file picker offers a bare binary layer, and
+  `RoomScanDialog.tsx` says "as USDZ, USDC or USDA (binary USD is read as
+  well as text)" where it said a USDZ needed a text layer. `roomScan.test.ts`
+  holds the list of endings and uses the refusal the server gives now.
+  Those frontend tests and the build were not run in the session that
+  wrote them (`npx vitest run` and `npm run build` were refused there);
+  `npx tsc --noEmit` gave the same 13 errors as before, none in these
+  files.
+- **Otherwise backend only.** No new field, no migration, no new
   dependency; nothing here sends Art-Net or DMX, and there is no network
   call.
 
@@ -3303,30 +3338,31 @@ Pixar's USD library from the same rooms (slice 24).
   - **No instances.** A mesh drawn many times from one prototype is read
     once, where the prototype is, or not at all.
   - **No animation.** A value with only time samples is read at its first
-    sample. That branch has not met a Pixar-written file.
+    sample (checked against a Pixar-written file, `variety.usdc`).
   - **No GeomSubsets, materials, normals or texture coordinates.** Only
     points and faces are read, so a scan's floor cannot be told from its
     walls by what the app called them.
   - **RoomPlan's categories are lost.** Read from binary USD, a RoomPlan
     room is a mesh like any other: walls and objects are not named, as
     they are from RoomPlan's JSON.
-  - **The dialog still says a USDZ needs a text layer**, and its file
-    picker does not offer `.usdc`. The frontend was left untouched by this
-    slice: `RoomScanDialog.tsx` (the line "as a USDZ or USDA with a text
-    layer"), `ROOM_SCAN_ACCEPT` and its comment in
-    `frontend/src/utils/roomScan.ts`, and the example refusal in
-    `roomScan.test.ts`. A `.usdz` can be picked and is read whatever its
-    layer; a bare `.usdc` has to be dropped on the API until `.usdc` is
-    added to `ROOM_SCAN_ACCEPT`.
+  - **The dialog's change is unrun.** The file picker offers `.usdc` and
+    the wording says binary USD is read, but the frontend tests and build
+    were not run where that was written: run `npx vitest run` and
+    `npm run build` in `frontend/`. A bare `.usd` is not in the picker's
+    list, though the server reads a binary layer under that name.
   - **Not run against a Pixar-written file**: crate versions 0.4 to 0.6,
     arrays of floats packed as whole numbers or as a lookup table, packed
-    64-bit arrays, LZ4 in more than one chunk, points as halves or doubles,
-    double and half quaternions, and a matrix small enough to be held in
-    place of its offset (an identity transform, which a real file may well
-    have). Their tests are bytes laid out by hand from the format's
-    description. Tested by nothing: leaving out `over`, `class` and
-    inactive prims, `!resetXformStack!`, and reading points from prims
-    that are not typed `Mesh` when no `Mesh` has any.
+    64-bit arrays, LZ4 in more than one chunk, half quaternions, and a
+    matrix held in place of its offset that is not the identity (a plain
+    scale). Their tests are bytes laid out by hand from the format's
+    description. Of the three-axis rotates, binary files with `rotateXYZ`
+    and `rotateZYX` are checked against Pixar's numbers; the other four
+    orders are checked in text layers against sums done in the test, and
+    go through the same code. Tested by nothing: `!resetXformStack!`, and
+    reading points from prims that are not typed `Mesh` when no `Mesh`
+    has any. Now checked against Pixar (`variety.usdc`): points as halves
+    and doubles, a double orient, an identity matrix held in place,
+    time samples, and leaving out `over`, `class` and inactive prims.
     Crate versions before 0.4.0 and any 1.x are refused. A 0.x later
     than 0.12 is read, with a note in the report.
   - **Slow on a very large packed file.** LZ4 is undone in Python. Points
