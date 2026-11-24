@@ -52,6 +52,9 @@ def detect_scan_format(filename: str, content: bytes) -> str:
         if suffix in (".gltf", ".glb") or looks_like_gltf(content):
             return "gltf"
         return "roomplan"
+    if suffix == ".zip":
+        # Named a zip and not starting like one: the zip reader says it is damaged.
+        return "zip"
     if suffix == ".obj":
         return "obj"
     if suffix == ".glb":

@@ -266,6 +266,14 @@ class TestWhatIsInTheZip:
         archive = write_zip([("room.usda", (FIXTURES / "room_y_metres.usdc").read_bytes())])
         assert read_scan_file("scan.zip", archive).format == "usdc"
 
+    def test_a_layer_named_usd_is_read_whichever_form_it_is(self):
+        """As it was when every archive went to the USDZ reader, which takes a .usd of either form."""
+        text = write_zip([("room.usd", write_usda(*SMALL).encode())])
+        binary = write_zip([("room.usd", (FIXTURES / "room_y_metres.usdc").read_bytes())])
+        assert read_scan_file("Room.zip", text).format == "usda"
+        assert read_scan_file("Room.zip", binary).format == "usdc"
+        assert read_scan_file("Room", text).notes[0] == "Read 'room.usd' from the zip."
+
     def test_a_gltf_named_json_is_read_with_its_bin(self):
         text, data = gltf_beside()
         mesh = read_scan_file("scan.zip", write_zip([("scene.json", text), ("scene.bin", data)]))
@@ -554,6 +562,13 @@ class TestLockedOrBroken:
     def test_something_that_only_starts_like_a_zip(self):
         assert "damaged or cut short" in refused(b"PK\x03\x04 not really a zip")
         assert "damaged or cut short" in refused(b"PK\x05\x06" + bytes(10))
+        # Named a zip, with its first bytes gone: still said to be a damaged zip, not "not a scan".
+        whole = write_zip([("model.obj", small_obj())])
+        assert detect_scan_format("scan.zip", b"\x00\x00" + whole[2:]) == "zip"
+        assert "damaged or cut short" in refused(bytes(40))
+        # What it holds still decides where it can: a GLB that was given the wrong name is a GLB.
+        doc, data = gltf_scene([(SMALL[0], SMALL[1], {})])
+        assert read_scan_file("scan.zip", write_glb(doc, data)).format == "glb"
 
     def test_a_zip_cut_short_anywhere_is_refused_in_words(self):
         text, data = gltf_beside()

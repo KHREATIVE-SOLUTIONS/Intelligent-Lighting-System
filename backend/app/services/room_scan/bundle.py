@@ -262,6 +262,9 @@ class _Zip:
 def _kind(path: str) -> str:
     """Which of PREFERENCE a file is by its ending, or '' for anything else."""
     ending = PurePosixPath(path).suffix.lower().lstrip(".")
+    if ending == "usd":
+        # USD lets a layer of either form be called .usd; most are binary. _parse goes by its first bytes.
+        return "usdc"
     return ending if ending in PREFERENCE else ""
 
 
