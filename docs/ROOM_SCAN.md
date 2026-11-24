@@ -64,7 +64,17 @@ stands, the fixtures and the raised areas standing on it swing about its
 middle with the turn, the 2D plan, the 3D view and the drag's snap lines
 draw it turned, and it has a Heading field on its row and on the Add form
 and a rotate handle on the plan (see "What slice 21 built"). **Its frontend
-tests are written but have not been run** either (see What is left).
+tests are written and type-checked but have not been run** either (see
+What is left).
+
+Slice 22 sets **heights by dragging**: while the room's items are arranged
+on the 2D plan, a strip beside the plan shows the selected item from the
+side, with a handle for a raised area's top and one for its base, and one
+for a truss line's or a ring's trim height (see "What slice 22 built").
+Frontend only. **Its tests are written and have not been run, and it has
+not been type-checked or built**: the session that wrote it had no
+`node_modules` and was refused `npx vitest run`, `npm run build`, `npm ci`
+and `tsc`. The backend suite was run and passes (see What is left).
 
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
@@ -397,6 +407,24 @@ it is open.
     without, and to 15 with Shift held either way (a truss line's rotate
     handle takes Shift the same way). One request, with `heading_deg`, when
     it is let go. Its quarter turn is still the Turn button on its row.
+  - **The height strip sets its heights** (slice 22). Beside the plan, for
+    the whole of items mode, is a strip that shows the selected item from
+    the side: the floor at the bottom, the ceiling as a dashed line, a
+    scale in metres. A raised area has two handles, side by side: **Top**
+    (its deck goes up or down and its underside stays; `height` is sent,
+    the deck above its base) and **Base** (the whole of it goes up or down,
+    as thick as it was; `base_height` is sent, 0 stands on the floor and
+    more floats). A truss line or a ring has one, **Trim**, its underside.
+    Drag a handle up or down: it goes to 0.05 m, or to 0.25 m with Shift
+    held or with the strip's **Step** button pressed (the touch for Shift),
+    and no further than the server allows (a deck 0.05 to 3 m with its top
+    under the ceiling, a base 0 to 10 m, a truss 0.5 m to the ceiling). The
+    handle and the line under the strip say the live value ("trim 4.50 m",
+    "top 1.00 m", "base 2.70 m", "on the floor"). A press that stays within
+    5 pixels changes nothing. Let go, it is **one request and one undo
+    step**; the fixtures go with it as the item's box says, and a change
+    the server refuses puts the handle back with the reason in the strip
+    over the plan. With nothing selected the strip says what it is for.
   - **The arrow keys nudge the selected item** by the grid step, ten steps
     with Shift, up the plan being upstage. **One request and one undo step
     for each key press**: presses are not gathered into one, and a key held
@@ -1384,6 +1412,69 @@ A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
 
+## What slice 22 built
+
+Heights set by dragging. Until now every height and base height was typed
+into a row of Edit Room: the plan is seen from above and has no height.
+Frontend only: the server already took everything a drag sends.
+
+- **The numbers** (`frontend/src/components/rig/roomItemHeight.ts`, new, no
+  React): `heightGauge` (what the strip shows for one item: the ceiling,
+  how many metres the strip covers, and each handle with where it stands
+  and the least and most it may go, by the server's own limits),
+  `dragHeight` (what a drag of one handle has the item at: the value, what
+  to draw, what to send, the words), `heightGripHint`, `heightGripLabel`,
+  `HEIGHT_SNAP_M` (0.05) and `HEIGHT_SHIFT_SNAP_M` (0.25). A value is
+  snapped, then held to its limits, then rounded to the millimetre.
+- **The strip** (`RoomItemHeightStrip.tsx`, new): an elevation of the
+  selected item, 136 pixels wide beside the plan. `gauge` is what to show
+  (null for nothing selected) and `onChange(kind, index, changes)` is
+  called once when a handle is let go, and never for a press within 5
+  pixels or a drag brought back. The handle is kept where it was dropped
+  until what `onChange` returns has settled, then the room given is drawn:
+  a refusal goes back. Pointer events, so a mouse, a finger and a pen are
+  one path; the move and the release are listened for on the window,
+  because a drag up a narrow strip leaves it sideways at once. The press
+  is prevented, so the page does not pan and the plan keeps the arrow keys.
+- **The editor** (`RigBuilder.tsx`): the plan and the strip are in one row
+  while items mode is on. The strip is given `heightGauge(selectedItem,
+  room)` and `handleItemChange`, the function the plan's handles already
+  call. So a height goes through `changeRoomItem` and its queue: one
+  `editShellItem`, `carry_fixtures` from the item's box (`withCarry` already
+  adds it to a `height` or a `base_height`), the rig read again when
+  fixtures moved, the notice from `editResultText`, a 422 or 409 shown in
+  the strip over the plan, and the room's Undo. None of that was changed.
+  The strip's default words gained a sentence about the height strip.
+- **No backend change, no new route and no migration.** `PATCH
+  .../room-shell/{kind}/{index}` with `height` or `base_height` is slice
+  15's and slice 18's, and the carry, the 422 and the undo step are slices
+  17, 18 and 20's.
+- **`StageView2D.tsx` and `roomItemDrag2d.ts` were not changed**: no grip
+  was added to the plan, so the handle lists their tests assert stand.
+- **Judgment calls.**
+  - *A strip beside the plan, not handles on it.* A height has no
+    direction on a plan seen from above; a handle there would have to
+    pretend one. The strip is a second, small view with a real up.
+  - *The strip is there for the whole of the mode*, selected item or not,
+    so the plan does not change size between a press and the first move.
+  - *Every raised area has a Base handle*, not only one that already
+    floats: dragging it up from the floor is how a platform is floated.
+  - *Top and Base are side by side*, each 44 by 30 pixels, so the two of a
+    0.05 m deck do not lie on each other and a finger can take either.
+  - *Top sends the deck above the base* (`height`), because that is the
+    field, and the handle shows the top above the floor, because that is
+    what a person measures. Snapping is of the value shown.
+  - *Base carries the whole area*, top included, since `base_height` alone
+    does that on the server; its most is the ceiling less the deck.
+  - *Always snapped*: 0.05 m, or 0.25 m. The plan's snap mode and Alt are
+    not read: a height typed to the millimetre is still the row's.
+  - *A Step button as well as Shift*, because a finger has no Shift.
+  - *The scale is fixed when the press begins*, and a room with no ceiling
+    stored is shown to a metre over the item and can be dragged past the
+    top of the strip; the value goes on and the strip is redrawn after.
+- **Nothing here sends Art-Net or DMX or touches a patch, a mode or a tag,**
+  and there is no new network call beyond the app's own API.
+
 ## What slice 21 built
 
 A raised area at any heading. Until now a stage, riser or booth stood
@@ -2284,9 +2375,40 @@ are no binary fixtures in the repository.
   undo that restored and not otherwise; and in the editor the rig read
   again, the plan redrawn, the editor's undo steps dropped, nothing read
   again when the truss went alone, and both Undo buttons.
+- **Slice 22 (heights by dragging).** Frontend only. **Written and not
+  run, and not type-checked**: the worktree had no `node_modules`, and `npx
+  vitest run`, `npm run build`, `npm ci`, `tsc` and running a script with
+  `node` were each refused. The expected numbers were worked out by hand.
+  The backend suite, which this slice does not touch, was run before and
+  after it: pytest `tests/` 2029 passed, 10 skipped, 5 xfailed both times.
+  `frontend/src/__tests__/roomItemHeight.test.ts`: the handles of a raised
+  area on the floor and of a floating one, a deck held under a low ceiling,
+  the one trim handle of a line and of a ring, a room with no ceiling, no
+  item and one with no height; the 0.05 and 0.25 m steps, the millimetre,
+  a handle let go where it stood, a truss held between 0.5 m and the
+  ceiling, a ceiling off the step, the deck above its base from the top,
+  the whole area from the base and down to the floor, a grip the item does
+  not have, the flag `withCarry` adds; and the words.
+  `RoomItemHeightStrip.test.tsx`: the empty strip; the handles of a truss,
+  a ring and a raised area and where they stand; a drag drawn as it goes
+  with the live value and one call when let go; down to the least; Shift
+  and the Step button; nothing under 5 pixels or brought back; a drag that
+  leaves the strip sideways; a finger, a second finger and a press the
+  browser took; another mouse button; the top, the base and a platform
+  brought down; the drop kept until the answer and no second drag
+  meanwhile; put back when refused; and one item's drop not drawn on
+  another.
+  `RigBuilderItems.test.tsx` (a second `describe`): the strip there for the
+  whole of the mode and gone after it; a truss raised with one
+  `editShellItem`, `carry_fixtures` true, the rig read again, the notice
+  and the undo label; Shift; the box unticked sending false; a deck from
+  the top and a base from the base, one request each; nothing under 5
+  pixels; a 422 and a 409 each put back with the server's words; and the
+  strip's Undo.
 - **Slice 21 (a raised area at a heading).** The backend tests were run
   after it: pytest `tests/` 2029 passed, 10 skipped, 5 xfailed (1990 before it). The frontend
-  tests are **written but not run**; see What is left.
+  tests are **written and type-checked but not run** (its commit says so);
+  see What is left.
   `backend/tests/unit/test_room_scan_heading.py`: one that stores none
   standing square, a heading stored folded and marked, half a turn being
   no turn and a tenth the least, what is not a heading refused, the undo
@@ -2452,10 +2574,63 @@ are no binary fixtures in the repository.
 
 ## What is left
 
+- **Slice 22 has not been run in any way: no test, no type-check, no
+  build, no browser.** The session had no `frontend/node_modules` and was
+  refused `npx vitest run`, `npm run build`, `npm ci`, `tsc` and `node` on
+  a script. Before relying on it, in `frontend/`: `npx tsc --noEmit` (13
+  older errors are expected, none in `roomItemHeight.ts`,
+  `RoomItemHeightStrip.tsx` or `RigBuilder.tsx`), `npx vitest run` and
+  `npm run build`. Its test files are `roomItemHeight.test.ts`,
+  `RoomItemHeightStrip.test.tsx` and the second `describe` of
+  `RigBuilderItems.test.tsx`. Expect a first run to find something: a
+  type error is as likely as a failed expectation. Not seen at all: how
+  the strip sits beside the plan on a narrow screen (it takes 136 pixels
+  and 8 of gap from the plan's width while items mode is on), whether the
+  plan and the strip line up when the plan is taller than the strip, the
+  handles under a finger, and **the plan's size outside items mode**: the
+  plan is now inside a row of its own in every mode, which should leave it
+  as wide and as tall as it was and has not been looked at.
+- **Heights by dragging go only so far** (slice 22):
+  - **Only in items mode on the 2D plan**, for the one selected item. The
+    3D view has no height handle, and a row of Edit Room is still where a
+    height is typed to the millimetre.
+  - **Shift has no touch equivalent but the Step button**, which stays
+    pressed until it is pressed again; it is not kept from one visit to
+    the mode to the next.
+  - **The strip shows one item and nothing else**: not the other raised
+    areas or trusses at their heights, not the fixtures on it, and not the
+    stage it stands on. A riser's base is not snapped to the top of the
+    stage under it: drag it there by the number, or type it.
+  - **Nothing follows while it is dragged.** The fixtures and the risers
+    standing on it go when the server answers, as for every other handle.
+  - **The limits are worked out from the room on screen.** The strip stops
+    a handle where the server would refuse the item itself; it does not
+    know what a carry would refuse (a fixture taken through the ceiling's
+    margin or a riser above the ceiling), which comes back as a 422 and
+    puts the handle back.
+  - **Top and Base cannot be dragged together**, and there is no dragging
+    the base while the top stays: the base carries the whole area. Lower
+    the top afterwards.
+  - **A room with no ceiling stored** is shown to a metre over the item;
+    a handle dragged past the top of the strip goes on rising by the
+    number while it is drawn at the top, until it is let go.
+  - **Escape does not cancel a drag** in the strip; bring the handle back,
+    or use Undo. The arrow keys do not change a height. **The plan's keys
+    do not know a handle of the strip is held**: Escape pressed during a
+    drag lets go of the item on the plan and the height is still sent when
+    the handle is let go, and an arrow key nudges the item under the drag.
+  - **A refusal is said in the strip over the plan**, not beside the
+    handle.
+  - **The readout is the height above the floor** for all three handles.
+    A raised area's row shows its Height as the deck above its base, so a
+    floating platform's Top reads differently in the two places (3.00 in
+    the strip, 0.3 in the row).
+
 - **The frontend tests of slices 19, 20 and 21 have not been run, and nor
   has the build.** `npx vitest --run`, `npm test` and `npm run build` were
-  refused in the sessions that wrote them; for slices 19 and 20
-  `npx tsc --noEmit` ran, with its 13 older errors and no new one. Run
+  refused in the sessions that wrote them; `npx tsc --noEmit` ran for
+  slices 19 and 20, with its 13 older errors and no new one, and slice
+  21's commit says its tests were type-checked too. Run
   both in `frontend/` before relying on any of them. Slice 21 wrote
   `raisedAreaHeading.test.ts` and added to `RoomShellRaisedDialog.test.tsx`,
   `StageView2DItems.test.tsx`, `RigBuilderItems.test.tsx` and
@@ -2537,8 +2712,8 @@ are no binary fixtures in the repository.
     line** unless the middle is on one.
   - **A length changes about the middle.** There is no dragging one end
     while the other stays put; move the line afterwards.
-  - **A height is not set on the plan**, which has none: a row's Height
-    still is.
+  - **A height is not set on the plan itself**, which has none: it is set
+    in the height strip beside it (slice 22), or in a row.
   - **A drag does not snap to anything but the grid**: not to a wall, to
     another item's edge, or to the fixtures. A length and a radius go to
     the grid's step, so an end does not land on a grid line unless the
@@ -2881,8 +3056,8 @@ are no binary fixtures in the repository.
     can be moved there, a line's length and heading, a ring's radius and a
     raised area's sides (slice 20) and heading (slice 21) have handles, and
     the arrow keys nudge.
-    Every height and a base height are still typed. See the limits of
-    slices 19 and 20 above.
+    A height and a base height are dragged in the strip beside the plan
+    (slice 22). See the limits of slices 19, 20 and 22 above.
   - **Everything is held to the room's box and 2 m round it, not to the
     floor outline**, so in an L-shaped room an item can be put in the notch.
   - **A plain move holds the middle only; a resize holds the whole item.**

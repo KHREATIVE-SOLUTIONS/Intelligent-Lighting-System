@@ -780,7 +780,9 @@ describe('RigBuilder: setting the heights of a scanned room\'s items by dragging
     expect(heightAt('base')).toBe(0);
     expect(screen.queryByTestId('item-height-handle-trim')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Done arranging' }));
+    // Found by its words, as the tests above find it: the dialog that was put away may still be leaving the page.
+    fireEvent.click(screen.getByText('Done arranging'));
+    await flush();
     expect(heightStrip()).toBeNull();
   });
 
