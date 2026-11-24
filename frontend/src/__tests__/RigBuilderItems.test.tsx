@@ -709,3 +709,215 @@ describe('RigBuilder: arranging the items of a scanned room on the plan', () => 
     expect(shape('risers-0').getAttribute('transform')).toBeNull();
   });
 });
+
+// Slice 22: the height strip beside the plan. A handle dragged there is one
+// PATCH with `height` or `base_height`, through what the plan's handles go
+// through: the carry box, a refusal in the strip over the plan, the undo.
+describe('RigBuilder: setting the heights of a scanned room\'s items by dragging', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getConflicts.mockResolvedValue({ conflicts: [] });
+    api.batchUpdateFixtures.mockResolvedValue(undefined as never);
+    roomApi.getOutline.mockResolvedValue({
+      rig_id: 7, outline: [], box: true, outside: { items: [], fixtures: [], count: 0 },
+    });
+    useRigEditorStore.setState({
+      viewMode: '2d', snapMode: 'grid', gridSize: 0.5,
+      selectedFixtureIds: new Set(), undoStack: [], redoStack: [],
+    });
+  });
+  afterEach(cleanup);
+
+  /** The room with its truss hung at `trim`, its stage's deck `deck` high and its base `base` above the floor. */
+  const raised = (trim = 4.2, deck = 0.6, base = 0): RoomShell => {
+    const shell = SHELL();
+    shell.truss_lines![0].height = trim;
+    shell.risers![0].height = deck;
+    if (base > 0) shell.risers![0].base_height = base;
+    return shell;
+  };
+
+  const heightStrip = () => screen.queryByTestId('item-height-strip');
+  const heightHandle = (name: string) => screen.getByTestId(`item-height-handle-${name}`);
+  const heightAt = (name: string) => Number(heightHandle(name).getAttribute('data-value'));
+  // The strip shows this 6 m room over 272 drawing units, and with no layout a unit is a pixel.
+  const PX_PER_M = 272 / 6;
+
+  /** A pointer event built by hand, as the strip's own tests build one. */
+  function pointer(type: string, target: Element | Window, clientY: number, more: { shiftKey?: boolean } = {}) {
+    const event = new MouseEvent(type, {
+      bubbles: true, cancelable: true, clientX: 50, clientY, shiftKey: more.shiftKey ?? false,
+    });
+    Object.defineProperty(event, 'pointerType', { value: 'mouse' });
+    Object.defineProperty(event, 'pointerId', { value: 1 });
+    return fireEvent(target as Element, event);
+  }
+
+  /** Drags a height handle `metres` up (down for less than 0), lets go and waits for the answer. */
+  async function lift(name: string, metres: number, more: { shiftKey?: boolean } = {}) {
+    pointer('pointerdown', heightHandle(name), 200, more);
+    pointer('pointermove', window, 200 - metres * PX_PER_M, more);
+    pointer('pointerup', window, 200 - metres * PX_PER_M, more);
+    for (let turn = 0; turn < 4; turn += 1) await flush();
+  }
+
+  it('has the strip beside the plan for the whole of the mode, with handles once an item is selected', async () => {
+    await editor(rigAt(1, SHELL()));
+    expect(heightStrip()).toBeNull();
+
+    await arrange();
+    // There before anything is selected, so the plan does not change size under a press.
+    expect(heightStrip()).toBeTruthy();
+    expect(screen.getByTestId('item-height-empty')).toBeTruthy();
+    expect(strip()!.textContent).toContain('The strip beside the plan sets the selected item\'s height');
+
+    pick('truss_lines-0', [0, 1]);
+    expect(screen.getByTestId('item-height-title').textContent).toBe('Height: Truss 1');
+    expect(heightAt('trim')).toBe(4.2);
+
+    pick('risers-0', [0, -3.5]);
+    expect(heightAt('top')).toBe(0.6);
+    expect(heightAt('base')).toBe(0);
+    expect(screen.queryByTestId('item-height-handle-trim')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Done arranging' }));
+    expect(heightStrip()).toBeNull();
+  });
+
+  it('raises a truss with one request and one undo step, takes its fixtures up and reads the rig again', async () => {
+    const after = raised(4.5);
+    const label = 'Truss 1 resized, with 2 fixtures';
+    roomApi.editShellItem.mockResolvedValue(edited(after, label, [1, 2]));
+    await editor(rigAt(1, SHELL()), rigAt(1, after, { room_shell_edits: { available: 1, label } }));
+    await arrange();
+    pick('truss_lines-0', [0, 1]);
+
+    await lift('trim', 0.3);
+
+    expect(roomApi.editShellItem).toHaveBeenCalledTimes(1);
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'truss_lines', 0, { height: 4.5, carry_fixtures: true });
+    // The strip draws the room that was answered, and the truss is still selected.
+    expect(heightAt('trim')).toBe(4.5);
+    expect(screen.getByTestId('room-item-truss_lines-0').getAttribute('data-selected')).toBe('true');
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(strip()!.textContent).toContain('underside 4.50 m up');
+    expect(strip()!.textContent).toContain('2 fixtures hung on it moved with it.');
+    expect(screen.getByTestId('items-mode-undo').textContent).toBe(`Undo: ${label}`);
+    // The room's own step, not one of the editor's.
+    expect(undoSteps()).toBe(0);
+  });
+
+  it('snaps to 0.25 m with Shift held', async () => {
+    roomApi.editShellItem.mockResolvedValue(edited(raised(4.5), 'Truss 1 resized'));
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('truss_lines-0', [0, 1]);
+
+    await lift('trim', 0.4, { shiftKey: true });
+
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'truss_lines', 0, { height: 4.5, carry_fixtures: true });
+  });
+
+  it('leaves the fixtures where they hang when the item\'s box is unticked', async () => {
+    roomApi.editShellItem.mockResolvedValue(edited(raised(4.5), 'Truss 1 resized'));
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('truss_lines-0', [0, 1]);
+    fireEvent.click(screen.getByTestId('items-mode-selected').querySelector('input[type="checkbox"]')!);
+
+    await lift('trim', 0.3);
+
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'truss_lines', 0, { height: 4.5, carry_fixtures: false });
+    expect(strip()!.textContent).toContain('The fixtures hung on it were left where they are.');
+    expect(api.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('sets a raised area\'s deck from its top handle and floats it from its base handle, one request each', async () => {
+    const answer = (shell: RoomShell, label: string) => ({ ...edited(shell, label), kind: 'risers' as const });
+    roomApi.editShellItem.mockResolvedValueOnce(answer(raised(4.2, 1), 'Stage resized'));
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('risers-0', [0, -3.5]);
+
+    await lift('top', 0.4);
+    expect(roomApi.editShellItem).toHaveBeenLastCalledWith(7, 'risers', 0, { height: 1, carry_fixtures: true });
+    expect(heightAt('top')).toBe(1);
+    expect(strip()!.textContent).toContain('top 1.00 m above the floor');
+
+    roomApi.editShellItem.mockResolvedValueOnce(answer(raised(4.2, 1, 2), 'Stage raised'));
+    await lift('base', 2);
+    expect(roomApi.editShellItem).toHaveBeenLastCalledWith(7, 'risers', 0, { base_height: 2, carry_fixtures: true });
+    expect(roomApi.editShellItem).toHaveBeenCalledTimes(2);
+    expect(heightAt('base')).toBe(2);
+    expect(heightAt('top')).toBe(3);
+    expect(strip()!.textContent).toContain('floating 2.00 m above it');
+  });
+
+  it('sends nothing for a press on a height handle that stays within 5 pixels', async () => {
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('truss_lines-0', [0, 1]);
+
+    pointer('pointerdown', heightHandle('trim'), 200);
+    pointer('pointermove', window, 197);
+    pointer('pointerup', window, 197);
+    await flush();
+
+    expect(roomApi.editShellItem).not.toHaveBeenCalled();
+    expect(heightAt('trim')).toBe(4.2);
+  });
+
+  it('puts a refused height back and shows the server\'s words (422, and 409 during a walkthrough)', async () => {
+    const detail = 'That would carry 2 fixtures hung on Truss 1 out of the room and the 2 m round it, or through the '
+      + 'floor (Spot 1 to -2, 8.5, 1; across, height, depth in metres). Nothing was changed.';
+    roomApi.editShellItem.mockRejectedValueOnce(refusal(422, detail));
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('truss_lines-0', [0, 1]);
+
+    await lift('trim', 1.5);
+
+    expect(roomApi.editShellItem).toHaveBeenCalledTimes(1);
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'truss_lines', 0, { height: 5.7, carry_fixtures: true });
+    expect(strip()!.textContent).toContain(detail);
+    // Back where the room has it, and nothing read again.
+    expect(heightAt('trim')).toBe(4.2);
+    expect(screen.getByTestId('item-height-readout').textContent).toBe('Drag a handle up or down');
+    expect(api.get).toHaveBeenCalledTimes(1);
+
+    const running = 'The room cannot be edited while Identify Lights is running on this rig. Finish or end it first.';
+    roomApi.editShellItem.mockRejectedValueOnce(refusal(409, running));
+    await lift('trim', -1);
+    expect(roomApi.editShellItem).toHaveBeenLastCalledWith(7, 'truss_lines', 0, { height: 3.2, carry_fixtures: true });
+    expect(strip()!.textContent).toContain(running);
+    expect(heightAt('trim')).toBe(4.2);
+  });
+
+  it('takes a height back with the room\'s Undo from the strip over the plan', async () => {
+    // The truss went up alone here, so the rig is not read again either way.
+    const label = 'Truss 1 resized';
+    roomApi.editShellItem.mockResolvedValue(edited(raised(4.5), label));
+    roomApi.undoShellEdit.mockResolvedValue({
+      rig_id: 7, undone: label, room_shell: SHELL(), undo: { available: 0, label: null },
+      fixtures_restored: [], fixtures_skipped: [],
+      message: `Undone: ${label}.`,
+    });
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('truss_lines-0', [0, 1]);
+    await lift('trim', 0.3);
+    expect(heightAt('trim')).toBe(4.5);
+    expect(screen.getByTestId('items-mode-undo').textContent).toBe(`Undo: ${label}`);
+
+    fireEvent.click(screen.getByTestId('items-mode-undo'));
+    for (let turn = 0; turn < 4; turn += 1) await flush();
+
+    expect(roomApi.undoShellEdit).toHaveBeenCalledWith(7);
+    expect(strip()!.textContent).toContain(`Undone: ${label}.`);
+    expect(screen.getByTestId('items-mode-undo').textContent).toBe('Nothing to undo');
+    // An undo lets go of the selection, so the strip has nothing to show; picked again, it is back at 4.2.
+    expect(screen.getByTestId('item-height-empty')).toBeTruthy();
+    pick('truss_lines-0', [0, 1]);
+    expect(heightAt('trim')).toBe(4.2);
+  });
+});

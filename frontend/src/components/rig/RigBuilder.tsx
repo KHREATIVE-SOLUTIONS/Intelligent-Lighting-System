@@ -30,6 +30,8 @@ import {
 } from '../../utils/roomShellEdit';
 import type { ShellItemChanges, ShellItemKind } from '../../utils/roomShellEdit';
 import { nudgeItem, planItems } from './roomItemDrag2d';
+import RoomItemHeightStrip from './RoomItemHeightStrip';
+import { heightGauge } from './roomItemHeight';
 import { outsideLines, outsideOf } from '../../utils/roomWallsEdit';
 import type { Rig, RigFixture, Fixture, PatchConflict, RoomShell, RoomShellEdits } from '../../types';
 
@@ -863,7 +865,7 @@ export default function RigBuilder() {
               }
             >
               {itemsNote?.text
-                ?? 'Arranging the room: drag a raised area, a truss line or a ring to move it, or press it and use the arrow keys (Shift for ten steps). A selected truss line has a square handle on one end for its length and a round one past the other for its heading; a ring has a square handle for its radius. Everything goes to the grid unless the snap is off or Alt is held. Fixtures cannot be picked up until you are done.'}
+                ?? 'Arranging the room: drag a raised area, a truss line or a ring to move it, or press it and use the arrow keys (Shift for ten steps). A selected truss line has a square handle on one end for its length and a round one past the other for its heading; a ring has a square handle for its radius. Everything goes to the grid unless the snap is off or Alt is held. Fixtures cannot be picked up until you are done. The strip beside the plan sets the selected item\'s height: drag its handle up or down.'}
               {selectedItem && (
                 <Box sx={{ mt: 0.5 }} data-testid="items-mode-selected">
                   <FormControlLabel
@@ -891,6 +893,11 @@ export default function RigBuilder() {
               )}
             </Alert>
           )}
+          {/* The plan, and beside it, while the room's items are arranged, the height strip. The
+              strip is there for the whole of the mode, selected item or not, so the plan does not
+              change size under a press. */}
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', flexShrink: 0 }}>
+          <Box sx={{ flexGrow: 1, minWidth: 0 }}>
           <StageView2D
             width={rig.stage_width}
             depth={rig.stage_depth}
@@ -935,6 +942,17 @@ export default function RigBuilder() {
             onSpaceEvenly={handleSpaceEvenly}
             onDropFromPalette={addFixtureAt}
           />
+          </Box>
+          {/* Heights by dragging (slice 22): the selected item's top and base, or its trim height.
+              A handle let go is one change to the room, through what the plan's handles go through:
+              the fixtures as the item's box says, a refusal in the strip above, and the room's undo. */}
+          {itemsOn && (
+            <RoomItemHeightStrip
+              gauge={heightGauge(selectedItem, rig.room_shell)}
+              onChange={handleItemChange}
+            />
+          )}
+          </Box>
 
           {/* Bottom: Properties Panel */}
           {selectedFixtures.length > 1 && (
