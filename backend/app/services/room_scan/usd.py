@@ -2,7 +2,7 @@
 USD and RoomPlan
 ================
 
-A USDZ is a ZIP. What can be read out of one without Pixar's USD library:
+A USDZ is a ZIP. What is read out of one, without Pixar's USD library:
 
     a USDA layer    USD as text. Its meshes are read, placed by the transforms
                     of the prims above them, with the layer's own `upAxis` and
@@ -11,10 +11,16 @@ A USDZ is a ZIP. What can be read out of one without Pixar's USD library:
                     objects, each a size and a 4x4 transform. Each becomes a
                     box, so the room is found the same way as in any mesh.
 
-A USDC layer is USD's binary form. Reading it needs the USD library, which is
-not a dependency here, so a USDZ that holds only USDC is refused with a message
-that says what to export instead. That is what Apple's RoomPlan and most phone
-apps write, so for now USDZ mostly ends at that message.
+    a USDC layer    USD's binary form, which is what Apple's RoomPlan and most
+                    phone apps write. Read by usdc.py, into the same prims and
+                    through the same placing and mesh-building as a text layer
+                    (`_Prim`, `_op_matrix_numbers`, `_mesh_from_prims` below).
+
+They are tried in that order: RoomPlan JSON, then text layers, then binary
+ones, and the first that gives a mesh is the scan. Only one layer is read; how
+a layer brings in another (references, payloads) is not followed. A binary
+layer that cannot be read is refused with the reason and what to export
+instead (`CONVERT_MESSAGE`).
 
 The RoomPlan JSON reader follows Apple's published field names (`walls`,
 `floors`, `objects`, `dimensions`, `transform`, `category`). It has NOT been
@@ -31,7 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .mesh import RoomScanError, ScanMesh, _checked, fan
+from .mesh import MAX_FACES, RoomScanError, ScanMesh, _checked, fan
 
 USDA_MAGIC = b"#usda"
 USDC_MAGIC = b"PXR-USDC"
@@ -39,8 +45,9 @@ USDC_MAGIC = b"PXR-USDC"
 # this is the limit a deliberately swollen ZIP runs into.
 MAX_ARCHIVE_BYTES = 400 * 1024 * 1024
 
+# What to do about a binary USD layer that could not be read. usdc.py puts the
+# reason in front of it.
 CONVERT_MESSAGE = (
-    "This USDZ holds only binary USD (USDC), which cannot be read here. "
     "Export the scan as OBJ (or PLY) instead: in Polycam use Export > OBJ, in Scaniverse "
     "use Share > Export Model > OBJ. From RoomPlan, send the CapturedRoom JSON."
 )
@@ -134,8 +141,19 @@ def _rotation(axis: str, degrees: float) -> np.ndarray:
 
 def _op_matrix(name: str, value: str) -> Optional[np.ndarray]:
     """One xformOp as a 4x4 in USD's row-vector form, or None if it cannot be read."""
-    numbers = _numbers(value)
-    kind = name.split(":")[1]
+    return _op_matrix_numbers(name, _numbers(value))
+
+
+def _op_matrix_numbers(name: str, numbers: np.ndarray) -> Optional[np.ndarray]:
+    """One xformOp from its numbers as USD text writes them (a quaternion as w, x, y, z).
+
+    Both readers come through here, so a text layer and a binary layer of the
+    same stage place a mesh in the same spot.
+    """
+    parts = name.split(":")
+    if len(parts) < 2 or parts[0] != "xformOp":
+        return None
+    kind = parts[1]
     if kind == "transform" and len(numbers) == 16:
         return numbers.reshape(4, 4)
     if kind == "translate" and len(numbers) == 3:
@@ -158,7 +176,7 @@ def _op_matrix(name: str, value: str) -> Optional[np.ndarray]:
         return m
     if kind.startswith("rotate"):
         axes = kind[len("rotate"):]
-        if len(numbers) == len(axes):
+        if axes and len(numbers) == len(axes) and all(axis in "XYZ" for axis in axes):
             m = np.eye(4)
             # rotateXYZ turns about X first; with row vectors that is Rx Ry Rz.
             for axis, degrees in zip(axes, numbers):
@@ -179,22 +197,111 @@ class _Prim:
         self.unread_ops = 0
 
     def local(self) -> np.ndarray:
-        """This prim's own transform. xformOpOrder lists the ops outermost first."""
+        """This prim's own transform. xformOpOrder lists the ops outermost first.
+
+        An op named `!invert!xformOp:...` in the order is that op undone (how
+        USD writes the far side of a pivot).
+        """
         names = self.order if self.order is not None else list(self.ops)
         m = np.eye(4)
         for name in names:
-            op = self.ops.get(name)
-            if op is not None:
-                m = op @ m
+            inverted = name.startswith(_INVERT)
+            op = self.ops.get(name[len(_INVERT):] if inverted else name)
+            if op is None:
+                continue
+            if inverted:
+                try:
+                    op = np.linalg.inv(op)
+                except np.linalg.LinAlgError:
+                    continue
+            m = op @ m
         return m
 
     def world(self) -> np.ndarray:
         m = self.local()
-        parent = self.parent
-        while parent is not None:
-            m = m @ parent.local()
-            parent = parent.parent
+        prim = self
+        # `!resetXformStack!` in a prim's order says the prims above it do not move it.
+        while prim.parent is not None and not (prim.order and _RESET in prim.order):
+            prim = prim.parent
+            m = m @ prim.local()
         return m
+
+
+_INVERT = "!invert!"
+_RESET = "!resetXformStack!"
+
+
+def _fan_faces(counts: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """Every polygon cut into triangles round its first corner, face by face."""
+    if not len(counts):
+        return np.zeros((0, 3), dtype=np.int64)
+    if (counts == 3).all():
+        return indices.reshape(-1, 3)
+    starts = np.cumsum(counts) - counts
+    triangles = np.maximum(counts - 2, 0)
+    total = int(triangles.sum())
+    if total > MAX_FACES:
+        raise RoomScanError(
+            f"The scan has {total:,} triangles; the most this reads is {MAX_FACES:,}. "
+            "Export it at a lower detail."
+        )
+    face =np.repeat(np.arange(len(counts)), triangles)
+    # Which triangle of its own face each one is: 0, 1, 2 ...
+    step = np.arange(total) - np.repeat(np.cumsum(triangles) - triangles, triangles)
+    first = starts[face]
+    return np.stack([indices[first], indices[first + step + 1], indices[first + step + 2]], axis=1)
+
+
+def _mesh_from_prims(
+    prims: List[_Prim], unread_ops: int, fmt: str, layer: str, source_file: str,
+    up_axis: Optional[str], metres_per_unit: Optional[float],
+) -> ScanMesh:
+    """One ScanMesh from prims that hold points, each placed by the transforms above it.
+
+    `layer` is what the notes call the layer: "USD text layer", "binary USD layer".
+    """
+    vertices: List[np.ndarray] = []
+    faces: List[np.ndarray] = []
+    offset = 0
+    meshes = 0
+    for prim in prims:
+        if prim.points is None or not len(prim.points):
+            continue
+        meshes += 1
+        world = prim.world()
+        placed = np.hstack([prim.points, np.ones((len(prim.points), 1))]) @ world
+        vertices.append(placed[:, :3])
+        counts, indices = prim.counts, prim.indices
+        if (
+            indices is not None and counts is not None and len(counts)
+            and (counts >= 0).all() and counts.sum() == len(indices)
+        ):
+            faces.append(_fan_faces(counts, indices) + offset)
+        offset += len(prim.points)
+
+    if not vertices:
+        raise RoomScanError(
+            f"The {layer} holds no mesh points. Export the scan as OBJ (or PLY) instead."
+        )
+    triangles = np.vstack(faces) if faces else np.zeros((0, 3), dtype=np.int64)
+    mesh = ScanMesh(
+        vertices=np.vstack(vertices),
+        faces=triangles.astype(np.int64) if len(triangles) else None,
+        format=fmt,
+        source_file=source_file,
+        # USD's default is Y-up when a layer does not say.
+        up_axis=up_axis or "y",
+        metres_per_unit=metres_per_unit,
+    )
+    mesh.notes.append(f"Read {meshes} mesh{'es' if meshes != 1 else ''} from the {layer}.")
+    if not up_axis:
+        mesh.notes.append("The USD layer does not name its up axis; USD's default, Y, was used.")
+    if unread_ops:
+        mesh.notes.append(
+            f"{unread_ops} transform{'s' if unread_ops != 1 else ''} in the USD layer could not be read; "
+            "what they place may be in the wrong position."
+        )
+    return _checked(mesh)
 
 
 def parse_usda(text: str, source_file: str = "") -> ScanMesh:
@@ -252,49 +359,11 @@ def parse_usda(text: str, source_file: str = "") -> ScanMesh:
                 else:
                     prim.ops[name] = op
 
-    vertices: List[np.ndarray] = []
-    faces: List[Tuple[int, int, int]] = []
-    offset = 0
-    meshes = 0
-    unread = sum(p.unread_ops for p in prims)
-    for prim in prims:
-        if prim.points is None or not len(prim.points):
-            continue
-        meshes += 1
-        world = prim.world()
-        placed = np.hstack([prim.points, np.ones((len(prim.points), 1))]) @ world
-        vertices.append(placed[:, :3])
-        if prim.indices is not None and prim.counts is not None and prim.counts.sum() == len(prim.indices):
-            cursor = 0
-            for count in prim.counts:
-                corners = [int(i) + offset for i in prim.indices[cursor:cursor + count]]
-                cursor += count
-                if count >= 3:
-                    faces.extend(fan(corners))
-        offset += len(prim.points)
-
-    if not vertices:
-        raise RoomScanError(
-            "The USD text layer holds no mesh points. Export the scan as OBJ (or PLY) instead."
-        )
-    mesh = ScanMesh(
-        vertices=np.vstack(vertices),
-        faces=np.array(faces, dtype=np.int64) if faces else None,
-        format="usda",
-        source_file=source_file,
-        # USD's default is Y-up when a layer does not say.
-        up_axis=(up.group(1).lower() if up else "y"),
-        metres_per_unit=(float(units.group(1)) if units else None),
+    return _mesh_from_prims(
+        prims, sum(p.unread_ops for p in prims), "usda", "USD text layer", source_file,
+        up.group(1).lower() if up else None,
+        float(units.group(1)) if units else None,
     )
-    mesh.notes.append(f"Read {meshes} mesh{'es' if meshes != 1 else ''} from the USD text layer.")
-    if not up:
-        mesh.notes.append("The USD layer does not name its up axis; USD's default, Y, was used.")
-    if unread:
-        mesh.notes.append(
-            f"{unread} transform{'s' if unread != 1 else ''} in the USD layer could not be read; "
-            "what they place may be in the wrong position."
-        )
-    return _checked(mesh)
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +483,9 @@ def parse_roomplan_bytes(content: bytes, source_file: str = "") -> ScanMesh:
 # ---------------------------------------------------------------------------
 
 def parse_usdz(content: bytes, source_file: str = "") -> ScanMesh:
-    """Whatever in a USDZ can be read: RoomPlan JSON first, then a USDA layer."""
+    """Whatever in a USDZ can be read: RoomPlan JSON first, then a text layer, then a binary one."""
+    from .usdc import parse_usdc      # usdc.py is built on this module
+
     try:
         archive = zipfile.ZipFile(io.BytesIO(content))
     except zipfile.BadZipFile:
@@ -422,8 +493,8 @@ def parse_usdz(content: bytes, source_file: str = "") -> ScanMesh:
 
     with archive:
         budget = MAX_ARCHIVE_BYTES
-        saw_usdc = False
         text_layers: List[Tuple[str, bytes]] = []
+        binary_layers: List[Tuple[str, bytes]] = []
         for info in archive.infolist():
             name = info.filename
             lower = name.lower()
@@ -448,22 +519,34 @@ def parse_usdz(content: bytes, source_file: str = "") -> ScanMesh:
             elif data.lstrip()[:len(USDA_MAGIC)] == USDA_MAGIC:
                 text_layers.append((name, data))
             elif data[:len(USDC_MAGIC)] == USDC_MAGIC:
-                saw_usdc = True
+                binary_layers.append((name, data))
 
-    last_error: Optional[RoomScanError] = None
-    for name, data in text_layers:
-        try:
-            mesh = parse_usda(data.decode("utf-8", errors="replace"), source_file)
-        except RoomScanError as error:
-            last_error = error
-            continue
-        mesh.notes.append(f"Read from '{name}' inside the USDZ.")
-        return mesh
+    # The layers in the order the archive holds them (a USDZ's first is its
+    # root), text before binary. The first that gives a mesh is the scan.
+    layers = len(text_layers) + len(binary_layers)
+    errors: Dict[bool, RoomScanError] = {}
+    for is_text, group in ((True, text_layers), (False, binary_layers)):
+        for name, data in group:
+            try:
+                if is_text:
+                    mesh = parse_usda(data.decode("utf-8", errors="replace"), source_file)
+                else:
+                    mesh = parse_usdc(data, source_file)
+            except RoomScanError as error:
+                # Of each kind, why its first layer could not be read.
+                errors.setdefault(is_text, error)
+                continue
+            mesh.notes.append(f"Read from '{name}' inside the USDZ.")
+            if layers > 1:
+                mesh.notes.append(
+                    f"The USDZ holds {layers} USD layers and only that one was read: how one layer "
+                    "brings in another is not followed. Check the room against the venue."
+                )
+            return mesh
 
-    if saw_usdc:
-        raise RoomScanError(CONVERT_MESSAGE)
-    if last_error is not None:
-        raise last_error
+    if errors:
+        # A binary layer that could not be read says what to export instead.
+        raise errors.get(False) or errors[True]
     raise RoomScanError(
         "The USDZ holds no USD layer or RoomPlan JSON that could be read. "
         "Export the scan as OBJ (or PLY) instead."

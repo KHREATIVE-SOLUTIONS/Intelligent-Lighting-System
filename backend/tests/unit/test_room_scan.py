@@ -179,25 +179,58 @@ def Xform "Outer"
         assert mesh.format == "usda"
         assert len(mesh.vertices) == len(vertices)
 
-    def test_a_usdz_with_only_binary_usd_says_to_export_obj(self):
+    # Binary USD (USDC) is read: tests/unit/test_room_scan_usdc.py. What is
+    # here is a layer that only starts like one, which is still refused, and
+    # still says what to export instead.
+
+    def test_a_usdz_whose_binary_usd_cannot_be_read_says_to_export_obj(self):
         archive = write_zip([("room.usdc", b"PXR-USDC" + bytes(64))])
         with pytest.raises(RoomScanError) as refused:
             read_scan_file("Room.usdz", archive)
         message = str(refused.value)
+        assert "cannot be read" in message
         assert "OBJ" in message and "Polycam" in message and "Scaniverse" in message
 
     def test_a_layer_is_known_by_its_first_bytes_not_its_name(self):
-        # A binary layer wearing a text layer's name is still refused, and a
-        # text layer named .usd is still read.
-        with pytest.raises(RoomScanError, match="OBJ"):
+        # A binary layer wearing a text layer's name is read as binary (and
+        # this one, being nothing but its first bytes, refused as binary), and
+        # a text layer named .usd is still read.
+        with pytest.raises(RoomScanError, match="binary USD.*OBJ"):
             read_scan_file("room.usdz", write_zip([("room.usda", b"PXR-USDC" + bytes(64))]))
         vertices, faces = room_mesh()
         mesh = read_scan_file("room.usdz", write_zip([("room.usd", write_usda(vertices, faces).encode())]))
         assert len(mesh.vertices) == len(vertices)
 
-    def test_a_bare_binary_usd_file_is_refused_the_same_way(self):
-        with pytest.raises(RoomScanError, match="OBJ"):
+    def test_a_bare_binary_usd_file_that_cannot_be_read_is_refused_the_same_way(self):
+        with pytest.raises(RoomScanError, match="binary USD.*OBJ"):
             read_scan_file("room.usdc", b"PXR-USDC" + bytes(64))
+
+    def test_a_text_layer_is_read_before_a_binary_one(self):
+        vertices, faces = room_mesh()
+        archive = write_zip([("a.usdc", b"PXR-USDC" + bytes(64)), ("b.usda", write_usda(vertices, faces).encode())])
+        mesh = read_scan_file("room.usdz", archive)
+        assert mesh.format == "usda"
+        assert any("2 USD layers" in note for note in mesh.notes)
+
+    def test_an_inverted_op_undoes_the_op_it_names(self):
+        # How USD writes a pivot: move to it, turn, move back.
+        text = '''#usda 1.0
+def Xform "Pivoted"
+{
+    double3 xformOp:translate:pivot = (1, 0, 0)
+    float xformOp:rotateY = 90
+    uniform token[] xformOpOrder = ["xformOp:translate:pivot", "xformOp:rotateY", "!invert!xformOp:translate:pivot"]
+    def Mesh "M"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(1, 0, 0), (2, 0, 0), (1, 1, 0)]
+    }
+}
+'''
+        mesh = parse_usda(text)
+        # A quarter turn about the upright line through (1, 0, 0): that point stays, (2,0,0) swings to (1,0,-1).
+        assert np.allclose(mesh.vertices, [[1, 0, 0], [1, 0, -1], [1, 1, 0]], atol=1e-6)
 
     def test_roomplan_json_inside_a_usdz_is_preferred(self):
         archive = write_zip([("room.usdc", b"PXR-USDC" + bytes(64)), ("room.json", roomplan_json())])

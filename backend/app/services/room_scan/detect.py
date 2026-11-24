@@ -4,15 +4,17 @@ Which reader a scan file goes to
 
 Decided from the file's first bytes, and from its name only when the bytes do
 not say: an OBJ has no signature, so a file is taken for one when it is named
-`.obj` or its lines look like one.
+`.obj` or its lines look like one. A USD file is text (`#usda`) or binary
+(`PXR-USDC`) whatever it is called; both are read, alone or inside a USDZ.
 """
 
 from pathlib import PurePath
 
 from .mesh import RoomScanError, ScanMesh, parse_obj, parse_ply
-from .usd import CONVERT_MESSAGE, USDA_MAGIC, USDC_MAGIC, parse_roomplan_bytes, parse_usda, parse_usdz
+from .usd import USDA_MAGIC, USDC_MAGIC, parse_roomplan_bytes, parse_usda, parse_usdz
+from .usdc import parse_usdc
 
-SUPPORTED = "OBJ, PLY (ASCII or binary), a USDZ or USDA with a text layer, or RoomPlan JSON"
+SUPPORTED = "OBJ, PLY (ASCII or binary), USDZ, USD (USDA text or USDC binary), or RoomPlan JSON"
 
 
 def detect_scan_format(filename: str, content: bytes) -> str:
@@ -58,7 +60,7 @@ def read_scan_file(filename: str, content: bytes) -> ScanMesh:
     if fmt == "roomplan":
         return parse_roomplan_bytes(content, name)
     if fmt == "usdc":
-        raise RoomScanError(CONVERT_MESSAGE.replace("This USDZ holds only", "This file is"))
+        return parse_usdc(content, name)
     if fmt == "glb":
         raise RoomScanError(
             "This is a GLB (binary glTF), which is not read yet. Export the scan as OBJ or PLY instead."
