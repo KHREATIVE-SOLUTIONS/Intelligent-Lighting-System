@@ -548,7 +548,32 @@ export interface ShellItemEdited {
    * moved with it. The rig's positions are stale once this is not empty.
    */
   fixtures_moved?: CarriedFixture[];
+  /**
+   * The other raised areas that stood on a moved, raised or turned raised
+   * area and went with it (a riser on a stage). `room_shell` has them where
+   * they went; the fixtures standing on them are in `fixtures_moved`.
+   */
+  items_moved?: CarriedArea[];
   message?: string;
+}
+
+/** Where a raised area is and how big: its middle, its sides and its base. */
+export interface CarriedAreaPlace {
+  center_x: number;
+  center_z: number;
+  width: number;
+  depth: number;
+  base_height: number;
+}
+
+/** One raised area that went with the raised area it stands on. */
+export interface CarriedArea {
+  kind: 'risers';
+  /** Its place in the stored list, from 0. */
+  index: number;
+  name: string;
+  from: CarriedAreaPlace;
+  to: CarriedAreaPlace;
 }
 
 /** How many fixtures an answer says moved: with their truss, or back with it. */
@@ -613,13 +638,14 @@ const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1
  *
  * `carried` is what became of the fixtures hung on a line or ring: how many
  * the server said moved with it, and whether they were asked to. Left out,
- * none did.
+ * none did. Its `areas` is how many raised areas standing on a raised area
+ * went with it.
  */
 export function editResultText(
   before: ShellItem,
   changes: ShellItemChanges,
   shell: RoomShell,
-  carried?: { moved: number; asked: boolean },
+  carried?: Carried,
 ): string {
   const after = shellItems(shell).find((item) => item.kind === before.kind && item.index === before.index);
   const title = shellItemTitle(after ?? before);
@@ -661,15 +687,36 @@ export function editResultText(
  * What became of the fixtures hung on a changed line or ring, or standing on
  * a changed raised area, in a sentence: the moved-count notice.
  */
-export function carriedText(kind: ShellItemKind, carried?: { moved: number; asked: boolean }): string {
+export function carriedText(kind: ShellItemKind, carried?: Carried): string {
+  const stack = stackedText(kind, carried?.areas);
   if (carried && carriesFixtures(kind)) {
     const how = stoodOn(kind) ? 'standing on' : 'hung on';
     if (carried.moved > 0) {
-      return `${carried.moved} fixture${carried.moved === 1 ? '' : 's'} ${how} it moved with it.`;
+      // With a stack carried, some of them stood on what stands on it.
+      const where = stack ? `${how} it, or on what stands on it,` : `${how} it`;
+      return `${carried.moved} fixture${carried.moved === 1 ? '' : 's'} ${where} moved with it.${stack}`;
     }
     if (!carried.asked) return `The fixtures ${how} it were left where they are.`;
   }
-  return 'No fixture was moved with it.';
+  return `No fixture was moved with it.${stack}`;
+}
+
+/** What became of what an item carries: how many fixtures moved, whether they were asked to, and how many raised areas. */
+export interface Carried {
+  moved: number;
+  asked: boolean;
+  /** How many raised areas standing on a raised area went with it. Left out, none. */
+  areas?: number;
+}
+
+/**
+ * The sentence for the raised areas that went with the one they stand on,
+ * with a space before it: " 1 raised area standing on it moved with it too."
+ * Nothing for none, and for a line or a ring, which nothing stands on.
+ */
+export function stackedText(kind: ShellItemKind, areas: number | undefined): string {
+  if (!stoodOn(kind) || !areas || areas <= 0) return '';
+  return ` ${areas} raised area${areas === 1 ? '' : 's'} standing on it moved with it too.`;
 }
 
 /** What the Delete button asks before anything is taken out. */
@@ -714,6 +761,11 @@ export interface NewItemDraft {
   radius: string;
   height: string;
   heading_deg: string;
+  /**
+   * A raised area's base height: how far its underside is above the floor.
+   * '0' stands on it, and so does an empty field. Not read for a truss.
+   */
+  base_height: string;
 }
 
 /** A height to offer for a new truss: 4 m, or half a metre under a lower ceiling. */
@@ -746,6 +798,7 @@ export function newItemDraft(what: NewItemWhat, shell?: RoomShell | null): NewIt
     radius: '1.5',
     height: overhead ? positionText(hangHeight(shell)) : deck,
     heading_deg: '0',
+    base_height: '0',
   };
 }
 
@@ -787,7 +840,16 @@ export function readNewItem(draft: NewItemDraft): NewItemReading {
     if (problem || value === null) return refuse(problem ?? `${SHELL_FIELD_LABELS[field]} must be a number.`);
     body[field] = value;
   }
-  if (kind === 'risers') body.riser_kind = draft.what as 'stage' | 'riser' | 'booth';
+  if (kind === 'risers') {
+    body.riser_kind = draft.what as 'stage' | 'riser' | 'booth';
+    // An empty field stands on the floor, as 0 does; the server takes one left out the same way,
+    // so only a platform that floats says so.
+    const typed = draft.base_height ?? '';
+    const base = typed.trim() === '' ? 0 : typedNumber(typed);
+    const problem = baseHeightProblem(base);
+    if (problem || base === null) return refuse(problem ?? `${BASE_HEIGHT_LABEL} must be a number.`);
+    if (base >= 0.0005) body.base_height = base;
+  }
   return { kind, body, problem: null };
 }
 

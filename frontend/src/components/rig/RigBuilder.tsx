@@ -346,7 +346,9 @@ export default function RigBuilder() {
         // Held where it already was (against the 2 m round the room): nothing was stored.
         text: result.changed === false
           ? `${shellItemTitle(item)} is where it was: nothing was changed.`
-          : editResultText(item, changes, result.room_shell, { moved, asked: carry }),
+          : editResultText(item, changes, result.room_shell, {
+            moved, asked: carry, areas: carriedCount(result.items_moved),
+          }),
       });
     } catch (err) {
       itemsError(err);

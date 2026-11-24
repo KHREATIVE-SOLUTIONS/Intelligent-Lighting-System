@@ -256,7 +256,9 @@ export default function RoomShellEditDialog({
         return next;
       });
       const moved = carriedCount(result.fixtures_moved);
-      setNotice(editResultText(item, reading.changes, result.room_shell, { moved, asked: carry }));
+      // A raised area also takes the raised areas standing on it: a riser on a stage goes with the stage.
+      const areas = carriedCount(result.items_moved);
+      setNotice(editResultText(item, reading.changes, result.room_shell, { moved, asked: carry, areas }));
       onChanged(result.room_shell, result.undo);
       // Fixtures stand somewhere new on the server: the rig on screen is to be read again.
       if (moved > 0) onFixturesMoved?.();
@@ -455,7 +457,8 @@ export default function RoomShellEditDialog({
           or a ring, and the ones standing on a raised area, go with it when it is moved, raised,
           turned or resized, unless its box is unticked; nothing else here moves a fixture. A raised
           area&apos;s base height is how far its underside is above the floor: 0 stands on it, more
-          floats, as a balcony does. Undo takes back one change at a time, with
+          floats, as a balcony does. A raised area standing on another (its middle over it, its base
+          at its top) goes with it too, with its own fixtures. Undo takes back one change at a time, with
           the fixtures it moved; reading the scan again replaces every change, and then there is
           nothing left to undo.
         </Typography>
@@ -797,7 +800,9 @@ export default function RoomShellEditDialog({
             <Typography variant="subtitle2">Add what the scan missed</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
               It is stored as added by hand, not as something the scan found. Leave the name empty
-              to have it called what it is.
+              to have it called what it is. A raised area&apos;s base height is 0 for one that stands
+              on the floor; give a riser that stands on a stage the height of the stage&apos;s top, and
+              it will go with the stage when the stage is moved, raised or turned.
             </Typography>
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
               <TextField
@@ -812,6 +817,8 @@ export default function RoomShellEditDialog({
                   name: current.name,
                   x: current.x,
                   z: current.z,
+                  // A stage made a riser floats as it did; a truss has no base and does not read it.
+                  base_height: current.base_height,
                 }))}
                 SelectProps={{ native: true }}
                 inputProps={{ 'aria-label': 'What to add' }}
@@ -826,6 +833,8 @@ export default function RoomShellEditDialog({
               {addField('z', 'Depth (m)')}
               {SHELL_SIZE_FIELDS[newItemKind(adding.what)].map((field) =>
                 addField(field, `${SHELL_FIELD_LABELS[field]} (${unitOf(field)})`, field === 'depth' ? 130 : 104))}
+              {/* How far a raised area's underside is above the floor: 0 stands on it, more floats. */}
+              {newItemKind(adding.what) === 'risers' && addField('base_height', `${BASE_HEIGHT_LABEL} (m)`, 130)}
               <Button
                 variant="contained"
                 size="small"
