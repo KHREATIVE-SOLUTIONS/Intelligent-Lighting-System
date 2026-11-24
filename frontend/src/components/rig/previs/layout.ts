@@ -135,8 +135,8 @@ const TRUSS_ROW_Z_TOLERANCE = 0.5;
 const TRUSS_ROW_Y_TOLERANCE = 0.45;
 const TRUSS_OVERHANG = 0.5;
 const RISER_HEIGHT = 0.3;
-const DESK_HEIGHT = 0.95;
-const DESK_DEPTH = 0.55;
+export const DESK_HEIGHT = 0.95;
+export const DESK_DEPTH = 0.55;
 const SPEAKER_WIDTH = 0.95;
 const SPEAKER_DEPTH = 0.8;
 

@@ -50,15 +50,15 @@ const HAIRS = [
 ];
 
 /** People per square metre the floor is allowed to hold: a packed club. */
-const MAX_DENSITY = 4;
+export const MAX_DENSITY = 4;
 /**
  * Elbow room: closer than this to someone already placed is a miss. The front
  * is always tight. The back opens out, less so the more people are asked for,
  * so a bigger crowd fills the floor instead of stopping short.
  */
-const SPACING_AT_BOOTH = 0.42;
-const SPACING_AT_BACK_MAX = 0.95;
-const SPACING_AT_BACK_MIN = 0.45;
+export const SPACING_AT_BOOTH = 0.42;
+export const SPACING_AT_BACK_MAX = 0.95;
+export const SPACING_AT_BACK_MIN = 0.45;
 
 /** How many people fit, whatever the quality mode asks for. */
 export function crowdCapacity(layout: ClubLayout): number {
@@ -108,26 +108,35 @@ export function placeCrowd(layout: ClubLayout, requested: number): CrowdPerson[]
     const toBoothZ = layout.booth.fasciaZ - z;
     const yaw = Math.atan2(toBoothX, toBoothZ) + (random() - 0.5) * 0.5;
 
-    people.push({
-      x,
-      z,
-      yaw,
-      height: 1.56 + random() * 0.34,
-      phase: (random() - 0.5) * 0.14,
-      rate: random() < 0.14 ? 0.5 : 1,
-      amp: 0.6 + random() * 0.8,
-      armsAbove: 0.74 + random() * 0.7,
-      arms: (['both', 'both', 'left', 'right'] as const)[Math.floor(random() * 4)],
-      armReach: random(),
-      jumper: random() < 0.45,
-      idle: random() * Math.PI * 2,
-      build: 0.88 + random() * 0.28,
-      sleeves: random() < 0.45,
-      shirt: SHIRTS[Math.floor(random() * SHIRTS.length)],
-      skin: SKINS[Math.floor(random() * SKINS.length)],
-      hair: HAIRS[Math.floor(random() * HAIRS.length)],
-    });
+    people.push(crowdPerson(random, x, z, yaw));
   }
 
   return people;
+}
+
+/**
+ * One person standing at (x, z) and facing `yaw`: their height, timing, build
+ * and colours drawn from `random`, always in this order, so a seeded crowd is
+ * the same people every time.
+ */
+export function crowdPerson(random: () => number, x: number, z: number, yaw: number): CrowdPerson {
+  return {
+    x,
+    z,
+    yaw,
+    height: 1.56 + random() * 0.34,
+    phase: (random() - 0.5) * 0.14,
+    rate: random() < 0.14 ? 0.5 : 1,
+    amp: 0.6 + random() * 0.8,
+    armsAbove: 0.74 + random() * 0.7,
+    arms: (['both', 'both', 'left', 'right'] as const)[Math.floor(random() * 4)],
+    armReach: random(),
+    jumper: random() < 0.45,
+    idle: random() * Math.PI * 2,
+    build: 0.88 + random() * 0.28,
+    sleeves: random() < 0.45,
+    shirt: SHIRTS[Math.floor(random() * SHIRTS.length)],
+    skin: SKINS[Math.floor(random() * SKINS.length)],
+    hair: HAIRS[Math.floor(random() * HAIRS.length)],
+  };
 }
