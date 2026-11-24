@@ -44,7 +44,7 @@ def truth(stage):
         if not prim.IsA(UsdGeom.Mesh):
             continue
         mesh = UsdGeom.Mesh(prim)
-        local = np.array(mesh.GetPointsAttr().Get(), dtype=float)
+        local = np.array(mesh.GetPointsAttr().Get(Usd.TimeCode.EarliestTime()), dtype=float)
         mat = np.array(cache.GetLocalToWorldTransform(prim), dtype=float)
         world = np.c_[local, np.ones(len(local))] @ mat
         counts = list(mesh.GetFaceVertexCountsAttr().Get())
@@ -122,6 +122,56 @@ def roomplan_like(name):
     os.remove(inner)
 
 
+def variety(name):
+    """The branches a plain export does not reach: double and half points,
+    points held only as time samples, an identity matrix (stored inline),
+    a double-precision orient, a rotateZYX op, and an over, a class and an
+    inactive prim that must not be read as part of the room."""
+    path = os.path.join(HERE, name + ".usdc")
+    stage = Usd.Stage.CreateNew(path)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    root = UsdGeom.Xform.Define(stage, "/Room"); stage.SetDefaultPrim(root.GetPrim())
+    root.AddTransformOp().Set(Gf.Matrix4d(1.0))
+    v, f = box(0, 2, 0, 1, 0, 3)
+
+    def mesh_with(path, type_name, values):
+        m = UsdGeom.Mesh.Define(stage, path)
+        attr = m.GetPrim().CreateAttribute("points", type_name)
+        attr.Set(values)
+        m.CreateFaceVertexCountsAttr(Vt.IntArray([3] * len(f)))
+        m.CreateFaceVertexIndicesAttr(Vt.IntArray([int(i) for t in f for i in t]))
+        return m, attr
+
+    a = UsdGeom.Xform.Define(stage, "/Room/Doubles")
+    a.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(1.0, 0.0, 0.0))
+    a.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(Gf.Rotation(Gf.Vec3d(0, 1, 0), 45).GetQuat()))
+    mesh_with("/Room/Doubles/Mesh", Sdf.ValueTypeNames.Point3dArray, Vt.Vec3dArray([Gf.Vec3d(*map(float, p)) for p in v]))
+
+    b = UsdGeom.Xform.Define(stage, "/Room/Halves")
+    b.AddTranslateOp().Set(Gf.Vec3d(-4.0, 0.0, 2.0))
+    b.AddRotateZYXOp().Set(Gf.Vec3f(10.0, 20.0, 0.0))
+    mesh_with("/Room/Halves/Mesh", Sdf.ValueTypeNames.Point3hArray, Vt.Vec3hArray([Gf.Vec3h(*map(float, p)) for p in v]))
+
+    c = UsdGeom.Xform.Define(stage, "/Room/Sampled")
+    c.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -5.0))
+    m, attr = mesh_with("/Room/Sampled/Mesh", Sdf.ValueTypeNames.Point3fArray, Vt.Vec3fArray([Gf.Vec3f(*map(float, p)) for p in v]))
+    attr.Clear()
+    attr.Set(Vt.Vec3fArray([Gf.Vec3f(*map(float, p)) for p in v]), 1.0)
+    attr.Set(Vt.Vec3fArray([Gf.Vec3f(*(float(x) + 100.0 for x in p)) for p in v]), 2.0)
+
+    over = stage.OverridePrim("/Room/OnlyAnOver")
+    UsdGeom.Mesh(over).CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(500, 500, 500)] * 3))
+    UsdGeom.Mesh(over).CreateFaceVertexCountsAttr(Vt.IntArray([3])); UsdGeom.Mesh(over).CreateFaceVertexIndicesAttr(Vt.IntArray([0, 1, 2]))
+    cls = stage.CreateClassPrim("/_class_Thing")
+    cm = UsdGeom.Mesh.Define(stage, "/_class_Thing/Mesh")
+    cm.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(-500, 0, 0)] * 3)); cm.CreateFaceVertexCountsAttr(Vt.IntArray([3])); cm.CreateFaceVertexIndicesAttr(Vt.IntArray([0, 1, 2]))
+    off = UsdGeom.Mesh.Define(stage, "/Room/Switched_off")
+    off.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(0, -500, 0)] * 3)); off.CreateFaceVertexCountsAttr(Vt.IntArray([3])); off.CreateFaceVertexIndicesAttr(Vt.IntArray([0, 1, 2]))
+    off.GetPrim().SetActive(False)
+    save(stage, name)
+
+
 if __name__ == "__main__":
     v, f = room_mesh()
     simple("room_y_metres", "Y", 1.0, v, f, (10.0, 0.0, -2.0))
@@ -130,4 +180,5 @@ if __name__ == "__main__":
     bv, bf = big_room_mesh(with_ring=True, with_angled_truss=True)
     simple("big_room_ring", "Y", 1.0, bv, bf, (0.0, 0.0, 0.0))
     roomplan_like("roomplan_like")
+    variety("variety")
     print("ok", sorted(os.listdir(HERE)))
