@@ -217,6 +217,27 @@ describe('RoomShellEditDialog: a riser standing on a stage goes with the stage',
     expect(field('Depth of Drum riser').value).toBe('-3');
   });
 
+  it('lets go of what was typed in the carried riser\'s row, and keeps what was typed in any other', async () => {
+    api.editShellItem.mockResolvedValue({
+      rig_id: 7, kind: 'risers', index: 0, item: {}, room_shell: shell(-3),
+      carry_fixtures: true, fixtures_moved: [], items_moved: [drumMoved],
+    });
+    open();
+
+    // A name typed in the riser's row holds its place as it was, -3.5, with it.
+    type('Name of Drum riser', 'Drums');
+    type('Name of Truss 1', 'Front truss');
+    type('Depth of Stage', '-3');
+    fireEvent.click(button('Save Stage'));
+    await flush();
+
+    // The riser's row shows where the server put it: saving it now cannot send it back.
+    expect(field('Depth of Drum riser').value).toBe('-3');
+    expect(field('Name of Drum riser').value).toBe('Drum riser');
+    expect(button('Save Drum riser').disabled).toBe(true);
+    expect(field('Name of Truss 1').value).toBe('Front truss');
+  });
+
   it('says so when the riser moved and no fixture did, and does not have the rig read again', async () => {
     api.editShellItem.mockResolvedValue({
       rig_id: 7, kind: 'risers', index: 0, item: {}, room_shell: shell(-3),

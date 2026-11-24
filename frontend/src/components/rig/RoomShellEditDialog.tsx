@@ -249,10 +249,15 @@ export default function RoomShellEditDialog({
       const result = await roomScanApi.editShellItem(
         rigId, item.kind, item.index, withCarry(item, reading.changes, carry),
       );
-      // This row now shows what was stored; what is typed in the others is kept.
+      // This row now shows what was stored; what is typed in the others is kept, but for the rows of
+      // the raised areas that went with this one: a row holds its place and sizes as they were when
+      // it was first typed in, and saving it would send a carried area back to where it had been.
+      const carriedRows = (Array.isArray(result.items_moved) ? result.items_moved : [])
+        .map((entry) => shellItemKey({ kind: 'risers', index: entry.index }));
       setDrafts((current) => {
         const next = { ...current };
         delete next[key];
+        for (const row of carriedRows) delete next[row];
         return next;
       });
       const moved = carriedCount(result.fixtures_moved);

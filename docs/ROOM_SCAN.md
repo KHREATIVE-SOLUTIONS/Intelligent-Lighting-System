@@ -2291,9 +2291,9 @@ are no binary fixtures in the repository.
   `roomItemDrag2d.test.ts`, `StageView2DItems.test.tsx` and
   `RigBuilderItems.test.tsx`; slice 20 added to all three, changed two
   older assertions in them on purpose (a raised area now has handles), and
-  wrote `RoomShellStackDialog.test.tsx`. Expect a first run to find
-  something: over 80 frontend tests across the two slices have never
-  been executed. Slice 20's backend tests were run (1990 passed).
+  wrote `RoomShellStackDialog.test.tsx` and added a key to one expectation
+  in `roomShellAdjust.test.ts`. Expect a first run to find something: none
+  of the frontend tests of the two slices has ever been executed. Slice 20's backend tests were run (1990 passed).
   **Nothing of either slice has been seen in a browser**: how wide a truss
   is to press, whether the handles are easy to hit at the plan's usual
   size, eight handles round a small riser, and how the strip reads with
@@ -2322,6 +2322,9 @@ are no binary fixtures in the repository.
   - **A stack is not shown before it goes.** While a stage is dragged on
     the plan, only the stage's outline follows the pointer; the riser on it
     is drawn where it was until the server answers.
+  - **What was typed in a carried area's row and not saved is let go**
+    when it is carried, its name included: the row held its old place, and
+    saving it would have sent the area back. Type it again.
   - **The undo's answer does not list the areas put back**, only the
     fixtures: the room it answers with has them where they were.
   - **Trusses do not follow a raised area.** A truss on legs standing on a

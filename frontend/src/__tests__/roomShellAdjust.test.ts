@@ -309,6 +309,8 @@ describe('adding an item by hand', () => {
     expect(newItemDraft('stage')).toEqual({
       what: 'stage', name: '', x: '0', z: '0', width: '4', depth: '3', length: '6', radius: '1.5', height: '0.6',
       heading_deg: '0',
+      // On the floor (slice 20): a base is sent only for a platform that floats.
+      base_height: '0',
     });
     expect(newItemDraft('riser')).toMatchObject({ width: '2', depth: '2', height: '0.3' });
     expect(newItemDraft('booth')).toMatchObject({ width: '2', depth: '1', height: '1' });
