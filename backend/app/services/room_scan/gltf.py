@@ -6,9 +6,10 @@ Polycam, Scaniverse and most LiDAR apps hand a scan over as glTF by default:
 
     .glb    one binary file: a 12-byte header, a JSON part and a BIN part
     .gltf   the JSON on its own, with its buffers inside it as base64 `data:`
-            URIs. A .gltf that keeps its mesh in a separate .bin cannot be
-            read, because only one file is uploaded: the message says to
-            export .glb.
+            URIs. A .gltf that keeps its mesh in a separate .bin is read when
+            the two arrive together in a zip (bundle.py hands this reader a
+            way to fetch the file a `uri` names). Sent alone it cannot be
+            read: the message says to send the zip, or to export .glb.
 
 What is read: every mesh the default scene draws, each primitive's POSITION
 (float, three to a point) and its indices, with the transforms of the nodes
@@ -61,6 +62,9 @@ _POINTS, _TRIANGLES, _STRIP, _FAN = 0, 4, 5, 6
 # Past this many nodes the file is not a scan of a room.
 MAX_NODES = 1_000_000
 
+# Fetches the file a buffer's `uri` names, for a glTF that arrived with its neighbours.
+Resolve = Callable[[str], bytes]
+
 
 def _compressed_message(kind: str, what: str) -> str:
     return (
@@ -82,12 +86,13 @@ def _whole(value: Any) -> bool:
 class _Reader:
     """One glTF document and its buffers, read into world-space triangles and points."""
 
-    def __init__(self, doc: Any, binary: Optional[memoryview], kind: str):
+    def __init__(self, doc: Any, binary: Optional[memoryview], kind: str, resolve: Optional[Resolve] = None):
         if not isinstance(doc, dict):
             raise _damaged(kind, "its JSON is not a glTF document")
         self.doc: Dict[str, Any] = doc
         self.binary = binary
         self.kind = kind
+        self.resolve = resolve
         self._buffers: Dict[int, Any] = {}
 
         self.mesh_vertices: List[np.ndarray] = []
@@ -152,11 +157,15 @@ class _Reader:
                 data = base64.b64decode(body, validate=False)
             except (binascii.Error, ValueError):
                 raise _damaged(self.kind, f"buffer {index} is base64 that cannot be read")
+        elif self.resolve is not None:
+            # The file came in a zip: the buffer is another file of it.
+            data = self.resolve(uri)
         else:
             name = uri if len(uri) <= 60 else uri[:57] + "..."
             raise RoomScanError(
-                f"This {self.kind} keeps its mesh in a separate file ('{name}'), and only one file can be "
-                "sent. Export the scan as .glb, which is the whole scan in one file, or export OBJ."
+                f"This {self.kind} keeps its mesh in a separate file ('{name}'), and only one file was "
+                "sent. Zip the two together (with any other .bin beside them) and send the zip, or "
+                "export the scan as .glb, which is the whole scan in one file, or export OBJ."
             )
         self._buffers[index] = data
         return data
@@ -442,8 +451,10 @@ def _document(text: bytes, kind: str) -> Any:
         raise _damaged(kind, "its JSON cannot be read")
 
 
-def _scan(doc: Any, binary: Optional[memoryview], kind: str, fmt: str, source_file: str) -> ScanMesh:
-    reader = _Reader(doc, binary, kind)
+def _scan(
+    doc: Any, binary: Optional[memoryview], kind: str, fmt: str, source_file: str, resolve: Optional[Resolve] = None,
+) -> ScanMesh:
+    reader = _Reader(doc, binary, kind, resolve)
     reader.refuse_what_cannot_be_unpacked()
     reader.read_scene()
     return reader.mesh(fmt, source_file)
@@ -456,14 +467,19 @@ def looks_like_gltf(content: bytes) -> bool:
     return any(key in content for key in (b'"accessors"', b'"meshes"', b'"buffers"', b'"scenes"', b'"nodes"'))
 
 
-def parse_gltf(content: bytes, source_file: str = "") -> ScanMesh:
-    """A .gltf: the JSON, with its buffers inside it as base64 data URIs."""
+def parse_gltf(content: bytes, source_file: str = "", resolve: Optional[Resolve] = None) -> ScanMesh:
+    """A .gltf: the JSON, with its buffers inside it as base64 data URIs.
+
+    `resolve` is given when the file's neighbours are at hand (it came in a
+    zip): called with a buffer's `uri` as the file writes it, it answers that
+    file's bytes or raises a RoomScanError that says what is missing.
+    """
     kind = "glTF"
-    return _read(lambda: _scan(_document(content, kind), None, kind, "gltf", source_file), kind)
+    return _read(lambda: _scan(_document(content, kind), None, kind, "gltf", source_file, resolve), kind)
 
 
-def parse_glb(content: bytes, source_file: str = "") -> ScanMesh:
-    """A .glb: header, JSON chunk, BIN chunk."""
+def parse_glb(content: bytes, source_file: str = "", resolve: Optional[Resolve] = None) -> ScanMesh:
+    """A .glb: header, JSON chunk, BIN chunk. `resolve` as for parse_gltf."""
     kind = "GLB"
 
     def build() -> ScanMesh:
@@ -499,6 +515,6 @@ def parse_glb(content: bytes, source_file: str = "") -> ScanMesh:
             offset = start + size
         if text is None:
             raise _damaged(kind, "it has no JSON part")
-        return _scan(_document(text, kind), binary, kind, "glb", source_file)
+        return _scan(_document(text, kind), binary, kind, "glb", source_file, resolve)
 
     return _read(build, kind)
