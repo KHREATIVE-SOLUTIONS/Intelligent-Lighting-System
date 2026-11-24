@@ -38,6 +38,8 @@ import { roomOutline, scanHangers, scanRisers, scannedRoom, usableDisc, usableDo
 import type { OutlinePoint } from './previs/roomShell';
 import { boxHeading } from './previs/raisedArea';
 import { boxFloor, placeScanBooth, placeScanCrowd } from './previs/scanFloor';
+import { boothCameraPreset, boothFloorStand } from './previs/boothCamera';
+import { isDjBooth } from './previs/boothPick';
 import type { FloorCamera } from './previs/scanFloor';
 import { RoomShellView } from './previs/RoomShellView';
 import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
@@ -967,6 +969,9 @@ function Scene({
         base_height: riser.base_height ?? 0,
         // One at a heading stands turned (slice 21); one that is not says nothing, as before.
         ...(boxHeading(riser) !== 0 ? { heading_deg: boxHeading(riser) } : {}),
+        // The one somebody marked as the DJ's booth (slice 28) says so; no other does, so a room
+        // nobody marked one in is the same text, and the same booth and crowd, as before.
+        ...(isDjBooth(riser) ? { is_dj_booth: true } : {}),
       })),
       camera: { x: stand[0], z: stand[2], clearRadius: layout.floorCamera.clearRadius },
     });
@@ -974,7 +979,11 @@ function Scene({
   const scanFloor = useMemo(() => {
     if (!scanFloorKey) return null;
     const floor = JSON.parse(scanFloorKey) as { outline: OutlinePoint[]; risers: RoomShellBox[]; camera: FloorCamera };
-    return { ...floor, booth: placeScanBooth(floor.outline, floor.risers) };
+    const booth = placeScanBooth(floor.outline, floor.risers);
+    // The Floor camera stands in front of the booth that is drawn (boothCamera.ts), and the crowd
+    // leaves it room there. With no booth, or nowhere in front of it, it stands where it did.
+    const stand = booth ? boothFloorStand(booth, floor.outline, floor.risers) : null;
+    return { ...floor, camera: stand ? { ...floor.camera, ...stand } : floor.camera, booth };
   }, [scanFloorKey]);
   const scanBooth = scanFloor?.booth ?? null;
   const scanPeople = useMemo(
@@ -1025,8 +1034,16 @@ function Scene({
   const dragLimits = useMemo(() => positionLimits(rig), [rig]);
   const dragSnapLines = useMemo(() => snapLines(rig.room_shell), [rig.room_shell]);
 
-  // In a room that is not a box the cameras stand, and look, inside its outline.
-  const camera = useMemo(() => cameraPreset(cameraMode, venue.layout, venue.outline), [cameraMode, venue]);
+  // In a room that is not a box the cameras stand, and look, inside its outline. In a scanned room
+  // the DJ and Floor cameras go by the booth that is drawn there (marked, the room's own or a
+  // guess), at its heading; every other camera, and every camera of a room with no scan or no
+  // booth, is the preset as it always was.
+  const camera = useMemo(() => {
+    const preset = cameraPreset(cameraMode, venue.layout, venue.outline);
+    return scanFloor
+      ? boothCameraPreset(cameraMode, preset, scanFloor.booth, scanFloor.outline, scanFloor.risers)
+      : preset;
+  }, [cameraMode, venue, scanFloor]);
   const longestThrow = useMemo(() => roomSpan(venue.layout), [venue.layout]);
   // With the venue hidden no walls are drawn, so none stops a beam. In a room
   // that is not a box a beam ends on the outline's walls, not on the box.
@@ -1081,8 +1098,9 @@ function Scene({
           )}
           {!scanned && <DJBooth layout={venue.layout} clock={beatClock} />}
           {!scanned && <Crowd layout={venue.layout} count={quality.crowdCount} clock={beatClock} />}
-          {/* A scanned room: the booth where the room has one (or, marked as a
-              guess, on its first stage), and the crowd on its open floor. */}
+          {/* A scanned room: the booth on the raised area marked as the DJ's, or
+              where the room has one (or, with the amber mark of a guess, on its
+              first stage), and the crowd on its open floor. */}
           {scanned && scanBooth && <DJBooth layout={venue.layout} clock={beatClock} placed={scanBooth} />}
           {scanned && <PlacedCrowd people={scanPeople} clock={beatClock} />}
         </>
