@@ -289,6 +289,13 @@ def Xform "Pivoted"
             xyz = parse_usda(turned_usda(f"float3 xformOp:rotateXYZ = {value}", ["xformOp:rotateXYZ"], points))
             assert not np.allclose(together.vertices, xyz.vertices, atol=1e-3)
 
+    @pytest.mark.parametrize("op", ["float2 xformOp:rotateXY = (10, 20)", "float3 xformOp:rotateXXY = (10, 20, 30)"])
+    def test_a_rotate_that_is_not_one_axis_or_all_three_is_not_guessed_at(self, op):
+        points = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        mesh = parse_usda(turned_usda(op, [op.split()[1]], points))
+        assert np.allclose(mesh.vertices, points)
+        assert any("1 transform in the USD layer could not be read" in note for note in mesh.notes)
+
     def test_roomplan_json_inside_a_usdz_is_preferred(self):
         archive = write_zip([("room.usdc", b"PXR-USDC" + bytes(64)), ("room.json", roomplan_json())])
         mesh = read_scan_file("Room.usdz", archive)

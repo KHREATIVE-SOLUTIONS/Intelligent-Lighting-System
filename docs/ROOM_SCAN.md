@@ -1579,8 +1579,8 @@ layer was read.
   truncation of a fixture and 3000 random damages of it were run by hand:
   no exception other than the refusal, the slowest 0.002 s once the path
   tree stopped trusting the file's count (1.8 s before). After the variety
-  fixture and the rotate fix, the same three files: 274 passed (3 more in
-  `test_room_scan_usdc.py`, 6 in `test_room_scan.py`).
+  fixture and the rotate fix, the same three files: 276 passed (3 more in
+  `test_room_scan_usdc.py`, 8 in `test_room_scan.py`).
 - **The dialog.** `ROOM_SCAN_ACCEPT` in `frontend/src/utils/roomScan.ts`
   now has `.usdc`, so the file picker offers a bare binary layer, and
   `RoomScanDialog.tsx` says "as USDZ, USDC or USDA (binary USD is read as
@@ -3358,7 +3358,9 @@ Pixar's USD library from the same rooms (slice 24).
     description. Of the three-axis rotates, binary files with `rotateXYZ`
     and `rotateZYX` are checked against Pixar's numbers; the other four
     orders are checked in text layers against sums done in the test, and
-    go through the same code. Tested by nothing: `!resetXformStack!`, and
+    go through the same code. Pixar's two hold a turn about one axis and
+    about two (Y then X); a turn about all three at once rests on the
+    sums in the test. Tested by nothing: `!resetXformStack!`, and
     reading points from prims that are not typed `Mesh` when no `Mesh`
     has any. Now checked against Pixar (`variety.usdc`): points as halves
     and doubles, a double orient, an identity matrix held in place,
