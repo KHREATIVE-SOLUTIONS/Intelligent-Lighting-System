@@ -35,6 +35,12 @@ SAME_PLACE_M = 0.005
 
 Point = Tuple[float, float, float]
 
+# Kept in an entry only when the scan also turned the fixture (slice 27).
+ROTATION_BEFORE = "rotation_y_before"
+ROTATION_AFTER = "rotation_y_after"
+# Two headings closer than this are the same heading.
+SAME_TURN_DEG = 0.01
+
 SOURCE_WORDS = {
     "tap": "it was tapped or dragged into place since",
     "confirmed": "its position was confirmed since",
@@ -90,7 +96,7 @@ def record_moves(
     entries: List[Dict[str, Any]] = []
     for move in moved:
         before = earlier.pop(move["rig_fixture_id"], None)
-        entries.append({
+        entry = {
             "rig_fixture_id": move["rig_fixture_id"],
             "name": move.get("name") or "",
             "from": before["from"] if before and _unpoint(before.get("from")) else _point(move["from"]),
@@ -98,7 +104,17 @@ def record_moves(
             "tags_before": (
                 list(before.get("tags_before") or []) if before else list(move.get("tags_before") or [])
             ),
-        })
+        }
+        # A fixture turned with a stage that stands at a heading: what its
+        # `rotation_y` was before any scan turned it, and what it is now. Only
+        # a move that turned has these, so every other entry is as it was.
+        for turned in (before, move):
+            if turned and ROTATION_BEFORE in turned:
+                entry[ROTATION_BEFORE] = turned[ROTATION_BEFORE]
+                break
+        if ROTATION_BEFORE in entry:
+            entry[ROTATION_AFTER] = move.get(ROTATION_AFTER, (before or {}).get(ROTATION_AFTER))
+        entries.append(entry)
     entries.extend(earlier.values())
     return {
         "file": file,
@@ -119,6 +135,10 @@ class Restore:
     from_position: Point  # where it stands now: where the scan put it
     to_position: Point    # where it goes back to
     tags: List[str]
+    # Whether the scan turned it and it still faces the way the scan left it,
+    # and the `rotation_y` it then goes back to (which may be none at all).
+    turn_back: bool = False
+    rotation_y: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -160,6 +180,21 @@ def _tags_restored(fixture: Any, tags_before: Sequence[str]) -> List[str]:
     return [*before, *added_since]
 
 
+def _still_turned(fixture: Any, entry: Dict[str, Any]) -> bool:
+    """Whether a scan turned this fixture and it still faces the way the scan left it.
+
+    One somebody has turned since keeps the way it faces: an undo takes back
+    the scan, not what was done after it.
+    """
+    if ROTATION_BEFORE not in entry:
+        return False
+    after, now = entry.get(ROTATION_AFTER), getattr(fixture, "rotation_y", None)
+    if not isinstance(after, (int, float)) or isinstance(after, bool):
+        return False
+    here = float(now) if isinstance(now, (int, float)) and not isinstance(now, bool) else 0.0
+    return abs(here - float(after)) <= SAME_TURN_DEG
+
+
 def plan_undo(fixtures: Sequence[Any], record: Optional[Dict[str, Any]]) -> UndoPlan:
     """What an undo would put back, and what it would leave alone and why."""
     plan = UndoPlan()
@@ -196,6 +231,8 @@ def plan_undo(fixtures: Sequence[Any], record: Optional[Dict[str, Any]]) -> Undo
             from_position=here,
             to_position=came_from,
             tags=_tags_restored(fixture, entry.get("tags_before") or []),
+            turn_back=_still_turned(fixture, entry),
+            rotation_y=entry.get(ROTATION_BEFORE),
         ))
     return plan
 
@@ -205,6 +242,8 @@ def restore(plan: UndoPlan) -> int:
     for item in plan.restores:
         fixture = item.fixture
         fixture.position_x, fixture.position_y, fixture.position_z = item.to_position
+        if item.turn_back:
+            fixture.rotation_y = item.rotation_y
         # A new list: the column is plain JSON, so a change in place is never written.
         fixture.tags = list(item.tags)
     return len(plan.restores)

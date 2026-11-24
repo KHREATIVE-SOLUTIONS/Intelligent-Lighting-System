@@ -82,7 +82,7 @@ from app.services.room_scan.mesh import MAX_UPLOAD_BYTES
 from app.services.room_scan.outline_edit import (
     corner_points, delete_corner, insert_corner, move_corner, outside_report, outside_words, room_corners, set_outline,
 )
-from app.services.room_scan.suggest import TAG_SCAN_HINT
+from app.services.room_scan.suggest import TAG_SCAN_HINT, turned_rotation
 from app.services.room_scan.undo import plan_undo, record_moves, restore, undo_count, undo_message
 from app.services.venue_import.apply import SOURCE_TEMPLATE, is_unconfirmed, with_position_source
 
@@ -211,10 +211,17 @@ async def import_room_scan(
             if TAG_SCAN_HINT not in tags:
                 tags.append(TAG_SCAN_HINT)
             rf.tags = tags
-            moved.append({
+            entry: Dict[str, Any] = {
                 "rig_fixture_id": rf.id, "name": move.name,
                 "from": move.from_position, "to": move.to_position, "tags_before": tags_before,
-            })
+            }
+            # A row put onto a stage that stands at a heading is turned with
+            # it, each fixture as far. What it was is kept for the undo.
+            if move.turn_deg:
+                entry["rotation_y_before"] = rf.rotation_y
+                rf.rotation_y = turned_rotation(rf.rotation_y, move.turn_deg)
+                entry["rotation_y_after"] = rf.rotation_y
+            moved.append(entry)
 
     # A new dict: the column is plain JSON, so a change made in place is never written.
     rig.room_shell = dict(shell)
