@@ -1589,6 +1589,16 @@ Polycam, Scaniverse and most LiDAR apps.
   change is one constant, one sentence of help text and one test, none of it
   executed. **No glTF from a real phone or app has been read**, and the
   dialog has not been opened in a browser with one.
+- **Together with slice 24** (Nov 24). This slice was written beside binary
+  USD and then put on top of it; the counts above are from before that. With
+  both in: the accept list is `.obj,.ply,.glb,.gltf,.usdz,.usdc,.usda,.json`,
+  the dialog and the server's "send one of these" name glTF and binary USD,
+  and the test of the list's exact order in `roomScan.test.ts` holds all
+  eight. Run from `backend/`: the five room-scan files (`test_room_scan.py`,
+  `test_room_scan_gltf.py`, `test_room_scan_usdc.py`, `test_api_room_scan.py`,
+  `test_api_room_scan_gltf.py`) 352 passed. `npx tsc --noEmit`: the 13 older
+  errors, none in these files. **Not run:** `npx vitest run` was refused
+  again, so `roomScan.test.ts` is still unexecuted with both slices in.
 - **What is left**: Draco and meshopt unpacking, a `.gltf` with its `.bin`,
   and a real export from each app. See What is left.
 - **Nothing here sends Art-Net or DMX**, opens a socket or calls an outside

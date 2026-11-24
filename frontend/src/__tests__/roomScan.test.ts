@@ -239,8 +239,8 @@ describe('room scan wording', () => {
     })).toBe('(-3.00, 6.00, -1.50) to (-3.00, 4.00, 0.50)');
   });
 
-  it('offers every ending the server reads, binary USD among them', () => {
-    expect(ROOM_SCAN_ACCEPT.split(',')).toEqual(['.obj', '.ply', '.usdz', '.usdc', '.usda', '.json']);
+  it('offers every ending the server reads, glTF and binary USD among them', () => {
+    expect(ROOM_SCAN_ACCEPT.split(',')).toEqual(['.obj', '.ply', '.glb', '.gltf', '.usdz', '.usdc', '.usda', '.json']);
   });
 
   it('uses the server\'s own words for a refusal, and has some when it gave none', () => {
