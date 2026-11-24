@@ -16,6 +16,8 @@
  * rig's: metres, X across, -Z upstage.
  */
 import type { RoomShellBox } from '../../../types';
+import { pickDjBooth } from './boothPick';
+import type { BoothSource } from './boothPick';
 import {
   MAX_DENSITY, SPACING_AT_BACK_MAX, SPACING_AT_BACK_MIN, SPACING_AT_BOOTH, crowdPerson,
 } from './crowdLayout';
@@ -110,10 +112,12 @@ function standingHeight(risers: RoomShellBox[], x: number, z: number): number {
  */
 export type ScanBooth = {
   /**
-   * 'scan': it stands on a raised area the stored room calls a booth.
-   * 'guess': the room has none, and it was put on the first stage.
+   * 'marked': it stands on the raised area somebody said is the DJ's booth.
+   * 'scan': nobody said, and it stands on the first one the stored room calls a booth.
+   * 'guess': the room has none, and it was put on the first stage. Only a
+   * guess is drawn with the amber mark (boothPick.ts).
    */
-  source: 'scan' | 'guess';
+  source: BoothSource;
   /** Which of the raised areas it stands on. */
   riser: number;
   x: number;
@@ -241,10 +245,16 @@ export function facingOpenFloor(
 }
 
 /**
- * The booth of a scanned room. On the first raised area the room calls a
- * booth, facing the open floor ('scan'). A room with none has no booth made up
- * for it, unless it has a stage: then the booth goes at the middle of the
- * front edge of the first one ('guess'). Null for a room with neither.
+ * The booth of a scanned room. On the raised area somebody marked as the
+ * DJ's booth ('marked', `is_dj_booth`); with none marked, on the first raised
+ * area the room calls a booth, facing the open floor ('scan'). A room with
+ * neither has no booth made up for it, unless it has a stage: then the booth
+ * goes at the middle of the front edge of the first one ('guess'). Null for a
+ * room with none of them (`pickDjBooth`).
+ *
+ * A marked raised area is drawn as what it is: a stage like a guessed booth
+ * on one (a desk at its downstage edge), anything else like a booth the room
+ * has (a counter from 0.6 m, a platform under that, facing the open floor).
  *
  * A raised area at a heading has its booth at that heading: on the side of it
  * that faces the open floor, or, for a guess, on its downstage side, both as
@@ -255,12 +265,16 @@ export function facingOpenFloor(
  */
 export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]): ScanBooth | null {
   if (outline.length < 3) return null;
-  let index = risers.findIndex((riser) => riser.kind === 'booth');
-  const source: ScanBooth['source'] = index >= 0 ? 'scan' : 'guess';
-  if (index < 0) index = risers.findIndex((riser) => riser.kind === 'stage');
-  if (index < 0) return null;
+  const pick = pickDjBooth(risers);
+  if (!pick) return null;
+  const { index, source } = pick;
   const shape = risers[index];
   const heading = boxHeading(shape);
+  // How it is drawn goes by what the raised area is, not by how it was chosen. A stage is played
+  // from its downstage edge with a desk on it; anything else is a booth facing the open floor. With
+  // nobody having marked one, a guess is always on a stage and a scan's booth never is, so a room
+  // with no mark comes out exactly as it did.
+  const staged = shape.kind === 'stage';
 
   // A booth put on a stage goes at the stage's downstage edge, as a stage is
   // played: only a wall right in front of that edge turns it to the open floor.
@@ -271,7 +285,7 @@ export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]):
     shape.center_x + downstage.fx * downstage.half + downstage.fx * FRONT_PROBE,
     shape.center_z + downstage.fz * downstage.half + downstage.fz * FRONT_PROBE,
   ) > 0;
-  const side = source === 'guess' && downstageOpen
+  const side = staged && downstageOpen
     ? downstage
     : sideToOpenFloor(outline, shape, openFloorCells(outline, risers).cells);
   const faceX = side.fx;
@@ -284,7 +298,7 @@ export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]):
   const frontX = shape.center_x + faceX * (deep / 2);
   const frontZ = shape.center_z + faceZ * (deep / 2);
 
-  const counter = source === 'scan' && shape.height >= COUNTER_MIN_HEIGHT;
+  const counter = !staged && shape.height >= COUNTER_MIN_HEIGHT;
   let width: number;
   let inset: number;
   let gearBack: number;
@@ -299,7 +313,7 @@ export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]):
     standY = base;
   } else {
     // A platform: the desk stands at its front edge and the DJ behind the desk.
-    const wanted = source === 'guess'
+    const wanted = staged
       ? Math.min(Math.max(wide * 0.5, 2.2), wide - 0.3)
       : wide - 0.2;
     width = Math.min(DESK_MAX_WIDTH, Math.max(DESK_MIN_WIDTH, wanted));
@@ -323,7 +337,7 @@ export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]):
     && Math.abs(standingHeight(risers, djX, djZ) - standY) <= 0.1;
 
   // The strip in front: as wide as a booth, or as the desk on a stage.
-  const half = (source === 'scan' ? Math.max(wide, width) : width) / 2;
+  const half = (staged ? width : Math.max(wide, width)) / 2;
   const aheadX = frontX + faceX * BOOTH_FRONT_CLEAR;
   const aheadZ = frontZ + faceZ * BOOTH_FRONT_CLEAR;
   let clear: FloorRect;

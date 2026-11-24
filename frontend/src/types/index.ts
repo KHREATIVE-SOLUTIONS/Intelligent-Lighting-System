@@ -176,6 +176,13 @@ export interface RoomShellBox {
   basis?: string;
   /** From a room scan: what its size suggests it is ('stage', 'riser' or 'booth'). */
   kind?: string;
+  /**
+   * True on the one raised area of a scanned room that somebody has said is
+   * the DJ's booth (Edit Room, slice 28): the 3D view puts the decks and the
+   * DJ on it and aims its DJ and Floor cameras at it. Left out on every other,
+   * and in a room nobody has marked one in (previs/boothPick.ts).
+   */
+  is_dj_booth?: boolean;
   /** True for anything a scan found: nobody has checked it against the room. */
   suggested?: boolean;
   /** True for one a person put into the room by hand (Edit Room): the scan did not find it. */

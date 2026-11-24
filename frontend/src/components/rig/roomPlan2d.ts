@@ -21,6 +21,8 @@ import {
   usableRoom,
 } from './previs/outline';
 import type { Span } from './previs/outline';
+import { pickDjBooth } from './previs/boothPick';
+import type { BoothSource } from './previs/boothPick';
 import { boxCorners, boxHeading, headingText } from './previs/raisedArea';
 import { scanRings, scanRisers, usableLine } from './previs/roomShell';
 
@@ -59,6 +61,13 @@ export interface PlanRaised {
   kind: string;
   label: string;
   tooltip: string;
+  /**
+   * On the one raised area the 3D view puts the DJ's decks on (slice 28), how
+   * it was chosen: 'marked' by a person in Edit Room, 'scan' for the first
+   * booth the room has, 'guess' for the first stage of a room with no booth
+   * (previs/boothPick.ts). Left out on every other raised area.
+   */
+  djBooth?: BoothSource;
 }
 
 export interface PlanTrussLine {
@@ -141,7 +150,10 @@ export function roomPlan(shell: RoomShell | null | undefined): RoomPlan | null {
     }
   }
 
-  const raised: PlanRaised[] = scanRisers(shell).map((riser) => {
+  // The same list, in the same order, that the 3D view picks the DJ's booth from.
+  const drawnRisers = scanRisers(shell);
+  const djBooth = pickDjBooth(drawnRisers);
+  const raised: PlanRaised[] = drawnRisers.map((riser, place) => {
     const base = Number.isFinite(riser.base_height) && riser.base_height! > 0 ? riser.base_height! : 0;
     const top = base + riser.height;
     const kind = riser.kind ?? 'riser';
@@ -167,6 +179,7 @@ export function roomPlan(shell: RoomShell | null | undefined): RoomPlan | null {
       area.heading = heading;
       area.corners = boxCorners(riser);
     }
+    if (djBooth && djBooth.index === place) area.djBooth = djBooth.source;
     return area;
   });
 
@@ -649,6 +662,49 @@ export function planLabels(plan: RoomPlan): PlanLabels {
     ));
 
   return { raised, trussLines, trussRings };
+}
+
+// ---------------------------------------------------------------------------
+// The tag on the DJ's booth
+// ---------------------------------------------------------------------------
+
+export const DJ_BOOTH_TAG_SIZE = 0.2;
+
+/** The small tag the plan prints on the raised area the DJ's booth is on. */
+export interface DjBoothTag {
+  /** "DJ", or "DJ?" where the booth is only a guess. */
+  text: string;
+  /** How it was chosen and what to do about it, for the tooltip. */
+  tooltip: string;
+  /** The middle of the text's baseline, on the plan: over the raised area's own label. */
+  x: number;
+  z: number;
+  /** True for a guess: drawn in the amber of a guessed position, as the 3D view marks it. */
+  guess: boolean;
+}
+
+const DJ_BOOTH_TAG_WORDS: Record<BoothSource, string> = {
+  marked: "The DJ's booth: marked in Edit Room. The 3D view puts the decks and the DJ here.",
+  scan: "The DJ's booth: the first booth the scan found. If this is the bar, mark the DJ's booth in Edit Room.",
+  guess: 'A guess: the room has no booth, so the DJ is drawn on its first stage. '
+    + "Mark the DJ's booth in Edit Room.",
+};
+
+/**
+ * The tag for a raised area, or null for one the DJ's booth is not on. It
+ * stands a line above the area's own label, which is left as it is.
+ */
+export function djBoothTag(area: PlanRaised): DjBoothTag | null {
+  if (!area.djBooth) return null;
+  const guess = area.djBooth === 'guess';
+  return {
+    text: guess ? 'DJ?' : 'DJ',
+    tooltip: DJ_BOOTH_TAG_WORDS[area.djBooth],
+    x: area.centerX,
+    // The label's baseline is 0.08 m below the middle; this is one label line above that.
+    z: area.centerZ + 0.08 - RAISED_LABEL_SIZE * LABEL_STEP,
+    guess,
+  };
 }
 
 /** The `points` of an SVG polygon for corners on the plan. */

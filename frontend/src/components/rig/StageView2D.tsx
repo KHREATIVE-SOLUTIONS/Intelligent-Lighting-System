@@ -4,8 +4,8 @@ import { FIXTURE_DRAG_MIME, computeTrussLines } from '../../stores/rigEditorStor
 import type { SnapMode } from '../../stores/rigEditorStore';
 import type { RigFixture, RoomShell } from '../../types';
 import {
-  holdOnPlan, planFrame, planGrid, planLabels, planPolygonPoints, planTrussTargets, planViewBox, roomPlan,
-  snapToRoomGrid, snapToScannedTruss,
+  DJ_BOOTH_TAG_SIZE, djBoothTag, holdOnPlan, planFrame, planGrid, planLabels, planPolygonPoints, planTrussTargets,
+  planViewBox, roomPlan, snapToRoomGrid, snapToScannedTruss,
 } from './roomPlan2d';
 import type { PlanLabel, PlanPoint } from './roomPlan2d';
 import {
@@ -46,6 +46,8 @@ const ROOM_WALL = '#90a4ae';
 const ROOM_RAISED = '#8d6e63';
 const ROOM_RAISED_TEXT = '#d7ccc8';
 const ROOM_TRUSS = '#4db6ac';
+// The tag on the DJ's booth where it is only a guess: the amber of a guessed position in the 3D view (GUESS_COLOR).
+const DJ_BOOTH_GUESS = '#ffb74d';
 // The selection's own blue, as the ring round a selected fixture.
 const SELECTION_COLOR = '#4fc3f7';
 // The corners of the walls while they can be dragged: amber, unlike anything else on the plan.
@@ -1324,7 +1326,10 @@ export default function StageView2D({
               </polygon>
             )}
 
-            {plan.raised.map((area, index) => (
+            {plan.raised.map((area, index) => {
+              // The raised area the 3D view puts the DJ on says so: "DJ", or an amber "DJ?" for a guess.
+              const djTag = djBoothTag(area);
+              return (
               <g key={`raised-${index}`} data-testid="room-plan-raised" data-kind={area.kind}>
                 <title>{area.tooltip}</title>
                 <rect
@@ -1343,8 +1348,25 @@ export default function StageView2D({
                   strokeWidth={0.05}
                 />
                 {labels && roomLabel(labels.raised[index], ROOM_RAISED_TEXT)}
+                {/* After its label, which stays the first text of the group. */}
+                {djTag && (
+                  <text
+                    data-testid="room-plan-dj-booth"
+                    data-source={area.djBooth}
+                    x={toSvgX(djTag.x)}
+                    y={toSvgY(djTag.z)}
+                    textAnchor="middle"
+                    fill={djTag.guess ? DJ_BOOTH_GUESS : ROOM_RAISED_TEXT}
+                    fontSize={DJ_BOOTH_TAG_SIZE}
+                    fontWeight="bold"
+                  >
+                    <title>{djTag.tooltip}</title>
+                    {djTag.text}
+                  </text>
+                )}
               </g>
-            ))}
+              );
+            })}
 
             {plan.trussLines.map((line, index) => (
               <g key={`scan-truss-${index}`} data-testid="room-plan-truss-line">
