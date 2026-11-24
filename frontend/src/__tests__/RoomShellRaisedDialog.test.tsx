@@ -506,3 +506,130 @@ describe('a floating raised area in the views', () => {
     expect(standing.boundingBox!.min.y).toBeCloseTo(0);
   });
 });
+
+// Slice 21: a raised area stands at any heading.
+describe('RoomShellEditDialog: a raised area\'s heading', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(cleanup);
+
+  const turnedStage = (heading: number): RoomShell => {
+    const after = shell();
+    after.risers![0] = {
+      ...after.risers![0], heading_deg: heading, suggested: false, basis: 'Resized by hand.',
+    };
+    return after;
+  };
+
+  it('has a heading field on each raised area, at 0 for one that stands square, and is no change until typed in', () => {
+    open();
+    expect(field('Heading of Stage').value).toBe('0');
+    expect(field('Heading of Drum riser').value).toBe('0');
+    // A truss keeps the heading field it always had.
+    expect(field('Heading of Truss 1').value).toBe('0');
+    expect(button('Save Stage').disabled).toBe(true);
+    type('Heading of Stage', '30');
+    expect(button('Save Stage').disabled).toBe(false);
+    type('Heading of Stage', '0');
+    expect(button('Save Stage').disabled).toBe(true);
+  });
+
+  it('turns a stage with the fixtures standing on it, and says what it now is', async () => {
+    const after = turnedStage(30);
+    const undo = { available: 1, label: 'Stage turned, with 1 fixture' };
+    api.editShellItem.mockResolvedValue({
+      rig_id: 7, kind: 'risers', index: 0, item: {}, room_shell: after, undo,
+      carry_fixtures: true, fixtures_moved: [carried(1, -2, -3)],
+    });
+    const { onChanged, onFixturesMoved } = open();
+
+    type('Heading of Stage', '30');
+    fireEvent.click(button('Save Stage'));
+    await flush();
+
+    expect(api.editShellItem).toHaveBeenCalledTimes(1);
+    expect(api.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { heading_deg: 30, carry_fixtures: true });
+    expect(screen.getByText(
+      'Stage is now 6.0 m by 3.0 m, turned 30 degrees, top 0.60 m above the floor. '
+      + '1 fixture standing on it moved with it.',
+    )).toBeTruthy();
+    expect(onChanged).toHaveBeenCalledWith(after, undo);
+    expect(onFixturesMoved).toHaveBeenCalledTimes(1);
+    // The row shows what is stored.
+    expect(field('Heading of Stage').value).toBe('30');
+    expect(button('Save Stage').disabled).toBe(true);
+  });
+
+  it('leaves what stands on it with the box unticked, and shows a heading as the server folded it', async () => {
+    api.editShellItem.mockResolvedValue({
+      rig_id: 7, kind: 'risers', index: 0, item: {}, room_shell: turnedStage(-45),
+      carry_fixtures: false, fixtures_moved: [],
+    });
+    const { onFixturesMoved } = open();
+
+    fireEvent.click(box('Stage'));
+    type('Heading of Stage', '135');
+    fireEvent.click(button('Save Stage'));
+    await flush();
+
+    // Sent as typed.
+    expect(api.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { heading_deg: 135, carry_fixtures: false });
+    expect(onFixturesMoved).not.toHaveBeenCalled();
+    expect(field('Heading of Stage').value).toBe('-45');
+  });
+
+  it('says what is wrong with a heading and sends nothing', () => {
+    open();
+    type('Heading of Stage', 'sideways');
+    expect(screen.getByText('Heading must be a number of degrees, such as 45 or -30.')).toBeTruthy();
+    expect(button('Save Stage').disabled).toBe(true);
+    type('Heading of Stage', '400');
+    expect(screen.getByText('Heading must be between -360 and 360 degrees.')).toBeTruthy();
+    expect(button('Save Stage').disabled).toBe(true);
+    expect(api.editShellItem).not.toHaveBeenCalled();
+  });
+
+  it('shows the server\'s words when a turn is refused, and changes nothing', async () => {
+    const detail = 'That would carry 1 fixture standing on Stage out of the room and the 2 m round it. Nothing was changed.';
+    api.editShellItem.mockRejectedValue({ isAxiosError: true, response: { status: 422, data: { detail } } });
+    const { onChanged } = open();
+
+    type('Heading of Stage', '60');
+    fireEvent.click(button('Save Stage'));
+    await flush();
+
+    expect(screen.getByText(detail)).toBeTruthy();
+    expect(onChanged).not.toHaveBeenCalled();
+    // What was typed is kept, to be put right.
+    expect(field('Heading of Stage').value).toBe('60');
+  });
+
+  it('has a heading field on the Add form for a raised area, and sends it only when it is turned', async () => {
+    api.addShellItem.mockResolvedValue({
+      rig_id: 7, kind: 'risers', index: 2, item: {}, room_shell: shell(), message: 'Riser was added.',
+    });
+    open();
+    // The form starts at a riser, square to the room.
+    expect(field('Heading of the new item').value).toBe('0');
+    fireEvent.click(button('Add to the room'));
+    await flush();
+    expect(api.addShellItem).toHaveBeenLastCalledWith(7, 'risers', {
+      center_x: 0, center_z: 0, width: 2, depth: 2, height: 0.3, riser_kind: 'riser',
+    });
+
+    type('Heading of the new item', '30');
+    fireEvent.click(button('Add to the room'));
+    await flush();
+    expect(api.addShellItem).toHaveBeenLastCalledWith(7, 'risers', {
+      center_x: 0, center_z: 0, width: 2, depth: 2, height: 0.3, riser_kind: 'riser', heading_deg: 30,
+    });
+  });
+
+  it('will not add a raised area at a heading that is not one, and has no heading for a ring', () => {
+    open();
+    type('Heading of the new item', 'round');
+    expect(button('Add to the room').disabled).toBe(true);
+    fireEvent.change(screen.getByRole('combobox', { name: 'What to add' }), { target: { value: 'truss_ring' } });
+    expect(screen.queryByLabelText('Heading of the new item')).toBeNull();
+    expect(button('Add to the room').disabled).toBe(false);
+  });
+});

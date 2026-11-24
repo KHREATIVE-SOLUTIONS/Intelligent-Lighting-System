@@ -599,4 +599,113 @@ describe('RigBuilder: arranging the items of a scanned room on the plan', () => 
     expect(screen.queryByTestId('room-items')).toBeNull();
     expect(screen.getByLabelText('Across of Truss 1')).toBeTruthy();
   });
+
+  // Slice 21: a raised area's rotate handle. The stage is 6 m by 3 m about (0, -3.5), drawn about
+  // (6, 1.5), and its rotate handle stands 0.6 m past its upstage edge, at (0, -5.6).
+  const turnedTo = (heading: number): RoomShell => {
+    const next = SHELL();
+    next.risers![0] = { ...next.risers![0], heading_deg: heading };
+    return next;
+  };
+  const handleAt = (name: string) =>
+    grip(name).getAttribute('transform')!.match(/-?\d+(\.\d+)?/g)!.map(Number);
+
+  it('turns a raised area from its rotate handle: one request with the heading and the flag', async () => {
+    roomApi.editShellItem.mockResolvedValueOnce({
+      ...edited(turnedTo(45), 'Stage turned'), kind: 'risers', carry_fixtures: true,
+    });
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('risers-0', [0, -3.5]);
+
+    // Up and stage left of its middle by as much: 45 degrees clockwise.
+    await drag(grip('rotate'), [0, -5.6], [1.5, -5]);
+
+    expect(roomApi.editShellItem).toHaveBeenCalledTimes(1);
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { heading_deg: 45, carry_fixtures: true });
+    // Drawn as the room now has it, with its handle round with it and no readout left over.
+    expect(shape('risers-0').getAttribute('transform')).toBe('rotate(45 6 1.5)');
+    expect(handleAt('rotate')[0]).toBeGreaterThan(6);
+    expect(screen.queryByTestId('room-item-readout')).toBeNull();
+    expect(strip()!.textContent).toContain(
+      'Stage is now 6.0 m by 3.0 m, turned 45 degrees, top 0.60 m above the floor. No fixture was moved with it.',
+    );
+    expect(api.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('turns in steps of 15 degrees with Shift held', async () => {
+    roomApi.editShellItem.mockResolvedValueOnce({
+      ...edited(turnedTo(15), 'Stage turned'), kind: 'risers', carry_fixtures: true,
+    });
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('risers-0', [0, -3.5]);
+    const svg = planSvg();
+
+    // 18.4 degrees clockwise of straight upstage: 20 on the grid's 5, 15 with Shift.
+    fireEvent.mouseDown(grip('rotate'), inRoom(0, -5.6));
+    fireEvent.mouseMove(svg, { ...inRoom(0.5, -5), shiftKey: true });
+    fireEvent.mouseUp(svg, { ...inRoom(0.5, -5), shiftKey: true });
+    for (let turn = 0; turn < 4; turn += 1) await flush();
+
+    expect(roomApi.editShellItem).toHaveBeenCalledTimes(1);
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { heading_deg: 15, carry_fixtures: true });
+    expect(shape('risers-0').getAttribute('transform')).toBe('rotate(15 6 1.5)');
+  });
+
+  it('leaves what stands on a turned raised area where it is when its box is unticked', async () => {
+    roomApi.editShellItem.mockResolvedValue({ ...edited(turnedTo(45), 'Stage turned'), kind: 'risers' });
+    await editor(rigAt(1, SHELL()));
+    await arrange(() => {
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Move the fixtures standing on Stage' }));
+    });
+    pick('risers-0', [0, -3.5]);
+
+    await drag(grip('rotate'), [0, -5.6], [1.5, -5]);
+
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { heading_deg: 45, carry_fixtures: false });
+    expect(strip()!.textContent).toContain('The fixtures standing on it were left where they are.');
+  });
+
+  it('reads the rig again when the fixtures standing on a turned raised area swung with it', async () => {
+    roomApi.editShellItem.mockResolvedValueOnce({
+      ...edited(turnedTo(45), 'Stage turned, with 2 fixtures', [1, 2]), kind: 'risers',
+    });
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('risers-0', [0, -3.5]);
+
+    await drag(grip('rotate'), [0, -5.6], [1.5, -5]);
+
+    expect(strip()!.textContent).toContain('2 fixtures standing on it moved with it.');
+    expect(api.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('puts a refused turn back and shows the server\'s words (422, and 409 during a walkthrough)', async () => {
+    const detail = 'That would carry 1 fixture standing on Stage out of the room and the 2 m round it, or through the '
+      + 'floor (Par 3 to 9, 1.1, -4.2; across, height, depth in metres). Nothing was changed.';
+    roomApi.editShellItem.mockRejectedValueOnce(refusal(422, detail));
+    await editor(rigAt(1, SHELL()));
+    await arrange();
+    pick('risers-0', [0, -3.5]);
+
+    await drag(grip('rotate'), [0, -5.6], [1.5, -5]);
+
+    expect(roomApi.editShellItem).toHaveBeenCalledTimes(1);
+    expect(roomApi.editShellItem).toHaveBeenCalledWith(7, 'risers', 0, { heading_deg: 45, carry_fixtures: true });
+    expect(strip()!.textContent).toContain(detail);
+    // Square to the room again, its handle upstage of it, and nothing read again.
+    expect(shape('risers-0').getAttribute('transform')).toBeNull();
+    expect(handleAt('rotate')[0]).toBeCloseTo(6);
+    expect(handleAt('rotate')[1]).toBeCloseTo(-0.6);
+    expect(screen.queryByTestId('room-item-readout')).toBeNull();
+    expect(api.get).toHaveBeenCalledTimes(1);
+
+    const running = 'The room cannot be edited while Identify Lights is running on this rig. Finish or end it first.';
+    roomApi.editShellItem.mockRejectedValueOnce(refusal(409, running));
+    await drag(grip('rotate'), [0, -5.6], [2, -3.5]);
+    expect(roomApi.editShellItem).toHaveBeenLastCalledWith(7, 'risers', 0, { heading_deg: 90, carry_fixtures: true });
+    expect(strip()!.textContent).toContain(running);
+    expect(shape('risers-0').getAttribute('transform')).toBeNull();
+  });
 });

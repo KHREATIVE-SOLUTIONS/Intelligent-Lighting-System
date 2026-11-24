@@ -61,8 +61,9 @@ describe('itemHandles', () => {
   });
 
   it('puts a handle on each corner and each edge of a raised area', () => {
-    // A stage 6 m by 3 m about (0, -5): upstage is the top of the plan.
-    expect(itemHandles(item('risers:1').shape)).toEqual([
+    // A stage 6 m by 3 m about (0, -5): upstage is the top of the plan. The ninth, which turns it
+    // (slice 21), is in raisedAreaHeading.test.ts.
+    expect(itemHandles(item('risers:1').shape).slice(0, 8)).toEqual([
       { grip: 'nw', x: -3, z: -6.5 },
       { grip: 'n', x: 0, z: -6.5 },
       { grip: 'ne', x: 3, z: -6.5 },

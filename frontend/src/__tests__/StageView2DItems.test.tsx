@@ -182,16 +182,18 @@ describe('StageView2D: arranging the room\'s items', () => {
     expect(at(grip('radius'))).toEqual([13.5, 1]);
     cleanup();
 
-    // A raised area stands square to the room: a handle on each corner and each edge, and none to turn it.
+    // A raised area: a handle on each corner and each edge, and since slice 21 one to turn it.
     plan({ itemsEdit: true, selectedItemKey: 'risers:1' });
     expect(screen.getAllByTestId(/^room-item-handle-/).map((handle) => handle.getAttribute('data-testid'))).toEqual(
-      ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((name) => `room-item-handle-${name}`),
+      ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w', 'rotate'].map((name) => `room-item-handle-${name}`),
     );
     // The stage is 6 m by 3 m about (0, -5), drawn at (x + 6, z + 5).
     expect(at(grip('nw'))).toEqual([3, -1.5]);
     expect(at(grip('e'))).toEqual([9, 0]);
     expect(at(grip('s'))).toEqual([6, 1.5]);
-    expect(screen.queryByTestId('room-item-handle-rotate')).toBeNull();
+    // The rotate handle stands 0.6 m past the middle of its upstage edge.
+    expect(at(grip('rotate'))[0]).toBeCloseTo(6);
+    expect(at(grip('rotate'))[1]).toBeCloseTo(-2.1);
   });
 
   it('has no resize handles on a raised area that is not selected', () => {
@@ -426,5 +428,157 @@ describe('StageView2D: arranging the room\'s items', () => {
     const fixture = screen.getByText('Spot 1').parentElement!;
     // Later in the document is nearer the front.
     expect(fixture.compareDocumentPosition(layer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+// Slice 21: a raised area stands at any heading. It is drawn turned, its
+// handles stand on it as it is turned, and a rotate handle turns it.
+describe('StageView2D: a raised area at a heading', () => {
+  afterEach(cleanup);
+
+  const turnedRoom = (heading: number): RoomShell => ({
+    ...ROOM,
+    risers: [ROOM.risers![0], { ...ROOM.risers![1], heading_deg: heading }],
+  });
+  const raisedRect = () => screen.getByTestId('room-plan-raised').querySelector('rect')!;
+
+  it('draws one that stands square as it always was, and a turned one turned about its middle', () => {
+    plan({ itemsEdit: true, selectedItemKey: 'risers:1' });
+    expect(raisedRect().getAttribute('transform')).toBeNull();
+    expect(shape('risers-1').getAttribute('transform')).toBeNull();
+    cleanup();
+
+    // The stage's middle, (0, -5), is drawn at (6, 0). The rectangle itself is the one it was.
+    plan({ itemsEdit: true, selectedItemKey: 'risers:1' }, turnedRoom(30));
+    expect(raisedRect().getAttribute('transform')).toBe('rotate(30 6 0)');
+    expect(raisedRect().getAttribute('width')).toBe('6');
+    expect(raisedRect().getAttribute('x')).toBe('3');
+    expect(shape('risers-1').getAttribute('transform')).toBe('rotate(30 6 0)');
+    expect(shape('risers-1').getAttribute('width')).toBe('6');
+    // Its handles stand on it as it is turned: the middle of its own stage left edge is 3 m along 30 degrees.
+    expect(at(grip('e'))[0]).toBeCloseTo(6 + 3 * Math.cos(Math.PI / 6));
+    expect(at(grip('e'))[1]).toBeCloseTo(1.5);
+    expect(at(grip('rotate'))[0]).toBeCloseTo(6 + 2.1 * Math.sin(Math.PI / 6));
+    expect(at(grip('rotate'))[1]).toBeCloseTo(-2.1 * Math.cos(Math.PI / 6));
+  });
+
+  it('draws a turned one turned on a plan that is not being arranged too', () => {
+    plan({}, turnedRoom(-20));
+    expect(raisedRect().getAttribute('transform')).toBe('rotate(-20 6 0)');
+    expect(screen.queryByTestId('room-items')).toBeNull();
+  });
+
+  it('turns it from the rotate handle: drawn as it goes, one call with the heading when let go', async () => {
+    const onItemChange = vi.fn();
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange });
+    // The handle is at (0, -7.1). Up and stage left of the middle is 45 degrees clockwise.
+    fireEvent.mouseDown(grip('rotate'), inRoom(0, -7.1));
+    fireEvent.mouseMove(svg, inRoom(1, -8));
+    fireEvent.mouseMove(svg, inRoom(3, -8));
+    expect(shape('risers-1').getAttribute('transform')).toBe('rotate(45 6 0)');
+    expect(screen.getByTestId('room-item-readout').textContent).toBe('45 deg');
+    // The handle goes round with it, and the one under the fixtures is left until the answer.
+    expect(at(grip('rotate'))[0]).toBeGreaterThan(6);
+    expect(raisedRect().getAttribute('transform')).toBeNull();
+    expect(onItemChange).not.toHaveBeenCalled();
+
+    fireEvent.mouseUp(svg, inRoom(3, -8));
+    expect(onItemChange).toHaveBeenCalledTimes(1);
+    expect(onItemChange).toHaveBeenCalledWith('risers', 1, { heading_deg: 45 });
+    await flush();
+  });
+
+  it('turns in steps of 5 degrees on the grid, and of 15 with Shift held', async () => {
+    const onItemChange = vi.fn();
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange });
+    // 18.4 degrees clockwise of straight upstage.
+    fireEvent.mouseDown(grip('rotate'), inRoom(0, -7.1));
+    fireEvent.mouseMove(svg, inRoom(1, -8));
+    expect(screen.getByTestId('room-item-readout').textContent).toBe('20 deg');
+    fireEvent.mouseMove(svg, { ...inRoom(1, -8), shiftKey: true });
+    expect(screen.getByTestId('room-item-readout').textContent).toBe('15 deg');
+    expect(shape('risers-1').getAttribute('transform')).toBe('rotate(15 6 0)');
+    fireEvent.mouseUp(svg, { ...inRoom(1, -8), shiftKey: true });
+    expect(onItemChange).toHaveBeenCalledTimes(1);
+    expect(onItemChange).toHaveBeenCalledWith('risers', 1, { heading_deg: 15 });
+    await flush();
+  });
+
+  it('turns in steps of 15 with Shift held when the snap is off as well', async () => {
+    const onItemChange = vi.fn();
+    const svg = plan({ itemsEdit: true, snapMode: 'none', selectedItemKey: 'risers:1', onItemChange });
+    fireEvent.mouseDown(grip('rotate'), inRoom(0, -7.1));
+    fireEvent.mouseMove(svg, { ...inRoom(1, -8), shiftKey: true });
+    fireEvent.mouseUp(svg, { ...inRoom(1, -8), shiftKey: true });
+    expect(onItemChange).toHaveBeenCalledWith('risers', 1, { heading_deg: 15 });
+    await flush();
+  });
+
+  it('sends nothing for a press on the rotate handle that stays within 5 pixels, or is brought back', () => {
+    const onItemChange = vi.fn();
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange });
+    // The handle is at (110, 19) on screen.
+    fireEvent.mouseDown(grip('rotate'), inRoom(0, -7.1));
+    fireEvent.mouseMove(svg, { clientX: 113, clientY: 21 });
+    fireEvent.mouseUp(svg, { clientX: 113, clientY: 21 });
+    expect(onItemChange).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(grip('rotate'), inRoom(0, -7.1));
+    fireEvent.mouseMove(svg, inRoom(3, -8));
+    fireEvent.mouseMove(svg, inRoom(0.05, -7.5));
+    fireEvent.mouseUp(svg, inRoom(0.05, -7.5));
+    expect(onItemChange).not.toHaveBeenCalled();
+    expect(shape('risers-1').getAttribute('transform')).toBeNull();
+  });
+
+  it('keeps a turned raised area as it was dropped until the change is answered, then puts it back if it was refused', async () => {
+    let answered: () => void = () => {};
+    const onItemChange = vi.fn(() => new Promise<void>((resolve) => { answered = resolve; }));
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange });
+    fireEvent.mouseDown(grip('rotate'), inRoom(0, -7.1));
+    fireEvent.mouseMove(svg, inRoom(3, -8));
+    fireEvent.mouseUp(svg, inRoom(3, -8));
+    await flush();
+    expect(shape('risers-1').getAttribute('transform')).toBe('rotate(45 6 0)');
+
+    // Refused: the room given is the one it had, and the stage stands square again with its handle upstage of it.
+    await act(async () => { answered(); });
+    await flush();
+    expect(shape('risers-1').getAttribute('transform')).toBeNull();
+    expect(at(grip('rotate'))[0]).toBeCloseTo(6);
+    expect(at(grip('rotate'))[1]).toBeCloseTo(-2.1);
+    expect(screen.queryByTestId('room-item-readout')).toBeNull();
+  });
+
+  it('resizes a turned raised area along its own sides, with the arrow turned too', async () => {
+    const onItemChange = vi.fn();
+    // A quarter turn: the stage's width now runs downstage, and its 'e' edge is at (0, -2), drawn at (6, 3).
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange }, turnedRoom(90));
+    expect(at(grip('e'))[0]).toBeCloseTo(6);
+    expect(at(grip('e'))[1]).toBeCloseTo(3);
+    expect(grip('e').getAttribute('style')).toContain('ns-resize');
+    expect(grip('n').getAttribute('style')).toContain('ew-resize');
+
+    fireEvent.mouseDown(grip('e'), inRoom(0, -2));
+    fireEvent.mouseMove(svg, inRoom(0, -1));
+    // Wider about its middle, and still turned: the rectangle is 8 m wide before it is turned.
+    expect(shape('risers-1').getAttribute('width')).toBe('8');
+    expect(shape('risers-1').getAttribute('height')).toBe('3');
+    expect(shape('risers-1').getAttribute('transform')).toBe('rotate(90 6 0)');
+    expect(screen.getByTestId('room-item-readout').textContent).toBe('8.00 by 3.00 m');
+    fireEvent.mouseUp(svg, inRoom(0, -1));
+    expect(onItemChange).toHaveBeenCalledTimes(1);
+    expect(onItemChange).toHaveBeenCalledWith('risers', 1, { width: 8 });
+    await flush();
+  });
+
+  it('does not widen a turned raised area for a pull across the room', async () => {
+    const onItemChange = vi.fn();
+    const svg = plan({ itemsEdit: true, gridSize: 0.5, selectedItemKey: 'risers:1', onItemChange }, turnedRoom(90));
+    fireEvent.mouseDown(grip('e'), inRoom(0, -2));
+    fireEvent.mouseMove(svg, inRoom(4, -2));
+    fireEvent.mouseUp(svg, inRoom(4, -2));
+    expect(onItemChange).not.toHaveBeenCalled();
+    await flush();
   });
 });
