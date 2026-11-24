@@ -176,11 +176,16 @@ def _op_matrix_numbers(name: str, numbers: np.ndarray) -> Optional[np.ndarray]:
         return m
     if kind.startswith("rotate"):
         axes = kind[len("rotate"):]
-        if axes and len(numbers) == len(axes) and all(axis in "XYZ" for axis in axes):
+        if len(axes) == 1 and axes in "XYZ" and len(numbers) == 1:
+            return _rotation(axes, float(numbers[0]))
+        if len(axes) == 3 and sorted(axes) == ["X", "Y", "Z"] and len(numbers) == 3:
+            # The value is always (degrees about X, about Y, about Z), whatever
+            # the op is called. The name is the order they are turned in:
+            # rotateZYX turns about Z first, then Y, then X, which with row
+            # vectors is Rz Ry Rx; rotateXYZ is Rx Ry Rz.
             m = np.eye(4)
-            # rotateXYZ turns about X first; with row vectors that is Rx Ry Rz.
-            for axis, degrees in zip(axes, numbers):
-                m = m @ _rotation(axis, float(degrees))
+            for axis in axes:
+                m = m @ _rotation(axis, float(numbers["XYZ".index(axis)]))
             return m
     return None
 

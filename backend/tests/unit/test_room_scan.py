@@ -28,6 +28,25 @@ from tests.unit.room_scan_meshes import (
 )
 
 
+def turned_usda(ops: str, order, points) -> str:
+    """One triangle of `points` under an Xform with the given ops."""
+    listed = ", ".join(f'"{name}"' for name in order)
+    written = ", ".join(f"({x}, {y}, {z})" for x, y, z in points)
+    return f'''#usda 1.0
+def Xform "Turned"
+{{
+    {ops}
+    uniform token[] xformOpOrder = [{listed}]
+    def Mesh "M"
+    {{
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [{written}]
+    }}
+}}
+'''
+
+
 def scan(content: bytes, name: str, **options):
     return extract_room(read_scan_file(name, content), ScanOptions(**options))
 
@@ -231,6 +250,44 @@ def Xform "Pivoted"
         mesh = parse_usda(text)
         # A quarter turn about the upright line through (1, 0, 0): that point stays, (2,0,0) swings to (1,0,-1).
         assert np.allclose(mesh.vertices, [[1, 0, 0], [1, 0, -1], [1, 1, 0]], atol=1e-6)
+
+    @pytest.mark.parametrize("order", ["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"])
+    def test_a_three_axis_rotate_turns_about_its_axes_in_the_order_of_its_name(self, order):
+        """rotateZYX = (x, y, z) holds the degrees about X, Y and Z in that
+        order whatever the op is called, and turns about Z first, then Y, then X."""
+        degrees = {"X": 10.0, "Y": 20.0, "Z": 35.0}
+        value = f'({degrees["X"]}, {degrees["Y"]}, {degrees["Z"]})'
+        points = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 2.0, 3.0]])
+        together = parse_usda(turned_usda(
+            f"float3 xformOp:rotate{order} = {value}", [f"xformOp:rotate{order}"], points))
+
+        # Worked out here: the right-handed turn about each axis, one after the other.
+        def turn(axis, p):
+            a = np.radians(degrees[axis])
+            c, s = np.cos(a), np.sin(a)
+            x, y, z = p
+            if axis == "X":
+                return np.array([x, c * y - s * z, s * y + c * z])
+            if axis == "Y":
+                return np.array([c * x + s * z, y, -s * x + c * z])
+            return np.array([c * x - s * y, s * x + c * y, z])
+
+        expected = []
+        for p in points:
+            for axis in order:
+                p = turn(axis, p)
+            expected.append(p)
+        assert np.allclose(together.vertices, expected, atol=1e-6)
+
+        # And as three ops of one axis each. xformOpOrder is outermost first, so the first turn is listed last.
+        singles = "\n    ".join(f"float xformOp:rotate{axis} = {degrees[axis]}" for axis in "XYZ")
+        apart = parse_usda(turned_usda(singles, [f"xformOp:rotate{axis}" for axis in reversed(order)], points))
+        assert np.allclose(together.vertices, apart.vertices, atol=1e-6)
+
+        # The six orders are six different turns: a reader that ignored the name would fail five of these.
+        if order != "XYZ":
+            xyz = parse_usda(turned_usda(f"float3 xformOp:rotateXYZ = {value}", ["xformOp:rotateXYZ"], points))
+            assert not np.allclose(together.vertices, xyz.vertices, atol=1e-3)
 
     def test_roomplan_json_inside_a_usdz_is_preferred(self):
         archive = write_zip([("room.usdc", b"PXR-USDC" + bytes(64)), ("room.json", roomplan_json())])
