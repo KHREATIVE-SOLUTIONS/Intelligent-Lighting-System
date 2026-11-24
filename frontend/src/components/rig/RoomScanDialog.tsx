@@ -49,6 +49,8 @@ import {
   removeResultText,
   roomScanErrorText,
   roomSizeText,
+  turnSummaryText,
+  turnText,
   undoResultText,
 } from '../../utils/roomScan';
 import type {
@@ -211,6 +213,13 @@ export default function RoomScanDialog({
 
   const shown = applied ?? preview;
   const wouldMove = preview?.fixtures.would_move ?? 0;
+  // How many of the moves on screen turn their fixture. Once applied it is said
+  // only when fixtures were moved: with the box unticked nothing was turned.
+  const turnSummary = !shown
+    ? ''
+    : applied
+      ? ((applied.applied?.fixtures_moved ?? 0) > 0 ? turnSummaryText(shown.fixtures.moves, true) : '')
+      : turnSummaryText(shown.fixtures.moves);
 
   return (
     <Dialog open={open} onClose={busy === 'apply' ? undefined : onClose} maxWidth="md" fullWidth>
@@ -384,11 +393,12 @@ export default function RoomScanDialog({
               <Typography variant="subtitle1">{applied ? 'Fixtures moved' : 'Suggested fixture moves'}</Typography>
               <Chip size="small" color="warning" variant="outlined" label="Still unconfirmed afterwards" />
             </Stack>
-            <Typography variant="body2" sx={{ mb: 1 }}>
+            <Typography variant="body2" sx={{ mb: 1 }} data-testid="room-scan-move-summary">
               {applied?.applied
                 ? `${applied.applied.fixtures_moved} moved. ${applied.applied.fixtures_still_unconfirmed} are still `
                   + 'unconfirmed: check them with Identify Lights, or drag them in the 3D view.'
                 : fixtureMoveText(shown)}{' '}
+              {turnSummary && `${turnSummary} `}
               Positions that were tapped, confirmed, measured in a file or fitted between tapped ends are never moved.
             </Typography>
 
@@ -400,6 +410,9 @@ export default function RoomScanDialog({
                       <TableCell>Fixture</TableCell>
                       <TableCell>Group</TableCell>
                       <TableCell>From x, y, z to x, y, z (m)</TableCell>
+                      <TableCell title="Degrees the fixture is turned with a stage that stands at a heading, clockwise seen from above">
+                        Turn
+                      </TableCell>
                       <TableCell>Why</TableCell>
                     </TableRow>
                   </TableHead>
@@ -409,6 +422,9 @@ export default function RoomScanDialog({
                         <TableCell>{move.name}</TableCell>
                         <TableCell>{move.group}</TableCell>
                         <TableCell sx={{ whiteSpace: 'nowrap' }}>{moveText(move)}</TableCell>
+                        <TableCell sx={{ whiteSpace: 'nowrap' }} data-testid={`room-scan-turn-${move.rig_fixture_id}`}>
+                          {turnText(move)}
+                        </TableCell>
                         <TableCell>{move.reason}</TableCell>
                       </TableRow>
                     ))}
