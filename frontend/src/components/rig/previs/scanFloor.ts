@@ -265,9 +265,11 @@ export function placeScanBooth(outline: OutlinePoint[], risers: RoomShellBox[]):
   // A booth put on a stage goes at the stage's downstage edge, as a stage is
   // played: only a wall right in front of that edge turns it to the open floor.
   const downstage = sidesOf(shape)[0];
-  const probe = downstage.half + FRONT_PROBE;
+  // Out to the edge and then past it, in that order: the sum a square stage always had.
   const downstageOpen = outlineClearance(
-    outline, shape.center_x + downstage.fx * probe, shape.center_z + downstage.fz * probe,
+    outline,
+    shape.center_x + downstage.fx * downstage.half + downstage.fx * FRONT_PROBE,
+    shape.center_z + downstage.fz * downstage.half + downstage.fz * FRONT_PROBE,
   ) > 0;
   const side = source === 'guess' && downstageOpen
     ? downstage
