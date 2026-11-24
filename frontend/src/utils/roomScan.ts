@@ -16,8 +16,8 @@ export interface RoomScanOptions {
 
 export const DEFAULT_SCAN_OPTIONS: RoomScanOptions = { units: 'auto', upAxis: 'auto', rotate: 0 };
 
-/** The file endings the server reads. A .usdz must hold a text layer or RoomPlan JSON. */
-export const ROOM_SCAN_ACCEPT = '.obj,.ply,.usdz,.usda,.json';
+/** The file endings the server reads. A .usdz is read whether its layer is binary USD (USDC), text or RoomPlan JSON. */
+export const ROOM_SCAN_ACCEPT = '.obj,.ply,.usdz,.usdc,.usda,.json';
 
 /** The server's own limit (room_scan.MAX_UPLOAD_BYTES). Checked here first so a huge file is not sent to be refused. */
 export const ROOM_SCAN_MAX_BYTES = 200 * 1024 * 1024;
@@ -319,7 +319,7 @@ export function fileProblem(file: { name: string; size: number }): string | null
 
 /**
  * The message for a refused request. The server's own words are used wherever
- * it gave any: they say what to export instead (a binary USDZ), which units to
+ * it gave any: they say what to export instead (a USD file that cannot be read), which units to
  * check, or that a locate walkthrough is running.
  */
 export function roomScanErrorText(status: number | undefined, detail: unknown): string {

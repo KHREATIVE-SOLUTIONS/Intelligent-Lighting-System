@@ -11,6 +11,7 @@ import {
 } from '../components/rig/previs/roomShell';
 import {
   DEFAULT_SCAN_OPTIONS,
+  ROOM_SCAN_ACCEPT,
   ROOM_SCAN_MAX_BYTES,
   fileProblem,
   fixtureMoveText,
@@ -231,8 +232,12 @@ describe('room scan wording', () => {
     })).toBe('(-3.00, 6.00, -1.50) to (-3.00, 4.00, 0.50)');
   });
 
+  it('offers every ending the server reads, binary USD among them', () => {
+    expect(ROOM_SCAN_ACCEPT.split(',')).toEqual(['.obj', '.ply', '.usdz', '.usdc', '.usda', '.json']);
+  });
+
   it('uses the server\'s own words for a refusal, and has some when it gave none', () => {
-    const usdz = 'Room.usdz holds only binary USD. Export OBJ from Polycam or Scaniverse instead.';
+    const usdz = 'This binary USD (USDC) file cannot be read: it is cut short. Export OBJ from Polycam or Scaniverse instead.';
     expect(roomScanErrorText(400, usdz)).toBe(usdz);
     expect(roomScanErrorText(422, [{ msg: "String should match pattern '^(auto|m|cm|mm)$'" }])).toContain('pattern');
     expect(roomScanErrorText(413, undefined)).toContain('too large');

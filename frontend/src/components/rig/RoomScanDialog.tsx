@@ -219,7 +219,7 @@ export default function RoomScanDialog({
       <DialogContent dividers>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Scan the room with a phone (Polycam, Scaniverse, Apple RoomPlan) and export it as OBJ or PLY,
-          as a USDZ or USDA with a text layer, or as RoomPlan JSON. The scan is read for the floor,
+          as USDZ, USDC or USDA (binary USD is read as well as text), or as RoomPlan JSON. The scan is read for the floor,
           walls and ceiling, any stage, riser or booth, and trusses or bars overhead. Everything it
           finds is a suggestion: you see it here first, and nothing is stored until you apply it.
         </Typography>
