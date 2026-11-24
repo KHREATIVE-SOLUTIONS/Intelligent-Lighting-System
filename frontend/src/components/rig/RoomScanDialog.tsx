@@ -220,6 +220,7 @@ export default function RoomScanDialog({
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Scan the room with a phone (Polycam, Scaniverse, Apple RoomPlan) and export it as OBJ, PLY or
           glTF (.glb or .gltf), as USDZ, USDC or USDA (binary USD is read as well as text), or as RoomPlan JSON.
+          If the app shares a zip (a glTF with its .bin, or an OBJ with its textures), choose the zip as it is.
           The scan is read for the floor,
           walls and ceiling, any stage, riser or booth, and trusses or bars overhead. Everything it
           finds is a suggestion: you see it here first, and nothing is stored until you apply it.

@@ -239,8 +239,11 @@ describe('room scan wording', () => {
     })).toBe('(-3.00, 6.00, -1.50) to (-3.00, 4.00, 0.50)');
   });
 
-  it('offers every ending the server reads, glTF and binary USD among them', () => {
-    expect(ROOM_SCAN_ACCEPT.split(',')).toEqual(['.obj', '.ply', '.glb', '.gltf', '.usdz', '.usdc', '.usda', '.json']);
+  it('offers every ending the server reads, glTF and binary USD among them, and a zip of a scan last', () => {
+    expect(ROOM_SCAN_ACCEPT.split(',')).toEqual([
+      '.obj', '.ply', '.glb', '.gltf', '.usdz', '.usdc', '.usda', '.json', '.zip',
+    ]);
+    expect(fileProblem({ name: 'polycam-export.zip', size: 1024 })).toBeNull();
   });
 
   it('uses the server\'s own words for a refusal, and has some when it gave none', () => {
