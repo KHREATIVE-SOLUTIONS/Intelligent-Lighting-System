@@ -63,6 +63,16 @@ RAISED_MAX_HEIGHT = 2.2
 RAISED_MIN_AREA = 1.5
 RAISED_MIN_SIDE = 0.8
 STAGE_MIN_AREA = 6.0
+# A raised area that stands turned from the room's walls (slice 27). It is
+# given a heading only when it is turned by at least this much, when its own
+# box is at most this share of the box along the room's axes (a rectangle
+# turned 5 degrees is under 0.86 of it), and when it fills this much of its
+# own box. Anything else is measured along the room's axes, as it always was.
+RAISED_TURN_MIN_DEG = 5.0
+RAISED_TURN_MAX_SHARE = 0.9
+RAISED_TURN_MIN_FILL = 0.8
+RAISED_TURN_MIN_POINTS = 40
+RAISED_TURN_SAMPLE = 4000
 
 # An overhead line: long, thin, clear of the walls, in the upper room.
 OVERHEAD_MIN_HEIGHT = 2.0
@@ -726,6 +736,82 @@ def _level_peaks(values: np.ndarray, low: float, high: float, step: float, enoug
     return peaks
 
 
+def _turned_box(px: np.ndarray, pz: np.ndarray, area: float) -> Optional[Dict[str, float]]:
+    """A level patch's own box where it clearly stands turned from the room's walls, else None.
+
+    The box round the patch is measured at every heading within 45 degrees of
+    square, and the smallest is the patch's own. It is kept only when all of
+    this holds, so that a patch standing square, a round one, an L and a
+    corner piece are each measured along the room's axes exactly as before:
+
+      * it is turned by RAISED_TURN_MIN_DEG or more;
+      * its own box is clearly smaller than the box along the room's axes;
+      * the patch fills its own box, as a rectangle does.
+
+    `heading` is degrees clockwise from across the room seen from above, over
+    -45 and up to 45; `width` runs along it and `depth` square to it, so the
+    edge at +depth is the one that faces most nearly downstage.
+    """
+    if len(px) < RAISED_TURN_MIN_POINTS:
+        return None
+    step = max(1, len(px) // RAISED_TURN_SAMPLE)
+    x, z = px[::step], pz[::step]
+
+    def boxes(degrees: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        cos, sin = np.cos(np.radians(degrees))[:, None], np.sin(np.radians(degrees))[:, None]
+        u, v = x[None, :] * cos + z[None, :] * sin, -x[None, :] * sin + z[None, :] * cos
+        return u.min(axis=1), u.max(axis=1), v.min(axis=1), v.max(axis=1)
+
+    def smallest(degrees: np.ndarray) -> Tuple[float, Tuple[float, float, float, float]]:
+        u0, u1, v0, v1 = boxes(degrees)
+        best = int(np.argmin((u1 - u0) * (v1 - v0)))
+        return float(degrees[best]), (float(u0[best]), float(u1[best]), float(v0[best]), float(v1[best]))
+
+    rough, _ = smallest(np.arange(-45.0, 45.0, 0.5))
+    heading, (u0, u1, v0, v1) = smallest(np.arange(rough - 0.5, rough + 0.5001, 0.05))
+    if heading <= -45.0:
+        return None     # as near square the other way round: not clearly turned either way
+    width, depth = u1 - u0, v1 - v0
+    if abs(heading) < RAISED_TURN_MIN_DEG or min(width, depth) < RAISED_MIN_SIDE:
+        return None
+    square = float(px.max() - px.min()) * float(pz.max() - pz.min())
+    if width * depth > RAISED_TURN_MAX_SHARE * square:
+        return None
+    if area < RAISED_TURN_MIN_FILL * width * depth:
+        return None
+    cos, sin = math.cos(math.radians(heading)), math.sin(math.radians(heading))
+    mid_u, mid_v = (u0 + u1) / 2.0, (v0 + v1) / 2.0
+    return {
+        "center_x": mid_u * cos - mid_v * sin, "center_z": mid_u * sin + mid_v * cos,
+        "width": width, "depth": depth, "heading": heading,
+    }
+
+
+def _turn_box(turned: Dict[str, float], turns: int) -> Dict[str, float]:
+    """A turned patch's own box after `turns` quarter turns clockwise seen from above.
+
+    Each quarter turn adds 90 degrees to its heading. A rectangle looks the
+    same after half a turn, and one at heading h with sides (w, d) is the one
+    at h - 90 with sides (d, w): the heading is brought back over -45 and up
+    to 45, so `depth` still runs towards the edge that faces most nearly
+    downstage.
+    """
+    out = dict(turned)
+    out["center_x"], out["center_z"] = quarter_turn(turned["center_x"], turned["center_z"], turns)
+    heading = turned["heading"] + 90.0 * (turns % 4)
+    heading = math.fmod(heading, 180.0)
+    if heading > 90.0:
+        heading -= 180.0
+    if heading > 45.0:
+        heading -= 90.0
+        out["width"], out["depth"] = turned["depth"], turned["width"]
+    elif heading <= -45.0:
+        heading += 90.0
+        out["width"], out["depth"] = turned["depth"], turned["width"]
+    out["heading"] = heading
+    return out
+
+
 def find_raised_areas(
     points: np.ndarray, normals: Optional[np.ndarray], room: Dict[str, float],
     ceiling: float, density: float, cell: float, warnings: List[str],
@@ -789,6 +875,13 @@ def find_raised_areas(
                 "x_min": float(px.min()), "x_max": float(px.max()),
                 "z_min": float(pz.min()), "z_max": float(pz.max()),
             }
+            # One that clearly stands turned from the walls keeps its own box
+            # as well. Its extent along the room's axes is still what says
+            # which wall it is nearest, and is left as the scan gave it.
+            turned = _turned_box(px, pz, area)
+            if turned is not None:
+                found.append({**extent, "height": height, "area": area, "fill": fill, "turned": turned})
+                continue
             # An edge this close to a wall is built against it.
             for key in extent:
                 if abs(extent[key] - room[key]) <= 0.15:
@@ -972,6 +1065,8 @@ def _turn_extent(item: Dict[str, float], turns: int) -> Dict[str, float]:
     out = dict(item)
     out["x_min"], out["x_max"] = sorted(c[0] for c in corners)
     out["z_min"], out["z_max"] = sorted(c[1] for c in corners)
+    if "turned" in item:
+        out["turned"] = _turn_box(item["turned"], turns)
     return out
 
 
@@ -1101,6 +1196,11 @@ def extract_room(mesh: ScanMesh, options: Optional[ScanOptions] = None) -> RoomE
         out = dict(item)
         out["x_min"], out["x_max"] = item["x_min"] - cx, item["x_max"] - cx
         out["z_min"], out["z_max"] = item["z_min"] - cz, item["z_max"] - cz
+        if "turned" in item:
+            out["turned"] = {
+                **item["turned"],
+                "center_x": item["turned"]["center_x"] - cx, "center_z": item["turned"]["center_z"] - cz,
+            }
         return out
 
     raised = [centred(r) for r in raised]
@@ -1153,6 +1253,34 @@ def extract_room(mesh: ScanMesh, options: Optional[ScanOptions] = None) -> RoomE
     for patch in raised:
         kind, name = _describe_raised(patch["area"], patch["height"])
         named[kind] = named.get(kind, 0) + 1
+        own = patch.get("turned")
+        if own is not None and _r(own["heading"], 1) != 0.0:
+            # It stands turned from the walls: its own middle and sides, and
+            # the heading its width runs at (as Edit Room stores one).
+            named_as = name if named[kind] == 1 else f"{name} {named[kind]}"
+            risers.append({
+                "center_x": _r(own["center_x"]),
+                "center_z": _r(own["center_z"]),
+                "width": _r(own["width"]),
+                "depth": _r(own["depth"]),
+                "height": _r(patch["height"]),
+                "base_height": 0.0,
+                "heading_deg": _r(own["heading"], 1),
+                "name": named_as,
+                "kind": kind,
+                "suggested": True,
+                "basis": (
+                    f"scan: a level area of about {patch['area']:.1f} m2, {patch['height']:.2f} m above the floor, "
+                    f"standing turned {abs(own['heading']):.0f} degrees from the room's walls. "
+                    "What it is was guessed from its size."
+                ),
+            })
+            assumptions.append(
+                f"{named_as} stands turned {abs(own['heading']):.0f} degrees from the room's walls "
+                f"({'clockwise' if own['heading'] > 0 else 'anticlockwise'} seen from above), measured from its top. "
+                "Fixtures suggested onto it are turned with it. If it stands square, set its Heading to 0 in Edit Room."
+            )
+            continue
         risers.append({
             "center_x": _r((patch["x_min"] + patch["x_max"]) / 2.0),
             "center_z": _r((patch["z_min"] + patch["z_max"]) / 2.0),
