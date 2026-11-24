@@ -109,6 +109,16 @@ beside it (see "What slice 26 built"). Its backend tests pass. **No zip from
 a real phone has been read**: every one it has seen was built by the tests.
 The file picker's change was not run, for the same reason as slice 25's.
 
+Slice 27 makes **the suggestion go by a stage that stands at a heading**. A
+scan now measures a stage turned from the room's walls (5 degrees or more)
+and stores its heading; a floor row suggested onto it is laid parallel to
+its turned edges, as far in from them, and each fixture is turned as far;
+and the scan's undo turns them back (see "What slice 27 built"). A stage
+standing square is read and suggested for exactly as before. Backend only.
+Its tests pass (pytest 2459 passed, 10 skipped, 5 xfailed, Nov 24). **No
+turned stage from a real phone has been read**, and the preview table does
+not show the turn (see What is left).
+
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
 
@@ -253,7 +263,10 @@ record holds moves, **Undo room scan moves (n)** is shown in the Room Scan
 dialog and in the 3D view's header. It asks once, then puts those fixtures
 back. A fixture a person has tapped, confirmed, dragged or moved since the scan
 is **left where it is** and named in the answer with the reason ("Left alone:
-Spot 1 (...)"). The stored room stays.
+Spot 1 (...)"). The stored room stays. A fixture the scan also turned, with
+a stage that stands at a heading (slice 27), is turned back as well, unless
+somebody has turned it since: then it goes back to where it stood and keeps
+the way it faces.
 
 **Remove the stored room** takes the room off the rig again. When the scan
 moved fixtures it asks first: remove the room and put them back, or remove the
@@ -287,7 +300,8 @@ it is open.
   change. Any other turn is its Heading.
 - **Heading** (slice 21), on a raised area's row and on the Add form: which
   way its width runs, in degrees clockwise from across the room seen from
-  above. 0 stands square to the room, as everything a scan finds does; 30
+  above. 0 stands square to the room, as most of what a scan finds does (a
+  scan gives a heading only to one clearly turned from the walls, slice 27); 30
   is turned 30 degrees. A rectangle looks the same after half a turn, so
   135 is stored as -45. Its width is then along its heading and its front
   to back square to it. The row, the 2D plan's tooltip and the notice say
@@ -574,7 +588,10 @@ The answer, for both:
   walls, a row longer than the truss it was put under).
 - `fixtures`: `total`, `unconfirmed`, `would_move`, and `moves`: each with
   `rig_fixture_id`, `name`, `group`, `from`, `to`, `reason` and
-  `suggested: true`.
+  `suggested: true`. A move onto a stage that stands at a heading also has
+  `turn_deg` (slice 27): the degrees the fixture is turned with the stage,
+  clockwise seen from above, which apply takes off its `rotation_y`. A move
+  that turns nothing has no `turn_deg`.
 - `applied`: `null` for a preview. After apply: `room_shell_stored`,
   `fixtures_moved`, `fixtures_still_unconfirmed` and a message.
 
@@ -1139,7 +1156,13 @@ room, `suggest.py` moves the guesses. In order:
    scan that stops short of a corner) is **drawn as a box, with a warning**
    saying why.
 6. **Raised areas.** Level patches 0.12 m to 2.2 m above the floor, at least
-   1.5 m2.
+   1.5 m2, each measured along the room's axes. One that clearly stands
+   turned from the walls is measured along its own sides instead and given a
+   heading (slice 27, `_turned_box`): the box round the patch is tried at
+   every heading within 45 degrees of square, and the smallest is kept when
+   it is turned 5 degrees or more, is at most 0.9 of the box along the
+   room's axes, and is at least 0.8 filled by the patch. No scan format
+   says which way a stage faces, so this is read from its shape alone.
 7. **Overhead lines and rings.** Long thin things hanging clear of the walls
    (of the outline's walls, where there is one) in the upper room, grouped into
    hanging heights. Each patch is measured along its own long axis, so a truss
@@ -1180,6 +1203,21 @@ row fit:
   flash-and-tap's row fit does not apply to it.
 - **Floor rows standing where the scan found a stage** go up onto it and in
   from its edges.
+- **Where that stage stands at a heading** (slice 27), the row goes onto it
+  **turned with it**. The row is read as drawn for a stage standing square
+  where this one's middle is, fitted by the rule above (up onto it, 0.3 m in
+  from its edges), and then swung about the stage's middle by the heading.
+  It ends parallel to the stage's turned edges, as far in from them, with
+  its spacing and its place across the stage kept; a row drawn at the front
+  is at the turned front. Each fixture is turned by the heading as well
+  (`turn_deg`; its `rotation_y` loses that much), so a light square to the
+  stage's front stays square to it. Then the walls: the row is shifted as
+  one piece into the room's box and its outline, a guess at a time only
+  where it fits nowhere whole, and nothing is lifted to within 0.3 m of the
+  ceiling. **A row a scan has already moved** (`position_hint:room_scan`)
+  is read as already laid on the turned stage: it is fitted to it and never
+  swung or turned again. A stage at heading 0, or with none stored, takes
+  the rule above unchanged.
 - **Every row** comes inside the walls: 0.2 m in from the walls of the room's
   box.
 - **In a room with a floor outline** (an L, a cut corner) the box is not the
@@ -1505,6 +1543,96 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 27 built
+
+The suggestion goes by a stage that stands at a heading. Until now
+`suggest.py` read the first stage's middle and sides and nothing else, so a
+row was fitted to a turned stage as though it stood square: parallel to the
+walls, and partly off the deck. Backend only.
+
+- **The suggestion** (`suggest.py`, `_onto_turned_stage`). The stage's
+  heading is read with slice 21's own `area_heading`, and a row is swung
+  with `carry.py`'s `_swung`, so the plan is turned the same way round here
+  as when a stage is turned by hand in Edit Room.
+  - *The rule* is the square rule, in the stage's own two ways. The row's
+    place from the stage's middle is taken along the stage's width and from
+    its back to its front; it is fitted there as it always was (the same
+    test for "is this row the stage's", the same lift onto its top, the
+    same 0.3 m in from its edges, the same note when it is wider than the
+    stage); and the result is swung about the stage's middle by the
+    heading. What comes out is what the old rule gives for the stage
+    standing square, turned as a person turning the stage with its box
+    ticked would turn it.
+  - *A row no scan has moved* was drawn for a stage standing square, so its
+    place from the stage's middle is taken as it is and the whole row is
+    swung. *A row a scan has moved* (`position_hint:room_scan` on any
+    fixture of it) is already turned: it is un-swung to be read, fitted,
+    and put back, and nothing is turned. That is what makes the same scan
+    read twice move nothing, at 90 degrees too, where a swung row looks
+    like one that was never swung.
+  - *Aim.* Each move carries `turn_deg`, the heading. `turned_rotation`
+    takes it off `rotation_y`, which runs the other way round from a
+    heading: the sign `carry.py` uses.
+  - *The walls and the ceiling* are held on the swung places: one shift for
+    the row into the room's box (0.2 m in), then into the floor outline;
+    a guess at a time only where the row fits nowhere whole, with the old
+    notes. Nothing is lifted to within 0.3 m of the ceiling (`CEILING_DROP`).
+  - *Settled at once.* A fit to a turned stage and a hold to the walls pull
+    along different ways, so doing both twice need not give the same place
+    twice, as it does when both go along the room's axes. So where the
+    walls moved a row, the stage's rule is asked once more from where the
+    walls left it and its answer is taken if the walls let it stand; and a
+    laid row that stands inside the walls, which the walls would move
+    again, stays where it is.
+  - *Heading 0 or none is the old code*, not the new code given a zero: the
+    branch is taken only when `area_heading` is not 0, so 0, 180, 360, a
+    string, a boolean and a number past 360 all leave the old lines to run
+    untouched. A stage with a number missing is not turned either.
+  - *A row that is not the stage's* (downstage of its turned front, or off
+    its width) falls through to the walls, as before. Overhead rows never
+    read the stage.
+- **The route** (`POST .../room-scan`). Apply writes `rotation_y` for a move
+  with a `turn_deg`, and the fixture's entry in the undo record keeps
+  `rotation_y_before` and `rotation_y_after`. The answer's moves have
+  `turn_deg` only where a fixture is turned, so every other answer is what
+  it was.
+- **The undo** (`undo.py`). A fixture the scan turned is turned back with
+  its position, when it still faces the way the scan left it (to 0.01 of a
+  degree). One somebody has turned since goes back to where it stood and
+  keeps the way it faces. A second scan over the first keeps the first's
+  `rotation_y_before`. An entry for a move that turned nothing has neither
+  key, and a record written before this slice is read as it was.
+- **The scan finds a turned stage** (`extract.py`, `_turned_box`,
+  `_turn_box`). Without this the rule above could never run from a scan: a
+  scan measured every raised area along the room's axes, and
+  `suggest_positions` is only ever given the shell the scan just made.
+  - *No format gives it.* A RoomPlan object's transform and a glTF node's
+    rotation are already applied to the vertices by the readers, and a
+    stage is not a named object in any of them: it is a level patch found
+    among the points. So the heading is read from the patch's shape, which
+    works for every format alike.
+  - *How.* The box round the patch's points is measured at each heading
+    from -45 to 45 degrees (half a degree apart, then a twentieth round the
+    best), and the smallest is the patch's own. It is kept only when it is
+    turned 5 degrees or more (`RAISED_TURN_MIN_DEG`), is at most 0.9 of the
+    box along the room's axes (`RAISED_TURN_MAX_SHARE`; a rectangle turned
+    5 degrees is under 0.86 of it), and the patch fills at least 0.8 of it
+    (`RAISED_TURN_MIN_FILL`). A stage standing square, one a degree or
+    three off, a round riser, an L and a corner piece fail one of those and
+    are measured exactly as before.
+  - *What is stored.* Its own middle, `width` along the heading, `depth`
+    square to it, and `heading_deg` to a tenth, as Edit Room stores one.
+    The heading is over -45 and up to 45, with the sides changed places
+    where needed, so `depth` runs to the edge that faces most nearly
+    downstage: that edge is its front. A quarter turn of the room
+    (`rotate`, or the turn that puts the stage upstage) turns it with the
+    room. Its `basis` and a line in `assumptions` say it stands turned, and
+    that Heading 0 in Edit Room squares it.
+  - *Left as it was:* which wall is upstage still goes by the box round the
+    stage along the room's axes; a turned stage's edges are not snapped to
+    a wall 0.15 m away; and a raised area with no heading has the same keys
+    and numbers as before.
 
 ## What slice 26 built
 
@@ -2705,6 +2833,33 @@ Pixar's USD library from the same rooms (slice 24).
   its `.mtl` and textures; each format from a zip; which of several models is
   read; macOS's leftovers; and each way a zip is refused, as a reader and as
   a 400 from the route. Listed in "What slice 26 built".
+- `backend/tests/unit/test_room_scan_suggest_heading.py` (slice 27): a floor
+  row on a stage at 30, 90 and -60 degrees ends where the square rule puts
+  it, swung about the stage's middle (the swing is worked out in the test,
+  not by the code under test); it is parallel to the turned edges, a metre
+  apart still and in from every edge; each fixture is turned; a row at the
+  front ends at the turned front; the same scan again moves nothing, for a
+  row and for one fixture; a row already moved is fitted and not swung; a
+  heading of 0, 180, 360, a string, a boolean, 1000 or NaN gives the moves
+  and the JSON a stage with no heading gives, and those are pinned; in a box
+  room and in an L-shaped room, at every heading 5 degrees apart with the
+  stage in five places and rows of 1, 4 and 7, nothing is left outside the
+  walls or in the drop under the ceiling and a second pass moves nothing; a
+  row swung into the notch of an L comes inside whole; and the undo turns
+  fixtures back, leaves one turned since, and keeps the old record for a
+  move that turned nothing.
+- `backend/tests/unit/test_room_scan_turned_stage.py` (slice 27): a stage
+  built at 30, -20, 10 and 44 degrees comes back at that heading with its
+  own sides and corners; the same from a scan held another way round and
+  from a point cloud; a quarter turn of the room turns it with the room; a
+  stage square or a degree or three off, an L-shaped stage, a corner piece
+  and a round riser get no heading; and the scan's own suggestion lays a
+  row on the turned stage it found.
+- `backend/tests/integration/test_api_room_scan_turned.py` (slice 27): the
+  route with a scan of a stage at 30 degrees. The preview names the turn
+  and writes nothing, apply moves and turns the row and leaves a tapped
+  fixture alone, the same file again moves nothing, and the undo puts each
+  fixture back facing the way it faced.
 - `backend/tests/integration/test_api_room_scan.py`: preview writes nothing;
   apply stores the shell and it comes back on the rig and in the rig list; only
   template guesses move, a row at a time, and stay guesses; tapped, confirmed,
@@ -3341,12 +3496,11 @@ Pixar's USD library from the same rooms (slice 24).
   its box in it, and a turned raised area in the plan and in the 3D view
   (that both turn it the same way round is tested on the numbers only).
 - **A raised area at a heading goes only so far** (slice 21):
-  - **A scan finds none.** Every raised area a scan reads stands square to
-    the room; a heading is set by hand and replaced when the scan is read
-    again.
-  - **A scan's suggestion does not read a heading** (`suggest.py` was not
-    changed): whatever it does with the first stage, it does as though the
-    stage stood square.
+  - **A scan finds one only where it is plain** (slice 27): turned 5
+    degrees or more, and a rectangle. A heading set by hand is still
+    replaced when the scan is read again, by the scan's own or by none.
+  - **A scan's suggestion reads the first stage's heading** (slice 27),
+    and no other raised area's: see the next item.
   - **The 2D plan's labels go by the square box.** The 3D drag snaps to
     the turned edges (`snapLines`); the 2D drag snaps to no raised area's
     edge, turned or not, and the label layout does not know the area is
@@ -3356,6 +3510,50 @@ Pixar's USD library from the same rooms (slice 24).
     turn at a time. To face a stage the other way, turn its fixtures.
   - **A turn does not respace anything**: fixtures and risers keep their
     place on the deck, and trusses over it do not follow.
+- **A suggestion for a turned stage goes only so far** (slice 27):
+  - **No turned stage from a real phone has been read.** Every one was
+    built in the tests, with clean edges. A real scan's stage has gear on
+    it, a ragged edge and steps beside it, and the three gates (5 degrees,
+    0.9, 0.8) were chosen on built rooms. Expect the first real one to be
+    read square when it is turned, which is the old behaviour, more often
+    than turned when it is square. Keep the scan either way.
+  - **The preview table does not show the turn.** The move's `reason`
+    says it ("... which stands turned 30 degrees and turned with it") and
+    the answer has `turn_deg`, but the Room Scan dialog has no column for
+    it, and no frontend file was changed or run in this slice.
+  - **A row an earlier scan moved is not swung by a later one.** A rig
+    scanned when the stage stood square (or by a version before this one)
+    has the scan's hint on its rows, and a hinted row is read as already
+    turned. It is then fitted to the turned stage as though it lay along
+    it, which it does not. Undo the room scan moves first, then read the
+    scan again. The same holds the other way: a row laid on a turned stage
+    is not swung back by a scan that finds the stage square.
+  - **A different heading the second time does not re-turn.** A laid row
+    is un-swung by the new heading, fitted and put back, so a scan that
+    reads 31 degrees after 30 shifts it at most to keep it on the deck and
+    never turns it the extra degree.
+  - **A heading has no front here either.** The front is taken as the edge
+    that faces most nearly downstage: the scan stores a heading within 45
+    degrees of square, and one set by hand is within 90. A stage that
+    really faces a side wall or upstage has its rows laid facing the wrong
+    edge; turn the room in quarter turns, or the fixtures by hand.
+  - **Only floor rows, and only the first stage.** Rows on a riser or a
+    booth are not suggested onto it, turned or square, as before. Overhead
+    rows do not follow a turned stage: a truss over it is found as its own
+    line at its own heading, and a row goes along that.
+  - **Only the plan is turned.** `rotation_y` loses the heading; tilt
+    (`rotation_x`) and roll are left, and a moving head's pan and tilt
+    limits or home are not looked at.
+  - **A row in the hold of both the stage and a wall settles in one or two
+    passes, not to the best place.** Where the stage's edge and the wall
+    cannot both be kept, the walls win and the row may stand off the deck.
+  - **Which wall is upstage is still decided by the box round the stage**
+    along the room's axes, and a turned stage is not snapped to a wall it
+    nearly touches. A stage across a corner at 45 degrees is as near two
+    walls as each other: the first of the two in the old order wins.
+  - **The undo record grew two keys** (`rotation_y_before`,
+    `rotation_y_after`) for turned fixtures only. The undo's answer still
+    lists positions and does not say a fixture was turned back.
 - **A stack of raised areas follows only so far** (slice 20):
   - **"Standing on it" is by place, not by a link.** The middle of the
     footprint inside the other's, and the base within 0.1 m of its top. A
@@ -3901,8 +4099,8 @@ Pixar's USD library from the same rooms (slice 24).
   - **One of four ways.** A booth faces the way a side of its raised area
     does: along X or Z on one square to the room, along its own width or
     depth on one at a heading. It does not turn to a wall that runs at an
-    angle, or to the floor, any further than its raised area is turned; and
-    a scan finds no heading, so that turn is one set by hand.
+    angle, or to the floor, any further than its raised area is turned. That
+    turn is one set by hand, or one a scan measured (slice 27).
   - **No dance floor is drawn** in a scanned room: the crowd stands on the
     plain floor. No speaker stacks either.
   - **Raised areas are all obstacles**, whatever their base: nobody stands

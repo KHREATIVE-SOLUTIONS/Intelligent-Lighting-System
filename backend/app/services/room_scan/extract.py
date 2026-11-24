@@ -29,7 +29,10 @@ How it works, in order:
    wall is the densest plane near its side. A plane, not the furthest point:
    scans leak through doorways.
 6. Raised areas (a stage, a riser, a booth): level patches between 12 cm and
-   2.2 m above the floor, at least 1.5 m2.
+   2.2 m above the floor, at least 1.5 m2. Each is measured along the room's
+   axes, but for one that clearly stands turned from the walls (a rectangle,
+   5 degrees or more off): that one is measured along its own sides and given
+   a `heading_deg`, the heading Edit Room stores for a raised area.
 7. Overhead lines (a truss, a lighting bar): long thin things hanging clear of
    the walls in the upper half of the room, grouped into hanging-height bands.
 8. Which way is upstage. The walls leave four ways round. The side with the
