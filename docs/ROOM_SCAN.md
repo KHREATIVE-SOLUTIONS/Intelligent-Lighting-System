@@ -2375,8 +2375,11 @@ are no binary fixtures in the repository.
   undo that restored and not otherwise; and in the editor the rig read
   again, the plan redrawn, the editor's undo steps dropped, nothing read
   again when the truss went alone, and both Undo buttons.
-- **Slice 22 (heights by dragging).** Frontend only. **Written and not
-  run, and not type-checked**: the worktree had no `node_modules`, and `npx
+- **Slice 22 (heights by dragging).** Frontend only. **Run afterwards (Nov 24,
+  ~1:10 AM ET, by the overnight Grok run):** `npx vitest run` 1128 passed
+  (1084 on its base), `npm run build` OK, `npx tsc --noEmit` only the 13 older
+  errors, backend pytest 2029 passed, 10 skipped, 5 xfailed. When it was
+  written it was not run and not type-checked: the worktree had no `node_modules`, and `npx
   vitest run`, `npm run build`, `npm ci`, `tsc` and running a script with
   `node` were each refused. The expected numbers were worked out by hand.
   The backend suite, which this slice does not touch, was run before and
@@ -2574,8 +2577,9 @@ are no binary fixtures in the repository.
 
 ## What is left
 
-- **Slice 22 has not been run in any way: no test, no type-check, no
-  build, no browser.** The session had no `frontend/node_modules` and was
+- **Slice 22 has been run but not seen in a browser.** Its tests, the build
+  and the type-check pass (see its entry in "What the tests cover"). The
+  session that wrote it had none of them: The session had no `frontend/node_modules` and was
   refused `npx vitest run`, `npm run build`, `npm ci`, `tsc` and `node` on
   a script. Before relying on it, in `frontend/`: `npx tsc --noEmit` (13
   older errors are expected, none in `roomItemHeight.ts`,
