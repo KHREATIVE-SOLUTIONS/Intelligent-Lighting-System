@@ -2,8 +2,9 @@
 Room Scan Endpoint
 ==================
 
-POST /api/rigs/{rig_id}/room-scan takes a phone scan of the room (OBJ, PLY, a
-USDZ, USD as text or binary, RoomPlan JSON) and answers with a preview: the
+POST /api/rigs/{rig_id}/room-scan takes a phone scan of the room (OBJ, PLY,
+glTF, a USDZ, USD as text or binary, RoomPlan JSON, or a zip of one of those
+with its .bin, .mtl and textures) and answers with a preview: the
 room shell it suggests, the guesses it made on the way, and where it would move
 the rig's unconfirmed fixtures. Nothing is written.
 
@@ -77,6 +78,7 @@ from app.services.room_scan.edit import (
     KINDS, ShellEditError, add_item, delete_item, edit_item, edit_words, first_stage, item_name,
 )
 from app.services.room_scan.edit_undo import pop_step, push_step, undo_summary
+from app.services.room_scan.mesh import MAX_UPLOAD_BYTES
 from app.services.room_scan.outline_edit import (
     corner_points, delete_corner, insert_corner, move_corner, outside_report, outside_words, room_corners, set_outline,
 )
@@ -87,8 +89,8 @@ from app.services.venue_import.apply import SOURCE_TEMPLATE, is_unconfirmed, wit
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024
-DOC = "docs/ROOM_SCAN.md"
+# MAX_UPLOAD_BYTES is the scan reader's (mesh.py): a zip may not unpack to more than a file may be.
+DOC ="docs/ROOM_SCAN.md"
 
 
 def _read_and_extract(filename: str, content: bytes, options: ScanOptions):
@@ -122,7 +124,10 @@ async def _rig_with_fixtures(db: AsyncSession, rig_id: int) -> Rig:
 @router.post("/rigs/{rig_id}/room-scan")
 async def import_room_scan(
     rig_id: int,
-    file: UploadFile = File(..., description="A scan export: .obj, .ply, .glb, .gltf, .usdz, .usda, .usdc or RoomPlan .json"),
+    file: UploadFile = File(..., description=(
+        "A scan export: .obj, .ply, .glb, .gltf, .usdz, .usda, .usdc or RoomPlan .json, "
+        "or a .zip of one with its .bin, .mtl and textures"
+    )),
     apply: bool = Query(False, description="Store the suggested shell on the rig and move its unconfirmed fixtures"),
     units: str = Query("auto", pattern="^(auto|m|cm|mm)$", description="The scan's units, when the guess is wrong"),
     up_axis: str = Query("auto", pattern="^(auto|y|z)$", description="The scan's up axis, when the guess is wrong"),

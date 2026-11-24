@@ -3,11 +3,12 @@ Room Scan
 =========
 
 Reads a phone scan of a room (LiDAR or photogrammetry, exported as OBJ, PLY, glTF
-(.glb or .gltf), USD (text or binary, alone or in a USDZ) or RoomPlan JSON) and
+(.glb or .gltf), USD (text or binary, alone or in a USDZ) or RoomPlan JSON, or a
+zip of one of those with its .bin, .mtl and textures) and
 suggests the room shell the 3D view draws: floor, ceiling height, walls, raised
 areas and overhead lines. See docs/ROOM_SCAN.md.
 
-    mesh    = read_scan_file(filename, content)     # detect.py, mesh.py, gltf.py, usd.py, usdc.py
+    mesh    = read_scan_file(filename, content)     # detect.py, mesh.py, gltf.py, usd.py, usdc.py, bundle.py
     found   = extract_room(mesh, ScanOptions())     # extract.py
     moves   = suggest_positions(fixtures, shell)    # suggest.py
 

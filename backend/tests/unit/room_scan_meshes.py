@@ -391,9 +391,9 @@ def write_gltf(doc: dict, data: bytes = b"") -> bytes:
     return json.dumps(whole, indent=1).encode()
 
 
-def write_zip(members: Sequence[Tuple[str, bytes]]) -> bytes:
+def write_zip(members: Sequence[Tuple[str, bytes]], compression: int = zipfile.ZIP_STORED) -> bytes:
     out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as archive:
+    with zipfile.ZipFile(out, "w", compression) as archive:
         for name, data in members:
             archive.writestr(name, data)
     return out.getvalue()

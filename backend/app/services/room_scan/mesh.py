@@ -27,6 +27,11 @@ import numpy as np
 MAX_VERTICES = 20_000_000
 MAX_FACES = 40_000_000
 
+# The largest file the upload route takes. A zip may not unpack to more than
+# this either (bundle.py): what is in it is held to the limit a file sent on
+# its own would be.
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
 
 class RoomScanError(ValueError):
     """The file cannot be read as a room scan. The message is for the operator."""
