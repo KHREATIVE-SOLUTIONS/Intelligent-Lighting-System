@@ -58,6 +58,14 @@ have not been run**, and nor have slice 19's: the sessions that wrote both
 were refused `npx vitest --run` and `npm run build`. Run both in
 `frontend/` before relying on either slice (see What is left).
 
+Slice 21 lets **a raised area stand at any heading**: a stage, riser or
+booth stores `heading_deg`, the whole of it is held to the room as it
+stands, the fixtures and the raised areas standing on it swing about its
+middle with the turn, the 2D plan, the 3D view and the drag's snap lines
+draw it turned, and it has a Heading field on its row and on the Add form
+and a rotate handle on the plan (see "What slice 21 built"). **Its frontend
+tests are written but have not been run** either (see What is left).
+
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
 
@@ -198,9 +206,19 @@ it is open.
   front, so 135 is stored as -45. A size changes about the middle; a line is
   made longer along the way it runs and turned about its middle.
 - **Turn**, on a raised area's row, swaps its width and its front-to-back: a
-  quarter turn. A raised area stands square to the room in both views, so it
-  has no other heading. The turn is typed into the row, and is saved like
-  any other change.
+  quarter turn. The turn is typed into the row, and is saved like any other
+  change. Any other turn is its Heading.
+- **Heading** (slice 21), on a raised area's row and on the Add form: which
+  way its width runs, in degrees clockwise from across the room seen from
+  above. 0 stands square to the room, as everything a scan finds does; 30
+  is turned 30 degrees. A rectangle looks the same after half a turn, so
+  135 is stored as -45. Its width is then along its heading and its front
+  to back square to it. The row, the 2D plan's tooltip and the notice say
+  how far it is turned ("6.0 m by 3.0 m, turned 30 degrees, top ..."). The
+  fixtures and the raised areas standing on it are swung about its middle
+  by the turn when its box is ticked, and the whole of it, as it stands,
+  is kept inside the room's box and the 2 m round it. It is marked
+  **Resized by hand**.
 - **Kind** (slice 18), on a raised area's row: a selector that makes it a
   **Stage**, a **Riser** or a **Booth or counter** where it is. Its place
   in the list is kept, and no fixture moves. One still called what its old
@@ -371,8 +389,14 @@ it is open.
     width or its front to back and a corner both, **about its middle**,
     which stays where it is, to the grid's step and never under 0.3 m. The
     words over it say its two sides. Each drag is one request, with `width`,
-    `depth` or both, and one undo step. It has no handle to turn it: its
-    quarter turn is still the Turn button on its row.
+    `depth` or both, and one undo step. On one that stands at a heading
+    (slice 21) the handles stand on it as it is turned and pull along its
+    own sides. It also has a round **rotate** handle on a stalk 0.6 m past
+    the edge that is upstage when it stands square: drag it to turn the
+    area about its middle, to 5 degrees with the snap on, to a tenth
+    without, and to 15 with Shift held either way (a truss line's rotate
+    handle takes Shift the same way). One request, with `heading_deg`, when
+    it is let go. Its quarter turn is still the Turn button on its row.
   - **The arrow keys nudge the selected item** by the grid step, ten steps
     with Shift, up the plan being upstage. **One request and one undo step
     for each key press**: presses are not gathered into one, and a key held
@@ -484,9 +508,9 @@ JSON body, every field optional; anything left out (or `null`) is kept:
 | `name` | the new name. Runs of spaces and line breaks become one space and the ends are trimmed; what is left must be 1 to 60 characters |
 | `center_x` | where the middle goes across the room, in metres (the rig's axes) |
 | `center_z` | where the middle goes in depth, in metres, -Z upstage |
-| `width`, `depth` | `risers` only: its size along X and along Z, each from 0.3 m |
+| `width`, `depth` | `risers` only: its size along X and along Z, or along its heading and square to it when it has one, each from 0.3 m |
 | `length` | `truss_lines` only: end to end, from 0.5 m |
-| `heading_deg` | `truss_lines` only: degrees clockwise from across the room seen from above, -360 to 360. Stored over -90 and up to 90, to a tenth: a line has no front |
+| `heading_deg` | `truss_lines`, and `risers` since slice 21: degrees clockwise from across the room seen from above, -360 to 360. Stored over -90 and up to 90, to a tenth: a line has no front, and a rectangle looks the same after half a turn. A raised area that stores none stands square to the room (0) |
 | `radius` | `truss_rings` only: to the middle of the truss, from 0.3 m |
 | `height` | a raised area's deck above its base, 0.05 to 3 m with its top under the ceiling; the underside of a line or ring, 0.5 m to the ceiling (`room.height`; 30 m where the room has none) |
 | `base_height` | `risers` only (slice 18): how far its underside is above the floor, 0 to 10 m, with its top (`base_height + height`) under the ceiling. 0 stands on the floor |
@@ -572,6 +596,31 @@ JSON body, every field optional; anything left out (or `null`) is kept:
     to, so a carried area can always be saved again.
   - The edited area, the areas above it and every fixture are **one undo
     step**: the step holds the whole room as it was, and the fixtures.
+- **A raised area's `heading_deg`** (slice 21, `area_heading`,
+  `area_turn`) stands it at any heading, about its middle:
+  - It is stored folded, to a tenth of a degree, and a turn under a tenth
+    is no change. One that stores none stands at 0, so 0 (or 180) sent for
+    it changes nothing. A changed heading counts as a resize ("Resized by
+    hand."), and the undo label says "turned".
+  - *The whole of it is held as it stands*: its reach either side of its
+    middle is worked out at its heading (`area_reach`), for the turn and
+    for every later resize, and one too long for the room the way it would
+    stand is refused (422).
+  - *Standing on it* is over its footprint as it stands, for fixtures and
+    for raised areas, measured along its own width and depth.
+  - *What stands on it is swung about its middle by the turn*, and each
+    fixture's `rotation_y` turned with it. A change of heading is taken as
+    the smaller of the two turns that give it (from 80 to -80 is 20 degrees
+    clockwise, not 160 back). A turn to 90 swings what a quarter turn told
+    by the sides swings, and sides swapped with a heading changed in one
+    request are both turns, added. A resize of a turned area keeps each
+    fixture's share along the area's own sides.
+  - *A raised area standing on it* is swung the same way and its own
+    `heading_deg` is turned by as much, so it stays as square to what it
+    stands on as it was. Its `from` and `to` in `items_moved` then carry
+    `heading_deg` (only for one that has a heading before or after).
+  - What the walls leave outside (the outline route's list) goes by its
+    four corners where they stand (`area_corners`).
 - **`riser_kind`** changes the item's `kind` where it is in its list. An
   item whose name is still what its old kind is called ("Riser") is named
   what the new kind is called, unless a `name` is sent with it; any other
@@ -616,8 +665,8 @@ JSON body, every field optional; anything left out (or `null`) is kept:
   false` and "Resized by hand." added to its `basis`, once. A value it
   already has changes nothing.
 - A size field that is not this list's (`radius` on a raised area) is
-  refused, not ignored. A raised area has no heading: it stands square to
-  the room, and a quarter turn is its `width` and `depth` swapped.
+  refused, not ignored. A raised area's quarter turn is still its `width`
+  and `depth` swapped; any other turn is its `heading_deg` (slice 21).
 
 Answers `rig_id`, `kind`, `index`, `item` (the item as stored), `room_shell`
 (the whole stored room after the change), `changed` (false when what was
@@ -655,7 +704,7 @@ list it goes in. Answers 201.
 | `riser_kind` | `risers` only: `stage`, `riser` or `booth`. A riser when left out or empty |
 | `base_height` | `risers` only (slice 18): as for `PATCH`. On the floor (0) when left out |
 | `length`, `height` | `truss_lines`: both needed |
-| `heading_deg` | `truss_lines` only: across the room (0) when left out |
+| `heading_deg` | `truss_lines`: across the room (0) when left out. `risers` (slice 21): square to the room when left out or 0, and then not stored |
 | `radius`, `height` | `truss_rings`: both needed |
 | `name` | as for `PATCH`. Left out, it is called what it is: "Stage", "Riser", "Booth or counter", "Overhead line 3", "Overhead ring 1" |
 
@@ -1334,6 +1383,89 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 21 built
+
+A raised area at any heading. Until now a stage, riser or booth stood
+square to the room and had only its quarter turn: a stage set across a
+corner, or a booth angled to face it, could not be put in as it stands.
+
+- **The heading** (`backend/app/services/room_scan/edit.py`): `heading_deg`
+  is one of a raised area's size fields. `area_heading` reads it (0, square
+  to the room, for one that stores none; folded over -90 and up to 90, to a
+  tenth, by `clean_heading` as a line's is), `area_reach` says how far the
+  area reaches either side of its middle as it stands, and `area_corners`
+  gives its four corners turned. `edit_item` stores a turn of a tenth of a
+  degree or more, marks it resized, and holds the whole of the area to the
+  room by its reach at that heading, for the turn and for any later resize.
+  `add_item` takes a heading and stores it only when it is not 0.
+  `edit_words` says "turned".
+- **What stands on it** (`carry.py`): `_across_and_back` measures a place
+  along the area's own width and depth, so "over its footprint" is over it
+  as it stands, for a fixture (`_stand_gap`) and for a raised area
+  (`_stands_on_area`). `area_turn` is how far an edit turned it: 90 for
+  sides that changed places, and the change of heading, taken as the
+  smaller of the two turns that give it, added. `_swung` turns an offset.
+  `_stood_moves` takes that turn in degrees (it took a yes or no): each
+  fixture keeps its share along the area's own sides and is swung about the
+  middle, its heading turned with it. `carried_areas` swings each raised
+  area standing on it the same way, turns its own `heading_deg` by as much,
+  and answers `turn`; `_footprint` adds `heading_deg` for one that has a
+  heading before or after.
+- **What is outside the walls** (`outline_edit.py`): `_item_points` goes by
+  the corners where they stand.
+- **The route** (`room_scan.py`): no new one and no new field. `PATCH` and
+  `POST` already had `heading_deg`, for a line; only the words changed. No
+  migration: a raised area stored before this slice has no heading and
+  reads as 0.
+- **The footprint** (`frontend/src/components/rig/previs/raisedArea.ts`,
+  new, numbers only): `foldHeading`, `boxHeading`, `boxPoint`, `boxCorners`,
+  `headingText` (", turned 30 degrees") and `sideFacing` (which way a side
+  faces, in the room's words). `RoomShellBox` has `heading_deg`.
+- **The 2D plan** (`roomPlan2d.ts`, `StageView2D.tsx`): `PlanRaised` has
+  `heading` and `corners` for one that is turned, the plan is made as big
+  as its corners reach, its tooltip says how far it is turned, and its
+  rectangle is drawn turned about its middle.
+- **The 3D view and the snap lines** (`previs/roomShell.ts`,
+  `previs/fixtureDrag.ts`): `buildRisers` turns the box and its top, the
+  same way round as the plan, and `snapLines` gives the four edges where
+  they stand, each called by the way it faces ("Stage, upstage edge").
+- **Edit Room** (`RoomShellEditDialog.tsx`, `utils/roomShellEdit.ts`): a
+  **Heading** field on a raised area's row and on the Add form
+  (`AREA_HEADING_LABEL`, `ShellItem.heading`, `headingShown`). `readDraft`
+  sends a typed heading only when it differs, folded, from what is stored;
+  `readNewItem` sends one only when it is not 0; `editResultText` tells a
+  turn as it tells a resize, and a row's detail says ", turned 30 degrees".
+- **The rotate handle** (`roomItemDrag2d.ts`): a box shape has `heading`;
+  `itemHandles` stands the eight resize handles on the area as it is turned
+  and adds `rotate`, on a stalk past the edge that is upstage when it
+  stands square; `dragItem` turns it so that the handle points at the
+  pointer, to 5 degrees with the snap on and a tenth without, and to 15
+  with Shift (`ItemSnap.coarse`, `HEADING_SHIFT_SNAP_DEG`), which a truss
+  line's rotate handle takes too; a resize handle pulls along the area's
+  own sides; `gripCursor` (moved here from the plan) turns the arrow with
+  the area. One `heading_deg` is sent when the handle is let go, through
+  the code every other handle goes through, so a refusal puts it back.
+- **Judgment calls.**
+  - *Folded, like a line's.* A rectangle has no front, so a heading is
+    kept over -90 and up to 90 and half a turn is no turn. What stands on
+    it does have a front, and is swung by the smaller of the two turns.
+  - *One square to the room stores nothing*, so every room stored before
+    this slice, and every answer about one, reads exactly as it did.
+  - *The quarter turn stays.* Sides swapped are still a quarter turn
+    clockwise, and Turn still does that; a heading of 90 swings what stands
+    on it the same way. Both in one request are added.
+  - *A carried raised area turns its own heading by as much*, so a riser
+    square to a stage stays square to the stage.
+  - *The drag draws the turn unfolded* while the handle is held, so the
+    handle stays under the pointer past 90 degrees; what is sent is folded.
+- **Older tests changed on purpose.** `test_room_scan_adjust.py` and
+  `test_api_room_shell_adjust.py` each had an expectation changed for a
+  raised area that now takes a heading (over HTTP, one past a whole turn is
+  refused as a line's is), and `roomItemDrag2d.test.ts` looks at the first
+  eight of a raised area's handles: the ninth turns it.
+- **Nothing here sends Art-Net or DMX or touches a patch, a mode or a tag,**
+  and there is no new network call beyond the app's own API.
 
 ## What slice 20 built
 
@@ -2152,6 +2284,43 @@ are no binary fixtures in the repository.
   undo that restored and not otherwise; and in the editor the rig read
   again, the plan redrawn, the editor's undo steps dropped, nothing read
   again when the truss went alone, and both Undo buttons.
+- **Slice 21 (a raised area at a heading).** The backend tests were run
+  after it: pytest `tests/` 2029 passed, 10 skipped, 5 xfailed (1990 before it). The frontend
+  tests are **written but not run**; see What is left.
+  `backend/tests/unit/test_room_scan_heading.py`: one that stores none
+  standing square, a heading stored folded and marked, half a turn being
+  no turn and a tenth the least, what is not a heading refused, the undo
+  words; its reach and its corners as it stands, a turn bringing the middle
+  in, one too long for the room refused, a resize of a turned one going by
+  its reach; an added one storing its heading and a square one saying
+  nothing; a fixture over its footprint as it stands and at a corner, a
+  riser standing on it; each fixture swung about the middle with its own
+  heading turned, a turn to 90 as the quarter turn, a turn and the turn
+  back to the millimetre, the smaller of the two turns, sides swapped and a
+  heading changed in one request, a move and a height with a turn, a
+  resize by share along the area's own sides; the stack swung about the
+  stage's middle and turned with it, one already at a heading keeping how
+  far off square it was; and a turned area past a wall listed where a
+  square one is not.
+  `backend/tests/integration/test_api_room_shell_heading.py`: over HTTP, a
+  heading stored and the row standing on it going round its middle; a turn
+  to 90; `carry_fixtures` false and the same heading changing nothing; a
+  heading that is not one refused and writing nothing; the 409 under a
+  walkthrough; a riser going round with the stage and taking its heading;
+  and `POST` keeping a heading and saying nothing of a square one.
+  `frontend/src/__tests__/raisedAreaHeading.test.ts`: the fold, the
+  footprint and its corners, the sides' names; the plan's heading, corners,
+  words and size; the 3D box turned the same way round; the snap lines'
+  edges; the nine handles where they stand and their cursors; the rotate
+  handle (folded, 5 degrees, a tenth, 15 with Shift, a truss line too);
+  resizing a turned area along its own sides; and the helpers (`shellItems`,
+  the row's draft, `readDraft`, `withCarry`, `editResultText`,
+  `readNewItem`).
+  `RoomShellRaisedDialog.test.tsx`, `StageView2DItems.test.tsx` and
+  `RigBuilderItems.test.tsx` each gained cases: the Heading field on a row
+  and on the Add form; the plan's turned rectangle and rotate handle, one
+  call when it is let go and put back when refused; and in the editor one
+  `editShellItem` with `heading_deg`.
 - **Slice 20 (a stack of raised areas, the Add form's base, resize
   handles).** The backend tests were run after it: pytest `tests/` 1990
   passed, 10 skipped, 5 xfailed (1951 before it). The frontend tests are
@@ -2283,21 +2452,41 @@ are no binary fixtures in the repository.
 
 ## What is left
 
-- **The frontend tests of slices 19 and 20 have not been run, and nor has
-  the build.** `npx vitest --run`, `npm test` and `npm run build` were
-  refused in the sessions that wrote both slices; only `npx tsc --noEmit`
-  ran, with its 13 older errors and no new one. Run both in `frontend/`
-  before relying on either. Slice 19's test files are
+- **The frontend tests of slices 19, 20 and 21 have not been run, and nor
+  has the build.** `npx vitest --run`, `npm test` and `npm run build` were
+  refused in the sessions that wrote them; for slices 19 and 20
+  `npx tsc --noEmit` ran, with its 13 older errors and no new one. Run
+  both in `frontend/` before relying on any of them. Slice 21 wrote
+  `raisedAreaHeading.test.ts` and added to `RoomShellRaisedDialog.test.tsx`,
+  `StageView2DItems.test.tsx`, `RigBuilderItems.test.tsx` and
+  `roomItemDrag2d.test.ts`. Slice 19's test files are
   `roomItemDrag2d.test.ts`, `StageView2DItems.test.tsx` and
   `RigBuilderItems.test.tsx`; slice 20 added to all three, changed two
   older assertions in them on purpose (a raised area now has handles), and
   wrote `RoomShellStackDialog.test.tsx` and added a key to one expectation
   in `roomShellAdjust.test.ts`. Expect a first run to find something: none
-  of the frontend tests of the two slices has ever been executed. Slice 20's backend tests were run (1990 passed).
-  **Nothing of either slice has been seen in a browser**: how wide a truss
+  of the frontend tests of the three slices has ever been executed. Slice 20's backend tests were run (1990 passed).
+  **Nothing of these slices has been seen in a browser**: how wide a truss
   is to press, whether the handles are easy to hit at the plan's usual
-  size, eight handles round a small riser, and how the strip reads with
-  its box in it.
+  size, nine handles round a small riser, how the strip reads with
+  its box in it, and a turned raised area in the plan and in the 3D view
+  (that both turn it the same way round is tested on the numbers only).
+- **A raised area at a heading goes only so far** (slice 21):
+  - **A scan finds none.** Every raised area a scan reads stands square to
+    the room; a heading is set by hand and replaced when the scan is read
+    again.
+  - **A scan's suggestion does not read a heading** (`suggest.py` was not
+    changed): whatever it does with the first stage, it does as though the
+    stage stood square.
+  - **The 2D plan's labels go by the square box.** The 3D drag snaps to
+    the turned edges (`snapLines`); the 2D drag snaps to no raised area's
+    edge, turned or not, and the label layout does not know the area is
+    turned.
+  - **A heading has no front.** 30 and 210 are the same raised area, and
+    what stands on it is swung the shorter way, never more than a quarter
+    turn at a time. To face a stage the other way, turn its fixtures.
+  - **A turn does not respace anything**: fixtures and risers keep their
+    place on the deck, and trusses over it do not follow.
 - **A stack of raised areas follows only so far** (slice 20):
   - **"Standing on it" is by place, not by a link.** The middle of the
     footprint inside the other's, and the base within 0.1 m of its top. A
@@ -2332,13 +2521,15 @@ are no binary fixtures in the repository.
 - **Arranging items on the plan goes only so far** (slices 19 and 20):
   - **A raised area's handles resize it about its middle** (slice 20).
     There is no dragging one edge while the other stays put: resize it,
-    then move it. Its quarter turn is still the Turn button on its row.
+    then move it. Its quarter turn is still the Turn button on its row;
+    its rotate handle sets its heading (slice 21).
   - **A corner dragged until the two sides have changed places is a
     quarter turn to the server**, which reads a turn from the sizes alone:
     a 6 by 3 stage dragged to exactly 3 by 6 has its fixtures and the
     risers on it swung, not kept at their share. One grid step off, it is
     a resize.
-  - **Eight handles cover a small riser.** Each is 0.24 m across; on a
+  - **Nine handles cover a small riser** (eight to resize it and one to
+    turn it). Each of the eight is 0.24 m across; on a
     raised area under about 0.6 m a side there is little of it left to
     press between them. Let go of it (Escape) and press it again to move
     it, or type its place in its row.
@@ -2353,8 +2544,9 @@ are no binary fixtures in the repository.
     the grid's step, so an end does not land on a grid line unless the
     middle is on one.
   - **A heading goes to 5 degrees**, or to a tenth with the snap off or Alt
-    held. Nothing snaps it to square with a wall that is not square to the
-    room.
+    held, or to 15 with Shift (slice 21), for a line and for a raised area.
+    Nothing snaps it to square with a wall that is not square to the room,
+    and Shift has no touch equivalent.
   - **One request for each key press.** A held key does not repeat, and ten
     quick presses are ten requests and ten undo steps (the room keeps 20).
   - **No nudge pad.** The arrow keys have no buttons on a touch screen in
@@ -2679,18 +2871,16 @@ are no binary fixtures in the repository.
   turned, and any of them can be added (Edit Room, slice 15); a raised area
   can be made another kind and floated on a base height (slice 18). What is
   left:
-  - **A raised area cannot stand at an angle.** It has a quarter turn (its
-    sides swapped) and no other heading: the 2D plan, the 3D view, the drag's
-    snap to its edges and a scan's suggestion all take its sides as square
-    to the room. A real heading means drawing and snapping to a turned box
-    in each of them.
+  - **A raised area can stand at any heading** since slice 21; the limits
+    of that are above.
   - **Only the first `stage` in the list** is what a scan's suggestion puts
     floor lights along, and a raised area cannot be moved up or down its
     list: a kind change keeps its place.
   - **A ring cannot be made an arc.**
   - **Items are dragged on the plan only so far** (slice 19): any of them
     can be moved there, a line's length and heading, a ring's radius and a
-    raised area's sides (slice 20) have handles, and the arrow keys nudge.
+    raised area's sides (slice 20) and heading (slice 21) have handles, and
+    the arrow keys nudge.
     Every height and a base height are still typed. See the limits of
     slices 19 and 20 above.
   - **Everything is held to the room's box and 2 m round it, not to the
