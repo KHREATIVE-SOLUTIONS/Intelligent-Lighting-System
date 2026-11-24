@@ -16,6 +16,7 @@ drives a fixture: the endpoint changes stored positions and scenery only.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -25,6 +26,9 @@ from app.services.venue_import.apply import is_unconfirmed, position_source
 from tests.unit.room_scan_meshes import (
     ROOM, STAGE, TRUSS, as_scanned, box, merge, room_mesh, roomplan_json, write_obj, write_ply, write_zip,
 )
+
+# Binary USD written by Pixar's own USD library (tests/unit/test_room_scan_usdc.py).
+USDC_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "usdc"
 
 GUESS = ["position_source:template", "position_unconfirmed"]
 FOOTPRINT = 16
@@ -206,10 +210,46 @@ class TestRoomScanPreview:
         assert roomplan.json()["summary"]["width"] == pytest.approx(ROOM["width"], abs=0.1)
 
 
+    @pytest.mark.asyncio
+    async def test_a_binary_usdz_as_a_phone_writes_it_is_read(
+        self, client: AsyncClient, sample_rig_data, sample_fixture_data,
+    ):
+        """A USDZ holding one binary USD layer shaped like RoomPlan's, written by Pixar's USD library."""
+        rig_id = await build_rig(client, sample_rig_data, sample_fixture_data, lights=[])
+        archive = (USDC_FIXTURES / "roomplan_like.usdz").read_bytes()
+
+        response = await client.post(f"/api/rigs/{rig_id}/room-scan", files=upload("Room.usdz", archive))
+
+        assert response.status_code == 200, response.text
+        preview = response.json()
+        assert preview["format"] == "usdc"
+        summary = preview["summary"]
+        # Walls 0.1 m thick about a 12 x 9 m outline, 4 m high.
+        assert summary["width"] == pytest.approx(12.0, abs=0.2)
+        assert summary["depth"] == pytest.approx(9.0, abs=0.2)
+        assert summary["height"] == pytest.approx(4.0, abs=0.2)
+        assert (summary["units"], summary["up_axis"]) == ("m", "y")
+        assert any("binary USD layer" in line for line in preview["assumptions"])
+        assert preview["applied"] is None
+        assert (await client.get(f"/api/rigs/{rig_id}")).json()["room_shell"] is None
+
+        bare = await client.post(
+            f"/api/rigs/{rig_id}/room-scan",
+            files=upload("room.usdc", (USDC_FIXTURES / "room_z_cm.usdc").read_bytes()),
+        )
+        assert bare.status_code == 200, bare.text
+        assert bare.json()["format"] == "usdc"
+        assert bare.json()["summary"]["width"] == pytest.approx(ROOM["width"], abs=0.1)
+        assert (bare.json()["summary"]["units"], bare.json()["summary"]["up_axis"]) == ("cm", "z")
+
+
 class TestRoomScanRefusals:
 
     @pytest.mark.asyncio
-    async def test_a_binary_usdz_says_to_export_obj(self, client: AsyncClient, sample_rig_data, sample_fixture_data):
+    async def test_a_binary_usdz_that_cannot_be_read_says_to_export_obj(
+        self, client: AsyncClient, sample_rig_data, sample_fixture_data,
+    ):
+        # Binary USD is read (the test above); a layer that only starts like it is not.
         rig_id = await build_rig(client, sample_rig_data, sample_fixture_data, lights=[])
         archive = write_zip([("Room.usdc", b"PXR-USDC" + bytes(64))])
 
@@ -219,6 +259,7 @@ class TestRoomScanRefusals:
 
         assert response.status_code == 400
         detail = response.json()["detail"]
+        assert "cannot be read" in detail
         assert "OBJ" in detail and "Polycam" in detail and "Scaniverse" in detail
         assert (await client.get(f"/api/rigs/{rig_id}")).json()["room_shell"] is None
 

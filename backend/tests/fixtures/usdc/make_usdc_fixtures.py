@@ -5,6 +5,12 @@ Run once by hand, outside the backend venv (usd-core is NOT a dependency):
     PYTHONPATH=<scratch> python tests/fixtures/usdc/make_usdc_fixtures.py
 Each fixture gets a JSON next to it with the world-space points and faces
 that Pixar's library computes, which the reader's tests compare against.
+
+That run writes crate version 0.8.0, the library's default. The two other
+versions of the first room, room_y_metres_v0_7_0 and room_y_metres_v0_10_0,
+were made the same way, by calling simple() with the same arguments and those
+names while the environment variable USD_WRITE_NEW_USDC_FILES_AS_VERSION was
+set to 0.7.0 and to 0.10.0. They are not made by running this file as it is.
 """
 import json, os, sys, zipfile
 import numpy as np
