@@ -70,7 +70,8 @@ from app.services.room_scan import (
     RoomScanError, ScanOptions, extract_room, read_scan_file, suggest_positions,
 )
 from app.services.room_scan.carry import (
-    apply_moves, carried_moves, carried_words, put_back, put_back_words, refuse_outside,
+    apply_areas, apply_moves, areas_report, carried_area_moves, carried_areas, carried_moves, carried_words,
+    put_back, put_back_words, refuse_areas_outside, refuse_outside,
 )
 from app.services.room_scan.edit import (
     KINDS, ShellEditError, add_item, delete_item, edit_item, edit_words, first_stage, item_name,
@@ -577,6 +578,14 @@ async def edit_room_shell_item(
     stage, a riser or a booth where it is in its list; `first_stage` in the
     answer is the place of the stage a suggestion would put floor lights on.
 
+    A raised area that is moved, raised or given a quarter turn also takes
+    the other raised areas standing on it (the middle of the footprint inside
+    its footprint, the base within 0.1 m of its top), and the fixtures
+    standing on those, as one piece. `items_moved` lists those areas, each
+    with where it was and where it went. One that would end up outside the
+    room and the 2 m round it, or above the ceiling, refuses the whole edit
+    (422), as a fixture does. `carry_fixtures` false leaves them all.
+
     The scan's undo record is left alone, and nothing reaches a device. The
     room as it was is kept with what the edit carried, so both are undone
     together (POST .../room-shell/undo); an edit that changes nothing leaves
@@ -593,18 +602,30 @@ async def edit_room_shell_item(
         # one that would leave the room refuses the whole edit, the truss's included.
         moves = carried_moves(before, kind, index, item, rig.fixtures) if carry and done is not None else []
         refuse_outside(shell, kind, item, moves)
+        # The raised areas standing on a raised area go with it, and so do the fixtures standing on those.
+        # All of it is read from the room as it was, and checked before anything is written.
+        stacked = carried_areas(before, index, item) if kind == "risers" and carry and done is not None else []
+        refuse_areas_outside(shell, item, stacked)
+        for entry, theirs in zip(stacked, carried_area_moves(before, stacked, rig.fixtures)):
+            refuse_outside(shell, kind, entry["item"], theirs)
+            moves = moves + theirs
+        shell = apply_areas(shell, stacked)
     except ShellEditError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)
     if done is not None:
         apply_moves(rig.fixtures, moves)
-        label = f"{done}, with {len(moves)} fixture{'' if len(moves) == 1 else 's'}" if moves else done
+        carried = [f"{len(stacked)} raised area{'' if len(stacked) == 1 else 's'}"] if stacked else []
+        if moves:
+            carried.append(f"{len(moves)} fixture{'' if len(moves) == 1 else 's'}")
+        label = f"{done}, with {' and '.join(carried)}" if carried else done
         # A new object throughout: the column is plain JSON, so a change made in place is never written.
         rig.room_shell = shell
         # One step for the truss and what it carried: one undo takes both back.
         rig.room_shell_undo = push_step(rig.room_shell_undo, before, label, fixtures=moves, kind=kind)
         await db.flush()
         logger.info(
-            "Room shell: rig %s '%s': %s %d: %s (%d fixtures carried)", rig.id, rig.name, kind, index, done, len(moves),
+            "Room shell: rig %s '%s': %s %d: %s (%d fixtures and %d raised areas carried)",
+            rig.id, rig.name, kind, index, done, len(moves), len(stacked),
         )
     return {
         "rig_id": rig.id, "kind": kind, "index": index, "item": item, "room_shell": shell,
@@ -615,7 +636,12 @@ async def edit_room_shell_item(
         "undo": undo_summary(rig.room_shell_undo),
         "carry_fixtures": carry,
         "fixtures_moved": moves,
-        "message": carried_words(kind, item, len(moves), carry) if done is not None else "Nothing was changed.",
+        # The other raised areas that stood on this one and went with it: {kind, index, name, from, to}.
+        "items_moved": areas_report(stacked),
+        "message": (
+            carried_words(kind, item, len(moves), carry, areas=len(stacked))
+            if done is not None else "Nothing was changed."
+        ),
     }
 
 

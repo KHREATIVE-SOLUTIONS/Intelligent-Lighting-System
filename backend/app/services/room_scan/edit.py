@@ -769,7 +769,9 @@ def add_item(
         )
 
     base = _in_range(kind, "base_height", sizes.get("base_height", 0.0), 0.0, BASE_MAX_M) if kind == "risers" else 0.0
-    least, most = height_limits(edited, kind, {"base_height": base})
+    # A raised area's deck is held to what a deck can be, and its top to the ceiling just below, in the
+    # words an edited base is refused in: "a height of at most 0.5 m" would not say that the base is why.
+    least, most = height_limits(edited, kind)
     high = _in_range(kind, "height", sizes["height"], least, most)
     if kind == "risers":
         _top_under_ceiling(edited, {"base_height": base, "height": high})

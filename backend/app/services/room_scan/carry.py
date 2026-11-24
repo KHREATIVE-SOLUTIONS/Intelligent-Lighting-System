@@ -52,10 +52,14 @@ fixtures they are given. Nothing here touches the database session, the engine
 or a device.
 """
 
+import copy
 import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .edit import KINDS, OUTSIDE_MARGIN_M, ShellEditError, _metres, _mm, _number, _room, base_of, item_name
+from .edit import (
+    BASE_MAX_M, KINDS, MOVED_BY_HAND, OUTSIDE_MARGIN_M, RESIZED_BY_HAND, ShellEditError,
+    _mark, _metres, _mm, _number, _room, base_of, item_name,
+)
 
 # How far off a truss's line on the plan, and off its underside in height, a
 # fixture still hangs from it (previs/layout.ts HANGER_REACH, HANGER_HEIGHT_WINDOW).
@@ -73,6 +77,8 @@ STAND_MARGIN_M = 0.15
 # and how far under it (one drawn a little into the deck).
 STAND_WINDOW_M = 0.6
 STAND_UNDER_M = 0.05
+# How far a raised area's base may be from another's top and still stand on it (a riser on a stage).
+STACK_BASE_WINDOW_M = 0.1
 
 # A line or ring shorter or smaller than this is not drawn and nothing hangs from it (previs/roomShell.ts).
 USABLE_OVER_M = 0.2
@@ -264,8 +270,14 @@ def _move_of(fixture: Any, to: Tuple[float, float, float], turn: float) -> Optio
 
 def _stood_moves(
     shell: Dict[str, Any], index: int, after: Dict[str, Any], fixtures: Sequence[Any],
+    turned: Optional[bool] = None,
 ) -> List[Dict[str, Any]]:
-    """Where the fixtures standing on a raised area go when it becomes `after`. Nothing is written."""
+    """Where the fixtures standing on a raised area go when it becomes `after`. Nothing is written.
+
+    `turned` says whether it was given a quarter turn where the caller knows
+    (a platform carried by the one under it turns with that one, and a square
+    one's sizes cannot say so); left out, it is read from the sizes.
+    """
     items = shell.get(STANDING_KIND)
     if not isinstance(items, list) or index < 0 or index >= len(items):
         return []
@@ -276,7 +288,8 @@ def _stood_moves(
         before["center_x"], before["center_z"], after["center_x"], after["center_z"],
     ))
     rise = _top(after) - _top(before)
-    turned = quarter_turned(before, after)
+    if turned is None:
+        turned = quarter_turned(before, after)
     wider = float(after["width"]) / float(before["width"])
     deeper = float(after["depth"]) / float(before["depth"])
     if abs(float(after["width"]) - float(before["width"])) < SIZE_OVER_M:
@@ -301,6 +314,176 @@ def _stood_moves(
         if move is not None:
             moves.append(move)
     return moves
+
+
+# ---------------------------------------------------------------------------
+# Raised areas standing on a raised area (slice 20)
+# ---------------------------------------------------------------------------
+
+def _stands_on_area(child: Any, parent: Any) -> bool:
+    """Whether one raised area stands on another: its middle over the other's footprint, its base at the other's top."""
+    if not _stands(child) or not _stands(parent):
+        return False
+    if abs(float(child["center_x"]) - float(parent["center_x"])) > float(parent["width"]) / 2.0 + 1e-9:
+        return False
+    if abs(float(child["center_z"]) - float(parent["center_z"])) > float(parent["depth"]) / 2.0 + 1e-9:
+        return False
+    return abs(base_of(child) - _top(parent)) <= STACK_BASE_WINDOW_M + 1e-9
+
+
+def stood_areas(shell: Optional[Dict[str, Any]], index: int) -> List[int]:
+    """The places of the other raised areas standing on one, in the order they are listed.
+
+    A raised area stands on another when the middle of its footprint is inside
+    the other's footprint and its base is within 0.1 m of the other's top. One
+    standing on one of those is taken too (a drum riser on a riser on a
+    stage): the whole stack above goes with what is under it. The area itself
+    is never one of them.
+    """
+    areas = shell.get(STANDING_KIND) if isinstance(shell, dict) else None
+    if not isinstance(areas, list) or index < 0 or index >= len(areas):
+        return []
+    found: List[int] = []
+    under = [index]
+    while under:
+        parent = areas[under.pop()]
+        for at, item in enumerate(areas):
+            if at != index and at not in found and _stands_on_area(item, parent):
+                found.append(at)
+                under.append(at)
+    return sorted(found)
+
+
+def carried_areas(shell: Optional[Dict[str, Any]], index: int, after: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Where the raised areas standing on one go when it becomes `after`. Nothing is written.
+
+    Each is {kind, index, name, turned, item, from, to}: `item` is the area as
+    it is to be stored, and `from` and `to` are its middle, sizes and base
+    before and after. The stack is carried as one piece:
+
+    - a **move** shifts each by what the middle of the one under it shifted
+      (a middle brought in by a resize included);
+    - a **height** or **base height** raises or lowers each one's base by what
+      the top moved;
+    - a **quarter turn** swings each a quarter turn clockwise seen from above
+      about the middle of the one that was turned, and swaps its sides.
+
+    A resize alone moves none of them: they keep their place and their size.
+    One that would not change is left out.
+    """
+    areas = shell.get(STANDING_KIND) if isinstance(shell, dict) else None
+    if not isinstance(areas, list) or index < 0 or index >= len(areas):
+        return []
+    before = areas[index]
+    if not _stands(before) or not _stands(after):
+        return []
+    was_x, was_z, now_x, now_z = (float(v) for v in (
+        before["center_x"], before["center_z"], after["center_x"], after["center_z"],
+    ))
+    rise = _top(after) - _top(before)
+    turned = quarter_turned(before, after)
+    shifted = max(abs(now_x - was_x), abs(now_z - was_z)) >= SHIFT_OVER_M
+    raised = abs(rise) >= SHIFT_OVER_M
+    if not turned and not shifted and not raised:
+        return []
+
+    carried: List[Dict[str, Any]] = []
+    for at in stood_areas(shell, index):
+        child = areas[at]
+        item = copy.deepcopy(child)
+        off_x, off_z = float(child["center_x"]) - was_x, float(child["center_z"]) - was_z
+        if turned:
+            item["center_x"], item["center_z"] = _mm(now_x - off_z), _mm(now_z + off_x)
+            item["width"], item["depth"] = child["depth"], child["width"]
+        elif shifted:
+            item["center_x"], item["center_z"] = _mm(now_x + off_x), _mm(now_z + off_z)
+        if raised:
+            # Never under the floor: one that stood a little under the top it stood on comes down to it.
+            item["base_height"] = _mm(max(0.0, base_of(child) + rise))
+        if turned or shifted:
+            _mark(item, MOVED_BY_HAND)
+        if raised:
+            _mark(item, RESIZED_BY_HAND)
+        carried.append({
+            "kind": STANDING_KIND, "index": at, "name": item_name(STANDING_KIND, child), "turned": turned,
+            "item": item, "from": _footprint(child), "to": _footprint(item),
+        })
+    return carried
+
+
+def _footprint(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Where a raised area is and how big, for an answer: its middle, its sides and its base."""
+    return {
+        "center_x": item["center_x"], "center_z": item["center_z"],
+        "width": item["width"], "depth": item["depth"], "base_height": _mm(base_of(item)),
+    }
+
+
+def carried_area_moves(
+    shell: Dict[str, Any], carried: Sequence[Dict[str, Any]], fixtures: Sequence[Any],
+) -> List[List[Dict[str, Any]]]:
+    """Where the fixtures standing on each carried raised area go: one list of moves for each, in their order.
+
+    `shell` is the room before the edit: which fixture stands on which area is
+    read from where everything was. A fixture stands on one area only
+    (`standing_fixtures`), so none is moved twice.
+    """
+    return [
+        _stood_moves(shell, entry["index"], entry["item"], fixtures, turned=entry["turned"])
+        for entry in carried
+    ]
+
+
+def refuse_areas_outside(shell: Dict[str, Any], item: Dict[str, Any], carried: Sequence[Dict[str, Any]]) -> None:
+    """Refuse an edit that would carry a raised area out of the room's box and the margin round it.
+
+    The whole edit is refused, like one that would carry a fixture out. A
+    carried area's middle is held to what a plain move holds one to (the box
+    and 2 m round it), and its top to the ceiling and its base to the most a
+    base can be, which its own row could not otherwise be saved past.
+    """
+    width, depth, ceiling = _room(shell)
+
+    def out(area: Dict[str, Any]) -> bool:
+        return (
+            (width is not None and abs(area["center_x"]) > width / 2.0 + OUTSIDE_MARGIN_M + 1e-9)
+            or (depth is not None and abs(area["center_z"]) > depth / 2.0 + OUTSIDE_MARGIN_M + 1e-9)
+            or (ceiling is not None and _top(area) > ceiling + 1e-9)
+            or base_of(area) > BASE_MAX_M + 1e-9
+        )
+
+    outside = [entry for entry in carried if out(entry["item"])]
+    if not outside:
+        return
+    named = ", ".join(
+        f"{entry['name']} to {_metres(entry['item']['center_x'])}, {_metres(entry['item']['center_z'])} "
+        f"with its top {_metres(_top(entry['item']))} m up"
+        for entry in outside[:NAMED_MAX]
+    )
+    more = len(outside) - NAMED_MAX
+    raise ShellEditError(
+        422,
+        f"That would carry {_areas(len(outside))} standing on {item_name(STANDING_KIND, item)} "
+        f"out of the room and the {_metres(OUTSIDE_MARGIN_M)} m round it, or above the ceiling "
+        f"({named}{f', and {more} more' if more > 0 else ''}; across, depth in metres). "
+        "Nothing was changed. Change the raised area by less, "
+        "or leave what stands on it where it is (carry_fixtures false) and move it afterwards.",
+    )
+
+
+def apply_areas(shell: Dict[str, Any], carried: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """The room with each carried raised area where its entry says. The shell given is not changed."""
+    if not carried:
+        return shell
+    edited = copy.deepcopy(shell)
+    for entry in carried:
+        edited[STANDING_KIND][entry["index"]] = copy.deepcopy(entry["item"])
+    return edited
+
+
+def areas_report(carried: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The carried raised areas as an answer lists them: {kind, index, name, from, to}."""
+    return [{key: entry[key] for key in ("kind", "index", "name", "from", "to")} for entry in carried]
 
 
 def _fold_turn(degrees: float) -> float:
@@ -519,12 +702,28 @@ def _lights(count: int) -> str:
     return f"{count} fixture{'' if count == 1 else 's'}"
 
 
-def carried_words(kind: str, item: Dict[str, Any], count: int, asked: bool) -> str:
-    """One sentence on what an edit did to the fixtures, for its answer."""
+def _areas(count: int) -> str:
+    return f"{count} raised area{'' if count == 1 else 's'}"
+
+
+def carried_words(kind: str, item: Dict[str, Any], count: int, asked: bool, areas: int = 0) -> str:
+    """One sentence on what an edit did to the fixtures, for its answer.
+
+    `areas` is how many raised areas standing on a raised area went with it;
+    `count` then takes in the fixtures standing on those.
+    """
     if kind not in HANGING_KINDS and kind != STANDING_KIND:
         return "No fixture was moved."
     if not asked:
         return f"The fixtures {_how(kind)} {item_name(kind, item)} were left where they are, as asked."
+    if areas:
+        name = item_name(kind, item)
+        if count == 0:
+            return f"{_areas(areas)} standing on {name} moved with it. No fixture had to move."
+        return (
+            f"{_lights(count)} standing on {name}, or on what stands on it, moved with it. "
+            f"{_areas(areas)} standing on it moved with it too."
+        )
     if count == 0:
         return f"No fixture was moved: none that {'stands' if kind == STANDING_KIND else 'hangs'} on it had to move."
     return f"{_lights(count)} {_how(kind)} {item_name(kind, item)} moved with it."
