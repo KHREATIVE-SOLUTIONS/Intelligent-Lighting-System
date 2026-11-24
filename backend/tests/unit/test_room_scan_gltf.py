@@ -27,7 +27,7 @@ import pytest
 from app.services.room_scan import RoomScanError, ScanOptions, detect_scan_format, extract_room, read_scan_file
 from app.services.room_scan import gltf as gltf_reader
 from tests.unit.room_scan_meshes import (
-    ROOM, as_scanned, box, gltf_scene, room_mesh, roomplan_json, write_glb, write_gltf, write_obj,
+    ROOM, as_scanned, box, gltf_scene, room_mesh, roomplan_json, sample_surface, write_glb, write_gltf, write_obj,
 )
 from tests.unit.test_room_scan import assert_the_room
 
@@ -227,13 +227,30 @@ class TestPrimitives:
         assert np.allclose(mesh.vertices, SMALL[0][SMALL[1].reshape(-1)] + np.array([0.0, 1.0, 0.0]))
         assert any("point cloud" in note for note in mesh.notes)
 
-    def test_lines_are_left_out_and_said_to_be(self):
+    def test_lines_beside_a_mesh_are_left_out_and_said_to_be(self):
         wire = box(0.0, 1.0, 0.0, 1.0, 0.0, 1.0)
         doc, data = gltf_scene([(SMALL[0], SMALL[1], {}), (wire[0], wire[1], {})])
         doc["meshes"][1]["primitives"][0]["mode"] = 1
         mesh = read_scan_file("wire.glb", write_glb(doc, data))
-        assert len(mesh.vertices) == 8
-        assert any("line drawings" in note for note in mesh.notes)
+        assert len(mesh.vertices) == 8 and len(mesh.faces) == 12
+        assert any("line ends beside the mesh were left out" in note for note in mesh.notes)
+
+    @pytest.mark.parametrize("mode", [1, 2, 3])
+    def test_lines_alone_give_their_points_as_a_point_cloud(self, mode):
+        doc, data = gltf_scene([(SMALL[0], SMALL[1], {"translation": [0.0, 0.0, 2.0]})], mode=mode)
+        mesh = read_scan_file("wire.glb", write_glb(doc, data))
+        assert mesh.is_point_cloud
+        assert np.allclose(mesh.vertices, SMALL[0] + np.array([0.0, 0.0, 2.0]))
+        assert any("lines and no triangles" in note for note in mesh.notes)
+
+    def test_a_point_cloud_in_a_glb_is_read_for_its_room(self):
+        """A LiDAR app's point export: the room's surface as loose points, no triangles."""
+        vertices, faces = room_mesh()
+        points = sample_surface(vertices, faces, 60_000)
+        doc, data = gltf_scene([(points, np.arange(len(points)).reshape(-1, 3), {})], indexed=False, mode=0)
+        found = extract_room(read_scan_file("cloud.glb", write_glb(doc, data)), ScanOptions())
+        for key in ("width", "depth", "height"):
+            assert found.shell["room"][key] == pytest.approx(ROOM[key], abs=0.15)
 
     def test_a_bad_index_never_lands_on_another_parts_point(self):
         other = box(5.0, 6.0, 0.0, 2.0, 5.0, 7.0)

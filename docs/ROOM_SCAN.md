@@ -92,6 +92,15 @@ reader is pure Python: no USD library and no new dependency (see "What slice
 USD library; **no USDZ from a real phone has been read by it yet** (see What
 is left).
 
+Slice 25 reads **glTF 2.0** (`.glb`, and a `.gltf` with its data inside it),
+which is what Polycam, Scaniverse and most LiDAR apps export by default and
+was refused until now. It goes through the same preview and apply as an OBJ.
+A file packed with Draco or meshopt compression, or a `.gltf` with a separate
+`.bin`, is refused with the fix in the message (see "What slice 25 built").
+Its backend tests pass. **No glTF from a real phone has been read**: every
+file it has seen was written by the tests. The file picker's change was not
+run (the worktree had no `node_modules`).
+
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
 
@@ -121,7 +130,8 @@ fixture's stored position changes without any DMX being sent.
 
 | App | Export | Read as |
 | --- | --- | --- |
-| Polycam, Scaniverse, 3D Scanner App | **OBJ** (best) or PLY | a mesh |
+| Polycam, Scaniverse, 3D Scanner App | **OBJ** or **GLB** (glTF binary, what most of them export by default), or PLY | a mesh |
+| Anything writing glTF 2.0 | `.glb`, or a `.gltf` with its data inside it (base64), **without Draco or mesh compression** | a mesh in metres, Y-up, as glTF defines; a file with only points is a point cloud |
 | Any LiDAR or photogrammetry app | PLY, ASCII or binary, with or without faces | a mesh or a point cloud |
 | Polycam, Scaniverse, RoomPlan apps | **USDZ** as the app shares it | a mesh, with the units and up axis the file states |
 | Apple RoomPlan apps | the RoomPlan **JSON**, or a USDZ that carries it | walls and objects as boxes |
@@ -135,6 +145,21 @@ parts missing or out of place, and the report says when a USDZ held more than
 one. A binary layer that cannot be read (damaged, cut short, or a newer
 format) is refused, and the server says why and names the fix: export OBJ
 from Polycam or Scaniverse instead.
+
+Three kinds of glTF **cannot be read**, and each is refused with the fix
+in the message (slice 25):
+
+- **Draco or meshopt compression** (`KHR_draco_mesh_compression`,
+  `EXT_meshopt_compression`): unpacking it needs a decoder that is not in
+  Python's standard library. Export again with compression switched off, or
+  export OBJ. Quantised positions (`KHR_mesh_quantization`, which mesh
+  optimisers write) are refused the same way.
+- **A `.gltf` beside a separate `.bin`**: only one file is uploaded, so the
+  mesh never arrives. Export `.glb`, which is the whole scan in one file.
+- **glTF 1.0**. Export glTF 2.0.
+
+Textures are never read, so a `.glb` whose images are in separate files, or in
+a format this does not know, is still read for its shape.
 
 Tips that make the reader's job easier: scan the whole room including the
 ceiling, keep doors shut where you can, and export at medium detail (the reader
@@ -491,7 +516,13 @@ All routes need the operator login, like every other `/api` route.
 
 ### `POST /api/rigs/{rig_id}/room-scan`
 
-Multipart upload, field `file`. Query parameters:
+Multipart upload, field `file`: `.obj`, `.ply`, `.glb`, `.gltf`, `.usdz`,
+`.usda`, `.usdc` or RoomPlan `.json`. The reader is chosen from the file's
+first bytes (`glTF` for a GLB, `ply`, a zip's `PK`, `#usda`, `PXR-USDC`), and
+from its name only when the bytes do not say. A `.gltf` is JSON, as RoomPlan's
+file is: it is known by its name, or by the `asset` every glTF carries when it
+is named `.json`. The answer's `format` is `obj`, `ply`, `glb`, `gltf`, `usda`,
+`usdc` or `roomplan`. Query parameters:
 
 | Parameter | Values | Meaning |
 | --- | --- | --- |
@@ -526,7 +557,7 @@ Refusals, each with a `detail` that says what to do:
 
 | Status | When |
 | --- | --- |
-| 400 | the file is not a scan this reads (a binary USD layer that cannot be read: the reason, then "export OBJ from Polycam or Scaniverse"), is cut short, has no surface, or is not a room at any plausible units; or `rotate` is not a quarter turn |
+| 400 | the file is not a scan this reads (a binary USD layer that cannot be read: the reason, then "export OBJ from Polycam or Scaniverse"; a glTF packed with Draco or meshopt: "export the scan again without Draco or mesh compression, or export OBJ"; a `.gltf` whose data is in a separate `.bin`: "export the scan as .glb"), is cut short or damaged, has no triangles or points, has more than 20 million points or 40 million triangles, or is not a room at any plausible units; or `rotate` is not a quarter turn |
 | 404 | no such rig |
 | 409 | `apply` would move fixtures while a locate walkthrough is running on the rig. Finish or end it first. A preview, and an apply with `move_fixtures=false`, are still answered |
 | 413 | the file is over 200 MB |
@@ -1055,13 +1086,18 @@ smaller and lower is a `riser`. Edit Room's kind selector sets it by hand
 
 ## How the scan is read
 
-`backend/app/services/room_scan/`: `mesh.py`, `usd.py` and `usdc.py` (binary
-USD, slice 24) parse the file, `extract.py` finds the room, `suggest.py` moves
-the guesses. In order:
+`backend/app/services/room_scan/`: `detect.py` picks the reader, `mesh.py`
+(OBJ, PLY), `gltf.py` (GLB, glTF, slice 25), `usd.py` (USD text, RoomPlan) and
+`usdc.py` (binary USD, slice 24) parse the file, `extract.py` finds the room,
+`suggest.py` moves the guesses. In order:
 
 1. **Points.** A mesh is sampled by area into points with normals; a point
-   cloud is used as it is.
-2. **Up axis.** From the file where it says (USD, RoomPlan), else guessed
+   cloud is used as it is. A glTF's meshes are first put where its nodes place
+   them (each node's matrix, or its translation, rotation and scale, times its
+   parent's), so a scan an app wrote lying down and stood up with a node is
+   read standing.
+2. **Up axis.** From the file where it says (USD, RoomPlan; glTF is always Y-up
+   and in metres, so it counts as saying both), else guessed
    between Y and Z: the axis with most surface at its two ends.
 3. **Units.** From the file where it says, else from the floor-to-ceiling
    height: under 100 is metres, under 1800 centimetres, else millimetres.
@@ -1443,6 +1479,120 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 25 built
+
+glTF 2.0 import: a `.glb` or a `.gltf` goes through `POST
+/api/rigs/{rig_id}/room-scan` and is previewed and applied like an OBJ. Until
+now a GLB was refused with "not read yet", and it is the default export of
+Polycam, Scaniverse and most LiDAR apps.
+
+- **The reader** (`backend/app/services/room_scan/gltf.py`, standard library
+  and numpy, no new dependency): `parse_glb` (the 12-byte header, the JSON
+  chunk, the BIN chunk) and `parse_gltf` (the JSON, its buffers as base64
+  `data:` URIs). Both end in the same `ScanMesh` the OBJ and PLY readers
+  make, so `extract.py` and `suggest.py` are unchanged.
+- **What is read.** Every mesh the default scene draws (`scene`, else the
+  first scene, else every node that is nobody's child; with no nodes at all,
+  every mesh where it lies). Each primitive's `POSITION` (FLOAT, VEC3), by the
+  buffer view's `byteOffset` and `byteStride` and the accessor's own
+  `byteOffset`, so an interleaved buffer reads. Indices as UNSIGNED_BYTE,
+  UNSIGNED_SHORT or UNSIGNED_INT; a primitive with none is three corners to a
+  triangle in turn. Triangles (mode 4), strips (5) and fans (6) become
+  triangles. Points (mode 0) and lines (1, 2, 3) have no surface: a file
+  with no triangle at all is read as a point cloud of their points, like a
+  PLY with no faces, and beside a mesh they are left out and the preview
+  says so.
+- **Nodes.** A mesh is put where its nodes place it: each node's `matrix`
+  (sixteen numbers, column by column) or its translation, rotation (a
+  quaternion, x y z w) and scale, times its parent's. A mesh drawn by two
+  nodes is read twice. The walk is a loop with a list, not recursion, and a
+  node reached twice (a loop in the file) is refused.
+- **Axes and units.** glTF is Y-up and in metres by definition. Nothing is
+  turned or scaled in the reader: the mesh says `up_axis: y` and
+  `metres_per_unit: 1.0`, as a USD layer does, and the preview's assumptions
+  read "the file says so". The dialog's Units and Up axis still win over the
+  file, for an exporter that wrote something else.
+- **Refusals**, each a 400 whose `detail` says what to do:
+  - `KHR_draco_mesh_compression` or `EXT_meshopt_compression` in
+    `extensionsRequired`, or a primitive whose points are only in its Draco
+    data: "Export the scan again without Draco or mesh compression, or export
+    OBJ." A required extension that is not about the mesh (a texture format)
+    is no reason to refuse.
+  - A buffer with a `uri` that is a file name: "keeps its mesh in a separate
+    file ('scene.bin') ... Export the scan as .glb, which is the whole scan in
+    one file, or export OBJ."
+  - Points stored as whole numbers (`KHR_mesh_quantization`), a sparse
+    accessor, glTF 1.0: each named, with OBJ as the way out.
+  - Cut short or damaged: a GLB shorter than its header says, a chunk or an
+    accessor that runs past the end, JSON or base64 that cannot be read, an
+    index that points at nothing, a size that is not a number. Whatever goes
+    wrong inside the reader comes out as a `RoomScanError` and never as a 500.
+  - No triangles and no points: "there is no room in it to read".
+  - More than `MAX_VERTICES` (20 million) points or `MAX_FACES` (40 million)
+    triangles, the limits `mesh.py` already had. They are counted as the scene
+    is walked, before anything is copied, because a file of a few kilobytes
+    can draw one mesh ten thousand times. The upload limit is the route's own
+    200 MB.
+- **Which reader** (`detect.py`): a file starting `glTF` is a GLB whatever its
+  name. A file starting `{` is a `.gltf` when it is named `.gltf` (or `.glb`),
+  or when it carries glTF's `asset` and one of `accessors`, `meshes`,
+  `buffers`, `scenes`, `nodes`; otherwise it is RoomPlan JSON, as before.
+- **The dialog** (`frontend/src/utils/roomScan.ts`, `RoomScanDialog.tsx`):
+  `.glb` and `.gltf` are in the file picker's accept list
+  (`ROOM_SCAN_ACCEPT`), and the help text names glTF.
+- **Tests.** All files are written in the test with `struct` and `json`
+  (`gltf_scene`, `write_glb` and `write_gltf` in
+  `backend/tests/unit/room_scan_meshes.py`); none is on disk.
+  - `backend/tests/unit/test_room_scan_gltf.py` (71): a `.glb` and a `.gltf`
+    of one scene give the same points and triangles; which reader a file goes
+    to, a `.gltf` named `.json`, a GLB whose buffer is a data URI; a node's
+    translation, rotation and scale, a matrix, a node under a node (the
+    expected points worked out from an axis and an angle, not from the
+    reader's quaternion formula), a mesh drawn twice, the default scene only,
+    no scene; each index width, no indices, an interleaved buffer with a
+    stride and both offsets, a strip and a fan, points alone, lines beside a
+    mesh left out and lines alone read as points, a point cloud of 60,000
+    points read for its room, a bad index kept off the next part's points;
+    the lopsided test room turned
+    25 degrees coming back the right way round from both, a Z-up mesh stood
+    up by its node, the same room as its OBJ gives, the operator's units over
+    the file's; and the refusals: Draco and meshopt (both files), Draco not
+    marked required, a required texture extension that is read anyway, a
+    separate `.bin`, sparse, quantised, no mesh, glTF 1.0, a GLB cut at every
+    length from one byte to one short of whole (and again with its header
+    rewritten to agree), a `.gltf` cut short, base64 cut short, 24 ways a file
+    can fail to hold together, the two limits, and one mesh drawn 5,000 times.
+  - `backend/tests/integration/test_api_room_scan_gltf.py` (4), through the
+    route: a box room 10 by 8 by 4 m with a stage block against the upstage
+    wall, off to stage right, sent as OBJ, GLB and `.gltf`, each finding the
+    room and the stage where they are and the three agreeing with each other,
+    the GLB's units and up axis coming back as `m` and `y` from the file, and
+    nothing written; the same room lying Z-up in two parts and placed by a
+    parent and a child node; a non-indexed, interleaved GLB applied and read
+    back off the rig; and Draco, meshopt, a separate `.bin`, a cut-short GLB
+    and `.gltf` and an empty scene each a 400 with its words, with nothing
+    stored.
+  - `backend/tests/unit/test_room_scan.py`: the GLB row in "the message says
+    what is wrong" now expects the refusal of a file that is four bytes of a
+    GLB and nothing after (it names glTF 2.0), not "not read yet".
+  - `frontend/src/__tests__/roomScan.test.ts`: one test that the accept list
+    holds `.glb` and `.gltf` beside what it had. **Not run** (below).
+- **What was run** (Nov 24), from `backend/` with the main checkout's venv:
+  `pytest tests/unit/test_room_scan.py tests/unit/test_room_scan_gltf.py`
+  133 passed; `pytest tests/integration/test_api_room_scan_gltf.py
+  tests/integration/test_api_room_scan.py` 28 passed; the whole suite,
+  `pytest tests/ -q -p no:cacheprovider`: 2105 passed, 10 skipped, 5 xfailed (2029 passed before this slice).
+- **What was not run.** The frontend: this worktree has no
+  `frontend/node_modules`, `npm ci` was refused, and `npx vitest run` and
+  `npx tsc --noEmit` both stopped for want of the packages. The frontend
+  change is one constant, one sentence of help text and one test, none of it
+  executed. **No glTF from a real phone or app has been read**, and the
+  dialog has not been opened in a browser with one.
+- **What is left**: Draco and meshopt unpacking, a `.gltf` with its `.bin`,
+  and a real export from each app. See What is left.
+- **Nothing here sends Art-Net or DMX**, opens a socket or calls an outside
+  service. No new dependency and no migration.
 
 ## What slice 24 built
 
@@ -2346,6 +2496,15 @@ Pixar's USD library from the same rooms (slice 24).
 - `backend/tests/unit/test_room_scan_usdc.py`: binary USD against what Pixar's
   library computes, the same room as from the text layer, the two unpackers,
   hand-laid values, and damaged files (see "What slice 24 built").
+- `backend/tests/unit/test_room_scan_gltf.py` and
+  `backend/tests/integration/test_api_room_scan_gltf.py`: glTF (slice 25). A
+  `.glb` and a `.gltf` of one scene are the same mesh; node transforms
+  (translation, rotation and scale; a matrix; a node under a node; a mesh drawn
+  twice; the default scene only; no scene at all); every index width, no
+  indices, an interleaved buffer, strips and fans, points or lines alone as a
+  point cloud, a bad index; the room recovered the same as from an OBJ; and each
+  refusal with its wording, as a reader and as a 400 from the route. Listed in
+  "What slice 25 built".
 - `backend/tests/integration/test_api_room_scan.py`: preview writes nothing;
   apply stores the shell and it comes back on the rig and in the rig list; only
   template guesses move, a row at a time, and stay guesses; tapped, confirmed,
@@ -2680,6 +2839,14 @@ Pixar's USD library from the same rooms (slice 24).
   undo that restored and not otherwise; and in the editor the rig read
   again, the plan redrawn, the editor's undo steps dropped, nothing read
   again when the truss went alone, and both Undo buttons.
+- **Slice 25 (glTF import).** Backend, and one constant, one sentence and one
+  test in the frontend. **Run (Nov 24):** backend pytest, whole suite,
+  2105 passed, 10 skipped, 5 xfailed (2029 passed before this slice); `tests/unit/test_room_scan_gltf.py` 71 and
+  `tests/integration/test_api_room_scan_gltf.py` 4 of them. **Not run:**
+  `npx vitest run` and `npx tsc --noEmit` (no `node_modules` in the worktree,
+  `npm ci` refused), so the new test in `roomScan.test.ts` has never been
+  executed. What each test file covers is listed under Tests in "What slice
+  25 built".
 - **Slice 23 (the booth and the crowd in a scanned room).** Frontend only.
   **Run (Nov 24):** `npx vitest run` 1163 passed in 55 files, `npm run build`
   OK, `npx tsc --noEmit` only the 13 older errors.
@@ -3377,6 +3544,24 @@ Pixar's USD library from the same rooms (slice 24).
     file built to be slow could take most of a minute at the 200 MB upload
     limit. The most read is 60 million entries in one array (20
     million triangles).
+- **glTF** (slice 25) is read, with these left:
+  - **No real export has been read.** Every `.glb` and `.gltf` the reader has
+    seen was written by the tests. Whether Polycam's and Scaniverse's default
+    GLB exports use Draco has not been checked against the apps: if they do,
+    the upload is refused with the message naming the fix, and the operator
+    has to find the app's switch or export OBJ.
+  - **Draco, meshopt and quantised positions** are refused, not unpacked. A
+    Draco decoder in pure Python would be a slice of its own.
+  - **A `.gltf` with a separate `.bin`** is refused: the upload takes one
+    file. Taking the two together (or a zip of them) is not built.
+  - **Sparse accessors** are refused. **Points and lines** are read only
+    when the file has no triangles, and without their normals (a PLY point
+    cloud's normals are read).
+  - **Only the default scene** is read, and no skin, morph target, animation
+    or GPU instancing extension (`EXT_mesh_gpu_instancing`) is applied.
+  - **The dialog** accepts `.glb` and `.gltf` in its file picker and words
+    them in its help text; that change has not been run or seen in a browser
+    (see "What slice 25 built").
 - **Ceilings and levels.** Sloped or domed ceilings, balconies and mezzanines
   are still read as a flat ceiling over one floor. A balcony can be put in
   by hand as a raised area with a base height (slice 18).

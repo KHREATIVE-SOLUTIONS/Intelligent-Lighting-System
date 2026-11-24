@@ -14,8 +14,9 @@ What is read: every mesh the default scene draws, each primitive's POSITION
 (float, three to a point) and its indices, with the transforms of the nodes
 above it applied (a `matrix`, or translation, rotation and scale). A mesh drawn
 by several nodes is read once for each. Triangles, triangle strips and triangle
-fans become triangles; a file with only point primitives is a point cloud;
-lines are left out.
+fans become triangles. A file with no triangle at all is a point cloud, of the
+points of its point and line primitives, as a PLY with no faces is; beside a
+mesh those are left out.
 
 What is refused, in words that say what to do: Draco and meshopt compression
 (there is no decoder in the standard library), quantised positions, sparse
@@ -96,8 +97,7 @@ class _Reader:
         self.cloud: List[np.ndarray] = []
         self.cloud_points = 0
         self.parts = 0
-        self.lines_skipped = 0
-        self.unplaced_skipped = 0
+        self.line_parts = 0
         self.bad_triangles = 0
 
     # --- the document -------------------------------------------------------
@@ -224,16 +224,16 @@ class _Reader:
             raise _damaged(self.kind, "a mesh primitive is not an object")
         attributes = primitive.get("attributes")
         if not isinstance(attributes, dict) or "POSITION" not in attributes:
-            self.unplaced_skipped += 1
-            return
+            return                  # nothing to place: glTF allows a primitive with no points
         mode = primitive.get("mode", _TRIANGLES)
-        if mode not in (_POINTS, _TRIANGLES, _STRIP, _FAN):
-            self.lines_skipped += 1
-            return
 
         local = self._positions(primitive, attributes["POSITION"])
         count = len(local)
-        if mode == _POINTS:
+        if mode not in (_TRIANGLES, _STRIP, _FAN):
+            # Points, and the ends of lines: no surface, so only their points
+            # are kept, and used only when the file has no triangle at all.
+            if mode != _POINTS:
+                self.line_parts += 1
             self.cloud_points += count
             self._within(self.cloud_points, MAX_VERTICES, "points")
             if count:
@@ -363,10 +363,13 @@ class _Reader:
                 "each placed by the nodes above it."
             )
             if self.cloud_points:
-                notes.append(f"{self.cloud_points:,} loose points beside the mesh were left out.")
+                notes.append(
+                    f"{self.cloud_points:,} loose points and line ends beside the mesh were left out."
+                )
         elif self.cloud:
             found = ScanMesh(vertices=np.concatenate(self.cloud), format=fmt, source_file=source_file)
-            notes.append(f"The {self.kind} has points and no triangles: it was read as a point cloud.")
+            holds = "lines" if self.line_parts and self.line_parts == len(self.cloud) else "points"
+            notes.append(f"The {self.kind} has {holds} and no triangles: it was read as a point cloud.")
         else:
             raise RoomScanError(
                 f"The {self.kind} holds no triangles or points: there is no room in it to read. "
@@ -379,8 +382,6 @@ class _Reader:
             notes.append(
                 f"{self.bad_triangles} triangles pointed at points their mesh part does not have and were left out."
             )
-        if self.lines_skipped:
-            notes.append(f"{self.lines_skipped} line drawings in the {self.kind} were left out.")
         found.notes.extend(notes)
         return _checked(found)
 
