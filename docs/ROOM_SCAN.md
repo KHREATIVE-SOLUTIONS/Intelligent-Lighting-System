@@ -797,7 +797,9 @@ sent is what was stored: nothing is written and no step is left to undo),
 `undo` (`available`, `label`: see the undo route), `riser_kind` (what a
 raised area now is; null for a line or ring), `first_stage` (the place in
 `risers` of the first raised area that is a stage, the one a suggestion puts
-floor lights on, or null), `carry_fixtures` (whether
+floor lights on, or null), `dj_booth` (slice 28: the place in `risers` of
+the raised area marked as the DJ's booth, or null; sent as `is_dj_booth`
+true or false, see "What slice 28 built"), `carry_fixtures` (whether
 fixtures were to go with it), `fixtures_moved` (each carried fixture's
 `rig_fixture_id`, `name`, `from` and `to`, each `x`, `y`, `z` and
 `rotation_y`; empty when none moved; the fixtures standing on a carried
@@ -1274,7 +1276,10 @@ For a rig with a scanned room (`room_shell.source == "scan"`):
   the walls, 0.5 m from them and from every raised area, and out of the metre
   in front of the booth. A raised area at a heading (slice 21) is read as it
   stands turned, and the booth on it is turned with it. Both are placed again
-  when the room is edited. See "What slice 23 built".
+  when the room is edited. See "What slice 23 built";
+- **the raised area marked as the DJ's booth has the desk, and the DJ and
+  Floor cameras look at the booth that is drawn** (slice 28, `boothPick.ts`,
+  `boothCamera.ts`). See "What slice 28 built".
 
 ## In the 2D layout view
 
@@ -1543,6 +1548,123 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 28 built
+
+"This one is the DJ's booth", and cameras that look at it. Until now the
+desk went on the first raised area of kind `booth`, which a scan also calls
+a bar counter, and the DJ and Floor cameras looked at the booth the view
+makes up against the upstage wall whatever the room had.
+
+- **The mark** (`edit.py`). `is_dj_booth: true` on one raised area of the
+  stored room. It is kept on the raised area itself, not as a place in the
+  list: the lists carry no ids, and a place would have to be counted again
+  at every delete. So it goes where its raised area goes, goes out with it,
+  and comes back with it when the room's Undo puts the room back.
+  - *One at a time.* Marking one takes the mark off every other in the same
+    edit. One that is not marked stores no key at all (never `false`), so a
+    room nobody marked one in is byte for byte what it was.
+  - *Any kind.* A stage or a riser can be marked as well as a booth: the DJ
+    who plays on the stage, in a room whose only "booth" is the bar.
+  - *A change of kind takes it off*, unless the same request sets it: it
+    was the booth as what it was. Edit Room's row sends the mark along when
+    its box is ticked, so changing the booth's kind there keeps it.
+  - *A deleted booth takes its mark with it.* Nothing is promoted in its
+    place; the view then goes back to the first `booth`, or its guess.
+  - *It moves nothing*, and does not make the raised area a person's
+    (`suggested` and `basis` are left): it says whose it is, not where.
+  - *A stack.* A riser carried with the stage under it is written back from
+    the room as it was (`carry.apply_areas`); where that riser was the booth
+    and the same edit marked the stage, `one_dj_booth` takes its mark off.
+  - `dj_booth_place(shell)` is the marked place, or None: the first, should
+    a shell written by hand mark two. Only a stored `true` is a mark.
+- **The routes.** `PATCH .../room-shell/risers/{index}` and
+  `POST .../room-shell/risers` take `is_dj_booth`; both answers and the
+  DELETE's carry `dj_booth` (the marked place or null). Refused with 422 in
+  a sentence: anything but true or false (a raw `Infinity` included), and a
+  truss or a ring. 404 for a raised area the room does not have. 409 during
+  a locate walkthrough, before the body is looked at, as every room edit.
+  One undo step each ("Decks marked as the DJ booth", "... no longer marked
+  as the DJ booth"); marking the one already marked writes nothing and
+  leaves no step. The mark is read back with the rig like the rest of the
+  room. No migration: the room is one JSON column.
+- **Which booth** (`previs/boothPick.ts`, `pickDjBooth`). The marked raised
+  area (`'marked'`); else the first of kind `booth` (`'scan'`); else the
+  first stage (`'guess'`); else none. One function for the 3D view and the
+  2D plan, over the same list (`scanRisers`), so they cannot disagree.
+- **The desk** (`scanFloor.ts`, `placeScanBooth`). How a booth is drawn now
+  goes by what the raised area is, not by how it was chosen: a stage is
+  played from its downstage edge with a desk half its width; anything else
+  is a booth facing the open floor, the counter itself from 0.6 m and a
+  platform with a desk under that. With no mark a guess is always on a stage
+  and a scan's booth never is, so those rooms come out exactly as they did
+  (tested as a deep-equal booth and the same crowd). **The amber mark is
+  drawn only for a guess**, as before: a marked booth has none.
+- **The cameras** (`previs/boothCamera.ts`, `boothCameraPreset`). In a
+  scanned room with a booth, the DJ and Floor cameras are worked out in the
+  booth's own frame: forward is the way it faces and right is
+  `(faceZ, -faceX)`, so a booth at a heading has its cameras at that heading.
+  - *Floor.* Straight out from the middle of the booth's front face, 0.85 m
+    short of the wall it faces (`distanceToWall`), looking at the front face
+    1.55 m above the decks. Where that spot is within 0.6 m of another wall
+    or over a raised area it comes back towards the booth 0.1 m at a time,
+    never nearer than 1 m. With nowhere on that line (a booth facing a
+    wall) it stands where it did and is turned to the booth.
+  - *DJ.* 1.25 m behind the DJ and 0.95 m to the booth's right, 2.3 m above
+    what the DJ stands on. Where a wall is within 0.3 m behind that spot, or
+    in front of it, a metre behind that wall instead: every wall is drawn
+    only from its room side (`ClubRoom.tsx`, `RoomShellView.tsx`), so the
+    camera looks straight in. It looks 0.375 m and 0.35 of the floor between
+    the booth and the wall it faces out in front, at 1.2 m, brought 0.6 m in
+    from a wall with `insetPoint`.
+  - *The numbers are the made-up booth's own*, read from the room and not
+    from the layout: a booth standing where the view's own would stand has
+    both cameras exactly where they always were (tested against
+    `cameraPreset`).
+  - *Left alone:* `cameraPreset` is not changed. A room with no scan, a
+    scanned room with no booth, and the Iso, Top, Front and Audience cameras
+    get the preset back as it is, the same object.
+  - *The crowd* leaves room where the Floor camera now stands. In a scanned
+    room whose booth is not upstage centre that is a different place, so
+    that room's crowd is a different crowd from before this slice.
+  - The view's key (`scanFloorKey`) carries `is_dj_booth` only where it is
+    true, so marking a booth places the booth and the crowd again and an
+    unmarked room's key is the text it was.
+- **Edit Room** (`RoomShellEditDialog.tsx`, `roomShellEdit.ts`). A "DJ
+  booth" box on each raised area's row, beside its Kind. It is saved with
+  the row's Save, like the kind, and taken back by the dialog's Undo. Once a
+  row is saved as the booth, a box ticked on another row and not saved is
+  let go, so two rows never show as the booth. The mark is not a change that
+  carries fixtures (`withCarry`). The Add form has no box: add the raised
+  area, then tick its row. Items mode on the plan edits no kind and has no
+  box either.
+- **The 2D plan** (`roomPlan2d.ts`, `djBoothTag`; `StageView2D.tsx`). The
+  raised area the 3D view puts the DJ on has a small "DJ" above its label,
+  or an amber "DJ?" where it is only a guess, with a tooltip that says how
+  it was chosen and to mark the right one in Edit Room. No label, tooltip or
+  bound of the room layer is changed by it.
+- **Tests.** Backend: `tests/unit/test_room_scan_dj_booth.py` (22) and
+  `tests/integration/test_api_room_shell_dj_booth.py` (9): marking, one at a
+  time, any kind, a change of kind with and without the mark, the words for
+  the undo, delete and add, the stack, the refusals, the round trip through
+  `GET /api/rigs/{id}` and the database column, three undo steps walked
+  back, and the locate walkthrough. Frontend: `boothPick.test.ts` (the
+  pick, the scanFloor choice, the plan's tag), `boothCamera.test.ts`
+  (heading 0, a booth elsewhere, turned 30, -60 and 90 against the heading-0
+  result turned in the test, a booth `placeScanBooth` placed, the view's own
+  booth, a room with no scan) and `RoomShellDjBoothDialog.test.tsx` (the
+  box, what it sends, Undo, one at a time, the helpers, the plan's tag
+  drawn).
+- **What was run** (Nov 24). Backend, with the main checkout's venv:
+  `python -m pytest tests/ -q` **2562 passed, 10 skipped, 5 xfailed** (2531
+  before the slice; the 31 new ones are the two files above). **Nothing of
+  the frontend was run.** This worktree has no `frontend/node_modules`, and
+  `npm ci`, `npx vitest run`, and `node` on the main checkout's `tsc` were
+  each refused in the session; `npx tsc` ran and found no compiler. So the
+  three new test files, the changed files, the type-check (13 older errors
+  expected) and the build are all unchecked by any tool: the expected
+  numbers in the tests were worked out by hand. See "What is left".
+- **No Art-Net, no DMX, no network call, no new dependency.**
 
 ## What slice 27 built
 
@@ -2814,6 +2936,11 @@ All scans are built in code (`backend/tests/unit/room_scan_meshes.py`), but
 for binary USD: those files are in `backend/tests/fixtures/usdc/`, written by
 Pixar's USD library from the same rooms (slice 24).
 
+- `backend/tests/unit/test_room_scan_dj_booth.py` and
+  `backend/tests/integration/test_api_room_shell_dj_booth.py`: the DJ booth
+  mark (slice 28). Run. The frontend's `boothPick.test.ts`,
+  `boothCamera.test.ts` and `RoomShellDjBoothDialog.test.tsx` are written and
+  **have not been run** (see "What slice 28 built").
 - `backend/tests/unit/test_room_scan.py`: the parsers (OBJ, PLY in three
   encodings, USDA, USDZ, RoomPlan JSON), the same room recovered whatever the
   units, axes and heading, a point cloud with no normals, a scan leaking through
@@ -3424,6 +3551,50 @@ Pixar's USD library from the same rooms (slice 24).
   up.
 
 ## What is left
+
+- **Slice 28's frontend has not been run at all**, and nothing of it has
+  been seen in a browser. Its backend tests pass (2562 in the whole suite).
+  The session that wrote it had no `frontend/node_modules` and was refused
+  `npm ci`, `npx vitest run` and `node`. Before relying on it, in
+  `frontend/`: `npm ci`, `npx vitest run`, `npx tsc --noEmit -p .` (13 older
+  errors are expected, none in `boothPick.ts`, `boothCamera.ts`,
+  `scanFloor.ts`, `roomPlan2d.ts`, `roomShellEdit.ts`, `StageView2D.tsx`,
+  `RoomShellEditDialog.tsx` or `RigVisualizer.tsx`) and `npm run build`. Its
+  test files are `boothPick.test.ts`, `boothCamera.test.ts` and
+  `RoomShellDjBoothDialog.test.tsx`. Expect a first run to find something: a
+  type error is as likely as a failed expectation, and one expectation
+  (a booth by the stage right wall facing stage left, in `boothPick.test.ts`)
+  rests on where the middle of the open floor falls, which was reasoned and
+  not computed. Not seen: the DJ and Floor cameras on a real room, the DJ
+  camera from behind a side wall or an outline's wall, the tag's size over a
+  small booth, and the box in the already wide row of Edit Room.
+- **The DJ booth mark goes only so far** (slice 28):
+  - **Reading the scan again drops it**, as it drops every change made by
+    hand: the scan writes a new room. Mark the booth again.
+  - **A change of kind made through the API without `is_dj_booth` takes the
+    mark off.** Edit Room sends it; another client has to.
+  - **A marked stage is drawn as a stage** (a desk at its downstage edge,
+    half its width) and a marked riser as a booth. There is no saying "a
+    counter" or "a desk" apart from the kind and the 0.6 m height.
+  - **No box in the Add form or in items mode on the plan**: tick the row
+    in Edit Room. The plan's tag is not a button.
+  - **The plan's tag does not move off another label**: it is a line above
+    its raised area's label wherever that label was nudged to, and the
+    label layout does not know it is there.
+  - **The Floor camera stands on one line**: straight out from the middle
+    of the booth's front. It does not look for the widest part of the
+    floor, it does not go round a pillar or a notch (it stops at the first
+    wall), and a booth facing a wall under 1.85 m away leaves it where the
+    old preset had it, turned to the booth. Its height is the preset's
+    2.3 m above the floor even when the booth is on a balcony.
+  - **The DJ camera is not kept out of things**: a raised area, a truss leg
+    or another arm of the room behind the booth can be where it stands. A
+    counter with no DJ drawn has it placed from the gear.
+  - **Only those two cameras.** Iso, Front, Audience and Top still frame the
+    room's box and the made-up booth's end of it.
+  - **A scanned room's crowd changed once** with this slice where the booth
+    is not upstage centre: the Floor camera, which the crowd keeps clear
+    of, stands somewhere else.
 
 - **Slice 22 has been run but not seen in a browser.** Its tests, the build
   and the type-check pass (see its entry in "What the tests cover"). The
@@ -4084,15 +4255,11 @@ Pixar's USD library from the same rooms (slice 24).
     looked at the view: a booth on a real scan, a booth on a turned raised
     area sitting square on the box drawn under it, the amber mark, or the
     crowd round a turned stage.
-  - **The DJ and Floor cameras still aim at the booth the view makes up**,
-    against the upstage wall on the centre line. In a scanned room whose
-    booth is elsewhere they look at a wall. The crowd does keep clear of
-    where the Floor camera stands.
-  - **Which booth.** Only the first raised area of kind `booth` gets the
-    desk. A scan calls a bar counter a booth too ("Booth or counter"), so
-    where the bar comes first in the list the decks are on the bar: change
-    its kind in Edit Room, or remove and add the booth so it comes first.
-    Nothing says "this one is the DJ's".
+  - **Which booth, unless one is marked.** With nobody having ticked "DJ
+    booth" on a row of Edit Room (slice 28), the first raised area of kind
+    `booth` still gets the desk, and a scan calls a bar counter a booth too:
+    where the bar comes first the decks are on the bar until the right one
+    is marked. The plan's tag shows which one it is.
   - **A counter against a wall has no DJ**, and neither has a platform under
     0.95 m deep or a counter over 1.3 m high: there is nowhere to draw one
     standing. A scan that took the DJ's standing room into the box gives this.
@@ -4109,8 +4276,9 @@ Pixar's USD library from the same rooms (slice 24).
     plain floor. No speaker stacks either.
   - **Raised areas are all obstacles**, whatever their base: nobody stands
     under a balcony added as a floating platform, or on a stage.
-  - **The mark is only in the 3D view.** Nothing in the 2D plan or in Edit
-    Room says where the booth was put or that it was a guess.
+  - **Edit Room does not say a booth is a guess.** The 2D plan's tag does
+    ("DJ?", slice 28) and so does the 3D view's amber mark; in Edit Room the
+    box is simply unticked on every row until somebody ticks one.
   - **A big edit moves everybody**: the crowd is seeded from the room, so
     any change to the floor or a raised area is a new crowd, not the old one
     stepping aside.
