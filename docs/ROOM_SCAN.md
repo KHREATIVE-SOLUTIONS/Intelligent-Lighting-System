@@ -101,6 +101,14 @@ Its backend tests pass. **No glTF from a real phone has been read**: every
 file it has seen was written by the tests. The file picker's change was not
 run (the worktree had no `node_modules`).
 
+Slice 26 reads **a scan sent as a zip**, which is how Polycam and Scaniverse
+often share one: a `.gltf` with its `.bin` and textures, or an `.obj` with
+its `.mtl` and textures. The zip is read in memory and nothing in it is
+trusted; the one model in it is the scan, and a `.gltf` finds its `.bin`
+beside it (see "What slice 26 built"). Its backend tests pass. **No zip from
+a real phone has been read**: every one it has seen was built by the tests.
+The file picker's change was not run, for the same reason as slice 25's.
+
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
 
@@ -136,6 +144,17 @@ fixture's stored position changes without any DMX being sent.
 | Polycam, Scaniverse, RoomPlan apps | **USDZ** as the app shares it | a mesh, with the units and up axis the file states |
 | Apple RoomPlan apps | the RoomPlan **JSON**, or a USDZ that carries it | walls and objects as boxes |
 | Anything writing USD | USDA (text) or USDC (binary), alone or in a USDZ | a mesh, with the units and up axis the file states |
+| Polycam, Scaniverse, anything that shares several files | a **ZIP** as the app shares it: a `.gltf` with its `.bin`, an `.obj` with its `.mtl`, either with textures | the one model in the zip, read as that file would be on its own |
+
+**A zip** (slice 26) is sent as it is: do not unpack it. The server reads the
+model in it and, for a `.gltf`, the `.bin` files it names; textures and `.mtl`
+files are never opened. If the zip holds more than one model, one is read, in
+this order: `.glb`, `.gltf`, `.usdz`, `.usdc`, `.usda`, `.obj`, `.ply`,
+RoomPlan `.json`. The preview's assumptions say which file was read and which
+were left alone. One that cannot be read (a Draco-packed `.glb`, a `.gltf`
+whose `.bin` is missing) gives way to the next, and the preview says that
+too. A zip with a password, with more than 2,000 files, or that unpacks to
+more than 200 MB is refused.
 
 A USDZ is read whether its layer is text or binary USD (`.usdc`, slice 24).
 OBJ is still the surest export: the binary reader has only read files written
@@ -146,7 +165,7 @@ one. A binary layer that cannot be read (damaged, cut short, or a newer
 format) is refused, and the server says why and names the fix: export OBJ
 from Polycam or Scaniverse instead.
 
-Three kinds of glTF **cannot be read**, and each is refused with the fix
+Some glTF **cannot be read**, and each is refused with the fix
 in the message (slice 25):
 
 - **Draco or meshopt compression** (`KHR_draco_mesh_compression`,
@@ -154,8 +173,9 @@ in the message (slice 25):
   Python's standard library. Export again with compression switched off, or
   export OBJ. Quantised positions (`KHR_mesh_quantization`, which mesh
   optimisers write) are refused the same way.
-- **A `.gltf` beside a separate `.bin`**: only one file is uploaded, so the
-  mesh never arrives. Export `.glb`, which is the whole scan in one file.
+- **A `.gltf` sent without its `.bin`**: the mesh is in the `.bin`, so it
+  never arrives. Send the two zipped together (slice 26; the app's own zip
+  is that), or export `.glb`, which is the whole scan in one file.
 - **glTF 1.0**. Export glTF 2.0.
 
 Textures are never read, so a `.glb` whose images are in separate files, or in
@@ -517,12 +537,17 @@ All routes need the operator login, like every other `/api` route.
 ### `POST /api/rigs/{rig_id}/room-scan`
 
 Multipart upload, field `file`: `.obj`, `.ply`, `.glb`, `.gltf`, `.usdz`,
-`.usda`, `.usdc` or RoomPlan `.json`. The reader is chosen from the file's
+`.usda`, `.usdc` or RoomPlan `.json`, or a `.zip` of one of those with the
+files that go with it. The reader is chosen from the file's
 first bytes (`glTF` for a GLB, `ply`, a zip's `PK`, `#usda`, `PXR-USDC`), and
 from its name only when the bytes do not say. A `.gltf` is JSON, as RoomPlan's
 file is: it is known by its name, or by the `asset` every glTF carries when it
-is named `.json`. The answer's `format` is `obj`, `ply`, `glb`, `gltf`, `usda`,
-`usdc` or `roomplan`. Query parameters:
+is named `.json`. A USDZ is a zip too: an archive named `.usdz` goes to the
+USDZ reader, and an archive under any other name is read as a zip that holds
+a scan (slice 26). The answer's `format` is `obj`, `ply`, `glb`, `gltf`, `usda`,
+`usdc` or `roomplan`; for a zip it is the format of the model read out of it,
+`file` is the zip's name, and `assumptions` begins with which file that was.
+Query parameters:
 
 | Parameter | Values | Meaning |
 | --- | --- | --- |
@@ -557,7 +582,7 @@ Refusals, each with a `detail` that says what to do:
 
 | Status | When |
 | --- | --- |
-| 400 | the file is not a scan this reads (a binary USD layer that cannot be read: the reason, then "export OBJ from Polycam or Scaniverse"; a glTF packed with Draco or meshopt: "export the scan again without Draco or mesh compression, or export OBJ"; a `.gltf` whose data is in a separate `.bin`: "export the scan as .glb"), is cut short or damaged, has no triangles or points, has more than 20 million points or 40 million triangles, or is not a room at any plausible units; or `rotate` is not a quarter turn |
+| 400 | the file is not a scan this reads (a binary USD layer that cannot be read: the reason, then "export OBJ from Polycam or Scaniverse"; a glTF packed with Draco or meshopt: "export the scan again without Draco or mesh compression, or export OBJ"; a `.gltf` sent without its `.bin`: "zip the two together ... and send the zip, or export the scan as .glb"; a zip with a name that points outside it, a password, more than 2,000 files, more than 200 MB unpacked, no model in it, or a `.gltf` whose `.bin` is not in it), is cut short or damaged, has no triangles or points, has more than 20 million points or 40 million triangles, or is not a room at any plausible units; or `rotate` is not a quarter turn |
 | 404 | no such rig |
 | 409 | `apply` would move fixtures while a locate walkthrough is running on the rig. Finish or end it first. A preview, and an apply with `move_fixtures=false`, are still answered |
 | 413 | the file is over 200 MB |
@@ -1088,8 +1113,9 @@ smaller and lower is a `riser`. Edit Room's kind selector sets it by hand
 
 `backend/app/services/room_scan/`: `detect.py` picks the reader, `mesh.py`
 (OBJ, PLY), `gltf.py` (GLB, glTF, slice 25), `usd.py` (USD text, RoomPlan) and
-`usdc.py` (binary USD, slice 24) parse the file, `extract.py` finds the room,
-`suggest.py` moves the guesses. In order:
+`usdc.py` (binary USD, slice 24) parse the file, `bundle.py` (slice 26) takes
+the model out of a zip and hands it to one of those, `extract.py` finds the
+room, `suggest.py` moves the guesses. In order:
 
 1. **Points.** A mesh is sampled by area into points with normals; a point
    cloud is used as it is. A glTF's meshes are first put where its nodes place
@@ -1480,6 +1506,163 @@ A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
 
+## What slice 26 built
+
+A scan sent as a zip: `POST /api/rigs/{rig_id}/room-scan` takes a `.zip` and
+reads the scan inside it. Polycam and Scaniverse often share a scan that way,
+a `.gltf` with its `.bin` and textures or an `.obj` with its `.mtl` and
+textures. Until now a zip was taken for a USDZ and refused, and a `.gltf`
+with a separate `.bin` could not be sent at all.
+
+- **The reader** (`backend/app/services/room_scan/bundle.py`, `parse_zip`,
+  standard library only): Python's `zipfile` over the uploaded bytes. Nothing
+  is unpacked to disk, so no name in the archive is ever a path on this
+  machine. It ends in the same `ScanMesh` every other reader makes, so
+  `extract.py`, `suggest.py` and the route's answer are unchanged.
+- **Which reader** (`detect.py`). A USDZ is a zip too, and both start `PK`.
+  An archive named `.usdz` goes to the USDZ reader, as before. An archive
+  under any other name (`.zip`, or none) is read as a zip that holds a scan.
+  A USDZ that has been renamed `.zip` is still read: its USD layer is a model
+  like any other, a layer named `.usd` included. A file named `.zip` that
+  does not start like one is sent to the zip reader all the same, so that
+  the refusal says "the zip is damaged" and not "this is not a scan"; a GLB
+  or a PLY given the name `.zip` is still known by its first bytes.
+- **A zip is not trusted.** Checked before a byte of any file is unpacked,
+  and each a 400 with the fix in its words:
+  - *Names.* An absolute name (`/x`, `C:/x`, `\\server\x`) or one that climbs
+    out with `..` refuses the whole zip, a good scan beside it included.
+    Nothing would have been written there; a zip like that is not a scan
+    export, and it is said so. `my..scan/model..v2.obj` is only a name.
+  - *How many.* More than 2,000 files (`MAX_ZIP_ENTRIES`). The count and the
+    size of the zip's directory are read from the record at the end of the
+    file first (the zip64 one too, past 65,535 files), so a zip that lists a
+    million files is refused before `zipfile` reads the list.
+  - *A password.* One encrypted file refuses the zip: "Zip the scan again
+    without a password."
+  - *How big.* The sizes the zip gives for its files, added up over every
+    file in it (textures and junk too), may not pass the upload limit, 200 MB
+    (`MAX_UPLOAD_BYTES`, now in `mesh.py`, and the route imports it). A zip is
+    held to what a file sent on its own would be. This is the check a zip
+    built to swell runs into: five megabytes of zeros in a few kilobytes is
+    refused on what the zip says, with nothing unpacked.
+  - *What it then unpacks to.* A file is read to the size the zip gave for it
+    and no further (`zipfile` stops there, and the read here asks for one
+    byte more to see). One that holds more, or less, than was said fails its
+    checksum or its length and is refused as damaged. Every line of the
+    directory pointing at the same packed bytes is counted once for each
+    line, and unpacked once.
+  - *Damage.* Not a zip, cut short, a changed byte (the checksum), or a
+    compression `zipfile` does not have (the message says to zip again with
+    ordinary compression): each in words, never a 500.
+- **Only the scan is unpacked**: the model, and the buffers a glTF names.
+  Textures, `.mtl` files and everything else are never opened, so a texture
+  packed some way `zipfile` cannot read does not matter.
+- **Which file is the scan.** Left out of the search: folders, macOS's
+  `__MACOSX` copies, and anything in a folder or with a name that starts
+  with a dot (`.DS_Store`, `._scene.gltf`). A model is a file ending `.glb`,
+  `.gltf`, `.usdz`, `.usdc`, `.usda`, `.obj`, `.ply` or `.json` (and `.usd`,
+  which is taken with `.usdc` and read as whichever form its first bytes
+  say). A `.json` counts only when it holds `"walls"` (RoomPlan) or is a glTF, so an app's
+  own notes about the scan (`mesh_info.json`) are not taken for it and not
+  mentioned. A zip inside the zip is not opened.
+  - *Several models* are taken in that order, the whole scan in one file
+    first; of two of a kind the one nearer the top of the zip, then the first
+    in the archive. The first assumption in the preview is "Read
+    'scan/scene.gltf' from the zip.", and another names the models that were
+    left alone (the first five, then how many more).
+  - *One that cannot be read gives way to the next.* A Draco-packed `.glb`
+    beside an `.obj` gives the `.obj`, and the preview says the `.glb` "was
+    tried first and could not be read", with the reason. This is more than
+    was asked for: the alternative was refusing a zip with a readable scan
+    in it and telling the operator to export the OBJ that was already there.
+    When none can be read, the refusal is the first one's, with its name.
+  - *No model*: "The zip holds no scan this can read", with the endings that
+    are read and the first three files that were found.
+- **A `.gltf` and its `.bin`** (`gltf.py`). `parse_gltf` and `parse_glb` take
+  an optional `resolve(uri)`, which `bundle.py` gives them: the reader knows
+  nothing of zips, and the zip knows nothing of glTF but where to look. A
+  buffer's `uri` is looked up relative to the `.gltf`'s own folder,
+  percent-decoded first (`my%20scan.bin` is `my scan.bin`) and then as
+  written (some apps do not encode, and a file can really be named
+  `a%20b.bin`), with a backslash read as a slash and capitals let off when
+  no name matches exactly. `../buffers/scene.bin` is followed while it stays
+  inside the zip. A `uri` that leaves the zip, starts with `/`, or has a
+  scheme (`file:`, `https:`, `C:`) is refused; nothing is ever fetched from
+  outside the upload. A `data:` URI is read as before. A file in `__MACOSX`
+  or a hidden folder is not a buffer.
+  - *A missing `.bin`*: "'scan/scene.gltf' in the zip could not be read. It
+    needs 'scene.bin', and that file is not in the zip. Zip the .gltf
+    together with its .bin and send that, or export the scan as .glb".
+  - *A `.gltf` sent on its own* whose buffers are `data:` URIs is read, as
+    since slice 25. With a separate `.bin` it is still refused, and the
+    message now says how to get it in: "keeps its mesh in a separate file
+    ('scene.bin'), and only one file was sent. Zip the two together (with
+    any other .bin beside them) and send the zip, or export the scan as
+    .glb, which is the whole scan in one file, or export OBJ."
+- **The answer.** `file` is the zip's name, as is `room_shell.scan.file` once
+  applied; `format` is the model's (`gltf`, `obj`, ...), never `zip`. Which
+  file was read is in `assumptions`.
+- **The dialog** (`frontend/src/utils/roomScan.ts`, `RoomScanDialog.tsx`):
+  `.zip` is the last ending in `ROOM_SCAN_ACCEPT`, and the help text says
+  "If the app shares a zip (a glTF with its .bin, or an OBJ with its
+  textures), choose the zip as it is." The server's "send one of these"
+  names a zip too.
+- **Tests.** Every zip is built in the test with `zipfile` (`write_zip` in
+  `room_scan_meshes.py`, which now takes a compression). The ones `zipfile`
+  will not write are made by changing bytes of one it did (`forged` in
+  `test_room_scan_zip.py`: a file's flags, compression method and stated
+  size, in both of its headers).
+  - `backend/tests/unit/test_room_scan_zip.py` (88): a `.gltf` and its `.bin`
+    give the mesh the `.glb` does, stored and deflated; the `.bin` found in a
+    folder, up and across, percent-encoded, not encoded, really named with a
+    `%20`, with other capitals and with a backslash; two `.bin` files; a
+    `.gltf` with its data inside it; a `.glb` with a buffer beside it; a
+    missing and a cut-short `.bin`; seven URIs that point outside the zip; a
+    lone `.gltf` told to send the zip. An `.obj` with its `.mtl` and textures
+    giving the room its `.obj` gives; each of the eight formats from a zip; a
+    USDZ renamed `.zip`; a layer named `.usd` in either form; `.usdz` still
+    going to the USDZ reader; a file named `.zip` with its first bytes gone,
+    and a GLB named `.zip`; a zip in a
+    zip, and a `.glb` that is really a zip, not opened. The order of the
+    eight, pair by pair and all at once; two of a kind; a Draco `.glb` and a
+    `.gltf` without its `.bin` giving way to the `.obj`; none readable; an
+    empty model; an app's own JSON; RoomPlan JSON beside a model. `__MACOSX`
+    and dot files; a zip of only junk. Eight names that point outside; the
+    2,000-file limit at and over it; a forged count and an over-long
+    directory refused before `zipfile` is called; 65,540 files through the
+    zip64 record. Sizes added up before anything is unpacked, exact to the
+    byte; a file holding more and less than the zip says, stored and
+    deflated; two names for one file. A password; an unknown compression on
+    the model and on a texture; not a zip; cut at every seventh length; a
+    changed byte; and 400 copies with bytes changed at random, each read or
+    refused in words.
+  - `backend/tests/integration/test_api_room_scan_zip.py` (5), through the
+    route with the hall of the glTF tests: a deflated zip of a `.gltf`, its
+    `.bin`, a texture and macOS's leftovers previews as the same room as the
+    `.glb`, to the last digit, names the file it read and writes nothing; a
+    zip of an `.obj`, `.mtl` and textures is applied and read back off the
+    rig; a zip of three models reads the `.glb` and names the other two; a
+    missing `.bin`, a lone `.gltf`, a climbing name, a password, not a zip,
+    a cut-short zip, no model and a lying size are each a 400 with their
+    words and nothing stored; and a zip over the upload limit is a 413.
+  - `frontend/src/__tests__/roomScan.test.ts`: the exact-order test of the
+    accept list holds nine endings, `.zip` last. **Not run** (below).
+- **What was run** (Nov 24), from `backend/` with the main checkout's venv:
+  `pytest tests/unit tests/integration -k room_scan`: 779 passed (686 before
+  this slice; 88 and 5 more). The whole suite, `pytest -q -p
+  no:cacheprovider`: 2389 passed, 10 skipped, 5 xfailed
+  (2296 passed before this slice, by the same count: 93 more).
+- **What was not run.** The frontend, again: this worktree has no
+  `frontend/node_modules`, and `npm ci` and `npx vitest run` were both
+  refused, so `npx tsc --noEmit` and `npx vite build` could not run either.
+  The frontend change is one ending added to a constant, one sentence of
+  help text, a comment and one changed test, none of it executed. In
+  `frontend/`: `npx vitest run`, `npx tsc --noEmit` (13 older errors
+  expected) and `npx vite build`. **No zip from a real phone or app has been
+  read**, and the dialog has not been opened in a browser with one.
+- **Nothing here sends Art-Net or DMX**, opens a socket or calls an outside
+  service. No new dependency and no migration.
+
 ## What slice 25 built
 
 glTF 2.0 import: a `.glb` or a `.gltf` goes through `POST
@@ -1599,8 +1782,9 @@ Polycam, Scaniverse and most LiDAR apps.
   `test_api_room_scan_gltf.py`) 352 passed. `npx tsc --noEmit`: the 13 older
   errors, none in these files. **Not run:** `npx vitest run` was refused
   again, so `roomScan.test.ts` is still unexecuted with both slices in.
-- **What is left**: Draco and meshopt unpacking, a `.gltf` with its `.bin`,
-  and a real export from each app. See What is left.
+- **What is left**: Draco and meshopt unpacking, and a real export from each
+  app. A `.gltf` with its `.bin` was left here too; slice 26 reads the two
+  from a zip. See What is left.
 - **Nothing here sends Art-Net or DMX**, opens a socket or calls an outside
   service. No new dependency and no migration.
 
@@ -2515,6 +2699,12 @@ Pixar's USD library from the same rooms (slice 24).
   point cloud, a bad index; the room recovered the same as from an OBJ; and each
   refusal with its wording, as a reader and as a 400 from the route. Listed in
   "What slice 25 built".
+- `backend/tests/unit/test_room_scan_zip.py` and
+  `backend/tests/integration/test_api_room_scan_zip.py`: a scan in a zip
+  (slice 26). A `.gltf` finds its `.bin` by the name it gives; an `.obj` with
+  its `.mtl` and textures; each format from a zip; which of several models is
+  read; macOS's leftovers; and each way a zip is refused, as a reader and as
+  a 400 from the route. Listed in "What slice 26 built".
 - `backend/tests/integration/test_api_room_scan.py`: preview writes nothing;
   apply stores the shell and it comes back on the rig and in the rig list; only
   template guesses move, a row at a time, and stay guesses; tapped, confirmed,
@@ -3562,8 +3752,10 @@ Pixar's USD library from the same rooms (slice 24).
     has to find the app's switch or export OBJ.
   - **Draco, meshopt and quantised positions** are refused, not unpacked. A
     Draco decoder in pure Python would be a slice of its own.
-  - **A `.gltf` with a separate `.bin`** is refused: the upload takes one
-    file. Taking the two together (or a zip of them) is not built.
+  - **A `.gltf` with a separate `.bin`** is read from a zip of the two
+    (slice 26). Sent on its own it is still refused, and the message says to
+    send the zip. Choosing the `.gltf` and the `.bin` as two files in the
+    dialog is not built: the upload takes one file.
   - **Sparse accessors** are refused. **Points and lines** are read only
     when the file has no triangles, and without their normals (a PLY point
     cloud's normals are read).
@@ -3572,6 +3764,40 @@ Pixar's USD library from the same rooms (slice 24).
   - **The dialog** accepts `.glb` and `.gltf` in its file picker and words
     them in its help text; that change has not been run or seen in a browser
     (see "What slice 25 built").
+- **A scan in a zip** (slice 26) is read, with these left:
+  - **No real zip has been read.** Every one was built by the tests with
+    Python's `zipfile`. What Polycam and Scaniverse put in theirs (the
+    folder layout, how a `uri` is spelled, whether they add a model in a
+    second format) has not been checked against the apps. Keep the first
+    real zip that is refused or read wrongly: it is the fixture this needs.
+  - **The frontend change is unrun** (see "What slice 26 built"): run
+    `npx vitest run`, `npx tsc --noEmit` and `npx vite build` in
+    `frontend/`.
+  - **One model.** A scan split over several models (tiles of a large
+    photogrammetry export, one `.obj` a room) is not put together: one is
+    read and the rest are named as left alone.
+  - **The size limit counts the textures.** A zip whose files add up to more
+    than 200 MB unpacked is refused even when the model alone is small,
+    because the limit is on what the zip says it holds. An OBJ is text and
+    packs small, so a zip well under 200 MB can hold an OBJ that is over.
+    Export at a lower detail, or zip the model without its textures.
+  - **A USDZ inside a zip** is unpacked by the USDZ reader under its own,
+    older limit (400 MB unpacked), not the zip's.
+  - **A USDZ renamed `.zip`** is read by the zip's rules, not the USDZ
+    reader's: binary layers before text ones, and RoomPlan JSON last, where
+    the USDZ reader takes RoomPlan JSON first.
+  - **Any `.json` holding the word `"walls"` is taken for a model**, RoomPlan's
+    or not. It is tried last, so it costs nothing beside a real model; when
+    it is the only one in the zip, the refusal is the RoomPlan reader's and
+    not "the zip holds no scan".
+  - **A `uri` with a query or a fragment** (`scene.bin?v=2`) is looked up
+    as a file of that whole name, and not found.
+  - **Two files with one name** in a zip: the first is the one read.
+  - **Zips in several parts, and compressions other than store and
+    deflate** that this Python was not built with (deflate64 never is) are
+    refused, in words.
+  - **The dialog takes one file.** A `.gltf` and its `.bin` cannot be
+    chosen together; they have to be zipped.
 - **Ceilings and levels.** Sloped or domed ceilings, balconies and mezzanines
   are still read as a flat ceiling over one floor. A balcony can be put in
   by hand as a raised area with a base height (slice 18).
