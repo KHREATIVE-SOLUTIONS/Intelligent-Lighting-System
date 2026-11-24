@@ -641,6 +641,42 @@ class TestHostileFiles:
         refused(patched(content, start + 8, "<Q", 1 << 50), within=1.0)       # unpacked size
         refused(patched(content, start + 16, "<Q", 1 << 50), within=1.0)      # packed size
 
+    def test_arrays_that_together_hold_too_much_are_refused(self, monkeypatch):
+        """Each array has its own limit, and so does the file: prims can share one array, and each reads it again."""
+        archive = fixture("roomplan_like.usdz")
+        monkeypatch.setattr(usdc._Crate, "_array_budget", 100)       # the first wall alone is 24 + 12 + 36 numbers
+        with pytest.raises(RoomScanError, match="together hold more than this will read.*OBJ"):
+            read_scan_file("Room.usdz", archive)
+        monkeypatch.setattr(usdc._Crate, "_array_budget", 10_000)
+        assert len(read_scan_file("Room.usdz", archive).vertices) == 44
+
+        # The same array asked for twice is counted twice.
+        data = PAD + struct.pack("<Q", 20) + struct.pack("<Q", len(ONE_TO_TWENTY)) + ONE_TO_TWENTY
+        monkeypatch.setattr(usdc._Crate, "_array_budget", 30)
+        crate = bare_crate(data)
+        twenty = rep(usdc._INT, 8, array=True, packed=True)
+        assert len(crate.value(twenty)) == 20
+        with pytest.raises(RoomScanError, match="together hold more"):
+            crate.value(twenty)
+
+    def test_one_array_at_its_limit_is_not_slow_to_refuse_or_to_read(self):
+        """A few kilobytes that unpack to millions of numbers: what one such array costs."""
+        count = 4_000_000
+        # Every number the common difference: a megabyte of zero codes, which LZ4 holds in 4 KB.
+        codes = (count * 2 + 7) // 8
+        runs, rest = divmod(codes + 4 - 1 - 4 - 15, 255)
+        block = b"\x00" + b"\x1f\x00\x01\x00" + b"\xff" * runs + bytes([rest]) + b"\x00"
+        data = PAD + struct.pack("<Q", count) + struct.pack("<Q", len(block)) + block
+        started = time.perf_counter()
+        values = bare_crate(data).value(rep(usdc._INT, 8, array=True, packed=True))
+        assert len(values) == count and not values.any()
+        assert time.perf_counter() - started < 3.0
+        over = PAD + struct.pack("<Q", usdc.MAX_ARRAY_ITEMS + 1) + struct.pack("<Q", len(block)) + block
+        started = time.perf_counter()
+        with pytest.raises(RoomScanError, match="larger than this will read"):
+            bare_crate(over).value(rep(usdc._INT, 8, array=True, packed=True))
+        assert time.perf_counter() - started < 0.5
+
     @pytest.mark.parametrize("name", ["room_y_metres.usdc", "big_room_ring.usdc", "room_y_metres_v0_7_0.usdc"])
     def test_damaged_bytes_give_a_mesh_or_a_plain_refusal_and_nothing_else(self, name):
         """A few hundred copies with bytes changed at random: read, or refused, never anything else, never slow."""

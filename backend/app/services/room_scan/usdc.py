@@ -39,8 +39,12 @@ tests/fixtures/usdc were written by Pixar's library, and what it computes from
 them is what the tests compare with. NOT run against a Pixar-written file:
 versions 0.4 to 0.6 (a shorter array header), arrays of floats packed as whole
 numbers or as a lookup table, 64-bit packed arrays, LZ4 in more than one
-chunk, time samples, and points held as halves or doubles. No file from a real
-phone has been read by it yet.
+chunk, time samples, points held as halves or doubles, double and half
+quaternions, a matrix small enough to be held in its ValueRep (an identity
+transform), leaving out `over`, `class` and inactive prims,
+`!resetXformStack!`, and reading points from prims that are not typed Mesh.
+Those are tested against bytes laid out by hand, or not at all. No file from a
+real phone has been read by it yet.
 
 Not read: what a layer brings in from another layer (references, payloads,
 sublayers), variants, instances and their prototypes, and animation (of a
@@ -74,6 +78,11 @@ MAX_DECODED_BYTES = MAX_ARCHIVE_BYTES
 MAX_TABLE_ITEMS = 20_000_000
 # Entries in any one array value: three corners each for 20 million triangles.
 MAX_ARRAY_ITEMS = 60_000_000
+# Entries in all the arrays read out of one file. Attributes can share a
+# value, so a small file can point a thousand prims at one huge packed array;
+# each array is within its own limit and the file is not. A scan at the size
+# limits (20 million points, 20 million triangles) comes to 120 million.
+MAX_TOTAL_ITEMS = 3 * MAX_ARRAY_ITEMS
 # LZ4 cannot make a block more than 255 times smaller, so a block of n bytes
 # that claims to unpack to more than this is lying.
 _LZ4_RATIO = 255
@@ -134,6 +143,10 @@ def unreadable(reason: str) -> RoomScanError:
 
 def _damaged() -> RoomScanError:
     return unreadable("it is damaged or cut short.")
+
+
+class _TooLarge(RoomScanError):
+    """The file as a whole holds more than is read. Never stepped over: the reading stops."""
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +386,9 @@ def _version_words(version: Tuple[int, int, int]) -> str:
 
 class _Crate:
     """The tables of a crate file, unpacked. Values are decoded only when asked for."""
+
+    # How many more array entries may be read out of this file.
+    _array_budget = MAX_TOTAL_ITEMS
 
     def __init__(self, data: bytes):
         self.data = data
@@ -678,6 +694,13 @@ class _Crate:
         if self.version < (0, 5, 0):
             cursor.u32()                    # an array's rank, which was always 1
         count = self._array_size(cursor.u32() if self.version < (0, 7, 0) else cursor.u64())
+        parts = 1 if kind == _TOKEN else row[1]
+        self._array_budget -= count * parts
+        if self._array_budget < 0:
+            raise _TooLarge(
+                "This binary USD (USDC) file cannot be read: its arrays together hold more than "
+                f"this will read. Export the scan at a lower detail. {CONVERT_MESSAGE}"
+            )
         if kind == _TOKEN:
             return [self.token(i) for i in cursor.array("<u4", count).tolist()]
 
@@ -712,6 +735,8 @@ def _quiet(crate: _Crate, rep: Optional[int]) -> Any:
         return None
     try:
         return crate.value(rep)
+    except _TooLarge:
+        raise
     except _DECODE_ERRORS:
         return None
 

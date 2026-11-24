@@ -3,7 +3,7 @@ Room Scan Endpoint
 ==================
 
 POST /api/rigs/{rig_id}/room-scan takes a phone scan of the room (OBJ, PLY, a
-USDZ or USDA with a text layer, RoomPlan JSON) and answers with a preview: the
+USDZ, USD as text or binary, RoomPlan JSON) and answers with a preview: the
 room shell it suggests, the guesses it made on the way, and where it would move
 the rig's unconfirmed fixtures. Nothing is written.
 
@@ -122,7 +122,7 @@ async def _rig_with_fixtures(db: AsyncSession, rig_id: int) -> Rig:
 @router.post("/rigs/{rig_id}/room-scan")
 async def import_room_scan(
     rig_id: int,
-    file: UploadFile = File(..., description="A scan export: .obj, .ply, .usdz, .usda or RoomPlan .json"),
+    file: UploadFile = File(..., description="A scan export: .obj, .ply, .usdz, .usda, .usdc or RoomPlan .json"),
     apply: bool = Query(False, description="Store the suggested shell on the rig and move its unconfirmed fixtures"),
     units: str = Query("auto", pattern="^(auto|m|cm|mm)$", description="The scan's units, when the guess is wrong"),
     up_axis: str = Query("auto", pattern="^(auto|y|z)$", description="The scan's up axis, when the guess is wrong"),

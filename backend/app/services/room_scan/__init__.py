@@ -2,12 +2,12 @@
 Room Scan
 =========
 
-Reads a phone scan of a room (LiDAR or photogrammetry, exported as OBJ, PLY, a
-USD text layer or RoomPlan JSON) and suggests the room shell the 3D view draws:
-floor, ceiling height, walls, raised areas and overhead lines. See
-docs/ROOM_SCAN.md.
+Reads a phone scan of a room (LiDAR or photogrammetry, exported as OBJ, PLY, USD
+(text or binary, alone or in a USDZ) or RoomPlan JSON) and suggests the room
+shell the 3D view draws: floor, ceiling height, walls, raised areas and
+overhead lines. See docs/ROOM_SCAN.md.
 
-    mesh    = read_scan_file(filename, content)     # detect.py, mesh.py, usd.py
+    mesh    = read_scan_file(filename, content)     # detect.py, mesh.py, usd.py, usdc.py
     found   = extract_room(mesh, ScanOptions())     # extract.py
     moves   = suggest_positions(fixtures, shell)    # suggest.py
 

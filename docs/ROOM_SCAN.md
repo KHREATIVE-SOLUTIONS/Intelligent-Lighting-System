@@ -1504,7 +1504,9 @@ layer was read.
 - **A file is not trusted.** Every count and offset is checked against the
   bytes that are there before anything is allocated: a block cannot claim
   to unpack to more than 255 times its size (LZ4's limit) or 400 MB, a table
-  to more than 20 million entries, an array to more than 60 million. The
+  to more than 20 million entries, an array to more than 60 million, and
+  all the arrays read out of one file to more than 180 million together
+  (prims can share one packed array, and each would unpack it again). The
   path tree is built from the entries present, not the count given. Field
   sets cannot be made to overlap and be read over and over. Whatever goes
   wrong is a `RoomScanError`: "This binary USD (USDC) file cannot be read:"
@@ -1520,7 +1522,7 @@ layer was read.
   for each wall placed by a 4x4, a four-sided floor placed by translate and
   scale, a table by translate, orient, scale and rotateXYZ, in nested
   groups, with normals, a primvar and custom data to step over.
-- **Tests** (`backend/tests/unit/test_room_scan_usdc.py`, 175): every
+- **Tests** (`backend/tests/unit/test_room_scan_usdc.py`, 177): every
   fixture's points to 1e-4 and its triangles exactly, in Pixar's order, with
   its up axis and units; the room from `room_y_metres.usdc` and
   `room_z_cm.usdc` is the room from the text layer of the same stage, shell
@@ -1533,7 +1535,8 @@ layer was read.
   doubles, a quaternion's order, time samples); and damaged files: cut
   short at every fifth length, a table of contents pointed anywhere, a
   version not read, too many sections, a section outside the file, each
-  table claiming more than it holds, and 400 copies of each of three
+  table claiming more than it holds, arrays that together hold too much,
+  and 400 copies of each of three
   fixtures with bytes changed at random, each one read or refused in plain
   words, within 2 seconds (in practice a few thousandths). In
   `test_room_scan.py` the refusal tests now refuse a layer that is only
@@ -1546,9 +1549,9 @@ layer was read.
   fixtures do reach is listed above; the rest is in What is left.
 - **What was run** (Nov 24): in `backend/`, with the project's venv,
   `pytest tests/unit/test_room_scan_usdc.py tests/unit/test_room_scan.py
-  tests/integration/test_api_room_scan.py` 263 passed, and the whole suite,
-  `pytest tests/ -q`: 2207 passed, 10 skipped, 5 xfailed (2029 passed
-  before; the 178 more are this slice's). Before the tests were written, every
+  tests/integration/test_api_room_scan.py` 265 passed, and the whole suite,
+  `pytest tests/ -q`: 2209 passed, 10 skipped, 5 xfailed (2029 passed
+  before; the 180 more are this slice's). Before the tests were written, every
   truncation of a fixture and 3000 random damages of it were run by hand:
   no exception other than the refusal, the slowest 0.002 s once the path
   tree stopped trusting the file's count (1.8 s before).
@@ -3307,10 +3310,23 @@ Pixar's USD library from the same rooms (slice 24).
   - **RoomPlan's categories are lost.** Read from binary USD, a RoomPlan
     room is a mesh like any other: walls and objects are not named, as
     they are from RoomPlan's JSON.
+  - **The dialog still says a USDZ needs a text layer**, and its file
+    picker does not offer `.usdc`. The frontend was left untouched by this
+    slice: `RoomScanDialog.tsx` (the line "as a USDZ or USDA with a text
+    layer"), `ROOM_SCAN_ACCEPT` and its comment in
+    `frontend/src/utils/roomScan.ts`, and the example refusal in
+    `roomScan.test.ts`. A `.usdz` can be picked and is read whatever its
+    layer; a bare `.usdc` has to be dropped on the API until `.usdc` is
+    added to `ROOM_SCAN_ACCEPT`.
   - **Not run against a Pixar-written file**: crate versions 0.4 to 0.6,
     arrays of floats packed as whole numbers or as a lookup table, packed
-    64-bit arrays, LZ4 in more than one chunk, points as halves or doubles.
-    Their tests are bytes laid out by hand from the format's description.
+    64-bit arrays, LZ4 in more than one chunk, points as halves or doubles,
+    double and half quaternions, and a matrix small enough to be held in
+    place of its offset (an identity transform, which a real file may well
+    have). Their tests are bytes laid out by hand from the format's
+    description. Tested by nothing: leaving out `over`, `class` and
+    inactive prims, `!resetXformStack!`, and reading points from prims
+    that are not typed `Mesh` when no `Mesh` has any.
     Crate versions before 0.4.0 and any 1.x are refused. A 0.x later
     than 0.12 is read, with a note in the report.
   - **Slow on a very large packed file.** LZ4 is undone in Python. Points

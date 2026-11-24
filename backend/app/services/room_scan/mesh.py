@@ -10,7 +10,7 @@ its axes and units.
     PLY    ASCII, binary little-endian and binary big-endian. A PLY with no
            faces is a point cloud and is read as one.
 
-USD and RoomPlan are in usd.py. Everything is numpy and the standard library:
+USD and RoomPlan are in usd.py, binary USD in usdc.py. Everything is numpy and the standard library:
 no mesh library is needed for the little that is read here.
 
 Nothing is turned, scaled or moved in this module. The file's own axes and
