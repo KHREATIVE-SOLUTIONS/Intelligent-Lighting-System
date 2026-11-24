@@ -84,6 +84,15 @@ class TestAStageTurnedFromTheWalls:
         assert "standing turned" in stage["basis"]
         assert any("stands turned" in line and "Heading to 0" in line for line in found.assumptions)
 
+    @pytest.mark.parametrize("heading", [45.0, -45.0])
+    def test_a_stage_across_a_corner_is_found_turned_whichever_way_its_sides_are_told(self, heading):
+        # At 45 degrees it is as much 6 by 3 at 45 as 3 by 6 at -45: the corners say which rectangle it is.
+        stage = stage_of(scan(*turned_stage_mesh(heading)).shell)
+        assert abs(stage["heading_deg"]) == pytest.approx(45.0, abs=1.0)
+        assert -45.0 < stage["heading_deg"] <= 45.0
+        assert sorted((stage["width"], stage["depth"])) == pytest.approx([DEPTH, WIDTH], abs=0.15)
+        assert same_corners(area_corners(stage), built_corners(heading))
+
     def test_the_scan_is_read_the_same_whichever_way_the_phone_held_it(self):
         vertices, faces = turned_stage_mesh(30.0)
         moved = as_scanned(vertices, yaw_deg=90.0, offset=(3.0, 0.5, -2.0))

@@ -260,12 +260,54 @@ class TestAStageThatStandsSquare:
             for i in range(5)
         ]
 
-    def test_a_stage_with_a_number_missing_is_not_turned(self):
+    def test_a_stage_with_no_base_height_stands_on_the_floor_and_is_still_turned(self):
+        floor_stage = stage(30.0)
+        del floor_stage["base_height"]
+        assert all(m.turn_deg == 30.0 for m in suggest_positions(back_row(), box_shell(floor_stage))[0])
+
+    def test_a_turned_stage_with_no_height_cannot_be_stood_on_and_turns_nothing(self):
+        # A row in front of it, so the square rule has nothing to read from the stage either.
         broken = stage(30.0)
-        broken["heading_deg"] = 30.0
-        del broken["base_height"]
-        # No base height is a stage on the floor, and is still turned.
-        assert all(m.turn_deg == 30.0 for m in suggest_positions(back_row(), box_shell(broken))[0])
+        broken["height"] = None
+        row = [fixture(i, -2.0 + i, 0.2, 5.0) for i in range(5)]
+        assert suggest_positions(row, box_shell(broken))[0] == []
+
+
+class TestUngroupedFixtures:
+    """With no group a row is told by one height and depth, which a swung row no longer has."""
+
+    @pytest.mark.parametrize("heading", HEADINGS)
+    def test_an_ungrouped_row_is_swung_once_and_then_left_alone(self, heading):
+        row = [fixture(i, -1.0 + i, 0.2, -3.9, group="") for i in range(5)]
+        shell = box_shell(stage(heading))
+        moves, _ = suggest_positions(row, shell)
+        assert len(moves) == 5 and all(m.turn_deg == heading for m in moves)
+        apply(row, moves)
+        assert suggest_positions(row, shell)[0] == []
+
+    @pytest.mark.parametrize("heading", HEADINGS)
+    def test_an_ungrouped_row_wider_than_the_stage_is_not_closed_up_a_fixture_at_a_time(self, heading):
+        # Eleven across an 8 m stage: its ends overhang, and four stand in the 0.3 m by each edge.
+        row = [fixture(i, -3.9 + 0.78 * i, 0.2, -2.0, group="") for i in range(11)]
+        shell = box_shell(stage(heading))
+        moves, notes = suggest_positions(row, shell)
+        assert len(moves) == 11
+        apply(row, moves)
+        before = places(row)
+
+        assert suggest_positions(row, shell)[0] == []
+        assert places(row) == before
+
+    @pytest.mark.parametrize("heading", HEADINGS)
+    def test_a_swung_ungrouped_row_is_still_one_row_where_a_rounded_depth_could_split_it(self, heading):
+        # 0.25 m upstage of the stage's middle: a place stored to the millimetre reads as 0.249 or 0.251.
+        row = [fixture(i, -3.9 + 0.78 * i, 0.2, -2.25, group="") for i in range(11)]
+        shell = box_shell(stage(heading))
+        apply(row, suggest_positions(row, shell)[0])
+        before = places(row)
+
+        assert suggest_positions(row, shell)[0] == []
+        assert places(row) == before
 
 
 def inside_box(shell, fixtures, slack=0.002):

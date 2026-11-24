@@ -772,8 +772,6 @@ def _turned_box(px: np.ndarray, pz: np.ndarray, area: float) -> Optional[Dict[st
 
     rough, _ = smallest(np.arange(-45.0, 45.0, 0.5))
     heading, (u0, u1, v0, v1) = smallest(np.arange(rough - 0.5, rough + 0.5001, 0.05))
-    if heading <= -45.0:
-        return None     # as near square the other way round: not clearly turned either way
     width, depth = u1 - u0, v1 - v0
     if abs(heading) < RAISED_TURN_MIN_DEG or min(width, depth) < RAISED_MIN_SIDE:
         return None
@@ -784,10 +782,13 @@ def _turned_box(px: np.ndarray, pz: np.ndarray, area: float) -> Optional[Dict[st
         return None
     cos, sin = math.cos(math.radians(heading)), math.sin(math.radians(heading))
     mid_u, mid_v = (u0 + u1) / 2.0, (v0 + v1) / 2.0
-    return {
+    own = {
         "center_x": mid_u * cos - mid_v * sin, "center_z": mid_u * sin + mid_v * cos,
         "width": width, "depth": depth, "heading": heading,
     }
+    # A stage across a corner is found at 45 or at -45 as the points fall: both
+    # are the same rectangle, and it is written the one way (over -45, up to 45).
+    return _turn_box(own, 0)
 
 
 def _turn_box(turned: Dict[str, float], turns: int) -> Dict[str, float]:

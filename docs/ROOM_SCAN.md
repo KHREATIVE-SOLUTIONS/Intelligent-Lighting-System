@@ -1588,10 +1588,13 @@ walls, and partly off the deck. Backend only.
   - *Heading 0 or none is the old code*, not the new code given a zero: the
     branch is taken only when `area_heading` is not 0, so 0, 180, 360, a
     string, a boolean and a number past 360 all leave the old lines to run
-    untouched. A stage with a number missing is not turned either.
+    untouched. A stage with a number missing (no height, say) cannot be
+    stood on at any heading: the row is held to the walls as though there
+    were no stage, where it used to stop the scan with an error.
   - *A row that is not the stage's* (downstage of its turned front, or off
     its width) falls through to the walls, as before. Overhead rows never
     read the stage.
+  - *The corner and the ungrouped row.* A stage across a corner is written one way (heading over -45, up to 45, never dropped at -45), and ungrouped floor fixtures a scan has swung are one row by their depth on the stage, not in the room, so a row wider than the stage is not closed up a fixture at a time on the next scan.
 - **The route** (`POST .../room-scan`). Apply writes `rotation_y` for a move
   with a `turn_deg`, and the fixture's entry in the undo record keeps
   `rotation_y_before` and `rotation_y_after`. The answer's moves have

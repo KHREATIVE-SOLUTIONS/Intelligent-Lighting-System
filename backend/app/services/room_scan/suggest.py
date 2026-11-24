@@ -81,6 +81,8 @@ ON_SHAPE_M = 0.05
 CROWDED_UNDER = 0.3
 # A row brought inside a floor outline is shifted by a whole number of these.
 OUTLINE_STEP = 0.05
+# What a stage must store, as numbers, for a row to be put onto it.
+STAGE_NUMBERS = ("center_x", "center_z", "width", "depth", "height")
 
 Point = Tuple[float, float, float]
 
@@ -370,7 +372,7 @@ def _stage_heading(stage: Any) -> float:
     """The heading the suggestion's stage stands at; 0 when it stores none or is not a box that can be turned."""
     if not isinstance(stage, dict):
         return 0.0
-    if any(_number(stage.get(key)) is None for key in ("center_x", "center_z", "width", "depth", "height")):
+    if any(_number(stage.get(key)) is None for key in STAGE_NUMBERS):
         return 0.0
     return area_heading(stage)
 
@@ -553,6 +555,10 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
     rings = [r for r in (shell.get("truss_rings") or []) if _usable_ring(r)]
     bands = shell.get("hanging_bands") or []
     stage = next((r for r in (shell.get("risers") or []) if r.get("kind") == "stage"), None)
+    # A stage with a number missing (no height, say) cannot be stood on: the
+    # row is held to the room as though the scan had found no stage.
+    if stage is not None and any(_number(stage.get(key)) is None for key in STAGE_NUMBERS):
+        stage = None
     # 0 for a stage that stands square, as every one did before a heading could be stored.
     stage_heading = _stage_heading(stage)
     half_width = float(room.get("width") or 0.0) / 2.0
@@ -581,6 +587,16 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
         if not group and any(_on_shape(shape, fixture) for shape in angled + rings):
             continue
         key = group or f"@ y{round(y, 1)} z{round(z, 1)}"
+        # A floor row a scan has swung onto a stage at a heading stands at one
+        # depth of the stage, not of the room: it is still one row, told by
+        # its depth from the stage's back to its front. (To the centimetre
+        # first: a stored place is rounded, and a row is not split by that.)
+        if (
+            not group and stage is not None and stage_heading != 0.0 and y < OVERHEAD_FROM
+            and TAG_SCAN_HINT in (getattr(fixture, "tags", None) or [])
+        ):
+            own_depth = _swung(x - float(stage["center_x"]), z - float(stage["center_z"]), -stage_heading)[1]
+            key = f"@ y{round(y, 1)} on the stage at {round(round(own_depth, 2), 1) + 0.0}"
         rows.setdefault(key, []).append(fixture)
 
     moves: List[SuggestedMove] = []
