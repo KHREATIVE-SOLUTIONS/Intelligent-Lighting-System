@@ -1580,7 +1580,9 @@ layer was read.
   no exception other than the refusal, the slowest 0.002 s once the path
   tree stopped trusting the file's count (1.8 s before). After the variety
   fixture and the rotate fix, the same three files: 276 passed (3 more in
-  `test_room_scan_usdc.py`, 8 in `test_room_scan.py`).
+  `test_room_scan_usdc.py`, 8 in `test_room_scan.py`). The whole suite,
+  run before the last two of those were written: 2218 passed, 10 skipped,
+  5 xfailed.
 - **The dialog.** `ROOM_SCAN_ACCEPT` in `frontend/src/utils/roomScan.ts`
   now has `.usdc`, so the file picker offers a bare binary layer, and
   `RoomScanDialog.tsx` says "as USDZ, USDC or USDA (binary USD is read as
