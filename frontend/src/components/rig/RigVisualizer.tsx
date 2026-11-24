@@ -12,7 +12,7 @@ import { OrbitControls, Grid, PerspectiveCamera, Html } from '@react-three/drei'
 import * as THREE from 'three';
 import { demoApi, rigsApi } from '../../services/api';
 import type { DemoPresetSummary } from '../../services/api';
-import type { Rig, RigFixture } from '../../types';
+import type { Rig, RigFixture, RoomShellBox } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
 import { useHealthStore } from '../../stores/healthStore';
 import { audioWebSocket } from '../../services/websocket';
@@ -26,7 +26,7 @@ import { buildBeamProfile, buildChannelMap, createBeamState, isPositionUnconfirm
 import { beamDirection, beamLanding, hangBeam } from './previs/beamThrow';
 import type { BeamRoom, BeamSurface, BeamVector } from './previs/beamThrow';
 import { ClubRoom } from './previs/ClubRoom';
-import { BeatClockTicker, Crowd } from './previs/Crowd';
+import { BeatClockTicker, Crowd, PlacedCrowd } from './previs/Crowd';
 import { DJBooth } from './previs/DJBooth';
 import { FixtureHead, FixtureSupport, FixtureYoke } from './previs/FixtureBody';
 import { FIXTURE_SPECS, resolveModelKind } from './previs/fixtureSpecs';
@@ -34,7 +34,10 @@ import { GuessMarkers } from './previs/GuessMarkers';
 import type { GuessPoint } from './previs/GuessMarkers';
 import { createOutputFeed, ingestOutput, summariseFeed } from './previs/outputFeed';
 import type { FeedSummary, OutputFeed } from './previs/outputFeed';
-import { roomOutline, scanHangers, scannedRoom, usableDisc, usableDome } from './previs/roomShell';
+import { roomOutline, scanHangers, scanRisers, scannedRoom, usableDisc, usableDome } from './previs/roomShell';
+import type { OutlinePoint } from './previs/roomShell';
+import { boxFloor, placeScanBooth, placeScanCrowd } from './previs/scanFloor';
+import type { FloorCamera } from './previs/scanFloor';
 import { RoomShellView } from './previs/RoomShellView';
 import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
 import {
@@ -930,15 +933,60 @@ function Scene({
   const shell = rig.room_shell ?? null;
   const shellDome = usableDome(shell?.dome);
   const shellDisc = usableDisc(shell?.dance_floor);
-  // A room read from a scan is drawn as the scan found it. The booth, the
-  // speaker stacks, the square dance floor and the crowd are the view's own
-  // invention for a room it knows nothing about, and would stand through the
-  // stage and risers the scan did find, so they are left out of that room.
+  // A room read from a scan is drawn as the scan found it. The booth against
+  // the upstage wall, the speaker stacks and the square dance floor are the
+  // view's own invention for a room it knows nothing about, and would stand
+  // through the stage and risers the scan did find, so they are left out of
+  // that room. Its booth and its crowd are fitted to it instead (below).
   const scanned = scannedRoom(shell) !== null;
   // One that is not a box has its floor, walls and ceiling drawn along its
   // outline (RoomShellView), in place of the club room's box. The outline is
   // the venue's: the one the mounts, the beams and the cameras go by too.
   const outlined = venue.outline !== null;
+
+  // The booth and the crowd of a scanned room (scanFloor.ts): the booth on
+  // the raised area that is one, the crowd on the floor left open round the
+  // stage, the risers and the booth. Both are worked out from the floor and
+  // the raised areas alone, written out as text first: an edit to the room
+  // changes the text and places them again, and a fixture moved, which makes
+  // a new rig and a new venue but the same text, leaves everybody standing.
+  const scanFloorKey = useMemo(() => {
+    if (!scanned) return null;
+    const { layout } = venue;
+    const stand = cameraPreset('floor', layout, venue.outline).position;
+    return JSON.stringify({
+      outline: venue.outline ?? boxFloor(-layout.wallX, layout.wallX, layout.backZ, layout.houseZ),
+      risers: scanRisers(shell).map((riser) => ({
+        kind: riser.kind,
+        center_x: riser.center_x,
+        center_z: riser.center_z,
+        width: riser.width,
+        depth: riser.depth,
+        height: riser.height,
+        base_height: riser.base_height ?? 0,
+      })),
+      camera: { x: stand[0], z: stand[2], clearRadius: layout.floorCamera.clearRadius },
+    });
+  }, [scanned, shell, venue]);
+  const scanFloor = useMemo(() => {
+    if (!scanFloorKey) return null;
+    const floor = JSON.parse(scanFloorKey) as { outline: OutlinePoint[]; risers: RoomShellBox[]; camera: FloorCamera };
+    return { ...floor, booth: placeScanBooth(floor.outline, floor.risers) };
+  }, [scanFloorKey]);
+  const scanBooth = scanFloor?.booth ?? null;
+  const scanPeople = useMemo(
+    () => (scanFloor
+      ? placeScanCrowd(scanFloor.outline, scanFloor.risers, scanFloor.booth, quality.crowdCount, scanFloor.camera)
+      : []),
+    [scanFloor, quality.crowdCount],
+  );
+  // The work light that is over the booth goes with it.
+  const scanBoothLight = useMemo<[number, number, number] | null>(
+    () => (scanBooth
+      ? [scanBooth.x + scanBooth.faceX * 0.55, scanBooth.deskTopY + 1.5, scanBooth.z + scanBooth.faceZ * 0.55]
+      : null),
+    [scanBooth],
+  );
 
   // Fixtures whose position nobody has confirmed: drawn where the guess puts
   // them, and marked so that is plain.
@@ -1023,12 +1071,17 @@ function Scene({
             danceFloor={!shellDisc && !scanned}
             dressing={!scanned}
             shell={!outlined}
+            boothLight={scanBoothLight}
           />
           {shell && (
             <RoomShellView shell={shell} layout={venue.layout} trussRows={venue.trussRows} outline={venue.outline} />
           )}
           {!scanned && <DJBooth layout={venue.layout} clock={beatClock} />}
           {!scanned && <Crowd layout={venue.layout} count={quality.crowdCount} clock={beatClock} />}
+          {/* A scanned room: the booth where the room has one (or, marked as a
+              guess, on its first stage), and the crowd on its open floor. */}
+          {scanned && scanBooth && <DJBooth layout={venue.layout} clock={beatClock} placed={scanBooth} />}
+          {scanned && <PlacedCrowd people={scanPeople} clock={beatClock} />}
         </>
       ) : (
         <Stage width={rig.stage_width} depth={rig.stage_depth} />

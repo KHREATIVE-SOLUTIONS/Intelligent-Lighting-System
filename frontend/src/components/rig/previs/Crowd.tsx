@@ -229,6 +229,22 @@ export const Crowd = memo(function Crowd({
 });
 
 /**
+ * A crowd whose places are already worked out: the one fitted to the open
+ * floor of a scanned room (`placeScanCrowd`, scanFloor.ts).
+ */
+export const PlacedCrowd = memo(function PlacedCrowd({
+  people,
+  clock,
+}: {
+  people: CrowdPerson[];
+  clock: MutableRefObject<BeatClock>;
+}) {
+  if (people.length === 0) return null;
+  // Keyed on the head count: an instanced mesh cannot be resized in place.
+  return <CrowdInstances key={people.length} people={people} clock={clock} />;
+});
+
+/**
  * Advances the beat clock once a frame. Mount it before anything that reads
  * the clock, so they all see the same beat.
  */

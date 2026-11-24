@@ -172,8 +172,14 @@ export const ClubRoom = memo(function ClubRoom({
   danceFloor = true,
   dressing = true,
   shell = true,
+  boothLight = null,
 }: {
   layout: ClubLayout;
+  /**
+   * Where the work light over the booth hangs, for a room whose booth is not
+   * the one the view makes up (a scanned room). Left out, it is over that one.
+   */
+  boothLight?: [number, number, number] | null;
   /**
    * The room's own box: its floor, four walls and flat ceiling. Off for a
    * scanned room that is not a box, whose floor, walls and ceiling follow its
@@ -246,7 +252,7 @@ export const ClubRoom = memo(function ClubRoom({
           Two fixed lights, so the room has some shape when the rig is dark.
           They are always on, which keeps the light count steady. */}
       <pointLight
-        position={[0, layout.booth.deskTopY + 1.5, layout.booth.fasciaZ + 0.55]}
+        position={boothLight ?? [0, layout.booth.deskTopY + 1.5, layout.booth.fasciaZ + 0.55]}
         color="#b6c6ff"
         intensity={3.4}
         distance={9}
