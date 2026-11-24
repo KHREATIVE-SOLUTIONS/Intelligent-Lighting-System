@@ -71,6 +71,23 @@ describe('the booth of a scanned room', () => {
     expect(booth.clear.zMax).toBeCloseTo(-2 + BOOTH_FRONT_CLEAR);
   });
 
+  it('keeps a guessed booth downstage on a stage in a corner, whichever way most of the floor is', () => {
+    // Upstage right: more of the open floor is across the room than downstage of it.
+    const booth = placeScanBooth(ROOM, [area('stage', -4, -3.5, 3, 3, 1)])!;
+    expect(booth.source).toBe('guess');
+    expect([booth.faceX, booth.faceZ]).toEqual([0, 1]);
+    expect(booth.x).toBeCloseTo(-4);
+    expect(booth.z).toBeCloseTo(-2.05);
+  });
+
+  it('turns a guessed booth to the open floor only when a wall is right in front of the stage', () => {
+    // Against the rear wall: z from 2 to 5, so downstage of it is the wall.
+    const booth = placeScanBooth(ROOM, [area('stage', 0, 3.5, 8, 3, 1)])!;
+    expect(booth.source).toBe('guess');
+    expect([booth.faceX, booth.faceZ]).toEqual([0, -1]);
+    expect(booth.z).toBeCloseTo(2.05);
+  });
+
   it('draws no DJ where a riser stands on the stage behind the desk', () => {
     const drums = area('riser', 0, -2.9, 1, 1, 0.3, 1);
     expect(placeScanBooth(ROOM, [STAGE, drums])!.dj).toBeNull();
