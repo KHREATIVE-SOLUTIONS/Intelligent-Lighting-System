@@ -54,7 +54,10 @@ import {
   AREA_HEADING_LABEL,
   BASE_HEIGHT_LABEL,
   NEW_ITEM_CHOICES,
+  DJ_BOOTH_LABEL,
   RISER_KIND_CHOICES,
+  djBoothBoxName,
+  djBoothShown,
   SHELL_FIELD_LABELS,
   SHELL_NAME_MAX,
   SHELL_SIZE_FIELDS,
@@ -232,6 +235,12 @@ export default function RoomShellEditDialog({
     setDrafts((current) => ({ ...current, [key]: { ...(current[key] ?? draftOf(item)), [field]: value } }));
   };
 
+  /** A raised area's "DJ booth" box: kept with what is typed in its row, and saved by the row's Save. */
+  const setDjBooth = (item: ShellItem, ticked: boolean) => {
+    const key = shellItemKey(item);
+    setDrafts((current) => ({ ...current, [key]: { ...(current[key] ?? draftOf(item)), is_dj_booth: ticked } }));
+  };
+
   const handleTurn = (item: ShellItem) => {
     const key = shellItemKey(item);
     setDrafts((current) => ({ ...current, [key]: quarterTurned(item, current[key] ?? draftOf(item)) }));
@@ -256,10 +265,21 @@ export default function RoomShellEditDialog({
       // it was first typed in, and saving it would send a carried area back to where it had been.
       const carriedRows = (Array.isArray(result.items_moved) ? result.items_moved : [])
         .map((entry) => shellItemKey({ kind: 'risers', index: entry.index }));
+      // One DJ booth at a time: once this row is it, a box ticked on another row and not saved is let go,
+      // so two rows never show as the booth. The rest of what is typed in that row is kept.
+      const becameBooth = reading.changes.is_dj_booth === true;
       setDrafts((current) => {
         const next = { ...current };
         delete next[key];
         for (const row of carriedRows) delete next[row];
+        if (becameBooth) {
+          for (const row of Object.keys(next)) {
+            if (next[row].is_dj_booth === undefined) continue;
+            const rest = { ...next[row] };
+            delete rest.is_dj_booth;
+            next[row] = rest;
+          }
+        }
         return next;
       });
       const moved = carriedCount(result.fixtures_moved);
@@ -465,7 +485,9 @@ export default function RoomShellEditDialog({
           turned or resized, unless its box is unticked; nothing else here moves a fixture. A raised
           area&apos;s base height is how far its underside is above the floor: 0 stands on it, more
           floats, as a balcony does. A raised area standing on another (its middle over it, its base
-          at its top) goes with it too, with its own fixtures. Undo takes back one change at a time, with
+          at its top) goes with it too, with its own fixtures. Tick DJ booth on the one raised area
+          the DJ plays at (a scan calls a bar a booth too): the 3D view puts the decks and the DJ
+          there and aims its DJ and Floor cameras at it. Undo takes back one change at a time, with
           the fixtures it moved; reading the scan again replaces every change, and then there is
           nothing left to undo.
         </Typography>
@@ -602,6 +624,23 @@ export default function RoomShellEditDialog({
                                 <option key={choice.kind} value={choice.kind}>{choice.label}</option>
                               ))}
                             </TextField>
+                          )}
+                          {item.kind === 'risers' && (
+                            // "This one is the DJ's booth": a scan calls a bar a booth too. One raised area
+                            // at a time; saving it ticked takes the mark off whichever had it.
+                            <FormControlLabel
+                              sx={{ mr: 0 }}
+                              control={
+                                <Checkbox
+                                  size="small"
+                                  checked={djBoothShown(item, draft)}
+                                  disabled={busy}
+                                  onChange={(e) => setDjBooth(item, e.target.checked)}
+                                  inputProps={{ 'aria-label': djBoothBoxName(title) }}
+                                />
+                              }
+                              label={<Typography variant="caption">{DJ_BOOTH_LABEL}</Typography>}
+                            />
                           )}
                         </Box>
                       </TableCell>

@@ -4,6 +4,7 @@
 // can be tested without a server or a screen. The server makes the change
 // (backend/app/services/room_scan/edit.py); docs/ROOM_SCAN.md describes both.
 import type { RoomShell, RoomShellBox, RoomShellEdits, RoomShellLine, RoomShellRing } from '../types';
+import { isDjBooth } from '../components/rig/previs/boothPick';
 import { boxHeading, foldHeading, headingText } from '../components/rig/previs/raisedArea';
 import { usableBox, usableLine, usableRing } from '../components/rig/previs/roomShell';
 import { lineRunText } from './roomScan';
@@ -52,6 +53,14 @@ export const RISER_KIND_CHOICES: Array<{ kind: RiserKind; label: string }> = [
 
 /** What the base height field of a raised area's row is called. */
 export const BASE_HEIGHT_LABEL = 'Base height';
+
+/** What the box on a raised area's row that says "this one is the DJ's booth" is called. */
+export const DJ_BOOTH_LABEL = 'DJ booth';
+
+/** What that box is called for a screen reader: "DJ booth: Stage". */
+export function djBoothBoxName(title: string): string {
+  return `${DJ_BOOTH_LABEL}: ${title}`;
+}
 
 /** What the heading field of a raised area's row, and of the Add form, is called. */
 export const AREA_HEADING_LABEL = 'Heading';
@@ -115,6 +124,11 @@ export interface ShellItem {
   heading: number | null;
   /** What a raised area is, or null for a line, a ring, and one stored with no kind the row knows. */
   riserKind: RiserKind | null;
+  /**
+   * Whether a raised area is marked as the DJ's booth (`is_dj_booth`, slice
+   * 28): at most one is. Null for a line or a ring, which cannot be.
+   */
+  djBooth: boolean | null;
   /** Whether the 2D and 3D views draw it. One they do not can still be deleted. */
   drawn: boolean;
   /** False once somebody has moved, resized or added it: it is no longer the scan's guess. */
@@ -213,6 +227,7 @@ export function shellItems(shell: RoomShell | null | undefined): ShellItem[] {
       baseHeight: base,
       heading,
       riserKind: riser.kind === 'stage' || riser.kind === 'riser' || riser.kind === 'booth' ? riser.kind : null,
+      djBooth: isDjBooth(riser),
       drawn,
       suggested: riser.suggested !== false,
       marks: marksOf(riser),
@@ -244,6 +259,7 @@ export function shellItems(shell: RoomShell | null | undefined): ShellItem[] {
       baseHeight: null,
       heading: null,
       riserKind: null,
+      djBooth: null,
       drawn,
       suggested: line.suggested !== false,
       marks: marksOf(line),
@@ -268,6 +284,7 @@ export function shellItems(shell: RoomShell | null | undefined): ShellItem[] {
       baseHeight: null,
       heading: null,
       riserKind: null,
+      djBooth: null,
       drawn,
       suggested: ring.suggested !== false,
       marks: marksOf(ring),
@@ -309,6 +326,8 @@ export interface ShellItemDraft {
   base_height?: string;
   /** What a raised area is to be, as chosen. Left out until the row's selector is touched. */
   riser_kind?: string;
+  /** Whether a raised area is to be the DJ's booth, as ticked. Left out until the row's box is touched. */
+  is_dj_booth?: boolean;
 }
 
 /** What is sent to change an item. Anything left out is kept. */
@@ -326,6 +345,11 @@ export interface ShellItemChanges {
   base_height?: number;
   /** What a raised area is to be. Its place in the list is kept. */
   riser_kind?: RiserKind;
+  /**
+   * Whether a raised area is the DJ's booth. True takes the mark off every
+   * other one; a change of kind sent without it takes it off this one.
+   */
+  is_dj_booth?: boolean;
   /**
    * Whether the fixtures hung on a line or ring, or standing on a raised
    * area, go with it when it is moved, raised, turned or resized. Left out,
@@ -366,12 +390,12 @@ export function carryBoxName(kind: ShellItemKind, title: string): string {
 /**
  * What is sent for a row's changes, with whether its fixtures go along. The
  * flag goes only with a change that could move one: an item whose place,
- * size, height, base or heading changes. A rename and a change of what a
- * raised area is are sent as they were.
+ * size, height, base or heading changes. A rename, a change of what a
+ * raised area is and the DJ booth mark are sent as they were.
  */
 export function withCarry(item: Pick<ShellItem, 'kind'>, changes: ShellItemChanges, carry: boolean): ShellItemChanges {
   const reshapes = Object.keys(changes).some(
-    (key) => key !== 'name' && key !== 'carry_fixtures' && key !== 'riser_kind',
+    (key) => key !== 'name' && key !== 'carry_fixtures' && key !== 'riser_kind' && key !== 'is_dj_booth',
   );
   return carriesFixtures(item.kind) && reshapes ? { ...changes, carry_fixtures: carry } : changes;
 }
@@ -506,6 +530,15 @@ export function readDraft(item: ShellItem, draft: ShellItemDraft): DraftReading 
     if (!chosen) return { changes: null, problem: 'A raised area is a stage, a riser or a booth.' };
     changes.riser_kind = chosen.kind;
   }
+  // The DJ booth box the same way: in the draft only once it was touched, and sent only when it
+  // differs from what is stored.
+  if (item.kind === 'risers' && item.djBooth !== null) {
+    const ticked = djBoothShown(item, draft);
+    if (ticked !== item.djBooth) changes.is_dj_booth = ticked;
+    // The server takes the mark off a raised area made another kind unless the request says it is
+    // still the booth. The row shows the box ticked, so it says so.
+    else if (ticked && changes.riser_kind !== undefined) changes.is_dj_booth = true;
+  }
 
   return { changes: Object.keys(changes).length > 0 ? changes : null, problem: null };
 }
@@ -535,6 +568,11 @@ export function headingShown(item: ShellItem, draft: ShellItemDraft): string {
 /** What a row's kind selector shows: what was chosen, or what is stored. '' when it has no kind the row knows. */
 export function riserKindShown(item: ShellItem, draft: ShellItemDraft): string {
   return draft.riser_kind ?? item.riserKind ?? '';
+}
+
+/** Whether a row's DJ booth box is ticked: as it was last set, or as stored. False for a line or a ring. */
+export function djBoothShown(item: ShellItem, draft: ShellItemDraft): boolean {
+  return draft.is_dj_booth ?? item.djBooth === true;
 }
 
 /**
@@ -701,6 +739,12 @@ export function editResultText(
     // One the server renamed with its kind ("Riser" to "Stage") is named as it was, or the sentence says nothing.
     parts.push(`${renamed ? title : shellItemTitle(before)} is now a ${(now?.label ?? changes.riser_kind).toLowerCase()}.`);
   }
+  // Said only where the mark changed: a change of kind that carries the mark it already had says nothing of it.
+  if (changes.is_dj_booth !== undefined && before.djBooth !== null && changes.is_dj_booth !== before.djBooth) {
+    parts.push(changes.is_dj_booth
+      ? `${title} is now the DJ booth: the 3D view puts the decks and the DJ there, and its DJ and Floor cameras look at it.`
+      : `${title} is no longer marked as the DJ booth.`);
+  }
   if (moved && after?.centre) {
     const held = (changes.center_x !== undefined && Math.abs(after.centre.x - changes.center_x) >= 0.0005)
       || (changes.center_z !== undefined && Math.abs(after.centre.z - changes.center_z) >= 0.0005);
@@ -854,6 +898,7 @@ export interface ShellItemAdd extends ShellItemChanges {
   center_z: number;
   height: number;
   riser_kind?: 'stage' | 'riser' | 'booth';
+  // The Add form has no DJ booth box: a new raised area is marked on its row once it is in the room.
 }
 
 export interface NewItemReading {
