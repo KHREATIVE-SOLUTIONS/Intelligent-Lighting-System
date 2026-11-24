@@ -30,7 +30,8 @@ from app.services.room_scan import usdc
 from app.services.room_scan.usdc import (
     decode_integers, decompress, decompress_integers, lz4_block, parse_usdc,
 )
-from tests.unit.room_scan_meshes import as_scanned, room_mesh, roomplan_json, write_usda, write_zip
+from app.services.room_scan.usd import parse_usda
+from tests.unit.room_scan_meshes import as_scanned, box, room_mesh, roomplan_json, write_usda, write_zip
 from tests.unit.test_room_scan import assert_the_room, scan
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "usdc"
@@ -103,6 +104,64 @@ class TestAgainstPixar:
         edge = table[4] - table[0]                      # along the box's own x, 6 m long
         assert np.linalg.norm(edge) == pytest.approx(6.0, abs=1e-5)
         assert abs(edge[2]) == pytest.approx(3.0, abs=1e-4)      # 6 sin 30
+
+    def test_the_variety_fixture_is_read_branch_by_branch(self):
+        """Pixar-written: double points under a double orient, half points under
+        a rotateZYX, points held only as time samples, an identity matrix held
+        in place of its offset, and three prims that are not part of the room."""
+        truth = pixar("variety.usdc")
+        mesh = read_scan_file("variety.usdc", fixture("variety.usdc"))
+        expected = np.array(truth["points"])
+
+        assert truth["meshes"] == ["/Room/Doubles/Mesh", "/Room/Halves/Mesh", "/Room/Sampled/Mesh"]
+        assert mesh.format == "usdc"
+        assert mesh.up_axis == "y" and mesh.metres_per_unit == pytest.approx(1.0)
+        assert any("Read 3 meshes" in note for note in mesh.notes)
+        assert mesh.vertices.shape == (24, 3)
+        assert mesh.faces.tolist() == truth["faces"]
+        # point3d[] under translate and a quatd orient of 45 degrees about the upright.
+        assert np.allclose(mesh.vertices[0:8], expected[0:8], atol=1e-6)
+        # point3h[] under translate and rotateZYX = (10, 20, 0): 20 about Y first, then 10 about X.
+        assert np.allclose(mesh.vertices[8:16], expected[8:16], atol=1e-3)
+        # Points only as time samples: the first (t=1), not the one 100 units away at t=2.
+        assert np.allclose(mesh.vertices[16:24], expected[16:24], atol=1e-6)
+        assert mesh.vertices[16:24].max() < 50.0
+
+    def test_an_over_a_class_and_an_inactive_prim_are_not_part_of_the_room(self):
+        content = fixture("variety.usdc")
+        mesh = read_scan_file("variety.usdc", content)
+        # Their points are at 500 and -500; the room's are within a few metres.
+        assert np.abs(mesh.vertices).max() < 10.0
+        assert not np.any(np.isclose(np.abs(mesh.vertices), 500.0))
+        assert len(mesh.vertices) == 24 and len(mesh.faces) == 36
+
+    def test_a_text_layer_with_the_same_rotate_zyx_agrees_with_pixar(self):
+        corners, triangles = box(0, 2, 0, 1, 0, 3)
+        counts = ", ".join("3" for _ in triangles)
+        indices = ", ".join(str(int(i)) for t in triangles for i in t)
+        points = ", ".join(f"({x}, {y}, {z})" for x, y, z in corners)
+        text = f'''#usda 1.0
+def Xform "Room"
+{{
+    def Xform "Halves"
+    {{
+        double3 xformOp:translate = (-4, 0, 2)
+        float3 xformOp:rotateZYX = (10, 20, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZYX"]
+        def Mesh "Mesh"
+        {{
+            int[] faceVertexCounts = [{counts}]
+            int[] faceVertexIndices = [{indices}]
+            point3f[] points = [{points}]
+        }}
+    }}
+}}
+'''
+        from_text = parse_usda(text)
+        expected = np.array(pixar("variety.usdc")["points"])[8:16]
+        assert np.allclose(from_text.vertices, expected, atol=1e-6)
+        from_binary = read_scan_file("variety.usdc", fixture("variety.usdc"))
+        assert np.allclose(from_text.vertices, from_binary.vertices[8:16], atol=1e-6)
 
     def test_roomplan_json_in_the_usdz_is_still_preferred(self):
         archive = write_zip([("room.usdc", fixture("room_y_metres.usdc")), ("room.json", roomplan_json())])
