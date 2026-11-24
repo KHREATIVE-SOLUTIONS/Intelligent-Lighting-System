@@ -75,7 +75,8 @@ from app.services.room_scan.carry import (
     put_back, put_back_words, refuse_areas_outside, refuse_outside,
 )
 from app.services.room_scan.edit import (
-    KINDS, ShellEditError, add_item, delete_item, edit_item, edit_words, first_stage, item_name,
+    KINDS, ShellEditError, add_item, delete_item, dj_booth_place, edit_item, edit_words, first_stage, item_name,
+    one_dj_booth,
 )
 from app.services.room_scan.edit_undo import pop_step, push_step, undo_summary
 from app.services.room_scan.mesh import MAX_UPLOAD_BYTES
@@ -366,6 +367,11 @@ class ShellItemEdit(BaseModel):
     # What a raised area is: "stage", "riser" or "booth". Added, it is a riser when left out;
     # edited, it keeps what it is.
     riser_kind: Optional[str] = Field(default=None, max_length=20)
+    # Whether a raised area is the DJ's booth: the one the 3D view puts the decks and the DJ on and
+    # aims its DJ and Floor cameras at. True marks it and takes the mark off any other; false takes
+    # it off this one. Not held to true or false here, for the reason given above: edit.py refuses
+    # anything else in a sentence.
+    is_dj_booth: Optional[Any] = None
 
 
 class ShellItemPatch(ShellItemEdit):
@@ -592,6 +598,12 @@ async def edit_room_shell_item(
     stands on it about its middle by the turn. `riser_kind` makes it a
     stage, a riser or a booth where it is in its list; `first_stage` in the
     answer is the place of the stage a suggestion would put floor lights on.
+    `is_dj_booth` true marks it, whatever kind it is, as the DJ's booth and
+    takes the mark off any other raised area; false takes it off this one;
+    and one made another kind loses the mark unless the same request sets
+    it. `dj_booth` in the answer is the place of the marked raised area, or
+    null. The mark moves nothing: it says where the 3D view puts the decks
+    and the DJ, and what its DJ and Floor cameras look at.
 
     A raised area that is moved, raised, turned or given a quarter turn also takes
     the other raised areas standing on it (the middle of the footprint inside
@@ -625,6 +637,9 @@ async def edit_room_shell_item(
             refuse_outside(shell, kind, entry["item"], theirs)
             moves = moves + theirs
         shell = apply_areas(shell, stacked)
+        if kind == "risers":
+            # A carried area is written from the room as it was, where it may still have been the booth.
+            shell = one_dj_booth(shell, index)
     except ShellEditError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)
     if done is not None:
@@ -647,6 +662,8 @@ async def edit_room_shell_item(
         # For a raised area: what it now is, and which raised area is the room's first stage (or null).
         "riser_kind": item.get("kind") if kind == "risers" else None,
         "first_stage": first_stage(shell),
+        # The place of the raised area marked as the DJ's booth, or null when none is.
+        "dj_booth": dj_booth_place(shell),
         "changed": done is not None,
         "undo": undo_summary(rig.room_shell_undo),
         "carry_fixtures": carry,
@@ -691,6 +708,8 @@ async def delete_room_shell_item(
         "index": index,
         "removed": removed,
         "room_shell": shell,
+        # A deleted DJ booth takes its mark with it: null then, and the place of the marked one otherwise.
+        "dj_booth": dj_booth_place(shell),
         "undo": undo_summary(rig.room_shell_undo),
         "message": f"{name} was taken out of the stored room. No fixture was moved.",
     }
@@ -760,7 +779,9 @@ async def add_room_shell_item(
 
     `kind` is the list it goes in (`risers`, `truss_lines`, `truss_rings`); it
     goes at the end, so nothing else changes place. It is marked as added by
-    hand, not as the scan's (`added_by_hand`). No fixture is moved and nothing
+    hand, not as the scan's (`added_by_hand`). A raised area added with
+    `is_dj_booth` true is the DJ's booth, and the mark comes off any other
+    (`dj_booth` in the answer is its place). No fixture is moved and nothing
     reaches a device. POST .../room-shell/undo takes it out again.
     """
     rig = await _rig(db, rig_id)
@@ -781,6 +802,7 @@ async def add_room_shell_item(
         "index": index,
         "item": item,
         "room_shell": shell,
+        "dj_booth": dj_booth_place(shell),
         "undo": undo_summary(rig.room_shell_undo),
         "message": f"{name} was added to the stored room as a {KINDS[kind]}. No fixture was moved.",
     }

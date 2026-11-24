@@ -34,6 +34,13 @@ cannot fit is refused, and the middle is brought in until the rest does.
 
 A truss or ring that is raised, lowered, added or deleted is kept counted in
 `hanging_bands`, which a scan's suggestion hangs rows by (suggest.py).
+
+One raised area can be marked as the DJ's booth (`is_dj_booth`, slice 28): a
+scan calls a bar counter a "Booth or counter" too, and only a person knows
+which one the DJ plays at. The mark is kept on the raised area itself, so it
+goes where the area goes in its list and goes out with it when it is deleted.
+Marking one takes the mark off every other, and a raised area made another
+kind loses it unless the same edit sets it.
 """
 
 import copy
@@ -57,6 +64,10 @@ MOVED_BY_HAND = "Moved by hand."
 RESIZED_BY_HAND = "Resized by hand."
 ADDED_BY_HAND = "Added by hand."
 KIND_BY_HAND = "Kind set by hand."
+
+# The key a raised area carries when a person has said it is the DJ's booth. Stored only when true:
+# a raised area that is not the booth says nothing, like every one stored before the mark could be set.
+DJ_BOOTH_KEY = "is_dj_booth"
 
 # Slack when deciding which hanging-height band a truss was counted in: the
 # shell's heights are rounded to the centimetre.
@@ -244,6 +255,58 @@ def _riser_kind(kind: str, riser_kind: Any) -> None:
         raise ShellEditError(422, f"Only a raised area is a stage, riser or booth; this is a {KINDS[kind]}.")
     if not isinstance(riser_kind, str) or riser_kind not in RISER_KINDS:
         raise ShellEditError(422, f"A raised area is one of: {', '.join(RISER_KINDS)}.")
+
+
+def _dj_booth_flag(kind: str, is_dj_booth: Any) -> None:
+    """Refuse a DJ booth mark that is not true or false, or that is asked of a truss."""
+    if is_dj_booth is None:
+        return
+    if kind != "risers":
+        raise ShellEditError(422, f"Only a raised area can be the DJ booth; this is a {KINDS[kind]}.")
+    if not isinstance(is_dj_booth, bool):
+        raise ShellEditError(422, "Whether a raised area is the DJ booth is true or false.")
+
+
+def marked_dj_booth(item: Any) -> bool:
+    """Whether a raised area is marked as the DJ's booth. Only a stored `true` is a mark."""
+    return isinstance(item, dict) and item.get(DJ_BOOTH_KEY) is True
+
+
+def dj_booth_place(shell: Optional[Dict[str, Any]]) -> Optional[int]:
+    """The place in `risers` of the raised area marked as the DJ's booth, or None when none is.
+
+    The first, should a shell written by hand mark two: every edit made here leaves at most one.
+    """
+    risers = shell.get("risers") if isinstance(shell, dict) else None
+    for place, item in enumerate(risers if isinstance(risers, list) else []):
+        if marked_dj_booth(item):
+            return place
+    return None
+
+
+def _unmark_others(risers: Any, keep: Optional[Dict[str, Any]]) -> None:
+    """Take the DJ booth mark off every raised area in a list but one. Changes the list's items in place."""
+    for other in risers if isinstance(risers, list) else []:
+        if isinstance(other, dict) and other is not keep:
+            other.pop(DJ_BOOTH_KEY, None)
+
+
+def one_dj_booth(shell: Dict[str, Any], index: int) -> Dict[str, Any]:
+    """The room with raised area `index` its only DJ booth, if it is marked. The shell given is not changed.
+
+    For a caller that puts raised areas back into a room after an edit (a
+    stack carried with the one under it is written from the room as it was,
+    carry.apply_areas): one of those may be the booth the edit just took the
+    mark from. The same shell is returned when there is nothing to take off.
+    """
+    risers = shell.get("risers") if isinstance(shell, dict) else None
+    if not isinstance(risers, list) or index < 0 or index >= len(risers) or not marked_dj_booth(risers[index]):
+        return shell
+    if not any(marked_dj_booth(other) for place, other in enumerate(risers) if place != index):
+        return shell
+    edited = copy.deepcopy(shell)
+    _unmark_others(edited["risers"], edited["risers"][index])
+    return edited
 
 
 def _given_sizes(kind: str, sizes: Dict[str, Any]) -> Dict[str, float]:
@@ -470,6 +533,7 @@ def edit_item(
     heading_deg: Optional[float] = None,
     base_height: Optional[float] = None,
     riser_kind: Optional[str] = None,
+    is_dj_booth: Optional[bool] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """(the shell with one item changed, that item). The shell given is not changed.
 
@@ -497,6 +561,12 @@ def edit_item(
     list is kept. One still called what its old kind is called ("Riser") is
     called what its new kind is, unless a name is given.
 
+    `is_dj_booth` true marks a raised area, of any kind, as the DJ's booth
+    and takes the mark off every other one; false takes it off this one. A
+    raised area made another kind loses the mark unless the same edit sets
+    it: it was the booth as what it was. The mark changes nothing else about
+    it, and one that is not marked stores no key.
+
     Everything is stored to the millimetre. An item that actually shifts is no
     longer a suggestion (`suggested` false) and its `basis` says it was moved
     by hand; one whose size, height or heading actually changes says it was
@@ -508,7 +578,9 @@ def edit_item(
         "height": height, "heading_deg": heading_deg, "base_height": base_height,
     })
     _riser_kind(kind, riser_kind)
-    if name is None and center_x is None and center_z is None and not sizes and riser_kind is None:
+    _dj_booth_flag(kind, is_dj_booth)
+    if (name is None and center_x is None and center_z is None and not sizes and riser_kind is None
+            and is_dj_booth is None):
         raise ShellEditError(
             422, "Nothing to change: give a name, a centre, a size, a height, a heading, a base height or a kind.",
         )
@@ -530,8 +602,18 @@ def edit_item(
         if name is None and item.get("name") == RISER_KINDS.get(had if isinstance(had, str) else ""):
             item["name"] = RISER_KINDS[riser_kind]
         _mark(item, KIND_BY_HAND)
+        if is_dj_booth is None:
+            # It was the DJ's booth as what it was. Made something else, it is not, until somebody says so.
+            item.pop(DJ_BOOTH_KEY, None)
 
-    shaped = {key: value for key, value in sizes.items() if key not in ("height", "base_height")}
+    if is_dj_booth is True:
+        # One at a time: the mark comes off every other raised area in the same edit.
+        _unmark_others(edited[kind], item)
+        item[DJ_BOOTH_KEY] = True
+    elif is_dj_booth is False:
+        item.pop(DJ_BOOTH_KEY, None)
+
+    shaped ={key: value for key, value in sizes.items() if key not in ("height", "base_height")}
     resized = False
     rebased = False
 
@@ -781,6 +863,7 @@ def add_item(
     heading_deg: Optional[float] = None,
     riser_kind: Optional[str] = None,
     base_height: Optional[float] = None,
+    is_dj_booth: Optional[bool] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], int]:
     """(the shell with one more item, that item, its place in its list). The shell given is not changed.
 
@@ -797,8 +880,12 @@ def add_item(
     inside the room's box and its margin; a size outside its limits, or too
     big for the room, is refused. An added truss or ring is counted in the
     hanging-height band it is in, or starts one.
+
+    A raised area added with `is_dj_booth` true is the DJ's booth, and the
+    mark comes off any other.
     """
     _editable(shell, kind)
+    _dj_booth_flag(kind, is_dj_booth)
     sizes = _given_sizes(kind, {
         "width": width, "depth": depth, "length": length, "radius": radius,
         "height": height, "heading_deg": heading_deg, "base_height": base_height,
@@ -871,6 +958,10 @@ def add_item(
         }
 
     item.update({"suggested": False, "added_by_hand": True, "basis": ADDED_BY_HAND})
+    if is_dj_booth is True:
+        # The list is the copy's own, but its items are the copy's too: nothing of the shell given is touched.
+        _unmark_others(items, None)
+        item[DJ_BOOTH_KEY] = True
     items.append(item)
     edited[kind] = items
     if kind != "risers":
@@ -921,6 +1012,8 @@ def edit_words(kind: str, before: Dict[str, Any], after: Dict[str, Any]) -> Opti
             if "renamed" in done and after.get("name") == RISER_KINDS[after["kind"]]:
                 done.remove("renamed")
             done.append(f"made a {after['kind']}")
+        if marked_dj_booth(before) != marked_dj_booth(after):
+            done.append("marked as the DJ booth" if marked_dj_booth(after) else "no longer marked as the DJ booth")
     if not done:
         done.append("changed")
     words = done[0] if len(done) == 1 else f"{', '.join(done[:-1])} and {done[-1]}"
