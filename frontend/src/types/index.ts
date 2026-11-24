@@ -152,16 +152,26 @@ export interface RoomScanUndoRecord {
   }> | null;
 }
 
-/** A box standing on the floor (or `base_height` above it), sides square to the room. */
+/**
+ * A box standing on the floor (or `base_height` above it). Its sides are
+ * square to the room unless it says a `heading_deg`.
+ */
 export interface RoomShellBox {
   center_x: number;
   center_z: number;
-  /** Along X. */
+  /** Along X, or along its heading when it has one. */
   width: number;
-  /** Along Z. */
+  /** Along Z, or square to its heading when it has one. */
   depth: number;
   height: number;
   base_height?: number;
+  /**
+   * A raised area of a scanned room that does not stand square to it: degrees
+   * clockwise from across the room seen from above, over -90 and up to 90
+   * (previs/raisedArea.ts). Left out, it stands square, as every one did
+   * before a heading could be set.
+   */
+  heading_deg?: number;
   name?: string;
   basis?: string;
   /** From a room scan: what its size suggests it is ('stage', 'riser' or 'booth'). */

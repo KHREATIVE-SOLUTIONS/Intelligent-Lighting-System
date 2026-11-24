@@ -21,7 +21,7 @@ import type { LayChoice } from './rowSpace2d';
 import type { SnapLine } from './previs/fixtureDrag';
 import { WALL_LIMITS, wallCorners } from '../../utils/roomWallsEdit';
 import type { ShellItemChanges, ShellItemKind } from '../../utils/roomShellEdit';
-import { dragItem, gripHint, isBoxGrip, itemHandles, planItems, shapeCentre } from './roomItemDrag2d';
+import { dragItem, gripCursor, gripHint, isBoxGrip, itemHandles, planItems, shapeCentre } from './roomItemDrag2d';
 import type { ItemGrip, ItemShape, PlanItem } from './roomItemDrag2d';
 
 const FIXTURE_TYPE_COLORS: Record<string, string> = {
@@ -65,16 +65,6 @@ interface CornerSession {
   at: PlanPoint;
   /** True once the pointer has gone past the drag threshold. */
   moved: boolean;
-}
-
-/** The pointer over a handle: which way a raised area's edge or corner goes, a turn for the rotate handle. */
-function gripCursor(grip: ItemGrip): string {
-  if (grip === 'rotate') return 'alias';
-  if (grip === 'e' || grip === 'w') return 'ew-resize';
-  if (grip === 'n' || grip === 's') return 'ns-resize';
-  if (grip === 'nw' || grip === 'se') return 'nwse-resize';
-  if (grip === 'ne' || grip === 'sw') return 'nesw-resize';
-  return 'pointer';
 }
 
 /** One press on a room item or one of its handles, until it is let go. */
@@ -716,11 +706,12 @@ export default function StageView2D({
       if (!arranging.moved && !pastDragThreshold(arranging.down, e)) return;
       arranging.moved = true;
       const raw = pointerToStage(e.clientX, e.clientY);
-      // Onto the grid, as a corner of the walls goes, unless the snap is off or Alt is held.
+      // Onto the grid, as a corner of the walls goes, unless the snap is off or Alt is held. With
+      // Shift held a rotate handle turns in steps of 15 degrees.
       const dragged = dragItem(
         arranging.item, arranging.grip,
         { x: raw.x + arranging.offset.x, z: raw.z + arranging.offset.z },
-        { on: snapMode !== 'none' && !e.altKey, gridSize },
+        { on: snapMode !== 'none' && !e.altKey, gridSize, coarse: e.shiftKey },
       );
       arranging.changes = dragged.changes;
       setItemPreview({ key: arranging.item.key, shape: dragged.shape, readout: dragged.readout });
@@ -1341,6 +1332,11 @@ export default function StageView2D({
                   y={toSvgY(area.z)}
                   width={area.width}
                   height={area.depth}
+                  // One at a heading is the same rectangle turned about its middle: clockwise on the
+                  // plan, which is drawn with downstage at the bottom, is clockwise seen from above.
+                  transform={area.heading
+                    ? `rotate(${area.heading} ${toSvgX(area.centerX)} ${toSvgY(area.centerZ)})`
+                    : undefined}
                   fill={ROOM_RAISED}
                   fillOpacity={0.28}
                   stroke={ROOM_RAISED}
@@ -1605,6 +1601,10 @@ export default function StageView2D({
                       y={toSvgY(shape.centerZ - shape.depth / 2)}
                       width={shape.width}
                       height={shape.depth}
+                      // At its heading, or at the turn a drag of its rotate handle has it.
+                      transform={shape.heading
+                        ? `rotate(${shape.heading} ${toSvgX(shape.centerX)} ${toSvgY(shape.centerZ)})`
+                        : undefined}
                       fill={WALL_HANDLE}
                       fillOpacity={selected ? 0.16 : 0.04}
                       stroke={stroke}
@@ -1653,7 +1653,8 @@ export default function StageView2D({
                       onMouseDown={(e) => handleItemMouseDown(e, item, handle.grip)}
                       onPointerDown={(e) => handleItemPointerDown(e, item, handle.grip)}
                       onClick={(e) => e.stopPropagation()}
-                      style={{ cursor: gripCursor(handle.grip) }}
+                      // A turned raised area's edges pull along its own sides: the arrow is turned with it.
+                      style={{ cursor: gripCursor(handle.grip, shape.type === 'box' ? shape.heading : 0) }}
                     >
                       <title>{gripHint(handle.grip, item.title)}</title>
                       {handle.grip === 'rotate' ? (

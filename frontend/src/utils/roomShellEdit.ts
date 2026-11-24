@@ -4,6 +4,7 @@
 // can be tested without a server or a screen. The server makes the change
 // (backend/app/services/room_scan/edit.py); docs/ROOM_SCAN.md describes both.
 import type { RoomShell, RoomShellBox, RoomShellEdits, RoomShellLine, RoomShellRing } from '../types';
+import { boxHeading, foldHeading, headingText } from '../components/rig/previs/raisedArea';
 import { usableBox, usableLine, usableRing } from '../components/rig/previs/roomShell';
 import { lineRunText } from './roomScan';
 
@@ -52,7 +53,15 @@ export const RISER_KIND_CHOICES: Array<{ kind: RiserKind; label: string }> = [
 /** What the base height field of a raised area's row is called. */
 export const BASE_HEIGHT_LABEL = 'Base height';
 
-/** The size fields each kind of item has, in the order the dialog shows them. */
+/** What the heading field of a raised area's row, and of the Add form, is called. */
+export const AREA_HEADING_LABEL = 'Heading';
+
+/**
+ * The size fields each kind of item has, in the order the dialog shows them.
+ * A raised area's heading is not among its own: one that stands square to the
+ * room stores none, so its row reads it as it reads the base height
+ * (`ShellItem.heading`, `headingShown`).
+ */
 export const SHELL_SIZE_FIELDS: Record<ShellItemKind, ShellSizeField[]> = {
   risers: ['width', 'depth', 'height'],
   truss_lines: ['length', 'heading_deg', 'height'],
@@ -97,6 +106,13 @@ export interface ShellItem {
    * or that was stored before a base could be set. Null for a line or a ring.
    */
   baseHeight: number | null;
+  /**
+   * The heading a raised area stands at, in degrees clockwise from across the
+   * room seen from above, over -90 and up to 90: 0 for one that stands square
+   * to the room, which stores none. Null for a line or a ring (a line's is in
+   * `sizes`).
+   */
+  heading: number | null;
   /** What a raised area is, or null for a line, a ring, and one stored with no kind the row knows. */
   riserKind: RiserKind | null;
   /** Whether the 2D and 3D views draw it. One they do not can still be deleted. */
@@ -182,17 +198,20 @@ export function shellItems(shell: RoomShell | null | undefined): ShellItem[] {
     const drawn = usableBox(riser);
     const centre = isNumber(riser.center_x) && isNumber(riser.center_z) ? { x: riser.center_x, z: riser.center_z } : null;
     const base = isNumber(riser.base_height) && riser.base_height > 0 ? riser.base_height : 0;
+    const heading = boxHeading(riser);
     items.push({
       kind: 'risers',
       index,
       name: named(riser.name),
       fallbackName: KIND_WORDS[riser.kind ?? 'riser'] ?? 'Raised area',
       detail: drawn
-        ? `${metres(riser.width)} by ${metres(riser.depth)}, top ${(base + riser.height).toFixed(2)} m above the floor${floatingText(base)}`
+        ? `${metres(riser.width)} by ${metres(riser.depth)}${headingText(heading)}, `
+          + `top ${(base + riser.height).toFixed(2)} m above the floor${floatingText(base)}`
         : 'Not drawn: its size is missing',
       centre,
       sizes: sizesOf(stored, SHELL_SIZE_FIELDS.risers),
       baseHeight: base,
+      heading,
       riserKind: riser.kind === 'stage' || riser.kind === 'riser' || riser.kind === 'booth' ? riser.kind : null,
       drawn,
       suggested: riser.suggested !== false,
@@ -223,6 +242,7 @@ export function shellItems(shell: RoomShell | null | undefined): ShellItem[] {
       centre: ends ? { x: (line.x1 + line.x2) / 2, z: (line.z1 + line.z2) / 2 } : null,
       sizes,
       baseHeight: null,
+      heading: null,
       riserKind: null,
       drawn,
       suggested: line.suggested !== false,
@@ -246,6 +266,7 @@ export function shellItems(shell: RoomShell | null | undefined): ShellItem[] {
       centre,
       sizes: sizesOf(stored, SHELL_SIZE_FIELDS.truss_rings),
       baseHeight: null,
+      heading: null,
       riserKind: null,
       drawn,
       suggested: ring.suggested !== false,
@@ -279,6 +300,10 @@ export interface ShellItemDraft {
   length?: string;
   radius?: string;
   height?: string;
+  /**
+   * A line's heading, as typed. A raised area's too, but left out until its
+   * row's field is touched: it then shows what is stored, as the base does.
+   */
   heading_deg?: string;
   /** A raised area's base height, as typed. Left out until the row's field is touched: it then shows what is stored. */
   base_height?: string;
@@ -466,6 +491,16 @@ export function readDraft(item: ShellItem, draft: ShellItemDraft): DraftReading 
     if (problem || value === null) return { changes: null, problem };
     if (Math.abs(value - item.baseHeight) >= 0.0005) changes.base_height = value;
   }
+  // Its heading the same way. What is typed is sent as typed, and the server folds it: a rectangle
+  // looks the same after half a turn, so 135 is stored as -45, and 180 on one that stands square
+  // is no change at all.
+  if (item.kind === 'risers' && item.heading !== null && draft.heading_deg !== undefined
+    && draft.heading_deg.trim() !== positionText(item.heading)) {
+    const value = typedNumber(draft.heading_deg);
+    const problem = sizeProblem(item.kind, 'heading_deg', value);
+    if (problem || value === null) return { changes: null, problem };
+    if (Math.abs((foldHeading(value) ?? value) - item.heading) >= 0.05) changes.heading_deg = value;
+  }
   if (item.kind === 'risers' && draft.riser_kind !== undefined && draft.riser_kind !== (item.riserKind ?? '')) {
     const chosen = RISER_KIND_CHOICES.find((choice) => choice.kind === draft.riser_kind);
     if (!chosen) return { changes: null, problem: 'A raised area is a stage, a riser or a booth.' };
@@ -492,6 +527,11 @@ export function baseHeightShown(item: ShellItem, draft: ShellItemDraft): string 
   return draft.base_height ?? (item.baseHeight === null ? '' : positionText(item.baseHeight));
 }
 
+/** What a raised area's heading field shows: what was typed, or what is stored. '' for a line or a ring. */
+export function headingShown(item: ShellItem, draft: ShellItemDraft): string {
+  return draft.heading_deg ?? (item.heading === null ? '' : positionText(item.heading));
+}
+
 /** What a row's kind selector shows: what was chosen, or what is stored. '' when it has no kind the row knows. */
 export function riserKindShown(item: ShellItem, draft: ShellItemDraft): string {
   return draft.riser_kind ?? item.riserKind ?? '';
@@ -499,8 +539,8 @@ export function riserKindShown(item: ShellItem, draft: ShellItemDraft): string {
 
 /**
  * A raised area's row turned a quarter turn: its width and its front-to-back
- * change places. A raised area stands square to the room, so this is the only
- * turn it has. The row is then saved like any other change.
+ * change places, and its heading is left as it is. Any other turn is its
+ * heading field (slice 21). The row is then saved like any other change.
  */
 export function quarterTurned(item: ShellItem, draft: ShellItemDraft): ShellItemDraft {
   const shown = draftOf(item);
@@ -651,8 +691,9 @@ export function editResultText(
   const title = shellItemTitle(after ?? before);
   const moved = changes.center_x !== undefined || changes.center_z !== undefined;
   const renamed = changes.name !== undefined;
+  // A raised area's heading is not among its size fields, and a turn is told as a resize is.
   const resized = SHELL_SIZE_FIELDS[before.kind].some((field) => changes[field] !== undefined)
-    || changes.base_height !== undefined;
+    || changes.base_height !== undefined || changes.heading_deg !== undefined;
   const parts: string[] = [];
   if (renamed) parts.push(`${shellItemTitle(before)} is now called ${title}.`);
   if (changes.riser_kind !== undefined) {
@@ -760,6 +801,11 @@ export interface NewItemDraft {
   length: string;
   radius: string;
   height: string;
+  /**
+   * A line's heading, and a raised area's: degrees clockwise from across the
+   * room seen from above. '0' runs across it, or stands square to it, and for
+   * a raised area so does an empty field. Not read for a ring.
+   */
   heading_deg: string;
   /**
    * A raised area's base height: how far its underside is above the floor.
@@ -849,6 +895,13 @@ export function readNewItem(draft: NewItemDraft): NewItemReading {
     const problem = baseHeightProblem(base);
     if (problem || base === null) return refuse(problem ?? `${BASE_HEIGHT_LABEL} must be a number.`);
     if (base >= 0.0005) body.base_height = base;
+    // Its heading the same way: an empty field stands square to the room, as 0 does, and only one
+    // that is turned says so. The server folds what is sent (135 is stored as -45).
+    const turnTyped = draft.heading_deg ?? '';
+    const turn = turnTyped.trim() === '' ? 0 : typedNumber(turnTyped);
+    const turnProblem = sizeProblem(kind, 'heading_deg', turn);
+    if (turnProblem || turn === null) return refuse(turnProblem ?? `${AREA_HEADING_LABEL} must be a number.`);
+    if (Math.abs(foldHeading(turn) ?? turn) >= 0.05) body.heading_deg = turn;
   }
   return { kind, body, problem: null };
 }

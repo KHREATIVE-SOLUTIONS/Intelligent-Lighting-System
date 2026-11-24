@@ -337,7 +337,7 @@ class ShellItemEdit(BaseModel):
     # Where the middle of it goes, in the rig's axes: metres, X across, -Z upstage.
     center_x: Optional[float] = None
     center_z: Optional[float] = None
-    # A raised area's size on the plan: along X, and along Z.
+    # A raised area's size on the plan: along X and along Z, or along its heading and square to it.
     width: Optional[float] = None
     depth: Optional[float] = None
     # A line's, end to end.

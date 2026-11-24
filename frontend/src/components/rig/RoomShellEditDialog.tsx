@@ -51,6 +51,7 @@ import axios from 'axios';
 import { roomScanApi } from '../../services/api';
 import type { RoomShell } from '../../types';
 import {
+  AREA_HEADING_LABEL,
   BASE_HEIGHT_LABEL,
   NEW_ITEM_CHOICES,
   RISER_KIND_CHOICES,
@@ -65,6 +66,7 @@ import {
   deleteQuestionText,
   draftOf,
   editResultText,
+  headingShown,
   newItemDraft,
   newItemKind,
   positionText,
@@ -545,7 +547,7 @@ export default function RoomShellEditDialog({
                         <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap', pt: 0.5 }}>
                           {planFields(item).map((field) => sizeField(item, draft, field, title, true))}
                           {item.kind === 'risers' && (
-                            // A raised area stands square to the room: a quarter turn is the turn it has.
+                            // A quarter turn: its width and its front to back change places. Any other turn is its heading.
                             <Button
                               size="small"
                               disabled={busy || item.sizes.width === undefined || item.sizes.depth === undefined}
@@ -554,6 +556,20 @@ export default function RoomShellEditDialog({
                             >
                               Turn
                             </Button>
+                          )}
+                          {item.kind === 'risers' && (
+                            // Which way its width runs: 0 stands square to the room, 30 is turned 30 degrees
+                            // clockwise seen from above. What stands on it is swung about its middle with the turn.
+                            <TextField
+                              size="small"
+                              label={`${AREA_HEADING_LABEL} (deg)`}
+                              value={headingShown(item, draft)}
+                              // A turn is about its middle, and needs its two sides to hold the whole of it to the room.
+                              disabled={busy || !item.centre || item.sizes.width === undefined || item.sizes.depth === undefined}
+                              onChange={(e) => setField(item, 'heading_deg', e.target.value)}
+                              inputProps={{ 'aria-label': `${AREA_HEADING_LABEL} of ${title}`, inputMode: 'decimal' }}
+                              sx={{ width: 104 }}
+                            />
                           )}
                           {item.kind === 'risers' && (
                             // How far its underside is above the floor: 0 stands on it, more floats.
@@ -824,6 +840,8 @@ export default function RoomShellEditDialog({
                   z: current.z,
                   // A stage made a riser floats as it did; a truss has no base and does not read it.
                   base_height: current.base_height,
+                  // And stands at the heading typed for it. A ring has none and does not read it.
+                  heading_deg: current.heading_deg,
                 }))}
                 SelectProps={{ native: true }}
                 inputProps={{ 'aria-label': 'What to add' }}
@@ -839,6 +857,8 @@ export default function RoomShellEditDialog({
               {SHELL_SIZE_FIELDS[newItemKind(adding.what)].map((field) =>
                 addField(field, `${SHELL_FIELD_LABELS[field]} (${unitOf(field)})`, field === 'depth' ? 130 : 104))}
               {/* How far a raised area's underside is above the floor: 0 stands on it, more floats. */}
+              {/* Which way a raised area's width runs: 0 stands square to the room. A line's heading is among its sizes. */}
+              {newItemKind(adding.what) === 'risers' && addField('heading_deg', `${AREA_HEADING_LABEL} (deg)`)}
               {newItemKind(adding.what) === 'risers' && addField('base_height', `${BASE_HEIGHT_LABEL} (m)`, 130)}
               <Button
                 variant="contained"

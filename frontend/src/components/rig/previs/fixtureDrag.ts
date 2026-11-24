@@ -10,6 +10,8 @@
 import type { Rig, RigFixture, RoomShell } from '../../../types';
 import { holdNearOutline, roomOutline } from './outline';
 import type { OutlinePoint } from './outline';
+import { boxCorners, sideFacing } from './raisedArea';
+import type { FootprintPoint } from './raisedArea';
 
 export type Point3 = { x: number; y: number; z: number };
 
@@ -172,18 +174,19 @@ export function snapLines(shell: RoomShell | null | undefined): SnapLine[] {
     if (!(box.width > 0 && box.depth > 0)) return;
     const name = box.name || `Raised area ${index + 1}`;
     const top = (finite(box.base_height) ? box.base_height : 0) + box.height;
-    const x1 = box.center_x - box.width / 2;
-    const x2 = box.center_x + box.width / 2;
-    const z1 = box.center_z - box.depth / 2;
-    const z2 = box.center_z + box.depth / 2;
-    const edge = (ax: number, az: number, bx: number, bz: number, side: string): SnapLine => ({
-      x1: ax, z1: az, x2: bx, z2: bz, height: top, kind: 'edge', name: `${name}, ${side} edge`,
-    });
+    // Its four sides where they are: square to the room, or turned to the heading it stands at
+    // (slice 21). Each is called by the way it faces from the middle, which for one that stands
+    // square is what it always was: upstage, downstage, stage right, stage left.
+    const [backRight, backLeft, frontLeft, frontRight] = boxCorners(box);
+    const edge = (a: FootprintPoint, b: FootprintPoint, depthSide: boolean): SnapLine => {
+      const side = sideFacing((a.x + b.x) / 2 - box.center_x, (a.z + b.z) / 2 - box.center_z, depthSide);
+      return { x1: a.x, z1: a.z, x2: b.x, z2: b.z, height: top, kind: 'edge', name: `${name}, ${side} edge` };
+    };
     lines.push(
-      edge(x1, z1, x2, z1, 'upstage'),
-      edge(x1, z2, x2, z2, 'downstage'),
-      edge(x1, z1, x1, z2, 'stage right'),
-      edge(x2, z1, x2, z2, 'stage left'),
+      edge(backRight, backLeft, true),
+      edge(frontRight, frontLeft, true),
+      edge(backRight, frontRight, false),
+      edge(backLeft, frontLeft, false),
     );
   });
   return lines;

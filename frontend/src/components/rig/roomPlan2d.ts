@@ -21,6 +21,7 @@ import {
   usableRoom,
 } from './previs/outline';
 import type { Span } from './previs/outline';
+import { boxCorners, boxHeading, headingText } from './previs/raisedArea';
 import { scanRings, scanRisers, usableLine } from './previs/roomShell';
 
 export type PlanPoint = { x: number; z: number };
@@ -35,13 +36,24 @@ export interface PlanWalls {
 }
 
 export interface PlanRaised {
-  /** The corner nearest upstage stage right: least x and least z. */
+  /**
+   * The corner nearest upstage stage right, least x and least z, of the
+   * rectangle as it would stand square to the room. One at a heading is that
+   * rectangle turned about its middle by `heading`.
+   */
   x: number;
   z: number;
   width: number;
   depth: number;
   centerX: number;
   centerZ: number;
+  /**
+   * Degrees it is turned clockwise about its middle, as the plan is drawn
+   * (slice 21). Left out for one that stands square to the room.
+   */
+  heading?: number;
+  /** Its four corners where they stand, in order round it. Only with a `heading`. */
+  corners?: PlanPoint[];
   /** Its top above the floor. */
   top: number;
   kind: string;
@@ -136,7 +148,9 @@ export function roomPlan(shell: RoomShell | null | undefined): RoomPlan | null {
     const name = riser.name ?? KIND_WORDS[kind] ?? 'Raised area';
     // One that does not stand on the floor (a balcony, a mezzanine) says how far above it it floats.
     const floating = base > 0 ? `, floating ${base.toFixed(2)} m above it` : '';
-    return {
+    // One that does not stand square to the room says how far it is turned, and is drawn turned.
+    const heading = boxHeading(riser);
+    const area: PlanRaised = {
       x: riser.center_x - riser.width / 2,
       z: riser.center_z - riser.depth / 2,
       width: riser.width,
@@ -146,8 +160,14 @@ export function roomPlan(shell: RoomShell | null | undefined): RoomPlan | null {
       top,
       kind,
       label: `${name} · ${top.toFixed(2)} m high`,
-      tooltip: `${name}: ${metres(riser.width)} by ${metres(riser.depth)}, top ${top.toFixed(2)} m above the floor${floating}`,
+      tooltip: `${name}: ${metres(riser.width)} by ${metres(riser.depth)}${headingText(heading)}, `
+        + `top ${top.toFixed(2)} m above the floor${floating}`,
     };
+    if (heading !== 0) {
+      area.heading = heading;
+      area.corners = boxCorners(riser);
+    }
+    return area;
   });
 
   // A line is drawn from its two ends, which every stored shell has: one
@@ -185,7 +205,15 @@ export function roomPlan(shell: RoomShell | null | undefined): RoomPlan | null {
   const xs: number[] = [];
   const zs: number[] = [];
   for (const point of walls?.points ?? []) { xs.push(point.x); zs.push(point.z); }
-  for (const area of raised) { xs.push(area.x, area.x + area.width); zs.push(area.z, area.z + area.depth); }
+  for (const area of raised) {
+    if (area.corners) {
+      // Turned: as far as its corners reach, which is further than its sides would square to the room.
+      for (const corner of area.corners) { xs.push(corner.x); zs.push(corner.z); }
+    } else {
+      xs.push(area.x, area.x + area.width);
+      zs.push(area.z, area.z + area.depth);
+    }
+  }
   for (const line of trussLines) { xs.push(line.x1, line.x2); zs.push(line.z1, line.z2); }
   for (const ring of trussRings) {
     const reach = ring.radius + ring.across / 2;

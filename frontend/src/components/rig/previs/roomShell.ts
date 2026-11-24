@@ -17,6 +17,7 @@ import { box, cylZ, merge, paint, place, strut, tubeY } from './geometryKit';
 import { usableRoom } from './layout';
 import type { Hanger, KnownRoom, TrussRow } from './layout';
 import { outlineBox, outlineSpansX, outlineSpansZ, spansInBoth } from './outline';
+import { boxHeading } from './raisedArea';
 import type { OutlinePoint } from './outline';
 
 // The outline's own maths has no three.js in it and lives in outline.ts, where
@@ -219,10 +220,22 @@ export function buildRisers(shapes: RoomShellBox[]): THREE.BufferGeometry | null
   const parts: THREE.BufferGeometry[] = [];
   for (const shape of shapes) {
     const base = shape.base_height ?? 0;
+    // A raised area at a heading (slice 21). The box is made with its width along X, and a turn of `a`
+    // about Y takes +X to (cos a, -sin a) on the plan, so a heading towards +Z is the turn the other
+    // way: what `buildOverheadLines` does for a line. One with no heading is not turned at all.
+    const heading = boxHeading(shape);
+    const turn: [number, number, number] | undefined = heading === 0 ? undefined : [0, -(heading * Math.PI) / 180, 0];
     parts.push(
-      paint(place(box(shape.width, shape.height, shape.depth), [shape.center_x, base + shape.height / 2, shape.center_z]), RISER),
       paint(
-        place(box(shape.width + 0.04, 0.03, shape.depth + 0.04), [shape.center_x, base + shape.height + 0.015, shape.center_z]),
+        place(box(shape.width, shape.height, shape.depth), [shape.center_x, base + shape.height / 2, shape.center_z], turn),
+        RISER,
+      ),
+      paint(
+        place(
+          box(shape.width + 0.04, 0.03, shape.depth + 0.04),
+          [shape.center_x, base + shape.height + 0.015, shape.center_z],
+          turn,
+        ),
         RISER_TOP,
       ),
     );
