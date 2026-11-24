@@ -5,6 +5,12 @@
  *
  * Everything that does not move is merged into two geometries, one solid and
  * one for the parts that light up. The DJ is two more, so the head can nod.
+ *
+ * In a scanned room the booth is where the room has it (`ScanBooth`,
+ * scanFloor.ts): the same desk, decks and DJ, built facing +Z about the middle
+ * of the booth's front face and then turned and moved there. The raised area
+ * it stands on is the room's own and is drawn with the room, and no speaker
+ * stacks are made up for a room somebody measured.
  */
 import { memo, useEffect, useMemo, useRef } from 'react';
 import type { MutableRefObject } from 'react';
@@ -13,8 +19,10 @@ import * as THREE from 'three';
 import { box, capsule, cylX, cylY, merge, paint, place, tubeY } from './geometryKit';
 import type { Vec3 } from './geometryKit';
 import type { BeatClock } from './beatClock';
+import { GUESS_COLOR } from './GuessMarkers';
 import type { ClubLayout } from './layout';
 import { glowMaterial, mattMaterial } from './materials';
+import type { ScanBooth } from './scanFloor';
 
 const CASE = '#2c2e35';
 const DESK = '#4a4d57';
@@ -58,27 +66,95 @@ function buildSpeakerStack(x: number, z: number, width: number, depth: number): 
   return parts;
 }
 
-function buildBooth(layout: ClubLayout): { solid: THREE.BufferGeometry; glow: THREE.BufferGeometry } {
-  const { booth, backZ, speakers } = layout;
-  const W = booth.width;
-  const fz = booth.fasciaZ;
-  const top = booth.deskTopY;
-  const rh = booth.riserHeight;
-  const dd = booth.deskDepth;
-  const deskZ = fz - dd / 2;
+/**
+ * What a booth is built from, in the frame it is built in: X along its front,
+ * +Z the way it faces.
+ */
+type BoothPlan = {
+  width: number;
+  /** Front face of the desk. */
+  fasciaZ: number;
+  deskTopY: number;
+  deskDepth: number;
+  /** Middle of the decks and the mixer. */
+  deskZ: number;
+  /** What the DJ stands on. */
+  standY: number;
+  djZ: number;
+  /** Where the desk's front and slats start from: the floor, or the top of the platform it stands on. */
+  baseY: number;
+  /** The view's own low riser from the wall at `backZ` to the fascia. Null where the room has its own. */
+  riser: { backZ: number } | null;
+  /** The desk itself: front, top, ends and slats. False where the decks sit on a counter the room has. */
+  desk: boolean;
+  speakers: ClubLayout['speakers'] | null;
+  dj: boolean;
+};
 
-  const solid: THREE.BufferGeometry[] = [
-    paint(place(box(W + 0.3, rh, fz - backZ), [0, rh / 2, (fz + backZ) / 2]), RISER),
-    paint(place(box(W, top, 0.05), [0, top / 2, fz - 0.025]), FASCIA),
-    paint(place(box(W + 0.04, 0.045, dd + 0.04), [0, top - 0.0225, deskZ]), DESK),
-    paint(place(box(0.05, top - rh, dd), [-(W / 2 - 0.025), rh + (top - rh) / 2, deskZ]), FASCIA),
-    paint(place(box(0.05, top - rh, dd), [W / 2 - 0.025, rh + (top - rh) / 2, deskZ]), FASCIA),
-  ];
-  // Vertical slats down the booth front.
-  const slats = Math.max(4, Math.round(W / 0.3));
-  for (let i = 0; i <= slats; i += 1) {
-    const x = -W / 2 + 0.06 + ((W - 0.12) * i) / slats;
-    solid.push(paint(place(box(0.05, top - 0.14, 0.016), [x, (top - 0.14) / 2 + 0.03, fz + 0.008]), SLAT));
+/** The booth the view makes up for a room it knows nothing about: against the upstage wall. */
+function templatePlan(layout: ClubLayout): BoothPlan {
+  const { booth } = layout;
+  return {
+    width: booth.width,
+    fasciaZ: booth.fasciaZ,
+    deskTopY: booth.deskTopY,
+    deskDepth: booth.deskDepth,
+    deskZ: booth.fasciaZ - booth.deskDepth / 2,
+    standY: booth.riserHeight,
+    djZ: booth.djZ,
+    baseY: 0,
+    riser: { backZ: layout.backZ },
+    desk: true,
+    speakers: layout.speakers,
+    dj: true,
+  };
+}
+
+/** The booth of a scanned room, about the middle of its front face. */
+function scanPlan(placed: ScanBooth): BoothPlan {
+  return {
+    width: placed.width,
+    fasciaZ: 0,
+    deskTopY: placed.deskTopY,
+    deskDepth: placed.deskDepth,
+    deskZ: -placed.gearBack,
+    standY: placed.dj ? placed.dj.y : placed.baseY,
+    djZ: placed.dj ? -placed.dj.back : 0,
+    baseY: placed.baseY,
+    riser: null,
+    desk: placed.desk,
+    speakers: null,
+    dj: placed.dj !== null,
+  };
+}
+
+function buildBooth(plan: BoothPlan): { solid: THREE.BufferGeometry; glow: THREE.BufferGeometry } {
+  const { speakers, deskZ } = plan;
+  const W = plan.width;
+  const fz = plan.fasciaZ;
+  const top = plan.deskTopY;
+  const rh = plan.standY;
+  const dd = plan.deskDepth;
+  const by = plan.baseY;
+
+  const solid: THREE.BufferGeometry[] = [];
+  if (plan.riser) {
+    const { backZ } = plan.riser;
+    solid.push(paint(place(box(W + 0.3, rh, fz - backZ), [0, rh / 2, (fz + backZ) / 2]), RISER));
+  }
+  if (plan.desk) {
+    solid.push(
+      paint(place(box(W, top - by, 0.05), [0, by + (top - by) / 2, fz - 0.025]), FASCIA),
+      paint(place(box(W + 0.04, 0.045, dd + 0.04), [0, top - 0.0225, deskZ]), DESK),
+      paint(place(box(0.05, top - rh, dd), [-(W / 2 - 0.025), rh + (top - rh) / 2, deskZ]), FASCIA),
+      paint(place(box(0.05, top - rh, dd), [W / 2 - 0.025, rh + (top - rh) / 2, deskZ]), FASCIA),
+    );
+    // Vertical slats down the booth front.
+    const slats = Math.max(4, Math.round(W / 0.3));
+    for (let i = 0; i <= slats; i += 1) {
+      const x = -W / 2 + 0.06 + ((W - 0.12) * i) / slats;
+      solid.push(paint(place(box(0.05, top - by - 0.14, 0.016), [x, by + (top - by - 0.14) / 2 + 0.03, fz + 0.008]), SLAT));
+    }
   }
 
   const glow: THREE.BufferGeometry[] = [];
@@ -145,7 +221,7 @@ function buildBooth(layout: ClubLayout): { solid: THREE.BufferGeometry; glow: TH
     }
   }
 
-  if (speakers.present) {
+  if (speakers && speakers.present) {
     solid.push(
       ...buildSpeakerStack(-speakers.x, speakers.z, speakers.width, speakers.depth),
       ...buildSpeakerStack(speakers.x, speakers.z, speakers.width, speakers.depth),
@@ -213,33 +289,64 @@ function buildDJ(leftHand: Vec3, rightHand: Vec3): { body: THREE.BufferGeometry;
   return { body: merge(body), head };
 }
 
+/**
+ * Marks a booth nobody found in the room: the amber of a guessed fixture
+ * position, as a frame on the stage round where the booth was put and a
+ * diamond over it. In the booth's own frame.
+ */
+function buildGuessMark(plan: BoothPlan): THREE.BufferGeometry {
+  const y = plan.baseY + 0.025;
+  const front = plan.fasciaZ + 0.12;
+  const back = Math.min(plan.djZ, plan.fasciaZ - plan.deskDepth) - 0.4;
+  const half = plan.width / 2 + 0.15;
+  const midZ = (front + back) / 2;
+  return merge([
+    paint(place(box(half * 2, 0.02, 0.05), [0, y, front]), GUESS_COLOR),
+    paint(place(box(half * 2, 0.02, 0.05), [0, y, back]), GUESS_COLOR),
+    paint(place(box(0.05, 0.02, front - back), [-half, y, midZ]), GUESS_COLOR),
+    paint(place(box(0.05, 0.02, front - back), [half, y, midZ]), GUESS_COLOR),
+    paint(place(new THREE.OctahedronGeometry(0.13), [0, plan.deskTopY + 1.75, midZ]), GUESS_COLOR),
+  ]);
+}
+
 export const DJBooth = memo(function DJBooth({
   layout,
   clock,
+  placed = null,
 }: {
   layout: ClubLayout;
   clock: MutableRefObject<BeatClock>;
+  /**
+   * Where the booth is in a scanned room. Left out, it is the booth the view
+   * makes up against the upstage wall, with its riser and speaker stacks.
+   */
+  placed?: ScanBooth | null;
 }) {
   const djRef = useRef<THREE.Group>(null);
   const headRef = useRef<THREE.Mesh>(null);
 
   const built = useMemo(() => {
-    const { booth } = layout;
-    const deskZ = booth.fasciaZ - booth.deskDepth / 2;
+    const plan = placed ? scanPlan(placed) : templatePlan(layout);
     // Hands, relative to the DJ's feet: left on the left jog wheel, right on
     // the mixer.
-    const handY = booth.deskTopY - booth.riserHeight + 0.125;
-    const reachZ = deskZ - booth.djZ;
+    const handY = plan.deskTopY - plan.standY + 0.125;
+    const reachZ = plan.deskZ - plan.djZ;
     const leftHand: Vec3 = [-DECK_SPACING + 0.02, handY, reachZ - 0.075];
     const rightHand: Vec3 = [0.1, handY, reachZ - 0.1];
-    return { booth: buildBooth(layout), dj: buildDJ(leftHand, rightHand) };
-  }, [layout]);
+    return {
+      plan,
+      booth: buildBooth(plan),
+      dj: plan.dj ? buildDJ(leftHand, rightHand) : null,
+      guess: placed && placed.source === 'guess' ? buildGuessMark(plan) : null,
+    };
+  }, [layout, placed]);
 
   useEffect(() => () => {
     built.booth.solid.dispose();
     built.booth.glow.dispose();
-    built.dj.body.dispose();
-    built.dj.head.dispose();
+    built.dj?.body.dispose();
+    built.dj?.head.dispose();
+    built.guess?.dispose();
   }, [built]);
 
   useFrame(({ clock: three }) => {
@@ -250,7 +357,7 @@ export const DJBooth = memo(function DJBooth({
     const onBeat = (1 + Math.cos(phase * Math.PI * 2)) / 2;
     const drive = beat.running ? 0.35 + beat.energy * 0.65 : 0;
     if (djRef.current) {
-      djRef.current.position.y = layout.booth.riserHeight - 0.022 * onBeat * drive;
+      djRef.current.position.y = built.plan.standY - 0.022 * onBeat * drive;
     }
     if (headRef.current) {
       headRef.current.rotation.x = 0.06 + 0.2 * onBeat * drive;
@@ -260,13 +367,16 @@ export const DJBooth = memo(function DJBooth({
   });
 
   return (
-    <group>
+    <group position={placed ? [placed.x, 0, placed.z] : [0, 0, 0]} rotation={[0, placed ? placed.yaw : 0, 0]}>
       <mesh geometry={built.booth.solid} material={mattMaterial} castShadow receiveShadow dispose={null} />
       <mesh geometry={built.booth.glow} material={glowMaterial} dispose={null} />
-      <group ref={djRef} position={[0, layout.booth.riserHeight, layout.booth.djZ]}>
-        <mesh geometry={built.dj.body} material={mattMaterial} castShadow dispose={null} />
-        <mesh ref={headRef} geometry={built.dj.head} material={mattMaterial} position={[0, NECK_Y, 0]} castShadow dispose={null} />
-      </group>
+      {built.guess && <mesh geometry={built.guess} material={glowMaterial} dispose={null} />}
+      {built.dj && (
+        <group ref={djRef} position={[0, built.plan.standY, built.plan.djZ]}>
+          <mesh geometry={built.dj.body} material={mattMaterial} castShadow dispose={null} />
+          <mesh ref={headRef} geometry={built.dj.head} material={mattMaterial} position={[0, NECK_Y, 0]} castShadow dispose={null} />
+        </group>
+      )}
     </group>
   );
 });

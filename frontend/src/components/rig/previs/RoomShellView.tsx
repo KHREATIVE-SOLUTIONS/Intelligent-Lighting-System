@@ -141,7 +141,8 @@ export const RoomShellView = memo(function RoomShellView({
 
   const built = useMemo(() => {
     // A scanned room's raised areas (stage, risers, booth) are all drawn as
-    // the scan found them; the view builds no booth of its own in that room.
+    // the scan found them. The desk, decks and DJ of that room's booth stand
+    // on one of these boxes (DJBooth with `placed`), which stays drawn here.
     const risers = [shell.rear_stage].filter(usableBox).concat(scanRisers(shell));
     const overhead = (shell.truss_lines ?? [])
       .filter(usableLine)
