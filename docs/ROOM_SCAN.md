@@ -116,8 +116,14 @@ its turned edges, as far in from them, and each fixture is turned as far;
 and the scan's undo turns them back (see "What slice 27 built"). A stage
 standing square is read and suggested for exactly as before. Backend only.
 Its tests pass (pytest 2531 passed, 10 skipped, 5 xfailed, Nov 24). **No
-turned stage from a real phone has been read**, and the preview table does
-not show the turn (see What is left).
+turned stage from a real phone has been read** (see What is left).
+
+Slice 29 **shows the turn in the Room Scan dialog**: the table of fixture
+moves has a Turn column, and the sentence above it says how many fixtures
+will be turned (see "What slice 29 built"). Frontend only. The type-check
+was run and has only its 13 older errors. **Its tests are written and have
+not been run, and the build was not run**: `npx vitest run` and `npm run
+build` were refused in the session that wrote it (see What is left).
 
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
@@ -205,7 +211,10 @@ Rig editor toolbar, **Room Scan**:
 2. Read the preview: the room's size, each raised area and overhead line, how
    the scan was read (units, up axis, which end was taken as upstage), any
    warnings, and a table of the fixtures that would move, from where to where
-   and why.
+   and why. Its **Turn** column says how many degrees a fixture is turned
+   with a stage that stands at a heading (clockwise seen from above), with a
+   dash where it is not turned; the sentence above the table says how many
+   will be.
 3. If the room came out wrong, correct the guess and the preview is read again:
    **Units** (metres, centimetres, millimetres), **Up axis** (Y or Z), **Turn
    the room** in quarter turns when the wrong wall was taken as upstage.
@@ -591,7 +600,8 @@ The answer, for both:
   `suggested: true`. A move onto a stage that stands at a heading also has
   `turn_deg` (slice 27): the degrees the fixture is turned with the stage,
   clockwise seen from above, which apply takes off its `rotation_y`. A move
-  that turns nothing has no `turn_deg`.
+  that turns nothing has no `turn_deg`. The dialog shows it in the table's
+  Turn column (slice 29).
 - `applied`: `null` for a preview. After apply: `room_shell_stored`,
   `fixtures_moved`, `fixtures_still_unconfirmed` and a message.
 
@@ -1551,6 +1561,53 @@ A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
 
+## What slice 29 built
+
+The Room Scan dialog shows the turn. Slice 27 turns each fixture of a row
+laid on a stage that stands at a heading, and the answer says by how much
+(`turn_deg`), but the dialog's table had no column for it: the only word of
+it was in the move's reason. Frontend only; no backend file was changed.
+
+- **The words** (`utils/roomScan.ts`). `RoomScanMove` has `turn_deg`, which
+  the server sends only where a fixture is turned.
+  - `turnText(move)` is the cell: "30 deg", "-12.5 deg", to a tenth of a
+    degree (what a heading is stored to) and with its sign, clockwise seen
+    from above as the server gives it. A dash (`NO_TURN_TEXT`) for 0, for a
+    move with no `turn_deg`, for anything that is not a number, and for a
+    turn too small to show as a tenth, so there is never a "0 deg".
+  - `turnedCount(moves)` counts the moves whose cell is not a dash.
+  - `turnSummaryText(moves, applied)` is the sentence: "2 of them will also
+    be turned with the stage, which stands at a heading." ("All 3", "Both"
+    or "It" where every move turns), in the past once applied ("were",
+    "was"), and nothing at all when no move turns. `fixtureMoveText` is not
+    changed, so a room standing square reads word for word as it did.
+- **The dialog** (`RoomScanDialog.tsx`). A **Turn** column between the
+  positions and Why, with a tooltip saying which way round it is. The
+  sentence above the table has the turned count after the count of moves.
+  After Apply the table and the column stay; the sentence says how many
+  were turned only when fixtures were moved, so storing the room with the
+  box unticked does not say a fixture was turned.
+- **No ghosts, so none turned.** The dialog draws no fixture at its
+  suggested place, in 3D or in 2D: the preview is held in the dialog alone
+  and handed to no view. No preview was added.
+- **Tests.** `roomScan.test.ts` ("the turn of a move", 6 tests): the text to
+  a tenth and with its sign; the dash for 0, -0, no key, null, a string, NaN,
+  infinity and 0.04 either way; the count; the sentence for some, all, both
+  and one, before and after apply; and `fixtureMoveText` unchanged.
+  `RoomScanDialogTurn.test.tsx` (7 tests, the dialog drawn with a mocked
+  API and a file chosen): the five headers in order; 30, -12.5, 0 and a
+  missing key in their rows, the cell fourth in its row; the sentence with
+  the count and with "All 3"; no word of a turn where none turns, the whole
+  sentence as it was; and after Apply, the count in the past with fixtures
+  moved and nothing with only the room stored.
+- **What was run** (Nov 24). `npx tsc --noEmit -p .`: the 13 older errors
+  and no other, none in `roomScan.ts`, `RoomScanDialog.tsx` or either test
+  file. **`npx vitest run` and `npm run build` were refused in the session**
+  (in both shells), so the 13 new tests have not been run and the bundle
+  has not been built with this change. The backend was not touched and its
+  suite was not run again. See "What is left".
+- **No Art-Net, no DMX, no network call, no new dependency.**
+
 ## What slice 28 built
 
 "This one is the DJ's booth", and cameras that look at it. Until now the
@@ -1659,13 +1716,15 @@ makes up against the upstage wall whatever the room had.
   box, what it sends, Undo, one at a time, the helpers).
 - **What was run** (Nov 24). Backend, with the main checkout's venv:
   `python -m pytest tests/ -q` **2562 passed, 10 skipped, 5 xfailed** (2531
-  before the slice; the 31 new ones are the two files above). **Nothing of
-  the frontend was run.** This worktree has no `frontend/node_modules`, and
-  `npm ci`, `npx vitest run`, and `node` on the main checkout's `tsc` were
-  each refused in the session; `npx tsc` ran and found no compiler. So the
-  four new test files, the changed files, the type-check (13 older errors
-  expected) and the build are all unchecked by any tool: the expected
-  numbers in the tests were worked out by hand. See "What is left".
+  before the slice; the 31 new ones are the two files above). **The frontend
+  was run afterwards** (Nov 24): `npx vitest run` 59 files, 1222 passed;
+  `npm run build` OK; `npx tsc --noEmit` only the 13 older errors; and the
+  backend again 2562 passed, 10 skipped, 5 xfailed. When the slice was
+  written none of the frontend was run: the worktree had no
+  `frontend/node_modules`, and `npm ci`, `npx vitest run`, and `node` on the
+  main checkout's `tsc` were each refused, so the expected numbers in the
+  tests were worked out by hand. It has not been seen in a browser: see
+  "What is left".
 - **No Art-Net, no DMX, no network call, no new dependency.**
 
 ## What slice 27 built
@@ -2942,8 +3001,12 @@ Pixar's USD library from the same rooms (slice 24).
   `backend/tests/integration/test_api_room_shell_dj_booth.py`: the DJ booth
   mark (slice 28). Run. The frontend's `boothPick.test.ts`,
   `boothCamera.test.ts`, `RoomShellDjBoothDialog.test.tsx` and
-  `StageView2DDjBooth.test.tsx` are written and **have not been run** (see
-  "What slice 28 built").
+  `StageView2DDjBooth.test.tsx` were run afterwards and pass (vitest 59
+  files, 1222 passed, Nov 24; see "What slice 28 built").
+- `frontend/src/__tests__/RoomScanDialogTurn.test.tsx` and "the turn of a
+  move" in `roomScan.test.ts`: the Turn column of the Room Scan dialog and
+  its words (slice 29). Type-checked; **written and not run** (see "What
+  slice 29 built").
 - `backend/tests/unit/test_room_scan.py`: the parsers (OBJ, PLY in three
   encodings, USDA, USDZ, RoomPlan JSON), the same room recovered whatever the
   units, axes and heading, a point cloud with no normals, a scan leaking through
@@ -3555,22 +3618,36 @@ Pixar's USD library from the same rooms (slice 24).
 
 ## What is left
 
-- **Slice 28's frontend has not been run at all**, and nothing of it has
-  been seen in a browser. Its backend tests pass (2562 in the whole suite).
-  The session that wrote it had no `frontend/node_modules` and was refused
-  `npm ci`, `npx vitest run` and `node`. Before relying on it, in
-  `frontend/`: `npm ci`, `npx vitest run`, `npx tsc --noEmit -p .` (13 older
-  errors are expected, none in `boothPick.ts`, `boothCamera.ts`,
-  `scanFloor.ts`, `roomPlan2d.ts`, `roomShellEdit.ts`, `StageView2D.tsx`,
-  `RoomShellEditDialog.tsx` or `RigVisualizer.tsx`) and `npm run build`. Its
-  test files are `boothPick.test.ts`, `boothCamera.test.ts`,
-  `RoomShellDjBoothDialog.test.tsx` and `StageView2DDjBooth.test.tsx`. Expect a first run to find something: a
-  type error is as likely as a failed expectation, and one expectation
-  (a booth by the stage right wall facing stage left, in `boothPick.test.ts`)
-  rests on where the middle of the open floor falls, which was reasoned and
-  not computed. Not seen: the DJ and Floor cameras on a real room, the DJ
-  camera from behind a side wall or an outline's wall, the tag's size over a
-  small booth, and the box in the already wide row of Edit Room.
+- **Slice 29's tests have not been run, and nor has the build with it.**
+  `npx vitest run` and `npm run build` were refused in the session that
+  wrote it; `npx tsc --noEmit -p .` ran, with its 13 older errors and no
+  new one. Before relying on it, in `frontend/`: `npx vitest run` (1222
+  passed in 59 files before the slice; it adds 13 tests and one file,
+  `RoomScanDialogTurn.test.tsx`, and 6 of the 13 are in `roomScan.test.ts`)
+  and `npm run build`. The likeliest thing for a first run to find is in
+  `RoomScanDialogTurn.test.tsx`: it is the first test to draw the Room Scan
+  dialog at all, and it chooses a file through the hidden file input and
+  reads the table by its roles. **Not seen in a browser**: how the Turn
+  column sits in the table at the dialog's width, where Why is already the
+  wide one.
+- **The Turn column goes only so far** (slice 29):
+  - **It is the number the server gives**, clockwise seen from above. It
+    does not say what the fixture's `rotation_y` was or will be, which runs
+    the other way round.
+  - **Nothing is drawn turned before Apply.** The dialog has no picture of
+    the suggestion; the turn is seen in the 3D view once it is applied.
+  - **After Apply the count is of the moves listed**, not of what the
+    server says it turned: the answer has no such number.
+  - **The undo's words do not say a fixture was turned back** (slice 27).
+- **Slice 28 has been run but not seen in a browser.** Its tests, the build
+  and the type-check pass (Nov 24: vitest 59 files, 1222 passed; `npm run
+  build` OK; `npx tsc --noEmit` only the 13 older errors; backend 2562
+  passed, 10 skipped, 5 xfailed). The session that wrote it had none of
+  the frontend's: it had no `frontend/node_modules` and was refused
+  `npm ci`, `npx vitest run` and `node`. Not seen: the DJ and Floor cameras
+  on a real room, the DJ camera from behind a side wall or an outline's
+  wall, the tag's size over a small booth, and the box in the already wide
+  row of Edit Room.
 - **The DJ booth mark goes only so far** (slice 28):
   - **Reading the scan again drops it**, as it drops every change made by
     hand: the scan writes a new room. Mark the booth again.
@@ -3695,10 +3772,6 @@ Pixar's USD library from the same rooms (slice 24).
     read square when it is turned, which is the old behaviour, more often
     than turned when it is square. Keep the scan either way.
   - **An ungrouped row moved while the stage stood square is not kept whole once the stage is turned by hand without its box ticked.** Ungrouped fixtures a scan has moved are a row by their depth on the turned stage (within 0.05 m of the next); ones still lying along the room are read a fixture at a time. Give the row a group.
-  - **The preview table does not show the turn.** The move's `reason`
-    says it ("... which stands turned 30 degrees and turned with it") and
-    the answer has `turn_deg`, but the Room Scan dialog has no column for
-    it, and no frontend file was changed or run in this slice.
   - **A row an earlier scan moved is not swung by a later one.** A rig
     scanned when the stage stood square (or by a version before this one)
     has the scan's hint on its rows, and a hinted row is read as already
