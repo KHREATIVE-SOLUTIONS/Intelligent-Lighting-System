@@ -31,6 +31,15 @@ drawn across it cannot be slid under it, so it is laid out along it.
         nothing found overhead, only brought down to hang under the ceiling.
     Floor rows standing where the scan found a stage
         up onto the stage, and in from its edges.
+        A stage that stands at a heading (`heading_deg`, which a scan measures
+        for a stage turned clear of the room's walls, and Edit Room sets by
+        hand) takes its rows turned with it: the row is fitted to the stage as
+        it would be to one standing square, then swung about the stage's
+        middle by the heading, so it is parallel to the turned edges and as
+        far from them, and each fixture is turned as far (`turn_deg`, taken
+        off its `rotation_y`). A row a scan has already moved (TAG_SCAN_HINT)
+        is read as already laid on the turned stage: it is only fitted, never
+        swung again. A stage at heading 0, or with none, is the old rule.
     Every row
         inside the walls. In a room that is not a box (an L, a cut corner)
         that is its floor outline and not the box round it: a row with a guess
@@ -51,6 +60,8 @@ import numpy as np
 
 from app.services.venue_import.apply import SOURCE_TEMPLATE, is_unconfirmed, position_source
 
+from .carry import _swung, _wrap_heading
+from .edit import area_heading
 from .extract import clear_of_outline, inside_outline, outline_area
 
 # Added to a moved fixture's tags, so a guess that a scan has shifted can be
@@ -82,12 +93,15 @@ class SuggestedMove:
     from_position: Point
     to_position: Point
     reason: str
+    # Degrees the fixture is turned with a stage that stands at a heading,
+    # clockwise seen from above. 0 for every move a room standing square makes.
+    turn_deg: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         def point(p: Point) -> Dict[str, float]:
             return {"x": p[0], "y": p[1], "z": p[2]}
 
-        return {
+        out = {
             "rig_fixture_id": self.rig_fixture_id,
             "name": self.name,
             "group": self.group,
@@ -97,6 +111,10 @@ class SuggestedMove:
             # Like every part of the shell: a guess moved to a better guess.
             "suggested": True,
         }
+        # Only a move that turns says so: every other move reads as it always did.
+        if self.turn_deg:
+            out["turn_deg"] = self.turn_deg
+        return out
 
 
 def movable(fixture: Any) -> bool:
@@ -333,6 +351,194 @@ def _shift_into_outline(
         reach *= 2.0
 
 
+# ---------------------------------------------------------------------------
+# A stage that stands at a heading
+# ---------------------------------------------------------------------------
+
+def turned_rotation(rotation_y: Any, turn_deg: float) -> float:
+    """A fixture's `rotation_y` after it is turned `turn_deg` clockwise seen from above.
+
+    `rotation_y` turns +Z towards +X and a heading turns +X towards +Z, the
+    other way round, so the turn comes off it: the rule carry.py turns a
+    fixture by when the stage under it is turned by hand.
+    """
+    stored = _number(rotation_y)
+    return _wrap_heading((stored if stored is not None else 0.0) - turn_deg)
+
+
+def _stage_heading(stage: Any) -> float:
+    """The heading the suggestion's stage stands at; 0 when it stores none or is not a box that can be turned."""
+    if not isinstance(stage, dict):
+        return 0.0
+    if any(_number(stage.get(key)) is None for key in ("center_x", "center_z", "width", "depth", "height")):
+        return 0.0
+    return area_heading(stage)
+
+
+def _already_laid(members: Sequence[Any]) -> bool:
+    """Whether a scan has moved any fixture of this row before: such a row is never swung a second time."""
+    return any(TAG_SCAN_HINT in (getattr(f, "tags", None) or []) for f in members)
+
+
+def _onto_turned_stage(
+    members: Sequence[Any], points: Sequence[Point], stage: Dict[str, Any], heading: float, label: str,
+    half_width: float, half_depth: float, ceiling: float, outline: Optional[np.ndarray], notes: List[str],
+) -> Optional[List[SuggestedMove]]:
+    """The moves that put a floor row onto a stage standing at a heading, or None when the row is not the stage's.
+
+    The row is read in the stage's own two ways, along its width (u) and from
+    its back to its front (v), fitted there by the rule for a stage that
+    stands square, and put back turned. A row no scan has moved was drawn as
+    though the stage stood square: its place from the stage's middle is taken
+    as it is, and the whole row is swung by the heading, each fixture turned
+    with it. A row a scan has moved is already turned: it is un-swung to be
+    read, and nothing is turned again.
+    """
+    cx, cz = float(stage["center_x"]), float(stage["center_z"])
+    half_w, half_d = float(stage["width"]) / 2.0, float(stage["depth"]) / 2.0
+    laid = _already_laid(members)
+    turn = 0.0 if laid else heading
+    local = [
+        _swung(x - cx, z - cz, -heading) if laid else (x - cx, z - cz)
+        for x, _, z in points
+    ]
+    us, vs, ys = [p[0] for p in local], [p[1] for p in local], [p[1] for p in points]
+    centre_u, mean_v, mean_y = (min(us) + max(us)) / 2.0, sum(vs) / len(vs), sum(ys) / len(ys)
+    # The square rule's test, in the stage's own ways: behind its front edge and over its width.
+    if not (mean_v <= half_d and -half_w <= centre_u <= half_w):
+        return None
+
+    stage_base = _number(stage.get("base_height"))
+    stage_top = float(stage["height"]) + (stage_base if stage_base is not None and stage_base > 0 else 0.0)
+    stage_name = str(stage.get("name") or "stage").lower()
+    dy = stage_top if mean_y < stage_top else 0.0
+    edge = STAGE_EDGE_CLEARANCE
+
+    def lay(row: Sequence[Tuple[float, float]]) -> Tuple[List[float], List[float], bool, List[str]]:
+        """A row given in the stage's own ways, fitted to the stage, turned and held to the room.
+
+        (x of each, z of each, whether the walls moved any of it, what to say.)
+        """
+        said: List[str] = []
+        row_u, row_v = [p[0] for p in row], [p[1] for p in row]
+        shift = _fit(min(row_v), max(row_v), -half_d + edge, half_d - edge)
+        dv = shift if shift is not None else (half_d - edge) - max(row_v)
+        du = 0.0
+        shift = _fit(min(row_u), max(row_u), -half_w + edge, half_w - edge)
+        if shift is None:
+            said.append(
+                f"{label}: the row is wider than the {stage_name} the scan found; it was left overhanging the sides."
+            )
+        else:
+            du = shift
+        du, dv = round(du, 2), round(dv, 2)
+        # Where each stands in the room once the row is on the turned stage.
+        placed = [_swung(u + du, v + dv, heading) for u, v in row]
+        to_x, to_z = [cx + p[0] for p in placed], [cz + p[1] for p in placed]
+
+        # Whatever else happened, a row belongs inside the room: as one piece
+        # where it fits, and a guess at a time where it does not.
+        moved = False
+        if half_width > 0 and half_depth > 0:
+            for along, half in ((to_x, half_width), (to_z, half_depth)):
+                low, high = -half + WALL_CLEARANCE, half - WALL_CLEARANCE
+                shift = _fit(min(along), max(along), low, high)
+                if shift is None:
+                    said.append(f"{label}: the row is longer than the room the scan found; check the scan's scale.")
+                    held = [min(max(value, low), high) if low <= high else 0.0 for value in along]
+                else:
+                    held = [value + shift for value in along]
+                if any(abs(a - b) > 1e-9 for a, b in zip(held, along)):
+                    moved = True
+                along[:] = held
+        if outline is not None and not _all_inside(to_x, to_z, outline):
+            inward = _shift_into_outline(to_x, to_z, outline)
+            if inward is not None:
+                to_x, to_z = [x + inward[0] for x in to_x], [z + inward[1] for z in to_z]
+                moved = True
+            else:
+                alone = 0
+                for index, (x, z) in enumerate(zip(to_x, to_z)):
+                    if _all_inside([x], [z], outline):
+                        continue
+                    own = _shift_into_outline([x], [z], outline)
+                    if own is not None:
+                        to_x[index], to_z[index] = x + own[0], z + own[1]
+                        alone += 1
+                if alone:
+                    moved = True
+                    said.append(
+                        f"{label}: the row does not fit inside the room's walls in one piece; "
+                        f"{alone} of its fixtures were brought inside on their own, "
+                        "so it is no longer a straight row."
+                    )
+        return to_x, to_z, moved, said
+
+    def within_walls(row_x: Sequence[float], row_z: Sequence[float]) -> bool:
+        """Whether a row as it stands is inside the room, to the millimetre a stored position is rounded to."""
+        slack = 0.002
+        if half_width > 0 and half_depth > 0:
+            if max(abs(x) for x in row_x) > half_width - WALL_CLEARANCE + slack:
+                return False
+            if max(abs(z) for z in row_z) > half_depth - WALL_CLEARANCE + slack:
+                return False
+        return outline is None or _all_inside(row_x, row_z, outline)
+
+    # A fit to a turned stage and a hold to the room's walls pull along
+    # different ways, so doing both again need not give the same place again.
+    # Where the walls moved the row, it is settled here and now: the stage's
+    # rule is asked once more from where the walls left it, and its answer is
+    # taken if the walls let it stand. And a row a scan has laid that the
+    # walls would move again, though it stands inside them, stays where it is:
+    # the same scan read twice moves nothing the second time.
+    at_x, at_z, walls, said = lay(local)
+    if walls:
+        here_x, here_z = [p[0] for p in points], [p[2] for p in points]
+        if laid and within_walls(here_x, here_z):
+            at_x, at_z, walls, said = here_x, here_z, False, []
+        else:
+            again = lay([_swung(x - cx, z - cz, -heading) for x, z in zip(at_x, at_z)])
+            if not again[2]:
+                at_x, at_z = again[0], again[1]
+    notes.extend(note for note in said if note not in notes)
+    reasons = [
+        f"onto the {stage_name} ({stage_top:.2f} m up), which stands turned {heading:g} degrees"
+        + (" and turned with it" if turn else "")
+    ]
+    if walls:
+        reasons.append("inside the walls")
+
+    # Lifted onto the stage, and never into the drop under the ceiling.
+    top = max(ceiling - CEILING_DROP, 0.0) if ceiling > 0 else math.inf
+    to_y = [max(0.0, min(y + dy, top)) for y in ys]
+    if any(y + dy > top for y in ys):
+        reasons.append(f"under the {ceiling:.2f} m ceiling")
+
+    targets = [
+        (round(x, 3) + 0.0, round(y, 3) + 0.0, round(z, 3) + 0.0)
+        for x, y, z in zip(at_x, to_y, at_z)
+    ]
+    # The whole row moves or none of it does, and a row that is turned always does.
+    if not turn and all(
+        max(abs(to[0] - x), abs(to[1] - y), abs(to[2] - z)) <= MOVED_IF_OVER
+        for to, (x, y, z) in zip(targets, points)
+    ):
+        return []
+    reason = "Moved " + ", ".join(reasons) + "."
+    return [
+        SuggestedMove(
+            rig_fixture_id=int(getattr(fixture, "id", 0) or 0),
+            name=str(getattr(fixture, "name", "") or ""),
+            group=str(getattr(fixture, "group_name", "") or ""),
+            from_position=(round(x, 3), round(y, 3), round(z, 3)),
+            to_position=to,
+            reason=reason,
+            turn_deg=turn,
+        )
+        for fixture, (x, y, z), to in zip(members, points, targets)
+    ]
+
+
 def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) -> Tuple[List[SuggestedMove], List[str]]:
     """(moves, notes). Fixtures are rig fixtures, or anything with the same attributes."""
     notes: List[str] = []
@@ -347,6 +553,8 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
     rings = [r for r in (shell.get("truss_rings") or []) if _usable_ring(r)]
     bands = shell.get("hanging_bands") or []
     stage = next((r for r in (shell.get("risers") or []) if r.get("kind") == "stage"), None)
+    # 0 for a stage that stands square, as every one did before a heading could be stored.
+    stage_heading = _stage_heading(stage)
     half_width = float(room.get("width") or 0.0) / 2.0
     half_depth = float(room.get("depth") or 0.0) / 2.0
     ceiling = float(room.get("height") or 0.0)
@@ -445,8 +653,16 @@ def suggest_positions(fixtures: Sequence[Any], shell: Optional[Dict[str, Any]]) 
             elif ceiling > 0 and max(ys) > ceiling - CEILING_DROP:
                 dy = (ceiling - CEILING_DROP) - max(ys)
                 reasons.append(f"down to hang under the {ceiling:.2f} m ceiling")
+        elif stage is not None and stage_heading != 0.0:
+            # A stage at a heading: the row goes onto it turned, by a rule of its own.
+            turned = _onto_turned_stage(
+                members, points, stage, stage_heading, label, half_width, half_depth, ceiling, outline, notes,
+            )
+            if turned is not None:
+                moves.extend(turned)
+                continue
         elif stage is not None:
-            sx0 = float(stage["center_x"]) - float(stage["width"]) / 2.0
+            sx0 =float(stage["center_x"]) - float(stage["width"]) / 2.0
             sx1 = float(stage["center_x"]) + float(stage["width"]) / 2.0
             sz0 = float(stage["center_z"]) - float(stage["depth"]) / 2.0
             sz1 = float(stage["center_z"]) + float(stage["depth"]) / 2.0
