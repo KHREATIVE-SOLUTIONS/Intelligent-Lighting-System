@@ -84,6 +84,14 @@ heading (slice 21) is read as it stands turned (see "What slice 23 built").
 Frontend only. Its tests, the type-check and the build have been run and
 pass; it has not been seen in a browser (see What is left).
 
+Slice 24 reads **binary USD** (USDC, the "crate" format), alone or inside a
+USDZ, which is what Apple's RoomPlan, Polycam and Scaniverse write. Until now
+a USDZ from a phone was refused unless its layer happened to be text. The
+reader is pure Python: no USD library and no new dependency (see "What slice
+24 built"). Backend only. Its tests pass against files written by Pixar's own
+USD library; **no USDZ from a real phone has been read by it yet** (see What
+is left).
+
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
 
@@ -115,12 +123,18 @@ fixture's stored position changes without any DMX being sent.
 | --- | --- | --- |
 | Polycam, Scaniverse, 3D Scanner App | **OBJ** (best) or PLY | a mesh |
 | Any LiDAR or photogrammetry app | PLY, ASCII or binary, with or without faces | a mesh or a point cloud |
+| Polycam, Scaniverse, RoomPlan apps | **USDZ** as the app shares it | a mesh, with the units and up axis the file states |
 | Apple RoomPlan apps | the RoomPlan **JSON**, or a USDZ that carries it | walls and objects as boxes |
-| Anything writing USD | USDA, or a USDZ whose layer is **text** | a mesh, with the units and up axis the file states |
+| Anything writing USD | USDA (text) or USDC (binary), alone or in a USDZ | a mesh, with the units and up axis the file states |
 
-A USDZ whose only layer is binary USD (`.usdc`) **cannot be read**: reading it
-needs Pixar's USD library, which is not a dependency of this project. The
-server says so and names the fix: export OBJ from Polycam or Scaniverse instead.
+A USDZ is read whether its layer is text or binary USD (`.usdc`, slice 24).
+OBJ is still the surest export: the binary reader has only read files written
+by Pixar's USD library, not yet one from a phone. One layer of a USDZ is
+read; a scan split across layers that bring each other in may come out with
+parts missing or out of place, and the report says when a USDZ held more than
+one. A binary layer that cannot be read (damaged, cut short, or a newer
+format) is refused, and the server says why and names the fix: export OBJ
+from Polycam or Scaniverse instead.
 
 Tips that make the reader's job easier: scan the whole room including the
 ceiling, keep doors shut where you can, and export at medium detail (the reader
@@ -512,7 +526,7 @@ Refusals, each with a `detail` that says what to do:
 
 | Status | When |
 | --- | --- |
-| 400 | the file is not a scan this reads (binary-only USDZ: "export OBJ from Polycam or Scaniverse"), is cut short, has no surface, or is not a room at any plausible units; or `rotate` is not a quarter turn |
+| 400 | the file is not a scan this reads (a binary USD layer that cannot be read: the reason, then "export OBJ from Polycam or Scaniverse"), is cut short, has no surface, or is not a room at any plausible units; or `rotate` is not a quarter turn |
 | 404 | no such rig |
 | 409 | `apply` would move fixtures while a locate walkthrough is running on the rig. Finish or end it first. A preview, and an apply with `move_fixtures=false`, are still answered |
 | 413 | the file is over 200 MB |
@@ -1041,8 +1055,9 @@ smaller and lower is a `riser`. Edit Room's kind selector sets it by hand
 
 ## How the scan is read
 
-`backend/app/services/room_scan/`: `mesh.py` and `usd.py` parse the file,
-`extract.py` finds the room, `suggest.py` moves the guesses. In order:
+`backend/app/services/room_scan/`: `mesh.py`, `usd.py` and `usdc.py` (binary
+USD, slice 24) parse the file, `extract.py` finds the room, `suggest.py` moves
+the guesses. In order:
 
 1. **Points.** A mesh is sampled by area into points with normals; a point
    cloud is used as it is.
@@ -1428,6 +1443,118 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 24 built
+
+Binary USD read directly, so a USDZ can go from the phone to the room without
+being exported again as OBJ. A USDZ is a ZIP, and the layer inside it is
+nearly always binary USD (USDC, which USD calls the "crate" format): that is
+what RoomPlan, Polycam and Scaniverse write. It was refused; only a text
+layer was read.
+
+- **The reader** (`backend/app/services/room_scan/usdc.py`, `parse_usdc`):
+  numpy and the standard library. Pixar's USD library is not used and
+  nothing was added to `requirements.txt`.
+  - *The file.* The header (`PXR-USDC`, three version bytes, where the table
+    of contents is), the table of contents, and the six tables it names:
+    TOKENS (every name, once), STRINGS, FIELDS (a name and a value), FIELDSETS
+    (which fields a prim or attribute has), PATHS (the tree of prims and
+    their attributes) and SPECS (which path is a prim, which an attribute).
+  - *Unpacking.* The tables are packed with LZ4 and it is undone here
+    (`lz4_block`; `decompress` for USD's wrapping of it: a count of chunks,
+    0 meaning one block). Tables of whole numbers are first written in USD's
+    own coding, each number as its difference from the one before in as few
+    bytes as it needs (`decode_integers`, 32-bit and 64-bit), done with numpy
+    a million numbers at a time.
+  - *The path tree* is walked with a list of what is still to visit, not by
+    a function calling itself, so a deep or looping file cannot run it out
+    of stack.
+  - *Values.* A value is 64 bits: flags for array, held-in-place and packed,
+    a type, and the value or where it is. Read: whole numbers, floats,
+    doubles and halves; tokens and strings; vectors, quaternions and
+    matrices; arrays of those, packed or not; lists of tokens; and of time
+    samples the first. Only what a room needs is ever decoded. Everything
+    else in the file (normals, texture coordinates, materials, custom data,
+    dictionaries, list ops) is stepped over without being looked at.
+  - *The stage.* `upAxis` and `metersPerUnit` from the layer. The prims in
+    the order USD walks them (each prim's `primChildren`), leaving out a
+    prim the file marks `over`, `class` or inactive. Each prim typed `Mesh`
+    gives its `points`, `faceVertexCounts` and `faceVertexIndices`; faces
+    of more than three sides are cut into triangles round their first
+    corner. A layer with no `Mesh` that holds points anywhere (a point
+    cloud) has those read.
+  - *Placing.* By the transform ops of the prim and of every prim above it,
+    in each one's `xformOpOrder`: translate, scale, orient, rotateX/Y/Z and
+    the three-axis orders, and a 4x4 transform, with any `:suffix`.
+- **The same code as a text layer.** `usd.py` now has the prims
+  (`_Prim`), the op-to-matrix sums (`_op_matrix_numbers`) and the building
+  of the mesh (`_mesh_from_prims`) in one place for both, so a text layer
+  and a binary layer of one stage give the same mesh. Two things came with
+  that for text layers too: an op named `!invert!...` in the order is that
+  op undone (how USD writes a pivot), and `!resetXformStack!` stops the
+  prims above from moving a prim. Faces are cut into triangles by numpy
+  instead of a loop, in the same order.
+- **Where it is used.** `parse_usdz` tries RoomPlan JSON first as before,
+  then text layers, then binary ones, each in the archive's order, and the
+  first that gives a mesh is the scan; when a USDZ held more than one USD
+  layer the report says only one was read. `read_scan_file` reads a bare
+  `.usdc` (or a binary layer under any name: it goes by the first bytes).
+  The mesh's format is `usdc`. Nothing else changed: the API, the dialog
+  and the rest of the pipeline take it as they take any mesh.
+- **A file is not trusted.** Every count and offset is checked against the
+  bytes that are there before anything is allocated: a block cannot claim
+  to unpack to more than 255 times its size (LZ4's limit) or 400 MB, a table
+  to more than 20 million entries, an array to more than 60 million. The
+  path tree is built from the entries present, not the count given. Field
+  sets cannot be made to overlap and be read over and over. Whatever goes
+  wrong is a `RoomScanError`: "This binary USD (USDC) file cannot be read:"
+  the reason, then what to export instead (`CONVERT_MESSAGE`, which is now
+  only that advice). A layer that is nothing but the eight bytes `PXR-USDC`
+  is still refused that way.
+- **The fixtures** (`backend/tests/fixtures/usdc/`) were written by Pixar's
+  USD library (`make_usdc_fixtures.py`, run by hand outside the venv; it is
+  not a dependency), each with a JSON of the world-space points, triangles,
+  up axis and units that Pixar's library computes from it: the test room in
+  metres Y-up at crate 0.8.0, 0.7.0 and 0.10.0; in centimetres Z-up; a
+  bigger room with a ring of truss (612 triangles); and `roomplan_like.usdz`, shaped like RoomPlan's export: a prim
+  for each wall placed by a 4x4, a four-sided floor placed by translate and
+  scale, a table by translate, orient, scale and rotateXYZ, in nested
+  groups, with normals, a primvar and custom data to step over.
+- **Tests** (`backend/tests/unit/test_room_scan_usdc.py`, 175): every
+  fixture's points to 1e-4 and its triangles exactly, in Pixar's order, with
+  its up axis and units; the room from `room_y_metres.usdc` and
+  `room_z_cm.usdc` is the room from the text layer of the same stage, shell
+  for shell; the RoomPlan-shaped USDZ gives a room 12 x 9 x 4 m with the
+  table as its raised area; LZ4 (a match that overlaps its own output, long
+  counts, chunks, broken blocks) and the integer coding (both widths,
+  wrapping, more than one block of work) against bytes laid out by hand;
+  values no fixture holds, laid out by hand (the array header of crate 0.4
+  and 0.6, packed floats both ways, 64-bit packed arrays, halves and
+  doubles, a quaternion's order, time samples); and damaged files: cut
+  short at every fifth length, a table of contents pointed anywhere, a
+  version not read, too many sections, a section outside the file, each
+  table claiming more than it holds, and 400 copies of each of three
+  fixtures with bytes changed at random, each one read or refused in plain
+  words, within 2 seconds (in practice a few thousandths). In
+  `test_room_scan.py` the refusal tests now refuse a layer that is only
+  its first bytes, and two are new (text before binary; an inverted op).
+  `tests/integration/test_api_room_scan.py` posts the RoomPlan-shaped USDZ
+  and a bare `.usdc` and gets the room back.
+- **What the hand-laid tests are worth.** They hold the reader to my
+  reading of the format (USD's `crateFile.cpp`), not to Pixar's library:
+  where no fixture reaches, a wrong reading would pass them. What the
+  fixtures do reach is listed above; the rest is in What is left.
+- **What was run** (Nov 24): in `backend/`, with the project's venv,
+  `pytest tests/unit/test_room_scan_usdc.py tests/unit/test_room_scan.py
+  tests/integration/test_api_room_scan.py` 263 passed, and the whole suite,
+  `pytest tests/ -q`: 2207 passed, 10 skipped, 5 xfailed (2029 passed
+  before; the 178 more are this slice's). Before the tests were written, every
+  truncation of a fixture and 3000 random damages of it were run by hand:
+  no exception other than the refusal, the slowest 0.002 s once the path
+  tree stopped trusting the file's count (1.8 s before).
+- **Backend only.** No frontend change, no new field, no migration, no new
+  dependency; nothing here sends Art-Net or DMX, and there is no network
+  call.
 
 ## What slice 23 built
 
@@ -2168,18 +2295,23 @@ A box room, and a shell with no outline, draw and clamp exactly as before.
 
 ## What the tests cover
 
-All scans are built in code (`backend/tests/unit/room_scan_meshes.py`); there
-are no binary fixtures in the repository.
+All scans are built in code (`backend/tests/unit/room_scan_meshes.py`), but
+for binary USD: those files are in `backend/tests/fixtures/usdc/`, written by
+Pixar's USD library from the same rooms (slice 24).
 
 - `backend/tests/unit/test_room_scan.py`: the parsers (OBJ, PLY in three
   encodings, USDA, USDZ, RoomPlan JSON), the same room recovered whatever the
   units, axes and heading, a point cloud with no normals, a scan leaking through
   a doorway, refusals and their wording, and which rows move where.
+- `backend/tests/unit/test_room_scan_usdc.py`: binary USD against what Pixar's
+  library computes, the same room as from the text layer, the two unpackers,
+  hand-laid values, and damaged files (see "What slice 24 built").
 - `backend/tests/integration/test_api_room_scan.py`: preview writes nothing;
   apply stores the shell and it comes back on the rig and in the rig list; only
   template guesses move, a row at a time, and stay guesses; tapped, confirmed,
   measured and row-fitted positions do not move; a second scan moves nothing; a
-  DJ booth is suggested where there is one; the overrides; binary USDZ and other
+  DJ booth is suggested where there is one; the overrides; a binary USDZ and a
+  bare `.usdc` are read; a binary layer that cannot be read and other
   refusals; the size limit; the locate-walkthrough conflict; removal; a rig
   update cannot write the shell; the route is behind the login.
 - `frontend/src/__tests__/roomScan.test.ts`: the scanned room's walls, ceiling,
@@ -3154,7 +3286,41 @@ are no binary fixtures in the repository.
   rig with no scanned room are not snap targets, and there is no grid snap.
 - **A real scan.** Polycam, Scaniverse and RoomPlan exports from a real venue
   have not been read. Expect the thresholds in `extract.py` to need tuning.
-- **Binary USDZ** (`.usdc`): not read. Export OBJ.
+- **Binary USDZ** (`.usdc`) is read (slice 24), but only so far:
+  - **No file from a real phone has been through it.** Every file it has
+    read was written by Pixar's USD library from a room made in code. The
+    first RoomPlan, Polycam or Scaniverse USDZ is a test of the reader. If
+    it is refused or the room is wrong, export OBJ, and keep the USDZ: it
+    is the fixture this needs.
+  - **One layer.** A USDZ whose root layer brings its geometry in from
+    another layer (references, payloads, sublayers) is not put together:
+    the first layer that holds mesh points is read on its own, without the
+    transforms the layer above gave it, and the report says the USDZ held
+    more than one. Variants are not read either.
+  - **No instances.** A mesh drawn many times from one prototype is read
+    once, where the prototype is, or not at all.
+  - **No animation.** A value with only time samples is read at its first
+    sample. That branch has not met a Pixar-written file.
+  - **No GeomSubsets, materials, normals or texture coordinates.** Only
+    points and faces are read, so a scan's floor cannot be told from its
+    walls by what the app called them.
+  - **RoomPlan's categories are lost.** Read from binary USD, a RoomPlan
+    room is a mesh like any other: walls and objects are not named, as
+    they are from RoomPlan's JSON.
+  - **Not run against a Pixar-written file**: crate versions 0.4 to 0.6,
+    arrays of floats packed as whole numbers or as a lookup table, packed
+    64-bit arrays, LZ4 in more than one chunk, points as halves or doubles.
+    Their tests are bytes laid out by hand from the format's description.
+    Crate versions before 0.4.0 and any 1.x are refused. A 0.x later
+    than 0.12 is read, with a note in the report.
+  - **Slow on a very large packed file.** LZ4 is undone in Python. Points
+    are not packed, so a phone scan's bulk reads at once, but its face
+    indexes are. Measured on made-up data, not a real scan: 3 million
+    indexes out of the integer coding in 0.1 s, and LZ4 at its worst (a
+    million short runs in 6 MB) in 0.6 s. A real file falls between; a
+    file built to be slow could take most of a minute at the 200 MB upload
+    limit. The most read is 60 million entries in one array (20
+    million triangles).
 - **Ceilings and levels.** Sloped or domed ceilings, balconies and mezzanines
   are still read as a flat ceiling over one floor. A balcony can be put in
   by hand as a raised area with a base height (slice 18).
