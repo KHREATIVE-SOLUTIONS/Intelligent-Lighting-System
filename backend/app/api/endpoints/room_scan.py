@@ -346,7 +346,8 @@ class ShellItemEdit(BaseModel):
     radius: Optional[float] = None
     # A raised area's deck above its base; the underside of a line or ring.
     height: Optional[float] = None
-    # Which way a line runs: degrees clockwise from across the room, seen from above.
+    # Which way a line runs, or a raised area's width does: degrees clockwise from across the room,
+    # seen from above. A raised area that stores none stands square to the room.
     heading_deg: Optional[float] = None
     # A raised area's underside above the floor: 0 stands on it, more floats (a balcony, a mezzanine).
     base_height: Optional[float] = None
@@ -574,11 +575,13 @@ async def edit_room_shell_item(
     A raised area takes the fixtures standing on it in the same way: shifted
     with a move, raised with its height or its `base_height`, kept at the
     same share of a footprint made bigger or smaller, and swung a quarter
-    turn when its width and depth change places. `riser_kind` makes it a
+    turn when its width and depth change places. `heading_deg` stands it at
+    any heading (its width along it, its depth square to it), and swings what
+    stands on it about its middle by the turn. `riser_kind` makes it a
     stage, a riser or a booth where it is in its list; `first_stage` in the
     answer is the place of the stage a suggestion would put floor lights on.
 
-    A raised area that is moved, raised or given a quarter turn also takes
+    A raised area that is moved, raised, turned or given a quarter turn also takes
     the other raised areas standing on it (the middle of the footprint inside
     its footprint, the base within 0.1 m of its top), and the fixtures
     standing on those, as one piece. `items_moved` lists those areas, each

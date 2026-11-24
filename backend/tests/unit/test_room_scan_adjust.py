@@ -145,7 +145,8 @@ class TestResize:
             assert "must be a number" in refused(call)
 
     @pytest.mark.parametrize("kind, sizes", [
-        ("risers", {"length": 2.0}), ("risers", {"radius": 2.0}), ("risers", {"heading_deg": 45.0}),
+        # A raised area has had a heading since slice 21 (test_room_scan_heading.py): it is no longer refused one.
+        ("risers", {"length": 2.0}), ("risers", {"radius": 2.0}),
         ("truss_lines", {"width": 2.0}), ("truss_lines", {"radius": 2.0}),
         ("truss_rings", {"length": 2.0}), ("truss_rings", {"heading_deg": 45.0}), ("truss_rings", {"depth": 2.0}),
     ])

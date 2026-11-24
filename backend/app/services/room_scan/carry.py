@@ -42,7 +42,13 @@ top it is nearer, and to the one listed first when they are as near.
   across a stage made wider, it is still half way across;
 - a **quarter turn** (the width and the depth changed places, which is all a
   quarter turn is to the server) swings it a quarter turn clockwise seen from
-  above about the area's middle, and turns its heading with it.
+  above about the area's middle, and turns its heading with it;
+- a **heading** (slice 21: a raised area can stand at any heading, its width
+  along it and its depth square to it) swings it about the area's middle by
+  what the area was turned, and turns its heading with it.
+
+"Over its footprint" and "a share of the footprint" are along the area's own
+width and depth, which are the room's only for one that stands square to it.
 
 Nothing else about a fixture is touched: not its patch, its mode, its tags or
 its group. A guess that is carried is still a guess.
@@ -58,7 +64,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .edit import (
     BASE_MAX_M, KINDS, MOVED_BY_HAND, OUTSIDE_MARGIN_M, RESIZED_BY_HAND, ShellEditError,
-    _mark, _metres, _mm, _number, _room, base_of, item_name,
+    _mark, _metres, _mm, _number, _room, area_heading, base_of, clean_heading, item_name,
 )
 
 # How far off a truss's line on the plan, and off its underside in height, a
@@ -184,13 +190,28 @@ def _top(item: Dict[str, Any]) -> float:
     return base_of(item) + float(item["height"])
 
 
+def _across_and_back(item: Dict[str, Any], x: float, z: float) -> Tuple[float, float]:
+    """How far a point on the plan is from a raised area's middle along its width and along its depth.
+
+    Its own two ways, which are the room's for one that stands square to it
+    and are turned with it for one that stands at a heading.
+    """
+    off_x, off_z = x - float(item["center_x"]), z - float(item["center_z"])
+    heading = area_heading(item)
+    if heading == 0.0:
+        return off_x, off_z
+    cos, sin = math.cos(math.radians(heading)), math.sin(math.radians(heading))
+    return off_x * cos + off_z * sin, -off_x * sin + off_z * cos
+
+
 def _stand_gap(item: Any, place: Tuple[float, float, float]) -> Optional[float]:
     """How far a fixture is from a raised area's top when it stands on it, else None."""
     if not _stands(item):
         return None
-    if abs(place[0] - float(item["center_x"])) > float(item["width"]) / 2.0 + STAND_MARGIN_M + 1e-9:
+    across, back = _across_and_back(item, place[0], place[2])
+    if abs(across) > float(item["width"]) / 2.0 + STAND_MARGIN_M + 1e-9:
         return None
-    if abs(place[2] - float(item["center_z"])) > float(item["depth"]) / 2.0 + STAND_MARGIN_M + 1e-9:
+    if abs(back) > float(item["depth"]) / 2.0 + STAND_MARGIN_M + 1e-9:
         return None
     above = place[1] - _top(item)
     if above < -STAND_UNDER_M - 1e-9 or above > STAND_WINDOW_M + 1e-9:
@@ -246,6 +267,41 @@ def quarter_turned(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
     return abs(was_w - was_d) >= SIZE_OVER_M and abs(now_w - was_d) < SIZE_OVER_M and abs(now_d - was_w) < SIZE_OVER_M
 
 
+def area_turn(before: Dict[str, Any], after: Dict[str, Any]) -> float:
+    """How far a raised area was turned, in degrees clockwise seen from above; 0 for none.
+
+    Two things turn one, and both are added: its sides changed places (a
+    quarter turn clockwise, 90) and its heading changed. A heading is kept
+    over -90 and up to 90, since a rectangle looks the same after half a
+    turn, so a change of heading is taken as the smaller of the two turns
+    that give it: from 80 to -80 is 20 degrees clockwise, not 160 back. A
+    quarter turn is as far one way as the other, and goes the way the heading
+    went: from 0 to 90 is clockwise, as the quarter turn told by the sides
+    is, and from 90 back to 0 takes it back. What stands on the area does
+    have a front, and is swung by this.
+    """
+    turn = 90.0 if quarter_turned(before, after) else 0.0
+    swing = area_heading(after) - area_heading(before)
+    if swing > 90.0:
+        swing -= 180.0
+    elif swing < -90.0:
+        swing += 180.0
+    if abs(swing) >= TURN_OVER_DEG:
+        turn += swing
+    return turn
+
+
+def _swung(off_x: float, off_z: float, degrees: float) -> Tuple[float, float]:
+    """An offset on the plan turned clockwise seen from above (+X towards +Z). A quarter turn is exact."""
+    if degrees == 0.0:
+        return off_x, off_z
+    if degrees == 90.0:
+        # What was stage left of the middle is downstage of it.
+        return -off_z, off_x
+    cos, sin = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+    return off_x * cos - off_z * sin, off_x * sin + off_z * cos
+
+
 def _move_of(fixture: Any, to: Tuple[float, float, float], turn: float) -> Optional[Dict[str, Any]]:
     """One carried move, {rig_fixture_id, name, from, to}, or None when the fixture would not shift or turn."""
     x, y, z = _place(fixture)
@@ -270,13 +326,18 @@ def _move_of(fixture: Any, to: Tuple[float, float, float], turn: float) -> Optio
 
 def _stood_moves(
     shell: Dict[str, Any], index: int, after: Dict[str, Any], fixtures: Sequence[Any],
-    turned: Optional[bool] = None,
+    turn: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Where the fixtures standing on a raised area go when it becomes `after`. Nothing is written.
 
-    `turned` says whether it was given a quarter turn where the caller knows
-    (a platform carried by the one under it turns with that one, and a square
-    one's sizes cannot say so); left out, it is read from the sizes.
+    `turn` is how far it was turned, in degrees clockwise seen from above,
+    where the caller knows (a platform carried by the one under it turns with
+    that one, and a square one's sizes cannot say so); left out, it is read
+    from the sizes and the heading (`area_turn`).
+
+    A fixture keeps its place on the area along the area's own width and
+    depth, which are not the room's once it stands at a heading: its share of
+    each side through a resize, and the same place on the deck through a turn.
     """
     items = shell.get(STANDING_KIND)
     if not isinstance(items, list) or index < 0 or index >= len(items):
@@ -288,29 +349,35 @@ def _stood_moves(
         before["center_x"], before["center_z"], after["center_x"], after["center_z"],
     ))
     rise = _top(after) - _top(before)
-    if turned is None:
-        turned = quarter_turned(before, after)
+    if turn is None:
+        turn = area_turn(before, after)
     wider = float(after["width"]) / float(before["width"])
     deeper = float(after["depth"]) / float(before["depth"])
     if abs(float(after["width"]) - float(before["width"])) < SIZE_OVER_M:
         wider = 1.0
     if abs(float(after["depth"]) - float(before["depth"])) < SIZE_OVER_M:
         deeper = 1.0
-    if not turned and wider == 1.0 and deeper == 1.0 and abs(rise) < SHIFT_OVER_M and max(
+    if quarter_turned(before, after):
+        # Its sides changed places: the deck is the one it was, turned, and nothing on it is spread or closed up.
+        wider = deeper = 1.0
+    if not turn and wider == 1.0 and deeper == 1.0 and abs(rise) < SHIFT_OVER_M and max(
         abs(now_x - was_x), abs(now_z - was_z),
     ) < SHIFT_OVER_M:
         return []
 
+    stood_at = area_heading(before)
     moves: List[Dict[str, Any]] = []
     for fixture in standing_fixtures(shell, index, fixtures):
         x, y, z = _place(fixture)
-        off_x, off_z = x - was_x, z - was_z
-        if turned:
-            # A quarter turn clockwise seen from above: what was stage left of the middle is downstage of it.
-            to_x, to_z = now_x - off_z, now_z + off_x
+        if stood_at == 0.0:
+            across, back = x - was_x, z - was_z
         else:
-            to_x, to_z = now_x + off_x * wider, now_z + off_z * deeper
-        move = _move_of(fixture, (to_x, y + rise, to_z), 90.0 if turned else 0.0)
+            # Along its width and its depth as it stood, which were not the room's.
+            across, back = _swung(x - was_x, z - was_z, -stood_at)
+        # The same place on the deck, by share of each side, and the deck where and as it now stands.
+        off_x, off_z = _swung(across * wider, back * deeper, stood_at)
+        off_x, off_z = _swung(off_x, off_z, turn)
+        move = _move_of(fixture, (now_x + off_x, y + rise, now_z + off_z), turn)
         if move is not None:
             moves.append(move)
     return moves
@@ -324,9 +391,11 @@ def _stands_on_area(child: Any, parent: Any) -> bool:
     """Whether one raised area stands on another: its middle over the other's footprint, its base at the other's top."""
     if not _stands(child) or not _stands(parent):
         return False
-    if abs(float(child["center_x"]) - float(parent["center_x"])) > float(parent["width"]) / 2.0 + 1e-9:
+    # Over the other's footprint as it stands, at whatever heading that is.
+    across, back = _across_and_back(parent, float(child["center_x"]), float(child["center_z"]))
+    if abs(across) > float(parent["width"]) / 2.0 + 1e-9:
         return False
-    if abs(float(child["center_z"]) - float(parent["center_z"])) > float(parent["depth"]) / 2.0 + 1e-9:
+    if abs(back) > float(parent["depth"]) / 2.0 + 1e-9:
         return False
     return abs(base_of(child) - _top(parent)) <= STACK_BASE_WINDOW_M + 1e-9
 
@@ -357,16 +426,20 @@ def stood_areas(shell: Optional[Dict[str, Any]], index: int) -> List[int]:
 def carried_areas(shell: Optional[Dict[str, Any]], index: int, after: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Where the raised areas standing on one go when it becomes `after`. Nothing is written.
 
-    Each is {kind, index, name, turned, item, from, to}: `item` is the area as
-    it is to be stored, and `from` and `to` are its middle, sizes and base
-    before and after. The stack is carried as one piece:
+    Each is {kind, index, name, turned, turn, item, from, to}: `item` is the
+    area as it is to be stored, `turn` how far it was swung in degrees
+    clockwise seen from above, and `from` and `to` are its middle, sizes and
+    base before and after (and its heading, where it has one either side).
+    The stack is carried as one piece:
 
     - a **move** shifts each by what the middle of the one under it shifted
       (a middle brought in by a resize included);
     - a **height** or **base height** raises or lowers each one's base by what
       the top moved;
     - a **quarter turn** swings each a quarter turn clockwise seen from above
-      about the middle of the one that was turned, and swaps its sides.
+      about the middle of the one that was turned, and swaps its sides;
+    - a **heading** swings each about that middle by what the one under it
+      was turned, and turns its own heading by as much.
 
     A resize alone moves none of them: they keep their place and their size.
     One that would not change is left out.
@@ -381,7 +454,11 @@ def carried_areas(shell: Optional[Dict[str, Any]], index: int, after: Dict[str, 
         before["center_x"], before["center_z"], after["center_x"], after["center_z"],
     ))
     rise = _top(after) - _top(before)
-    turned = quarter_turned(before, after)
+    swapped = quarter_turned(before, after)
+    turn = area_turn(before, after)
+    turned = turn != 0.0
+    # What the heading alone turned it by: a quarter turn is told by the sides, and is in the sides of each.
+    swing = turn - 90.0 if swapped else turn
     shifted = max(abs(now_x - was_x), abs(now_z - was_z)) >= SHIFT_OVER_M
     raised = abs(rise) >= SHIFT_OVER_M
     if not turned and not shifted and not raised:
@@ -393,8 +470,13 @@ def carried_areas(shell: Optional[Dict[str, Any]], index: int, after: Dict[str, 
         item = copy.deepcopy(child)
         off_x, off_z = float(child["center_x"]) - was_x, float(child["center_z"]) - was_z
         if turned:
-            item["center_x"], item["center_z"] = _mm(now_x - off_z), _mm(now_z + off_x)
-            item["width"], item["depth"] = child["depth"], child["width"]
+            to_x, to_z = _swung(off_x, off_z, turn)
+            item["center_x"], item["center_z"] = _mm(now_x + to_x), _mm(now_z + to_z)
+            if swapped:
+                item["width"], item["depth"] = child["depth"], child["width"]
+            if swing:
+                # It stays square to what it stands on, or as far off square as it was.
+                item["heading_deg"] = clean_heading(area_heading(child) + swing)
         elif shifted:
             item["center_x"], item["center_z"] = _mm(now_x + off_x), _mm(now_z + off_z)
         if raised:
@@ -404,19 +486,28 @@ def carried_areas(shell: Optional[Dict[str, Any]], index: int, after: Dict[str, 
             _mark(item, MOVED_BY_HAND)
         if raised:
             _mark(item, RESIZED_BY_HAND)
+        headed = area_heading(child) != 0.0 or area_heading(item) != 0.0
         carried.append({
-            "kind": STANDING_KIND, "index": at, "name": item_name(STANDING_KIND, child), "turned": turned,
-            "item": item, "from": _footprint(child), "to": _footprint(item),
+            "kind": STANDING_KIND, "index": at, "name": item_name(STANDING_KIND, child),
+            "turned": turned, "turn": turn,
+            "item": item, "from": _footprint(child, headed), "to": _footprint(item, headed),
         })
     return carried
 
 
-def _footprint(item: Dict[str, Any]) -> Dict[str, Any]:
-    """Where a raised area is and how big, for an answer: its middle, its sides and its base."""
-    return {
+def _footprint(item: Dict[str, Any], headed: bool = False) -> Dict[str, Any]:
+    """Where a raised area is and how big, for an answer: its middle, its sides and its base.
+
+    With `headed`, its heading too: said only for one that stands at a
+    heading before or after, so one square to the room reads as it always did.
+    """
+    footprint = {
         "center_x": item["center_x"], "center_z": item["center_z"],
         "width": item["width"], "depth": item["depth"], "base_height": _mm(base_of(item)),
     }
+    if headed:
+        footprint["heading_deg"] = area_heading(item)
+    return footprint
 
 
 def carried_area_moves(
@@ -429,7 +520,7 @@ def carried_area_moves(
     (`standing_fixtures`), so none is moved twice.
     """
     return [
-        _stood_moves(shell, entry["index"], entry["item"], fixtures, turned=entry["turned"])
+        _stood_moves(shell, entry["index"], entry["item"], fixtures, turn=entry["turn"])
         for entry in carried
     ]
 

@@ -71,11 +71,12 @@ RISER_KINDS: Dict[str, str] = {
 
 # The size fields each list takes. Any other is refused for that list.
 SIZE_FIELDS: Dict[str, Tuple[str, ...]] = {
-    "risers": ("width", "depth", "height", "base_height"),
+    "risers": ("width", "depth", "height", "base_height", "heading_deg"),
     "truss_lines": ("length", "height", "heading_deg"),
     "truss_rings": ("radius", "height"),
 }
-# The size fields an added item can go without: a line runs across the room, a raised area stands on the floor.
+# The size fields an added item can go without: a line runs across the room, and a raised area stands on the
+# floor, square to the room.
 OPTIONAL_SIZES: Tuple[str, ...] = ("heading_deg", "base_height")
 FIELD_WORDS: Dict[str, str] = {
     "base_height": "base height",
@@ -345,6 +346,48 @@ def clean_heading(degrees: float) -> float:
     return round(heading, 1) + 0.0
 
 
+def area_heading(item: Any) -> float:
+    """The heading a raised area stands at: 0, square to the room, for one that stores none.
+
+    Degrees clockwise from across the room seen from above, as a line's is:
+    its `width` then runs along that heading and its `depth` square to it. A
+    rectangle looks the same after half a turn, so it is kept over -90 and up
+    to 90. Every raised area stored before a heading could be set has none.
+    """
+    stored = item.get("heading_deg") if isinstance(item, dict) else None
+    if not _number(stored) or abs(stored) > HEADING_LIMIT_DEG:
+        return 0.0
+    return clean_heading(float(stored))
+
+
+def area_reach(width: float, depth: float, heading: float) -> Tuple[float, float]:
+    """How far a raised area at a heading reaches either side of its middle, across the room and in depth."""
+    if heading == 0.0:
+        return width / 2.0, depth / 2.0
+    radians = math.radians(heading)
+    cos, sin = abs(math.cos(radians)), abs(math.sin(radians))
+    return (cos * width + sin * depth) / 2.0, (sin * width + cos * depth) / 2.0
+
+
+def area_corners(item: Dict[str, Any]) -> List[Tuple[float, float]]:
+    """The four corners of a raised area on the plan, turned to its heading: (x, z) each, in order round it.
+
+    From the corner that is upstage stage right when it stands square, then
+    clockwise seen from above. Its numbers must all be there.
+    """
+    cx, cz = float(item["center_x"]), float(item["center_z"])
+    half_w, half_d = float(item["width"]) / 2.0, float(item["depth"]) / 2.0
+    heading = area_heading(item)
+    if heading == 0.0:
+        cos, sin = 1.0, 0.0
+    else:
+        cos, sin = math.cos(math.radians(heading)), math.sin(math.radians(heading))
+    return [
+        (cx + u * cos - v * sin, cz + u * sin + v * cos)
+        for u, v in ((-half_w, -half_d), (half_w, -half_d), (half_w, half_d), (-half_w, half_d))
+    ]
+
+
 def line_heading(item: Dict[str, Any]) -> Optional[float]:
     """The heading a line's two ends give it, or None when they are missing or the same point."""
     ends = [item.get(key) for key in ("x1", "z1", "x2", "z2")]
@@ -438,8 +481,11 @@ def edit_item(
 
     `width` and `depth` resize a raised area, `length` a line (about its
     middle, along its heading), `radius` a ring. `heading_deg` turns a line
-    about its middle. With any of them the whole item is held inside the
-    room's box and its margin, and one too big to be is refused.
+    or a raised area about its middle: a raised area's `width` then runs
+    along its heading and its `depth` square to it, and one that stores no
+    heading stands square to the room (0). With any of them the whole item is
+    held inside the room's box and its margin, and one too big to be is
+    refused.
 
     `height` is a raised area's deck above its base, and the underside of a
     line or ring, whose top moves with it and whose hanging-height band is
@@ -514,9 +560,19 @@ def edit_item(
                     if not _number(item.get(key)) or _mm(item[key]) != value:
                         item[key] = value
                         resized = True
+            if "heading_deg" in shaped:
+                value = clean_heading(shaped["heading_deg"])
+                # A tenth of a degree is the least turn, as for a line. One that stores no heading stands at 0.
+                if abs(value - area_heading(item)) >= 0.05:
+                    item["heading_deg"] = value
+                    resized = True
             if resized:
-                half_x = item["width"] / 2.0 if _number(item.get("width")) else 0.0
-                half_z = item["depth"] / 2.0 if _number(item.get("depth")) else 0.0
+                # As far as it reaches at the heading it stands at, which is not half its sides once it is turned.
+                half_x, half_z = area_reach(
+                    float(item["width"]) if _number(item.get("width")) else 0.0,
+                    float(item["depth"]) if _number(item.get("depth")) else 0.0,
+                    area_heading(item),
+                )
                 to_x, to_z = _fit(edited, kind, want_x, want_z, half_x, half_z)
             else:
                 to_x, to_z = _held(edited, want_x, want_z)
@@ -729,7 +785,8 @@ def add_item(
     """(the shell with one more item, that item, its place in its list). The shell given is not changed.
 
     The scan missed it, and a person puts it in: a stage, riser or booth
-    (`risers`, with `riser_kind`, a width, a depth and a height), a truss
+    (`risers`, with `riser_kind`, a width, a depth and a height, and a
+    heading when it does not stand square to the room), a truss
     (`truss_lines`, with a length, a height and a heading, across the room
     when none is given) or a ring (`truss_rings`, with a radius and a height).
     The centre is needed for all three. It goes at the end of its list, so no
@@ -781,13 +838,17 @@ def add_item(
         what = riser_kind or "riser"
         wide = _in_range(kind, "width", sizes["width"], SIDE_MIN_M, ANY_ROOM_SIZE_MAX_M)
         deep = _in_range(kind, "depth", sizes["depth"], SIDE_MIN_M, ANY_ROOM_SIZE_MAX_M)
-        x, z = _fit(edited, kind, x, z, wide / 2.0, deep / 2.0)
+        turned = clean_heading(sizes.get("heading_deg", 0.0))
+        x, z = _fit(edited, kind, x, z, *area_reach(wide, deep, turned))
         item: Dict[str, Any] = {
             "center_x": _mm(x), "center_z": _mm(z), "width": wide, "depth": deep,
             "height": high, "base_height": base,
             "name": clean_name(name) if name is not None else RISER_KINDS[what],
             "kind": what,
         }
+        if turned != 0.0:
+            # One square to the room says nothing, like every raised area stored before a heading could be set.
+            item["heading_deg"] = turned
     elif kind == "truss_lines":
         long = _in_range(kind, "length", sizes["length"], LINE_MIN_M, ANY_ROOM_SIZE_MAX_M)
         heading = clean_heading(sizes.get("heading_deg", 0.0))
@@ -851,6 +912,8 @@ def edit_words(kind: str, before: Dict[str, Any], after: Dict[str, Any]) -> Opti
     if kind == "truss_lines" and line_heading(before) != line_heading(after):
         done.append("turned")
     if kind == "risers":
+        if area_heading(before) != area_heading(after):
+            done.append("turned")
         if _mm(base_of(before)) != _mm(base_of(after)):
             done.append("raised" if base_of(after) > base_of(before) else "lowered")
         if before.get("kind") != after.get("kind") and after.get("kind") in RISER_KINDS:

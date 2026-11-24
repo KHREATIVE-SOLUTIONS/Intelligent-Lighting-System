@@ -165,7 +165,8 @@ class TestResizeHeightHeading:
             ("truss_lines/0", {"heading_deg": 400}, "between -360 and 360"),
             ("truss_lines/0", {"width": 2}, "It takes: length, height, heading"),
             ("risers/0", {"radius": 2}, "It takes: width, depth, height"),
-            ("risers/0", {"heading_deg": 45}, "It takes: width, depth, height"),
+            # A raised area takes a heading since slice 21; one past a whole turn is refused, as a line's is.
+            ("risers/0", {"heading_deg": 400}, "between -360 and 360"),
         ]:
             refused = await client.patch(f"{path}/{kind}", json=body)
             assert refused.status_code == 422, (kind, body, refused.text)

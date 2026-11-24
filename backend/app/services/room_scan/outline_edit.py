@@ -34,7 +34,8 @@ import math
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .edit import (
-    ANY_ROOM_HEIGHT_MAX_M, ANY_ROOM_SIZE_MAX_M, KINDS, ShellEditError, _metres, _mm, _number, item_name,
+    ANY_ROOM_HEIGHT_MAX_M, ANY_ROOM_SIZE_MAX_M, KINDS, ShellEditError, _metres, _mm, _number, area_corners,
+    item_name,
 )
 
 Corner = Tuple[float, float]
@@ -475,8 +476,8 @@ def _item_points(kind: str, item: Dict[str, Any]) -> List[Corner]:
         values = [item.get(key) for key in ("center_x", "center_z", "width", "depth")]
         if not all(_number(value) for value in values):
             return []
-        cx, cz, half_w, half_d = values[0], values[1], values[2] / 2.0, values[3] / 2.0
-        return [(cx, cz)] + [(cx + sx * half_w, cz + sz * half_d) for sx in (-1, 1) for sz in (-1, 1)]
+        # Its middle and its four corners where they are, turned to the heading it stands at.
+        return [(float(values[0]), float(values[1]))] + area_corners(item)
     if kind == "truss_lines":
         ends = [item.get(key) for key in ("x1", "z1", "x2", "z2")]
         if not all(_number(end) for end in ends):
