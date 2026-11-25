@@ -43,6 +43,7 @@ import {
   ROOM_SCAN_ACCEPT,
   djBoothDroppedText,
   djBoothPreviewLine,
+  handEditsLine,
   fileProblem,
   fixtureMoveText,
   foundLines,
@@ -217,6 +218,8 @@ export default function RoomScanDialog({
   const wouldMove = preview?.fixtures.would_move ?? 0;
   // Said of the preview only: once applied, the answer's own words take over.
   const markLine = applied ? null : djBoothPreviewLine(preview);
+  // Before Apply what would be kept of the edits made by hand, and after it what was.
+  const editsLine = handEditsLine(shown);
   // How many of the moves on screen turn their fixture. Once applied it is said
   // only when fixtures were moved: with the box unticked nothing was turned.
   const turnSummary = !shown
@@ -375,6 +378,17 @@ export default function RoomScanDialog({
             ) : (
               <Typography variant="body2" sx={{ mb: 2 }} data-testid="room-scan-dj-booth-preview">
                 {markLine.text}
+              </Typography>
+            ))}
+
+            {/* What the scan keeps of the edits made by hand to the room already stored (slice 32). */}
+            {editsLine && (editsLine.replaced ? (
+              <Alert severity="warning" sx={{ mb: 2 }} data-testid="room-scan-hand-edits">
+                {editsLine.text}
+              </Alert>
+            ) : (
+              <Typography variant="body2" sx={{ mb: 2 }} data-testid="room-scan-hand-edits">
+                {editsLine.text}
               </Typography>
             ))}
 

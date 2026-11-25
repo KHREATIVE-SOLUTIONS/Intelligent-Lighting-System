@@ -95,8 +95,15 @@ export interface RoomScanPreview {
     kind_kept?: string | null;
     message?: string | null;
   } | null;
+  /**
+   * What applying would keep of the edits made by hand to the stored room's raised areas (slice 32).
+   * Sent with a preview only, and only where there is something to say.
+   */
+  hand_edits?: RoomScanHandEdits | null;
   /** Null for a preview: nothing was written. */
   applied: null | {
+    /** What was kept of the edits made by hand (slice 32). Sent only where there is something to say. */
+    hand_edits?: RoomScanHandEdits | null;
     room_shell_stored: boolean;
     fixtures_moved: number;
     fixtures_still_unconfirmed: number;
@@ -118,7 +125,50 @@ export interface RoomScanPreview {
   };
 }
 
-export const DJ_BOOTH_WILL_DROP_TEXT = 'DJ booth mark will be dropped';
+/** The hand edits a scan applied again keeps on the room's raised areas, and what became of the ones added by hand. */
+export interface RoomScanHandEdits {
+  /** How many raised areas of the new room keep a name, a height or a base height set by hand. */
+  areas?: number;
+  /** Each: its place in the new room's raised areas, what it is called, and which fields it keeps. */
+  kept?: { index: number; name: string; edits: string[]; overlap?: number }[];
+  /** Raised areas added by hand that the scan has nothing in the place of: kept as they were. */
+  added_kept?: { index: number; name: string }[];
+  /** Raised areas added by hand that the scan now has something in the place of. */
+  added_replaced?: { name: string; by_index: number; by: string }[];
+  message?: string | null;
+}
+
+const areasText = (count: number) => `${count} area${count === 1 ? '' : 's'}`;
+
+/**
+ * The one line the dialog says about edits made by hand: "Will keep your edits on 2 areas" before
+ * Apply and "Kept your edits on 2 areas" after it, with "1 area you added will be kept" and
+ * "1 area you added will be replaced by the scan" joined on where there are any. `replaced` is
+ * true when something added by hand is lost, which the dialog shows as a warning. Null where the
+ * server sent nothing: no hand edit was there to keep.
+ */
+export function handEditsLine(
+  answer: RoomScanPreview | null | undefined,
+): { text: string; replaced: boolean } | null {
+  if (!answer) return null;
+  const done = !!answer.applied;
+  const edits = done ? answer.applied?.hand_edits : answer.hand_edits;
+  if (!edits) return null;
+  const kept = Array.isArray(edits.kept) ? edits.kept.length : 0;
+  const added = Array.isArray(edits.added_kept) ? edits.added_kept.length : 0;
+  const replaced = Array.isArray(edits.added_replaced) ? edits.added_replaced.length : 0;
+  const parts: string[] = [];
+  if (kept > 0) parts.push(`${done ? 'kept' : 'will keep'} your edits on ${areasText(kept)}`);
+  if (added > 0) parts.push(`${areasText(added)} you added ${done ? 'kept' : 'will be kept'}`);
+  if (replaced > 0) {
+    parts.push(`${areasText(replaced)} you added ${done ? 'replaced' : 'will be replaced'} by the scan`);
+  }
+  if (parts.length === 0) return null;
+  const text = parts.join('; ');
+  return { text: text.charAt(0).toUpperCase() + text.slice(1), replaced: replaced > 0 };
+}
+
+export const DJ_BOOTH_WILL_DROP_TEXT ='DJ booth mark will be dropped';
 
 /**
  * The one line a preview says about the DJ booth mark before Apply: "DJ booth mark: kept on Riser",
