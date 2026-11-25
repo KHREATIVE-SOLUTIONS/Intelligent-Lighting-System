@@ -195,6 +195,31 @@ def footprint_overlap(one: Any, other: Any) -> float:
     return max(0.0, min(1.0, inter / union))
 
 
+def best_match(area: Any, risers: Any) -> Tuple[Optional[int], float]:
+    """Which raised area of a new reading is the stored one given, and by how much they overlap.
+
+    The one matching rule (points 2 and 3 at the top of this file), for the
+    DJ booth mark and for every other thing kept across a reading
+    (keep_edits.py): the same kind, unless the stored one's kind was set by
+    hand; an intersection over union of at least `MATCH_IOU`; the greatest
+    overlap, and of two equal the earlier. (None, 0.0) when none passes.
+    """
+    if not isinstance(area, dict) or not isinstance(risers, list):
+        return None, 0.0
+    # A kind a person set is theirs, not one the scan can be expected to read again: any kind may match.
+    by_hand = kind_set_by_hand(area) and area.get("kind") in RISER_KINDS
+    best: Optional[int] = None
+    best_overlap = 0.0
+    for index, item in enumerate(risers):
+        if not isinstance(item, dict) or (item.get("kind") != area.get("kind") and not by_hand):
+            continue
+        overlap = footprint_overlap(area, item)
+        # Strictly greater: of two that overlap as much, the earlier keeps it.
+        if overlap >= MATCH_IOU and overlap > best_overlap:
+            best, best_overlap = index, overlap
+    return best, best_overlap
+
+
 def keep_dj_booth(old_shell: Optional[Dict[str, Any]], new_shell: Dict[str, Any]) -> KeptMark:
     """The new room with the DJ booth mark kept where the old room had it, and what became of the mark.
 
@@ -207,18 +232,7 @@ def keep_dj_booth(old_shell: Optional[Dict[str, Any]], new_shell: Dict[str, Any]
     marked = old_shell["risers"][place]
     name = item_name("risers", marked)
     risers = new_shell.get("risers") if isinstance(new_shell, dict) else None
-
-    # A kind a person set is theirs, not one the scan can be expected to read again: any kind may match.
-    by_hand = kind_set_by_hand(marked) and marked.get("kind") in RISER_KINDS
-    best: Optional[int] = None
-    best_overlap = 0.0
-    for index, item in enumerate(risers if isinstance(risers, list) else []):
-        if not isinstance(item, dict) or (item.get("kind") != marked.get("kind") and not by_hand):
-            continue
-        overlap = footprint_overlap(marked, item)
-        # Strictly greater: of two that overlap as much, the earlier keeps it.
-        if overlap >= MATCH_IOU and overlap > best_overlap:
-            best, best_overlap = index, overlap
+    best, best_overlap = best_match(marked, risers)
 
     already = [index for index, item in enumerate(risers if isinstance(risers, list) else [])
                if isinstance(item, dict) and DJ_BOOTH_KEY in item]
