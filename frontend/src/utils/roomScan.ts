@@ -155,8 +155,83 @@ export interface RoomScanHandEdits {
    * 'truss_rings' for a line or a ring (slice 34).
    */
   deleted_left_out?: { name: string; kind?: string | null; overlap?: number }[];
-  /** Kept things the new room does not hold: above its ceiling, or outside its walls. Kept all the same. */
-  warnings?: { kind: 'risers' | OverheadKind; index: number; name: string; reason: string }[];
+  /**
+   * Kept things the new room does not hold: above its ceiling, or outside its walls. Kept all the same.
+   * Each of those has the `index` of the item in the new room. Since slice 35 the list also names what
+   * was lost, each with the server's own `message` and no `index` (it is not in the new room): a line's
+   * or ring's name or trim where the scan read one there at another height (`reason` 'hanging height')
+   * or sharing too little of the plan ('read beside'), and the record of a deleted item that was
+   * dropped because the scan did not see it ('record dropped').
+   */
+  warnings?: {
+    kind: 'risers' | OverheadKind;
+    index?: number;
+    name: string;
+    reason: string;
+    message?: string | null;
+    edits?: string[];
+    read_height?: number;
+    trim?: number | null;
+    scan_height?: number | null;
+    offset?: number;
+    overlap?: number;
+  }[];
+  /**
+   * Everything above one thing at a time, in the order `message` says it (slice 35): what it is, what
+   * it is called and what happened to it. Sent only when something was kept, left out or replaced.
+   */
+  items?: RoomScanHandEditItem[];
+}
+
+/** One thing a scan applied again acted on. `outcome` is the server's words, the same before and after Apply. */
+export interface RoomScanHandEditItem {
+  /** 'raised area', 'line' or 'ring'. */
+  kind: string;
+  name: string;
+  /** 'kept your edits', 'left out (you deleted it)', 'replaced (a scanned item overlaps it)' or 'added by hand, kept'. */
+  outcome: string;
+}
+
+/** How many of `items` the dialog shows before "Show all". */
+export const HAND_EDIT_ITEMS_SHOWN = 5;
+
+const handEditsOf = (answer: RoomScanPreview | null | undefined) =>
+  (answer?.applied ? answer.applied.hand_edits : answer?.hand_edits) ?? null;
+
+/**
+ * What a scan applied again did, one thing at a time: before Apply what it would do, after it what it
+ * did. Empty where the server sent no list. An entry with no name or no outcome is passed over.
+ */
+export function handEditItems(answer: RoomScanPreview | null | undefined): RoomScanHandEditItem[] {
+  const items = handEditsOf(answer)?.items;
+  if (!Array.isArray(items)) return [];
+  return items.filter((item) => !!item && typeof item.name === 'string' && item.name !== ''
+    && typeof item.outcome === 'string' && item.outcome !== '');
+}
+
+/** One line of that list: "Front truss (line): kept your edits". */
+export function handEditItemText(item: RoomScanHandEditItem): string {
+  const kind = typeof item.kind === 'string' && item.kind !== '' ? ` (${item.kind})` : '';
+  return `${item.name}${kind}: ${item.outcome}`;
+}
+
+/**
+ * The warnings of `hand_edits`, each as a sentence: the server's own `message` where it sent one (what
+ * was lost, slice 35), and for a kept item the new room does not hold "Check Podium: it is outside the
+ * walls of the room as this scan reads it.", as the server's `message` says it.
+ */
+export function handEditWarnings(answer: RoomScanPreview | null | undefined): string[] {
+  const warnings = handEditsOf(answer)?.warnings;
+  if (!Array.isArray(warnings)) return [];
+  const said: string[] = [];
+  warnings.forEach((warning) => {
+    if (!warning) return;
+    if (typeof warning.message === 'string' && warning.message !== '') said.push(warning.message);
+    else if (warning.name && warning.reason) {
+      said.push(`Check ${warning.name}: it is ${warning.reason} of the room as this scan reads it.`);
+    }
+  });
+  return said;
 }
 
 const areasText = (count: number) => `${count} area${count === 1 ? '' : 's'}`;
@@ -189,7 +264,11 @@ export function handEditsLine(
   const deleted = Array.isArray(edits.deleted_left_out) ? edits.deleted_left_out : [];
   const overheadOut = deleted.filter((entry) => entry?.kind === 'truss_lines' || entry?.kind === 'truss_rings').length;
   const leftOut = thingsText(deleted.length - overheadOut, overheadOut);
-  const toCheck = howMany(edits.warnings);
+  // Only what is in the new room to be checked against it. What was lost (slice 35) has no place in
+  // the new room, and is said in full under this line (handEditWarnings).
+  const toCheck = Array.isArray(edits.warnings)
+    ? edits.warnings.filter((warning) => typeof warning?.index === 'number').length
+    : 0;
   const parts: string[] = [];
   if (leftOut) parts.push(`${done ? 'left' : 'will leave'} out ${leftOut} you deleted`);
   if (kept) parts.push(`${done ? 'kept' : 'will keep'} your edits on ${kept}`);

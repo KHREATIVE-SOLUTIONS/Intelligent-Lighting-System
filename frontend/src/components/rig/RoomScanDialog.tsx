@@ -43,6 +43,10 @@ import {
   ROOM_SCAN_ACCEPT,
   djBoothDroppedText,
   djBoothPreviewLine,
+  HAND_EDIT_ITEMS_SHOWN,
+  handEditItems,
+  handEditItemText,
+  handEditWarnings,
   handEditsLine,
   fileProblem,
   fixtureMoveText,
@@ -106,6 +110,8 @@ export default function RoomScanDialog({
   const [notice, setNotice] = useState<string | null>(null);
   // Removing a room whose scan moved fixtures asks first whether to put them back.
   const [askRemove, setAskRemove] = useState(false);
+  // The list of what a scan applied again did shows its first few, until asked for all of it.
+  const [showAllItems, setShowAllItems] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Only the newest preview may land: changing the units while one is in
   // flight must not show the old reading under the new setting.
@@ -124,6 +130,7 @@ export default function RoomScanDialog({
     setError(null);
     setNotice(null);
     setAskRemove(false);
+    setShowAllItems(false);
   }, [open, rigId]);
 
   const runPreview = useCallback(async (chosen: File, using: RoomScanOptions) => {
@@ -131,6 +138,7 @@ export default function RoomScanDialog({
     requestRef.current = request;
     setPreview(null);
     setApplied(null);
+    setShowAllItems(false);
     setNotice(null);
     setError(null);
     setBusy('preview');
@@ -220,6 +228,9 @@ export default function RoomScanDialog({
   const markLine = applied ? null : djBoothPreviewLine(preview);
   // Before Apply what would be kept of the edits made by hand, and after it what was.
   const editsLine = handEditsLine(shown);
+  // The same by name, one thing at a time, and what was lost or is to be checked (slice 35).
+  const editItems = handEditItems(shown);
+  const editWarnings = handEditWarnings(shown);
   // How many of the moves on screen turn their fixture. Once applied it is said
   // only when fixtures were moved: with the box unticked nothing was turned.
   const turnSummary = !shown
@@ -390,6 +401,38 @@ export default function RoomScanDialog({
               <Typography variant="body2" sx={{ mb: 2 }} data-testid="room-scan-hand-edits">
                 {editsLine.text}
               </Typography>
+            ))}
+
+            {/* The same by name: each thing kept, left out or replaced, the first few until asked (slice 35). */}
+            {editItems.length > 0 && (
+              <Box sx={{ mt: -1, mb: 2 }} data-testid="room-scan-hand-edit-items">
+                <Box component="ul" sx={{ my: 0, pl: 3 }}>
+                  {(showAllItems ? editItems : editItems.slice(0, HAND_EDIT_ITEMS_SHOWN)).map((item, index) => (
+                    // Two things can share a name and an outcome: the place in the list is the key.
+                    <Typography key={index} component="li" variant="body2">
+                      {handEditItemText(item)}
+                    </Typography>
+                  ))}
+                </Box>
+                {editItems.length > HAND_EDIT_ITEMS_SHOWN && (
+                  <Button
+                    size="small"
+                    sx={{ ml: 1 }}
+                    aria-expanded={showAllItems}
+                    data-testid="room-scan-hand-edit-items-toggle"
+                    onClick={() => setShowAllItems((all) => !all)}
+                  >
+                    {showAllItems ? 'Show fewer' : `Show all ${editItems.length}`}
+                  </Button>
+                )}
+              </Box>
+            )}
+
+            {/* What was lost, and what was kept that the new room does not hold: shown as the scan's own warnings are. */}
+            {editWarnings.map((warning, index) => (
+              <Alert key={index} severity="warning" sx={{ mb: 1 }} data-testid="room-scan-hand-edit-warning">
+                {warning}
+              </Alert>
             ))}
 
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
