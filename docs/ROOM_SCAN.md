@@ -219,7 +219,11 @@ Rig editor toolbar, **Room Scan**:
    **Units** (metres, centimetres, millimetres), **Up axis** (Y or Z), **Turn
    the room** in quarter turns when the wrong wall was taken as upstage.
 4. **Store the room** (and, if ticked, move the listed fixtures). Untick the box
-   to store the room and leave every fixture where it is.
+   to store the room and leave every fixture where it is. Where the room it
+   replaces had a raised area ticked as the **DJ booth**, the tick is kept
+   on the same raised area of the new room; if the new scan has none of
+   that kind standing there, the dialog says the mark was dropped, and it
+   is ticked again in Edit Room (slice 30).
 5. **See it in the 3D view.** Then run Identify Lights: the moved fixtures are
    still unconfirmed.
 
@@ -603,7 +607,15 @@ The answer, for both:
   that turns nothing has no `turn_deg`. The dialog shows it in the table's
   Turn column (slice 29).
 - `applied`: `null` for a preview. After apply: `room_shell_stored`,
-  `fixtures_moved`, `fixtures_still_unconfirmed` and a message.
+  `fixtures_moved`, `fixtures_still_unconfirmed` and a message. Where the
+  room it replaced had a raised area marked as the DJ's booth (slice 30),
+  also `dj_booth` (the place in the new `risers` of the raised area that
+  keeps the mark, or null), `dj_booth_dropped` (true when none does and the
+  mark is gone), `dj_booth_overlap` (the intersection over union it was
+  kept at, or null) and `dj_booth_message` (the sentence for the
+  operator). A room with no marked booth has none of the four. The
+  `room_shell` of an applied answer carries the kept mark; a preview's
+  never does. See "What slice 30 built" for the rule.
 
 Refusals, each with a `detail` that says what to do:
 
@@ -1560,6 +1572,95 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 30 built
+
+The DJ booth mark is kept when the scan is read again. Slice 28 put the
+mark on one raised area of the stored room; a scan applied again writes a
+whole new room, whose raised areas carry no mark and no id, so the mark was
+lost every time.
+
+- **The rule** (`services/room_scan/keep_mark.py`, `keep_dj_booth`). On
+  apply, with the room being replaced still in hand:
+  1. The old room's marked raised area is found (`dj_booth_place`: the
+     first, should a shell written by hand mark two). With none, nothing is
+     done and the answer is what it always was.
+  2. A raised area of the new reading can take the mark only if it is **the
+     same kind** (`stage`, `riser` or `booth`) as the marked one is now, and
+     **its footprint overlaps the marked one's by an intersection over union
+     of 0.5 or more** (`MATCH_IOU`). The footprints are the rectangles on
+     the plan turned to their headings (`area_corners`), cut against each
+     other as polygons: a booth standing at a heading is compared as it
+     stands, a reading a few degrees further round still matches, and the
+     same rectangle stored as 2 x 1 at 0 degrees or 1 x 2 at 90 is the same
+     footprint. Heights are not looked at.
+  3. **Of several that pass, the greatest overlap takes it; of two that
+     overlap exactly as much, the earlier in the list.**
+  4. **With none that passes, the mark is dropped**, and the answer says so.
+     It is never given to the nearest raised area or to the scan's first
+     booth: a mark set by hand is kept where it was or not at all.
+  - Half is what lets a 2 m booth be read 0.6 m off and refuses one read
+    0.7 m off; two booths side by side share nothing.
+  - *Only the mark is carried.* The name, kind, size and place set by hand
+    on the old raised area are not: the new room is the scan's, and the
+    kept raised area is still its suggestion (`suggested`, `basis` as read).
+  - *One at a time.* The kept mark is the only one in the new room.
+  - Pure: neither room is changed, and a room with no mark to keep comes
+    back as the same object.
+- **The route** (`POST /api/rigs/{id}/room-scan?apply=true`). The stored
+  room and the answer's `room_shell` carry the kept mark. `applied` gains
+  `dj_booth` (the place, or null), `dj_booth_dropped`, `dj_booth_overlap`
+  and `dj_booth_message` ("The DJ booth mark was kept on Booth or counter."
+  / "The DJ booth mark was dropped: no raised area in this scan stands where
+  DJ did. Mark the DJ booth again in Edit Room."), **only where the room
+  replaced had a mark**; `applied.message` is not changed. A preview looks
+  at nothing and says nothing of the mark: it stores nothing, and the room
+  can be edited before it is applied.
+- **The room's Undo is emptied by an apply, as before.** Its steps were
+  edits to the room that was replaced, so after a scan is applied again
+  there is nothing to take back: a dropped mark is not brought back by
+  Undo, and a kept one is not a step. This was so before the slice and is
+  not changed; the next edit (taking the kept mark off, say) is step one
+  and can be undone. *Undo room scan moves* is about fixtures and is not
+  touched by the mark.
+- **The dialog** (`RoomScanDialog.tsx`, `djBoothDroppedText` in
+  `utils/roomScan.ts`). After Apply, where `dj_booth_dropped` is true, a
+  warning under the stored message with the server's sentence (or the
+  dialog's own, `DJ_BOOTH_DROPPED_TEXT`, where none was sent). Nothing is
+  shown for a kept mark, a room that had none, or a preview.
+- **Tests.** Backend: `tests/unit/test_room_scan_keep_mark.py` (39): the
+  overlap in numbers worked by hand (a shift, one inside another, a quarter
+  turn stored either way, two squares 45 degrees apart sharing an octagon,
+  +30 against -30, an area with a number missing); the same booth read a
+  little off keeps the mark and only the mark; the mark following the booth
+  to another place in the list; no match dropped with its sentence; a booth
+  that only stands near, and the half exactly; another kind in the same
+  place; a kind changed by hand; a marked stage with a riser on it; two
+  candidates in either order; two equal ones; a booth at a heading read 3
+  degrees further round, stored the other way round, swung across itself,
+  and read square; a room with no mark; a room marking two; a reading that
+  came marked; neither room changed.
+  `tests/integration/test_api_room_scan_keep_mark.py` (8): over HTTP, the
+  same scan applied again keeps the mark in the answer, the column and the
+  rig, moving no fixture; a booth nudged 0.3 m by hand is kept (overlap
+  1.7 / 2.3); one moved 4 m and one made another kind are dropped and said;
+  the room's Undo emptied by the apply, not bringing a dropped mark back,
+  and working again for the next edit; an unmarked room's `applied` has
+  exactly the keys it had; a preview writes nothing; the room read a
+  quarter turn round drops it. Frontend:
+  `RoomScanDialogDjBoothDropped.test.tsx` (6): the warning with the
+  server's sentence beside the stored message, the dialog's own words,
+  nothing for a kept mark or no mark or a preview, and the helper.
+- **No existing test was changed.**
+- **What was run** (Nov 24). Backend, with the main checkout's venv:
+  `python -m pytest tests/ -q` **2609 passed, 10 skipped, 5 xfailed** (2562
+  before the slice; the 47 new ones are the two files above). Frontend:
+  `npx tsc --noEmit -p .` only the 13 older errors, none in `roomScan.ts`,
+  `RoomScanDialog.tsx` or the new test file. **`npx vitest run` and
+  `npx vite build` were refused in the session**, so the 6 new frontend
+  tests have not been run and the bundle has not been built with this
+  change. See "What is left".
+- **No Art-Net, no DMX, no network call, no new dependency.**
 
 ## What slice 29 built
 
@@ -2997,6 +3098,11 @@ All scans are built in code (`backend/tests/unit/room_scan_meshes.py`), but
 for binary USD: those files are in `backend/tests/fixtures/usdc/`, written by
 Pixar's USD library from the same rooms (slice 24).
 
+- `backend/tests/unit/test_room_scan_keep_mark.py` and
+  `backend/tests/integration/test_api_room_scan_keep_mark.py`: the DJ booth
+  mark kept or dropped when a scan is applied again (slice 30). Run. The
+  frontend's `RoomScanDialogDjBoothDropped.test.tsx` has **not** been run
+  (see "What slice 30 built" and "What is left").
 - `backend/tests/unit/test_room_scan_dj_booth.py` and
   `backend/tests/integration/test_api_room_shell_dj_booth.py`: the DJ booth
   mark (slice 28). Run. The frontend's `boothPick.test.ts`,
@@ -3618,6 +3724,34 @@ Pixar's USD library from the same rooms (slice 24).
 
 ## What is left
 
+- **Slice 30's frontend tests have not been run, and nor has the build
+  with it.** `npx vitest run` and `npx vite build` were refused in the
+  session that wrote it; `npx tsc --noEmit -p .` ran with its 13 older
+  errors and no new one, and the backend suite ran. Before relying on it,
+  in `frontend/`: `npx vitest run` (it adds one file,
+  `RoomScanDialogDjBoothDropped.test.tsx`, 6 tests) and `npx vite build`.
+  **Not seen in a browser**: the warning under the stored message.
+- **Keeping the DJ booth mark goes only so far** (slice 30):
+  - **A kind changed by hand loses the mark at the next scan.** The match
+    is on the kind the marked raised area has now. A scan's "riser" made a
+    booth and marked comes back a riser, so the mark is dropped (and said).
+    Marked without changing its kind, it is kept.
+  - **A booth moved or resized by hand past half its footprint is
+    dropped**: the new reading has it where the scan sees it. So is every
+    mark when the room is read a quarter turn round (**Turn the room**):
+    nothing stands where it did.
+  - **Only the mark is kept.** A name, a size, a heading or a base height
+    set by hand, and every added or deleted item, are still the scan's
+    again.
+  - **The preview does not say what will become of the mark.** It is
+    worked out, and said, on apply only.
+  - **A kept mark is said in the answer and not in the dialog**
+    (`dj_booth_message`); the dialog speaks only of a dropped one.
+  - **The room's Undo does not go back across a scan applied again**, for
+    the mark as for everything else (it never did).
+  - **Heights are not compared.** Two raised areas of one kind stacked on
+    the same footprint are told apart only by their place in the list.
+
 - **Slice 29's tests have not been run, and nor has the build with it.**
   `npx vitest run` and `npm run build` were refused in the session that
   wrote it; `npx tsc --noEmit -p .` ran, with its 13 older errors and no
@@ -3649,8 +3783,10 @@ Pixar's USD library from the same rooms (slice 24).
   wall, the tag's size over a small booth, and the box in the already wide
   row of Edit Room.
 - **The DJ booth mark goes only so far** (slice 28):
-  - **Reading the scan again drops it**, as it drops every change made by
-    hand: the scan writes a new room. Mark the booth again.
+  - **Reading the scan again no longer drops it** where the new reading
+    has the same raised area standing in the same place (slice 30); it is
+    dropped, and the answer and the dialog say so, where it has not. Every
+    other change made by hand is still dropped: the scan writes a new room.
   - **A change of kind made through the API without `is_dj_booth` takes the
     mark off.** Edit Room sends it; another client has to.
   - **A marked stage is drawn as a stage** (a desk at its downstage edge,
