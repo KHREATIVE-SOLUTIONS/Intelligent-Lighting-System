@@ -1754,6 +1754,16 @@ scanning a venue a second time cost every correction made since the first.
     `test_a_preview_over_a_marked_room_writes_nothing_and_says_the_mark_
     will_be_kept` named the marked riser "DJ" and expected "kept on
     Riser"; it is "kept on DJ", and the stored riser carries the name.
+- **What was run** (Nov 24). Backend, with the main checkout's venv, after
+  the last code change: `python -m pytest tests/ -q` **2658 passed, 10
+  skipped, 5 xfailed** (2626 with slice 31's flaky strobe test passing;
+  the 31 new ones are the two files above, and one line was added to an
+  existing unit test). Frontend: `npx tsc --noEmit -p .` only the 13 older
+  errors, none in `roomScan.ts`, `RoomScanDialog.tsx`,
+  `RoomShellEditDialog.tsx` or the new test file. **`npx vitest run` and
+  `npx vite build` were refused in the session**, so the 8 new frontend
+  tests have not been run and the bundle has not been built with this
+  change. See "What is left".
 - **No Art-Net, no DMX, no network call, no new dependency.**
 
 ## What slice 31 built
