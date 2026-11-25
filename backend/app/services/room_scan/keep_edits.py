@@ -14,7 +14,9 @@ the kind was set by hand (a line and a ring have no kind), footprints
 overlapping by an intersection over union of at least 0.5, the greatest
 overlap, the earlier of two equal. A raised area is only asked of raised
 areas, a line of lines, a ring of rings. There is no second rule: what differs
-between the three is only what a footprint is (keep_mark.py, `_footprint`).
+between the three is what a footprint is (keep_mark.py, `_footprint`), and
+that a line or ring read more than 1.0 m above or below where the scan read
+the stored one is not it (`HANG_MATCH_M`, slice 34).
 
 What counts as set by hand is read from what is stored (`hand_edits`):
 
@@ -32,16 +34,20 @@ were written keeps nothing.
 
 What is done, in this order:
 
-0. **Raised areas a person deleted** (`deleted_areas` in the stored room,
-   edit.py `tombstone`). Each is asked, by the same rule, which raised area of
-   the new reading it is. One it matches is left out of the new room and
-   reported, and its record goes on to the new room (with the footprint this
-   reading gave), so it is left out at the reading after too. Two records that
-   pick the same new area: the greater overlap has it, the earlier of two
-   equal. A record that matches nothing is dropped: the scan no longer reads
-   anything there. This is done first: everything below is asked of the new
-   room without those areas, so one a person deleted and then put in again by
-   hand, their way, is kept as theirs.
+0. **Raised areas, lines and rings a person deleted** (`deleted_areas` in the
+   stored room, edit.py `tombstone`; lines and rings slice 34). Each record is
+   asked, by the same rule, which item of the new reading it is, in the list
+   it was deleted from (a record with ends is a line's, one with a radius a
+   ring's). One it matches is left out of the new room and reported, and its
+   record goes on to the new room (with the footprint, and for a line or ring
+   the height, this reading gave), so it is left out at the reading after
+   too. A line or ring left out is taken out of `hanging_bands`, as Edit Room
+   does when one is deleted. Two records that pick the same new item: the
+   greater overlap has it, the earlier of two equal. A record that matches
+   nothing is dropped: the scan no longer reads anything there. This is done
+   first: everything below is asked of the new room without those items, so
+   one a person deleted and then put in again by hand, their way, is kept as
+   theirs.
 1. A stored item with anything set by hand that matches a new one gives it
    the name, the height and the base height that were set by hand, and the
    new one's `basis` says so again, so the reading after this one keeps them
@@ -49,7 +55,9 @@ What is done, in this order:
    the scan measures those better than a person drags them. A raised area's
    kind is the scan's too (only the marked DJ booth keeps a kind:
    keep_mark.py). A line or ring given a height keeps its depth (its `top`
-   goes with it) and is counted again in `hanging_bands`, as Edit Room does.
+   goes with it) and is counted again in `hanging_bands`, as Edit Room does;
+   the height this reading gave is stored beside it (`scan_height`), for the
+   reading after to match by.
 2. Two stored items that pick the same new one: the greater overlap has it,
    the earlier of two equal. The other is treated as one that matched nothing.
    Every stored item is asked, with or without anything to keep: a riser a
@@ -91,8 +99,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.room_scan.edit import (
-    BASE_BY_HAND, DELETED_KEY, HEIGHT_BY_HAND, KINDS, NAME_BY_HAND, RESIZED_BY_HAND, RISER_KINDS, _count, _mark,
-    _mm, _note, _number, _uncount, base_of, item_name,
+    BASE_BY_HAND, DELETED_KEY, HEIGHT_BY_HAND, KINDS, NAME_BY_HAND, RESIZED_BY_HAND, RISER_KINDS, SCAN_HEIGHT_KEY,
+    _count, _mark, _mm, _note, _number, _uncount, base_of, item_name,
 )
 from app.services.room_scan.keep_mark import best_match, footprint_overlap
 from app.services.room_scan.outline_edit import ABOVE, outside_report
@@ -105,6 +113,22 @@ CROSSING = 0.2
 SHARED: Dict[str, float] = {"risers": TOUCHING, "truss_lines": CROSSING, "truss_rings": CROSSING}
 
 OVERHEAD: Tuple[str, ...] = ("truss_lines", "truss_rings")
+
+# What a record of a deleted item takes from the reading that has it again: where the next is matched.
+_RECORD_READ: Dict[str, Tuple[str, ...]] = {
+    "risers": ("center_x", "center_z", "width", "depth", "heading_deg"),
+    "truss_lines": ("x1", "z1", "x2", "z2", "across", "height"),
+    "truss_rings": ("center_x", "center_z", "radius", "height"),
+}
+
+
+def _record_list(record: Any) -> str:
+    """The list a record of a deleted item was deleted from, read from what it stores (as keep_mark._footprint)."""
+    if isinstance(record, dict) and "x1" in record:
+        return "truss_lines"
+    if isinstance(record, dict) and "radius" in record:
+        return "truss_rings"
+    return "risers"
 
 # What each kept field is called in a sentence, in the order they are said.
 EDIT_WORDS: Dict[str, str] = {"name": "name", "height": "height", "base_height": "base height"}
@@ -157,7 +181,8 @@ class KeptEdits:
     overhead_kept: List[Dict[str, Any]] = field(default_factory=list)
     overhead_added_kept: List[Dict[str, Any]] = field(default_factory=list)
     overhead_added_replaced: List[Dict[str, Any]] = field(default_factory=list)
-    # Each {"name", "kind", "overlap"}: a raised area of the reading left out because a person deleted it.
+    # Each {"name", "kind", "overlap"}: an item of the reading left out because a person deleted it. `kind`
+    # is a raised area's kind ("stage", "riser", "booth"), and "truss_lines" or "truss_rings" for one of those.
     left_out: List[Dict[str, Any]] = field(default_factory=list)
     # Each {"kind", "index", "reason"}: something kept that the new room's ceiling or walls do not hold.
     warnings: List[Dict[str, Any]] = field(default_factory=list)
@@ -200,9 +225,11 @@ class KeptEdits:
 
         was, were = ("was", "were") if applied else ("will be", "will be")
         said = []
-        if self.left_out:
-            names = ", ".join(entry["name"] for entry in self.left_out)
-            said.append(f"{'Left' if applied else 'Will leave'} out {_plural(len(self.left_out))} you deleted: {names}.")
+        for kind in KINDS:
+            gone = [entry for entry in self.left_out if (entry["kind"] if entry["kind"] in OVERHEAD else "risers") == kind]
+            if gone:
+                names = ", ".join(entry["name"] for entry in gone)
+                said.append(f"{'Left' if applied else 'Will leave'} out {_plural(len(gone), kind)} you deleted: {names}.")
         for kind, words, entries in (
             ("risers", EDIT_WORDS, kept),
             *((over, OVERHEAD_EDIT_WORDS, [entry for entry in over_kept if entry["kind"] == over]) for over in OVERHEAD),
@@ -258,32 +285,46 @@ def _winners(matches: List[Tuple[Optional[int], float]]) -> Dict[int, Tuple[int,
 
 
 def _leave_out(old_shell: Any, new_shell: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """(the new room without the raised areas a person deleted, what was left out). Point 0 at the top.
+    """(the new room without the items a person deleted, what was left out). Point 0 at the top.
 
     The same object, and nothing, when no record matches.
     """
     records = old_shell.get(DELETED_KEY) if isinstance(old_shell, dict) else None
-    new = new_shell.get("risers") if isinstance(new_shell, dict) else None
-    if not isinstance(records, list) or not isinstance(new, list):
+    if not isinstance(records, list) or not isinstance(new_shell, dict):
         return new_shell, []
-    winner = _winners([best_match(record, new) for record in records])
-    if not winner:
+    # (the record's place, the list, the place in that list of the new reading, the overlap)
+    taken: List[Tuple[int, str, int, float]] = []
+    for kind in KINDS:
+        new = new_shell.get(kind)
+        places = [place for place, record in enumerate(records) if _record_list(record) == kind]
+        if not places or not isinstance(new, list):
+            continue
+        winner = _winners([best_match(records[place], new) for place in places])
+        taken.extend((places[at], kind, index, overlap) for index, (at, overlap) in winner.items())
+    if not taken:
         return new_shell, []
     shell = copy.deepcopy(new_shell)
-    shell["risers"] = [item for index, item in enumerate(shell["risers"]) if index not in winner]
+    for kind in KINDS:
+        out = {index for _, where, index, _ in taken if where == kind}
+        if not out:
+            continue
+        shell[kind] = [item for index, item in enumerate(shell[kind]) if index not in out]
+        if kind in OVERHEAD:
+            # As Edit Room's delete: out of its list, then out of the band that counted it.
+            for index in sorted(out):
+                _uncount(shell, kind, new_shell[kind][index])
     carried: List[Dict[str, Any]] = []
     left_out: List[Dict[str, Any]] = []
-    for index in sorted(winner, key=lambda at: winner[at][0]):
-        place, overlap = winner[index]
-        record, read = records[place], new[index]
+    for place, kind, index, overlap in sorted(taken):
+        record, read = records[place], new_shell[kind][index]
         # The record goes on, standing where this reading has it: the next reading is matched against that.
-        again = {key: value for key, value in record.items() if key != "heading_deg"}
-        again.update({key: read[key] for key in ("center_x", "center_z", "width", "depth", "heading_deg") if key in read})
+        again = {key: value for key, value in record.items() if key not in _RECORD_READ[kind]}
+        again.update({key: read[key] for key in _RECORD_READ[kind] if key in read})
         carried.append(again)
         name = record.get("name")
         left_out.append({
-            "name": name if isinstance(name, str) and name.strip() else item_name("risers", read),
-            "kind": record.get("kind"), "overlap": round(overlap, 3),
+            "name": name if isinstance(name, str) and name.strip() else item_name(kind, read),
+            "kind": kind if kind in OVERHEAD else record.get("kind"), "overlap": round(overlap, 3),
         })
     shell[DELETED_KEY] = carried
     return shell, left_out
@@ -397,6 +438,9 @@ def keep_hand_edits(old_shell: Optional[Dict[str, Any]], new_shell: Dict[str, An
                     # As Edit Room hangs one higher or lower: as deep as the scan reads it, and counted
                     # in the hanging-height band it is now in.
                     top, had = before.get("top"), before.get("height")
+                    if _number(had):
+                        # Where this reading has it, beside the trim: the reading after matches by that.
+                        item[SCAN_HEIGHT_KEY] = had
                     if _number(top) and _number(had):
                         item["top"] = _mm(item["height"] + (top - had))
                     _uncount(shell, kind, before)

@@ -65,10 +65,12 @@ is, and one the scan now overlaps is replaced. `hand_edits`, in a preview and
 in `applied`, lists them, and is sent only where there is something to list.
 An overhead line and a ring keep a name and a hanging height set by hand the
 same way (`overhead_kept`, `overhead_added_kept`, `overhead_added_replaced`).
-A scanned raised area deleted by hand (DELETE .../room-shell/risers/{index})
-is remembered in the room (`deleted_areas`) and left out of a scan applied
-again (`deleted_left_out`); the room's Undo putting it back, or taking the
-room off the rig, forgets it. Something kept that is above the new ceiling,
+A scanned raised area, overhead line or ring deleted by hand (DELETE
+.../room-shell/{kind}/{index}) is remembered in the room (`deleted_areas`)
+and left out of a scan applied again (`deleted_left_out`, each with its
+`kind`); the room's Undo putting it back, or taking the room off the rig,
+forgets it. A line or ring is matched by where it hangs as well as where it
+is on the plan (within 1.0 m of where the scan read it). Something kept that is above the new ceiling,
 or added by hand and now outside the new walls, is still kept and is listed
 in `warnings`. Each of those keys is sent only when it has something in it.
 

@@ -77,11 +77,19 @@ BASE_BY_HAND = "Base height set by hand."
 # a raised area that is not the booth says nothing, like every one stored before the mark could be set.
 DJ_BOOTH_KEY = "is_dj_booth"
 
-# The list, in the stored room, of the scanned raised areas a person deleted: one small record each
-# (`tombstone`), so that a scan applied again leaves them out instead of bringing them back
-# (keep_edits.py, slice 33). Stored only when there is one. It is part of the room, so the room's Undo,
-# which puts back the whole room as it was before the delete, takes the record away with it.
+# The list, in the stored room, of the scanned raised areas, overhead lines and rings a person
+# deleted: one small record each (`tombstone`), so that a scan applied again leaves them out instead
+# of bringing them back (keep_edits.py; raised areas slice 33, lines and rings slice 34, in the one
+# list: which a record is, is read from what it stores, ends for a line and a radius for a ring).
+# Stored only when there is one. It is part of the room, so the room's Undo, which puts back the whole
+# room as it was before the delete, takes the record away with it.
 DELETED_KEY = "deleted_areas"
+
+# The height the scan read an overhead line or ring at, kept beside a hanging height set by hand
+# (slice 34): written the first time a person sets the trim, and again at each reading that keeps it.
+# A scan applied again tells two trusses hung one above the other apart by it (keep_mark.best_match):
+# the trim a person set is not where the scan will read the truss.
+SCAN_HEIGHT_KEY = "scan_height"
 
 # Slack when deciding which hanging-height band a truss was counted in: the
 # shell's heights are rounded to the centimetre.
@@ -756,6 +764,10 @@ def edit_item(
         value = _in_range(kind, "height", sizes["height"], least, most)
         had = item.get("height")
         if not _number(had) or _mm(had) != value:
+            if (kind != "risers" and _number(had) and SCAN_HEIGHT_KEY not in item
+                    and item.get("added_by_hand") is not True and HEIGHT_BY_HAND not in str(item.get("basis") or "")):
+                # The first trim set by hand: what it had till now is what the scan read.
+                item[SCAN_HEIGHT_KEY] = had
             item["height"] = value
             resized = True
             _mark(item, HEIGHT_BY_HAND)
@@ -872,36 +884,75 @@ def delete_item(shell: Optional[Dict[str, Any]], kind: str, index: int) -> Tuple
     taken out of the hanging-height band that counted it, and a band left with
     nothing in it goes too.
 
-    A raised area the scan read leaves a record of where it stood in the
-    room's `deleted_areas` (`tombstone`), so a scan applied again does not
-    bring it back. One added by hand leaves none, and neither does a line or
-    a ring.
+    A raised area, a line or a ring the scan read leaves a record of where
+    it was in the room's `deleted_areas` (`tombstone`), so a scan applied
+    again does not bring it back. One added by hand leaves none.
     """
     _find(shell, kind, index)
     edited = copy.deepcopy(shell)
     removed = edited[kind].pop(index)
     if kind in ("truss_lines", "truss_rings"):
         _uncount(edited, kind, removed)
-    else:
-        left = tombstone(removed)
-        if left is not None:
-            had = edited.get(DELETED_KEY)
-            edited[DELETED_KEY] = ([one for one in had if isinstance(one, dict)] if isinstance(had, list) else [])
-            edited[DELETED_KEY] = (edited[DELETED_KEY] + [left])[-ITEMS_MAX:]
+    left = tombstone(removed, kind)
+    if left is not None:
+        had = edited.get(DELETED_KEY)
+        edited[DELETED_KEY] = ([one for one in had if isinstance(one, dict)] if isinstance(had, list) else [])
+        edited[DELETED_KEY] = (edited[DELETED_KEY] + [left])[-ITEMS_MAX:]
     return edited, removed
 
 
-def tombstone(item: Any) -> Optional[Dict[str, Any]]:
-    """What is remembered of a scanned raised area a person deleted, or None when nothing is.
+def scan_read_height(item: Any) -> Optional[float]:
+    """The height the scan read an overhead line or ring at, or None where what is stored does not say.
 
-    Its footprint, its kind and its name, shaped as a raised area is so that
-    the one matching rule can be asked which raised area of a later reading
-    it is (keep_mark.best_match); a kind that was set by hand says so, as it
-    did. Nothing for one added by hand (the scan never read it, so it will
-    not read it again), or for one with no footprint to match by.
+    `scan_height` where one is stored; else the `height`, unless a person set
+    that (the basis says "Height set by hand.", or it was added by hand): a
+    trim set before `scan_height` was written says nothing of where the scan
+    read the truss.
+    """
+    if not isinstance(item, dict):
+        return None
+    if _number(item.get(SCAN_HEIGHT_KEY)):
+        return float(item[SCAN_HEIGHT_KEY])
+    if item.get("added_by_hand") is True or HEIGHT_BY_HAND in str(item.get("basis") or ""):
+        return None
+    return float(item["height"]) if _number(item.get("height")) else None
+
+
+def tombstone(item: Any, kind: str = "risers") -> Optional[Dict[str, Any]]:
+    """What is remembered of a scanned item a person deleted, or None when nothing is.
+
+    `kind` is the list it was in. Shaped as the item is, so that the one
+    matching rule can be asked which item of a later reading it is
+    (keep_mark.best_match).
+
+    A raised area: its footprint, its kind and its name; a kind that was set
+    by hand says so, as it did. An overhead line: its name, its two ends, how
+    wide it is where it stored that, and the height the scan read it at
+    (`scan_read_height`: not a trim set by hand, which is not where a later
+    scan will read it). A ring: its name, centre, radius and that height. A
+    line or ring record stores no kind: which it is, is read from its ends or
+    its radius.
+
+    Nothing for one added by hand (the scan never read it, so it will not
+    read it again), or for one with no footprint to match by.
     """
     if not isinstance(item, dict) or item.get("added_by_hand") is True:
         return None
+    if kind in ("truss_lines", "truss_rings"):
+        keys = ("x1", "z1", "x2", "z2") if kind == "truss_lines" else ("center_x", "center_z", "radius")
+        if not all(_number(item.get(key)) for key in keys):
+            return None
+        if kind == "truss_lines" and item["x1"] == item["x2"] and item["z1"] == item["z2"]:
+            return None
+        if kind == "truss_rings" and item["radius"] <= 0:
+            return None
+        over: Dict[str, Any] = {"name": item_name(kind, item), **{key: item[key] for key in keys}}
+        if kind == "truss_lines" and _number(item.get("across")):
+            over["across"] = item["across"]
+        read_at = scan_read_height(item)
+        if read_at is not None:
+            over["height"] = read_at
+        return over
     numbers = [item.get(key) for key in ("center_x", "center_z", "width", "depth")]
     if not all(_number(value) for value in numbers) or numbers[2] <= 0 or numbers[3] <= 0:
         return None

@@ -50,7 +50,14 @@ wider): a truss is 0.3 m across, and two readings of the same one 0.1 m apart
 would share only half of that. A ring's is the disc it goes round, as a polygon
 of `RING_SIDES` sides. Neither has a kind, so none is compared, and a line is
 only ever asked of lines and a ring of rings: the caller gives the list.
-Heights are not looked at for them either.
+
+A line or a ring is also told from another by the height it hangs at (slice
+34): one of the new reading read more than `HANG_MATCH_M` (1.0 m) above or
+below where the scan read the stored one is not it, however much of the plan
+they share. So two trusses hung one above the other keep their own names and
+trims. The height compared is the one the scan read (`scan_read_height`), not
+a trim set by hand; where what is stored does not say what the scan read,
+heights are not compared. A raised area's height is never compared.
 
 Pure: the shells given are never changed, and a new one is returned only when
 there is a mark to write.
@@ -63,6 +70,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.room_scan.edit import (
     DJ_BOOTH_KEY, KIND_BY_HAND, RISER_KINDS, _mark, _number, area_corners, dj_booth_place, item_name,
+    scan_read_height,
 )
 
 # How much of the two footprints together must be shared for a raised area of the new reading to be
@@ -76,6 +84,10 @@ MATCH_IOU = 0.5
 LINE_STRIP_M = 0.6
 # How many sides the polygon has that stands for a ring's disc.
 RING_SIDES = 24
+# How far above or below where the scan read a line or ring one of a new reading can be read and
+# still be it. A truss is read within a few centimetres of where it was, and one flown under another
+# hangs more than a metre below it; a truss re-trimmed by more than this between scans is another.
+HANG_MATCH_M = 1.0
 
 Point = Tuple[float, float]
 
@@ -243,7 +255,8 @@ def footprint_overlap(one: Any, other: Any) -> float:
     """How much two raised areas (or two lines, or two rings) share on the plan: intersection over union, 0 to 1.
 
     0 when either has no footprint (a number missing, or no size). Heights are
-    not looked at: a booth read 5 cm taller is the same booth.
+    not looked at here: a booth read 5 cm taller is the same booth. (For a
+    line or a ring `best_match` looks at them: `HANG_MATCH_M`.)
     """
     a, b = _footprint(one), _footprint(other)
     if a is None or b is None:
@@ -266,17 +279,25 @@ def best_match(area: Any, risers: Any) -> Tuple[Optional[int], float]:
     overlap, and of two equal the earlier. (None, 0.0) when none passes.
 
     Asked the same way of an overhead line among the new reading's lines, a
-    ring among its rings (neither stores a kind, so none differs), and a
-    raised area a person deleted among its raised areas (slice 33).
+    ring among its rings (neither stores a kind, so none differs), and the
+    record of one a person deleted among the list it was in (slices 33, 34).
+
+    For a line or a ring only (one that stores ends or a radius), one of the
+    new reading hanging more than `HANG_MATCH_M` from where the scan read the
+    stored one (`scan_read_height`) does not pass. Not compared where either
+    height is not known. A raised area's height is never compared.
     """
     if not isinstance(area, dict) or not isinstance(risers, list):
         return None, 0.0
+    read_at = scan_read_height(area) if ("x1" in area or "radius" in area) else None
     # A kind a person set is theirs, not one the scan can be expected to read again: any kind may match.
     by_hand = kind_set_by_hand(area) and area.get("kind") in RISER_KINDS
     best: Optional[int] = None
     best_overlap = 0.0
     for index, item in enumerate(risers):
         if not isinstance(item, dict) or (item.get("kind") != area.get("kind") and not by_hand):
+            continue
+        if read_at is not None and _number(item.get("height")) and abs(item["height"] - read_at) > HANG_MATCH_M:
             continue
         overlap = footprint_overlap(area, item)
         # Strictly greater: of two that overlap as much, the earlier keeps it.
