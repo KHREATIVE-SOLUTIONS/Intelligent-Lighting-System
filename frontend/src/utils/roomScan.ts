@@ -149,7 +149,11 @@ export interface RoomScanHandEdits {
   overhead_added_kept?: { kind: OverheadKind; index: number; name: string }[];
   /** Overhead lines and rings added by hand that the scan now has one in the place of. */
   overhead_added_replaced?: { kind: OverheadKind; name: string; by_index: number; by: string }[];
-  /** Scanned raised areas deleted by hand that this scan reads again and leaves out. */
+  /**
+   * Scanned raised areas, overhead lines and rings deleted by hand that this scan reads again and
+   * leaves out. `kind` is a raised area's kind ('stage', 'riser', 'booth'), and 'truss_lines' or
+   * 'truss_rings' for a line or a ring (slice 34).
+   */
   deleted_left_out?: { name: string; kind?: string | null; overlap?: number }[];
   /** Kept things the new room does not hold: above its ceiling, or outside its walls. Kept all the same. */
   warnings?: { kind: 'risers' | OverheadKind; index: number; name: string; reason: string }[];
@@ -166,8 +170,8 @@ const howMany = (list: unknown) => (Array.isArray(list) ? list.length : 0);
  * The one line the dialog says about edits made by hand: "Will keep your edits on 2 areas" before
  * Apply and "Kept your edits on 2 areas" after it, with "1 area you added will be kept" and
  * "1 area you added will be replaced by the scan" joined on where there are any. Overhead lines
- * and rings are counted beside the areas ("2 areas and 1 overhead item"), a raised area deleted by
- * hand that the scan leaves out is said first ("will leave out 1 area you deleted"), and what the
+ * and rings are counted beside the areas ("2 areas and 1 overhead item"), what was deleted by hand
+ * and the scan leaves out is said first ("will leave out 1 area and 1 overhead item you deleted"), and what the
  * new room does not hold last ("1 to check against the new room"). `replaced` is true when
  * something added by hand is lost or something is to be checked, which the dialog shows as a
  * warning. Null where the server sent nothing: no hand edit was there to keep.
@@ -182,10 +186,12 @@ export function handEditsLine(
   const kept = thingsText(howMany(edits.kept), howMany(edits.overhead_kept));
   const added = thingsText(howMany(edits.added_kept), howMany(edits.overhead_added_kept));
   const replaced = thingsText(howMany(edits.added_replaced), howMany(edits.overhead_added_replaced));
-  const leftOut = howMany(edits.deleted_left_out);
+  const deleted = Array.isArray(edits.deleted_left_out) ? edits.deleted_left_out : [];
+  const overheadOut = deleted.filter((entry) => entry?.kind === 'truss_lines' || entry?.kind === 'truss_rings').length;
+  const leftOut = thingsText(deleted.length - overheadOut, overheadOut);
   const toCheck = howMany(edits.warnings);
   const parts: string[] = [];
-  if (leftOut > 0) parts.push(`${done ? 'left' : 'will leave'} out ${areasText(leftOut)} you deleted`);
+  if (leftOut) parts.push(`${done ? 'left' : 'will leave'} out ${leftOut} you deleted`);
   if (kept) parts.push(`${done ? 'kept' : 'will keep'} your edits on ${kept}`);
   if (added) parts.push(`${added} you added ${done ? 'kept' : 'will be kept'}`);
   if (replaced) parts.push(`${replaced} you added ${done ? 'replaced' : 'will be replaced'} by the scan`);

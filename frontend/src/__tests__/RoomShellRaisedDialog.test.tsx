@@ -463,7 +463,7 @@ describe('roomShellEdit: a raised area\'s words, flag, base and kind', () => {
     const stage = deleteQuestionText(item('risers', 0));
     expect(stage).toBe(
       'Take Stage out of the stored room? Fixtures standing on it stay where they are. '
-      + 'Undo here brings it back, until the scan is read again.',
+      + 'It stays deleted when the scan is applied again. Undo here brings it back, until then.',
     );
     expect(deleteQuestionText(item('truss_lines', 0))).not.toContain('standing on it');
   });

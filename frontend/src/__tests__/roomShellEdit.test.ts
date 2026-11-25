@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { roomPlan } from '../components/rig/roomPlan2d';
 import { roomShellItemPath } from '../utils/roomScan';
 import {
+  DELETE_ADDED_TEXT,
+  DELETE_STAYS_OUT_TEXT,
   SHELL_NAME_MAX,
   deleteQuestionText,
   draftOf,
@@ -245,12 +247,39 @@ describe('wording', () => {
     const truss = deleteQuestionText(item('truss_lines', 0));
     expect(truss).toMatch(/^Take Overhead line 1 out of the stored room\?/);
     expect(truss).toContain('Fixtures hung on it stay where they are');
-    // A delete can be taken back now, for as long as the scan is not read again.
-    expect(truss).toContain('Undo here brings it back, until the scan is read again.');
+    // Slice 34: a truss the scan read stays deleted when the scan is applied again (until then the
+    // text was "Undo here brings it back, until the scan is read again."), and Undo takes it back.
+    expect(truss).toBe(
+      'Take Overhead line 1 out of the stored room? '
+      + 'Fixtures hung on it stay where they are, and nothing will snap to it or be laid along it. '
+      + 'It stays deleted when the scan is applied again. Undo here brings it back, until then.',
+    );
     expect(truss).not.toContain('cannot be undone');
     const stage = deleteQuestionText(item('risers', 0));
     expect(stage).not.toContain('Fixtures hung on it');
     expect(stage).toContain('Undo here brings it back');
+  });
+
+  it('says a scanned raised area, line and ring stay deleted, and not of one added by hand', () => {
+    for (const [kind, index] of [['risers', 0], ['risers', 1], ['truss_lines', 0], ['truss_rings', 0]] as const) {
+      const asked = deleteQuestionText(item(kind, index));
+      expect(asked.endsWith(` ${DELETE_STAYS_OUT_TEXT}`)).toBe(true);
+      expect(asked).not.toContain('until the scan is read again');
+    }
+    expect(DELETE_STAYS_OUT_TEXT).toBe(
+      'It stays deleted when the scan is applied again. Undo here brings it back, until then.',
+    );
+    // The scan never read one a person added: no record is kept of it, and nothing says one is.
+    const added = shell();
+    added.truss_lines![0] = { ...added.truss_lines![0], added_by_hand: true, suggested: false, basis: 'Added by hand.' };
+    added.truss_rings![0] = { ...added.truss_rings![0], added_by_hand: true, suggested: false, basis: 'Added by hand.' };
+    added.risers![1] = { ...added.risers![1], added_by_hand: true, suggested: false, basis: 'Added by hand.' };
+    for (const [kind, index] of [['risers', 1], ['truss_lines', 0], ['truss_rings', 0]] as const) {
+      const asked = deleteQuestionText(item(kind, index, added));
+      expect(asked.endsWith(` ${DELETE_ADDED_TEXT}`)).toBe(true);
+      expect(asked).not.toContain('stays deleted');
+    }
+    expect(DELETE_ADDED_TEXT).toBe('Undo here brings it back, until the scan is read again.');
   });
 
   it('uses the server\'s words for a refusal where it gave any', () => {

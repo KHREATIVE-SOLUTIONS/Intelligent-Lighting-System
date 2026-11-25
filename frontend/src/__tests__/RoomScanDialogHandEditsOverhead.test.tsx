@@ -144,6 +144,20 @@ describe('handEditsLine with the slice 33 keys', () => {
     }))).toEqual({ text: '1 overhead item you added will be replaced by the scan', replaced: true });
   });
 
+  it('counts a deleted line and ring left out as overhead items, beside a deleted area (slice 34)', () => {
+    const lineOut = { name: 'Overhead line 1', kind: 'truss_lines', overlap: 1 };
+    const ringOut = { name: 'Overhead ring 1', kind: 'truss_rings', overlap: 1 };
+    expect(handEditsLine(scan({ ...NOTHING, deleted_left_out: [lineOut] }))).toEqual({
+      text: 'Will leave out 1 overhead item you deleted', replaced: false,
+    });
+    expect(handEditsLine(scan({
+      ...NOTHING, deleted_left_out: [{ name: 'Riser', kind: 'riser', overlap: 1 }, lineOut, ringOut],
+    }))).toEqual({ text: 'Will leave out 1 area and 2 overhead items you deleted', replaced: false });
+    expect(handEditsLine(scan(undefined, {
+      ...STORED, hand_edits: { ...NOTHING, deleted_left_out: [lineOut, ringOut] },
+    }))).toEqual({ text: 'Left out 2 overhead items you deleted', replaced: false });
+  });
+
   it('is nothing where the new lists are all empty', () => {
     expect(handEditsLine(scan({
       ...NOTHING, overhead_kept: [], overhead_added_kept: [], overhead_added_replaced: [],

@@ -461,8 +461,10 @@ describe('RoomShellEditDialog: undo', () => {
     const onChanged = open();
 
     fireEvent.click(button('Delete Overhead line 1'));
-    // The question says the delete can be taken back.
-    expect(screen.getByText(/Undo here brings it back, until the scan is read again\.$/)).toBeTruthy();
+    // The question says the delete holds across a scan applied again (slice 34), and can be taken back.
+    expect(screen.getByText(
+      /It stays deleted when the scan is applied again\. Undo here brings it back, until then\.$/,
+    )).toBeTruthy();
     fireEvent.click(button('Delete it'));
     await flush();
 

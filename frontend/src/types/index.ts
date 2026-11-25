@@ -198,6 +198,8 @@ export interface RoomShellLine {
   z2: number;
   /** Height of its underside: where a fixture hangs from. */
   height: number;
+  /** Where the scan read it, kept beside a `height` set by hand: a scan applied again matches by it. */
+  scan_height?: number;
   top?: number;
   length?: number;
   /** Its width across the line. */
@@ -225,6 +227,8 @@ export interface RoomShellRing {
   radius: number;
   /** Height of its underside: where a fixture hangs from. */
   height: number;
+  /** Where the scan read it, kept beside a `height` set by hand: a scan applied again matches by it. */
+  scan_height?: number;
   top?: number;
   /** Its width across the ring, inside edge to outside edge. */
   across?: number;

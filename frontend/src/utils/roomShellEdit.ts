@@ -804,14 +804,25 @@ export function stackedText(kind: ShellItemKind, areas: number | undefined): str
   return ` ${areas} raised area${areas === 1 ? '' : 's'} standing on it moved with it too.`;
 }
 
-/** What the Delete button asks before anything is taken out. */
+/** What the delete question says of an item the scan read: the room remembers the delete (slices 33 and 34). */
+export const DELETE_STAYS_OUT_TEXT =
+  'It stays deleted when the scan is applied again. Undo here brings it back, until then.';
+/** What it says of one added by hand: the scan never read it, so there is nothing for a scan to bring back. */
+export const DELETE_ADDED_TEXT = 'Undo here brings it back, until the scan is read again.';
+
+/**
+ * What the Delete button asks before anything is taken out. An item the scan
+ * read (a raised area, a line or a ring) stays deleted when the scan is
+ * applied again; the room's Undo brings it back, for as long as the delete is
+ * among its steps (an applied scan empties them).
+ */
 export function deleteQuestionText(item: ShellItem): string {
   const overhead = item.kind !== 'risers';
   return `Take ${shellItemTitle(item)} out of the stored room? `
     + (overhead
       ? 'Fixtures hung on it stay where they are, and nothing will snap to it or be laid along it. '
       : 'Fixtures standing on it stay where they are. ')
-    + 'Undo here brings it back, until the scan is read again.';
+    + (item.marks.includes('Added by hand') ? DELETE_ADDED_TEXT : DELETE_STAYS_OUT_TEXT);
 }
 
 // --- Adding an item by hand --------------------------------------------------

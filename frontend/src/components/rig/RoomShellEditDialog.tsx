@@ -490,7 +490,8 @@ export default function RoomShellEditDialog({
           there and aims its DJ and Floor cameras at it. Undo takes back one change at a time, with
           the fixtures it moved. Reading the scan again keeps a raised area&apos;s name, height and
           base height, the DJ booth tick, an overhead line&apos;s or ring&apos;s name and hanging height,
-          and what you added where the scan finds nothing; a raised area you deleted stays out.
+          and what you added where the scan finds nothing; a raised area, line or ring of the
+          scan&apos;s that you deleted stays out.
           Every other change is replaced by the scan, and then there is nothing left to undo.
         </Typography>
 
