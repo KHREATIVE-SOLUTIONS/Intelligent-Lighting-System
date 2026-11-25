@@ -217,7 +217,9 @@ Rig editor toolbar, **Room Scan**:
    will be. Where the room already stored has a raised area ticked as the
    **DJ booth**, one line says what applying will do to the tick: "DJ booth
    mark: kept on Riser", or a warning, "DJ booth mark will be dropped"
-   (slice 31).
+   (slice 31). Where you have corrected the stored room's raised areas in
+   Edit Room, one more line says what applying keeps of that: "Will keep
+   your edits on 2 areas" (slice 32).
 3. If the room came out wrong, correct the guess and the preview is read again:
    **Units** (metres, centimetres, millimetres), **Up axis** (Y or Z), **Turn
    the room** in quarter turns when the wrong wall was taken as upstage.
@@ -228,7 +230,15 @@ Rig editor toolbar, **Room Scan**:
    that kind standing there, the dialog says the mark was dropped, and it
    is ticked again in Edit Room (slice 30). A kind you set by hand on the
    ticked raised area (a scan's riser made a booth) is kept with the tick,
-   whatever the scan reads there (slice 31).
+   whatever the scan reads there (slice 31). **Your corrections to raised
+   areas are kept too** (slice 32): a name you typed, and a height or a
+   base height you set, stay on the raised area the new scan reads in the
+   same place, while where it stands and how wide and deep it is are read
+   again from the scan. A raised area you added is kept as it is where the
+   new scan has nothing; where the scan now reads something on that spot,
+   the scan's takes its place and the dialog says so. A width, a depth, a
+   heading or a place you set, a deleted raised area, and anything done to
+   an overhead line or ring are still the scan's again.
 5. **See it in the 3D view.** Then run Identify Lights: the moved fixtures are
    still unconfirmed.
 
@@ -633,6 +643,27 @@ The answer, for both:
   booth again in Edit Room after applying."). The `room_shell` of a preview
   is the room apply would store: it carries the kept mark, and a kept kind.
   Nothing is written.
+- `hand_edits` (slice 32): **at the top of a preview, and inside `applied`
+  after an apply, and in either only where there is something to say**:
+  what is kept of the edits made by hand to the stored room's raised
+  areas. A room with none has no such key, and every other key is what it
+  was.
+  - `kept`: one entry for each raised area of the new room that keeps a
+    hand edit: `index` (its place in `risers`), `name`, `edits` (which of
+    `"name"`, `"height"`, `"base_height"`) and `overlap` (the intersection
+    over union it was matched at).
+  - `areas`: how many entries `kept` has.
+  - `added_kept`: the raised areas added by hand that are kept as they
+    were, each `index` (at the end of `risers`) and `name`.
+  - `added_replaced`: the ones added by hand that the scan now has
+    something in the place of, each `name`, `by_index` and `by` (the
+    scan's raised area that overlaps it most, and what that is called).
+  - `message`: the sentence for the operator ("Will keep your edits on 2
+    raised areas: Stage (base height), Drum riser (name, height). 1 raised
+    area you added will be kept as it is: Podium."; "Kept ..." and "was
+    kept" in `applied`).
+  - The preview's `room_shell` and `summary.raised_areas` are of the room
+    with all of it carried. See "What slice 32 built" for the rule.
 
 Refusals, each with a `detail` that says what to do:
 
@@ -790,6 +821,16 @@ JSON body, every field optional; anything left out (or `null`) is kept:
   name is kept. It gets `suggested: false` and "Kind set by hand." added to
   its `basis`, once. The kind it already is changes nothing. No fixture is
   moved.
+- **Which field was set by hand** (slice 32, raised areas only). The
+  `basis` of a raised area also gets, once each: **"Name set by hand."**
+  when a `name` is sent that differs from the one it has (`suggested` is
+  left as it is: a rename does not make its place a person's);
+  **"Height set by hand."** when its `height` changes; **"Base height set
+  by hand."** when its `base_height` changes (both beside "Resized by
+  hand."). These are what a scan applied again reads to keep the name and
+  the heights. "Resized by hand." alone covers a width, a depth and a
+  heading as well and says none of the three. A line or a ring gets none
+  of them.
 - **`base_height`** is stored to the millimetre and set before the height,
   whose limit goes by it (`ceiling - base_height`, at most 3 m). A top that
   would be above the ceiling is refused (422, "Give it a lower base or a
@@ -1590,6 +1631,119 @@ A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
 
+## What slice 32 built
+
+The operator's corrections to raised areas are kept when the scan is
+applied again. Until now a scan applied again wrote a whole new room and
+kept only the DJ booth mark and that booth's kind: a name typed in Edit
+Room, a height set there and a riser added there were all thrown away, so
+scanning a venue a second time cost every correction made since the first.
+
+- **No second matcher** (`services/room_scan/keep_mark.py`, `best_match`).
+  The loop that decided which raised area of a new reading is the marked
+  booth is now a function of its own, and `keep_dj_booth` calls it. Slice
+  32 calls the same function for every stored raised area with something
+  to keep: the same kind unless the kind was set by hand, footprints turned
+  to their headings overlapping by an intersection over union of 0.5 or
+  more, the greatest overlap, the earlier of two equal.
+- **What says a field was set by hand** (`edit.py`; read by `hand_edits`
+  in `keep_edits.py`). Two of the three had no mark, so this slice adds
+  them where `edit_item` writes the field:
+  - **"Name set by hand."** in the `basis`, when a rename changes a raised
+    area's name. `suggested` is not touched: where it stands is still the
+    scan's guess. The name a change of kind gives ("Booth or counter") is
+    not marked.
+  - **"Height set by hand."** and **"Base height set by hand."**, when
+    those change, each beside "Resized by hand." as before. "Resized by
+    hand." alone could not be used: it is written for a width, a depth and
+    a heading too.
+  - **`added_by_hand`** (already stored): its height and base height are
+    the person's, and its name too unless it is only what its kind is
+    called (added without a name).
+- **The rule** (`services/room_scan/keep_edits.py`, `keep_hand_edits`):
+  1. A stored raised area with any of those that matches a new one gives
+     it **the name, the height and the base height that were set by hand**,
+     and nothing else. The new one's `basis` gets the same marks (and
+     "Resized by hand." with a height, `suggested` false), so the reading
+     after this one keeps them too. It is carried and reported whether or
+     not the scan happens to read the same value: a height read 2 cm
+     different next time must not win.
+  2. **The footprint is the scan's**: `center_x`, `center_z`, `width`,
+     `depth` and `heading_deg` are the new reading's, whatever was dragged
+     or typed. So is the kind (but for the marked DJ booth, slice 31).
+  3. **Two stored areas that pick the same new one**: the greater overlap
+     has it, the earlier of two equal; the other is treated as matching
+     nothing.
+  4. **A raised area added by hand that matches nothing and shares no
+     floor with any raised area of the new reading is kept as it is**,
+     appended after the scan's, so every place the scan gave is what it
+     was. It stays `added_by_hand`, and is kept again at each reading.
+  5. **One added by hand that matches nothing but shares floor with a new
+     raised area is not kept: the new one wins**, and the answer names it
+     and what replaced it (the new one it overlaps most). Two that only
+     touch along an edge share no floor.
+  6. One added by hand that *does* match (the scan now reads it) falls
+     under point 1: the scan's footprint with the person's name and
+     heights, and no longer `added_by_hand`.
+  7. Anything else that matches nothing is not carried and not reported.
+  - Pure: neither room is changed, and with nothing to carry the reading
+    comes back as the same object.
+- **The route** (`api/endpoints/room_scan.py`). `keep_hand_edits` is called
+  once, before the mark and before the moves, for a preview and an apply
+  alike; `keep_dj_booth` is then asked of the room it returns. That order
+  is what makes a marked booth added by hand keep its mark (it matches its
+  own kept copy at 1.0), and the mark's sentence use a kept name. The
+  moves are suggested for the room with everything carried.
+- **The answers.** `hand_edits`, at the top of a preview and inside
+  `applied`, **only where something was kept or replaced**: `kept`
+  (`index`, `name`, `edits`, `overlap`), `areas`, `added_kept`,
+  `added_replaced` (`name`, `by_index`, `by`) and `message`. With no hand
+  edit the keys of both answers are exactly what they were. The preview's
+  `room_shell` and `summary.raised_areas` are the room apply would store.
+- **The dialog** (`RoomScanDialog.tsx`, `handEditsLine` in
+  `utils/roomScan.ts`). One line under the DJ booth line
+  (`room-scan-hand-edits`): "Will keep your edits on 2 areas", and after
+  Apply "Kept your edits on 2 areas"; "1 area you added will be kept" and
+  "1 area you added will be replaced by the scan" are joined on with a
+  semicolon, and the line is a warning when one is replaced. Nothing where
+  the server sends no `hand_edits`.
+- **Tests.** Backend, `tests/unit/test_room_scan_keep_edits.py` (23): the
+  marks Edit Room writes and what is not one (a width, a move, a kind,
+  "Resized by hand." alone); a name kept on a raised area read a little
+  off; a height and a base height kept against the reading; the footprint
+  and the kind the scan's; holding at the reading after and the one after
+  that, each mark once; another kind or too far keeping nothing; two
+  stored that pick one new area; nothing carried with no hand edits, no
+  room, or only a move; an added area kept, replaced, kept when it only
+  touches, and matched; a marked added booth keeping its mark; the mark's
+  sentence with a kept name; a hand-set kind on the marked one still said;
+  the words of a preview and an apply.
+  `tests/integration/test_api_room_scan_keep_edits.py` (7): over HTTP, a
+  name kept twice running; heights kept; an added area kept where the scan
+  has nothing and replaced where it overlaps; a marked added booth; nothing
+  carried and no new key with only a move and a width; a preview that says
+  what will be kept, writes nothing (room, undo steps, fixtures) and is
+  then applied to the room it showed. Frontend,
+  `RoomScanDialogHandEdits.test.tsx` (8): the line for kept edits, an
+  added area, a replaced one as a warning, nothing sent, after Apply, and
+  the helper.
+- **Six existing tests were changed, because the behaviour was.**
+  - `test_a_rename_changes_the_name_and_nothing_else` (unit) and
+    `test_a_rename_is_stored_and_changes_nothing_else` (API) held a
+    renamed raised area equal to the old one but for its name: its `basis`
+    now also says "Name set by hand.". The unit test gained a line holding
+    that an overhead line's rename still changes only the name.
+  - `test_a_scan_read_again_replaces_the_edits` and
+    `test_a_scan_read_again_clears_the_steps` renamed the stage "Main
+    stage" and held the room to be the scan's own afterwards. The name is
+    now kept; the deleted line still comes back and the undo steps are
+    still cleared.
+  - `test_the_same_scan_applied_again_keeps_the_mark` and
+    `test_a_preview_over_a_marked_room_writes_nothing_and_says_the_mark_
+    will_be_kept` named the marked riser "DJ" and expected "kept on
+    Riser"; it is "kept on DJ", and the stored riser carries the name.
+- **No Art-Net, no DMX, no network call, no new dependency.**
+
 ## What slice 31 built
 
 The preview says what will become of the DJ booth mark, and a kind set by
@@ -1727,7 +1881,9 @@ lost every time.
   - *Only the mark is carried.* The name, kind, size and place set by hand
     on the old raised area are not: the new room is the scan's, and the
     kept raised area is still its suggestion (`suggested`, `basis` as read).
-    (Slice 31 carries a kind set by hand as well, and does not compare it.)
+    (Slice 31 carries a kind set by hand as well, and does not compare it.
+    Slice 32 carries a name, a height and a base height set by hand, for
+    every raised area and not only the marked one.)
   - *One at a time.* The kept mark is the only one in the new room.
   - Pure: neither room is changed, and a room with no mark to keep comes
     back as the same object.
@@ -3223,6 +3379,13 @@ All scans are built in code (`backend/tests/unit/room_scan_meshes.py`), but
 for binary USD: those files are in `backend/tests/fixtures/usdc/`, written by
 Pixar's USD library from the same rooms (slice 24).
 
+- `backend/tests/unit/test_room_scan_keep_edits.py` and
+  `backend/tests/integration/test_api_room_scan_keep_edits.py`: a name, a
+  height and a base height set by hand kept when a scan is applied again,
+  a raised area added by hand kept or replaced, and what the preview and
+  the apply say of it (slice 32). Run. The frontend's
+  `RoomScanDialogHandEdits.test.tsx` has **not** been run (see "What slice
+  32 built" and "What is left").
 - `backend/tests/unit/test_room_scan_keep_mark.py` and
   `backend/tests/integration/test_api_room_scan_keep_mark.py`: the DJ booth
   mark kept or dropped when a scan is applied again (slice 30), what a
@@ -3851,6 +4014,55 @@ Pixar's USD library from the same rooms (slice 24).
 
 ## What is left
 
+- **Slice 32's frontend test has not been run, and nor has the build with
+  it.** `npx vitest run` and `npx vite build` were refused in the session
+  that wrote it, as for slices 29 to 31; `npx tsc --noEmit -p .` ran with
+  its 13 older errors and no new one, and the backend suite ran. Before
+  relying on it, in `frontend/`: `npx vitest run` (it adds one file,
+  `RoomScanDialogHandEdits.test.tsx`, 8 tests) and `npx vite build`. The
+  likeliest thing for a first run to find is the `alert` role it tells the
+  warning by. **Not seen in a browser**: the line under the preview note.
+- **Keeping hand edits goes only so far** (slice 32):
+  - **Raised areas only.** A line or ring renamed, moved, raised, added or
+    deleted by hand is the scan's again; nothing matches lines across a
+    reading.
+  - **A footprint set by hand is not kept**, on purpose: width, depth,
+    heading and place are read again. An operator who widened a stage the
+    scan reads too narrow has to widen it again. An area added by hand and
+    kept as it is, is the exception: all of it is the person's.
+  - **A kind set by hand is kept only on the marked DJ booth** (slice 31).
+    On any other raised area it lets the area match whatever kind is read
+    there, so its name and heights are kept, but the kind is the scan's
+    again.
+  - **A deleted raised area comes back**: nothing records that a person
+    took it out.
+  - **A room edited before this slice keeps nothing**: its basis says
+    "Resized by hand." at most, which does not say a height was set, and a
+    rename left no mark. Rename or set the height once more and it is kept
+    from then on.
+  - **A raised area moved with the one it stands on is not "set by hand"**
+    (`carry.py`): its base height changed because its carrier's did, and
+    its basis says "Resized by hand." only. It is not kept.
+  - **An area added by hand that shares any floor with a new raised area
+    is replaced whole**, even a sliver of overlap, and its name and height
+    go with it unless it matches (half the two footprints together). The
+    answer names it, so it can be added again.
+  - **A kept height is not checked against the new room.** A base height
+    and height carried into a room the scan now reads with a lower ceiling
+    can stand above it, and a raised area added by hand is kept where it
+    was even if the new walls leave it outside. `GET .../room-shell/outline`
+    lists what is outside.
+  - **The moves follow the room with the edits**: a kept height on the
+    first stage changes where the floor lights are suggested. Held by the
+    slice 31 test for a kept kind, not by one of its own.
+  - **Two stored areas that pick one new area**: the greater overlap has
+    it and the other keeps nothing. The DJ booth mark is asked on its own,
+    so in that corner the mark can sit on a raised area named after the
+    other.
+  - **Edit Room shows no chip for a name set by hand**, and after a scan
+    is applied again a kept height shows as "Resized by hand".
+  - **After Apply the dialog's line counts areas**; which fields, and the
+    names, are in the answer's `hand_edits.message` and not on screen.
 - **Slice 31's frontend tests have not been run, and nor has the build
   with it.** `npx vitest run` and `npx vite build` were refused in the
   session that wrote it, as for slices 29 and 30; `npx tsc --noEmit -p .`
@@ -3884,16 +4096,21 @@ Pixar's USD library from the same rooms (slice 24).
     a booth, so it is no longer that stage. One test over HTTP makes the
     test room's stage a booth and holds the preview's moves to be the ones
     apply makes; where the floor lights then go is not asserted.
-  - **A name typed by hand is still not kept**, only the kind: the kept
-    raised area is called what its kind is called ("Booth or counter")
-    where the scan called it what it read ("Riser").
+  - *Closed by slice 32:* a name typed by hand is kept, on the marked
+    raised area and on every other, and the mark's sentence uses it ("kept
+    on DJ"). A raised area nobody named is still called what its kept kind
+    is called ("Booth or counter") where the scan called it what it read
+    ("Riser").
   - **A booth moved or resized by hand past half its footprint is
     dropped**: the new reading has it where the scan sees it. So is every
     mark when the room is read a quarter turn round (**Turn the room**):
     nothing stands where it did.
-  - **Only the mark and a kind set by hand are kept.** A name, a size, a
-    heading or a base height set by hand, and every added or deleted item,
-    are still the scan's again.
+  - *Closed in part by slice 32:* a name, a height and a base height set
+    by hand are kept, and so is a raised area added by hand that the scan
+    has nothing in the place of. **Still the scan's again:** a width, a
+    depth, a heading and a place set by hand (by design: the scan measures
+    the footprint), a deleted raised area (it comes back), and every edit
+    to an overhead line or ring. See the slice 32 list above.
   - *Closed by slice 31:* the preview now says what will become of the
     mark (`dj_booth_mark`, and one line in the dialog). **It is said of the
     room as stored when the preview was read**: a room edited between the
@@ -3941,8 +4158,11 @@ Pixar's USD library from the same rooms (slice 24).
   - **Reading the scan again no longer drops it** where the new reading
     has the same raised area standing in the same place (slice 30); it is
     dropped, and the answer and the dialog say so, where it has not. A kind
-    set by hand on the marked raised area is kept with it (slice 31). Every
-    other change made by hand is still dropped: the scan writes a new room.
+    set by hand on the marked raised area is kept with it (slice 31), and a
+    name and a height set by hand on any raised area (slice 32). A marked
+    booth added by hand keeps its mark where it is itself kept. A width, a
+    depth, a heading or a place set by hand is still dropped: the scan
+    measures those.
   - **A change of kind made through the API without `is_dj_booth` takes the
     mark off.** Edit Room sends it; another client has to.
   - **A marked stage is drawn as a stage** (a desk at its downstage edge,
@@ -4207,8 +4427,10 @@ Pixar's USD library from the same rooms (slice 24).
   - **A change of kind moves nothing and re-suggests nothing.** The only
     suggestion is made when a scan is read, from that scan's own room, in
     which every raised area is the scan's guess and stands on the floor. A
-    kind or a base height set by hand is replaced when the scan is read
-    again, so neither has yet reached a suggestion through the API: a
+    kind set by hand is replaced when the scan is read again unless it is
+    on the marked DJ booth (slice 31); a base height set by hand is kept
+    since slice 32, and the suggestion is made for the room with it, but
+    no test over HTTP holds where the floor lights then go: a
     suggestion going by a stage set by hand, and its lift to a floating
     stage's top, are tested on the function alone.
   - **A base height is the whole of a level.** A balcony is a box with a
