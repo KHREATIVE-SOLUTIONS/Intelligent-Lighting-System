@@ -219,7 +219,12 @@ Rig editor toolbar, **Room Scan**:
    mark: kept on Riser", or a warning, "DJ booth mark will be dropped"
    (slice 31). Where you have corrected the stored room's raised areas in
    Edit Room, one more line says what applying keeps of that: "Will keep
-   your edits on 2 areas" (slice 32).
+   your edits on 2 areas" (slice 32). The same line counts overhead lines
+   and rings ("2 areas and 1 overhead item"), says "Will leave out 1 area
+   you deleted" where the scan reads again a raised area you took out, and
+   turns into a warning with "1 to check against the new room" where
+   something kept is above the new ceiling or outside the new walls (slice
+   33).
 3. If the room came out wrong, correct the guess and the preview is read again:
    **Units** (metres, centimetres, millimetres), **Up axis** (Y or Z), **Turn
    the room** in quarter turns when the wrong wall was taken as upstage.
@@ -236,9 +241,15 @@ Rig editor toolbar, **Room Scan**:
    same place, while where it stands and how wide and deep it is are read
    again from the scan. A raised area you added is kept as it is where the
    new scan has nothing; where the scan now reads something on that spot,
-   the scan's takes its place and the dialog says so. A width, a depth, a
-   heading or a place you set, a deleted raised area, and anything done to
-   an overhead line or ring are still the scan's again.
+   the scan's takes its place and the dialog says so. **An overhead line
+   or ring keeps the name you typed and the height you hung it at** the
+   same way, and one you added is kept where the scan has no truss (slice
+   33). **A raised area you deleted stays deleted**: the scan reads it
+   again, and it is left out and the dialog says so. To have it back, use
+   the room's Undo before scanning, or take the room off the rig and scan
+   from scratch. A width, a depth, a length, a heading or a place you set
+   are still the scan's again, and so is a deleted line or ring (it comes
+   back).
 5. **See it in the 3D view.** Then run Identify Lights: the moved fixtures are
    still unconfirmed.
 
@@ -572,7 +583,10 @@ it is open.
   the scan". Reading the scan again **replaces the edits made here, but
   for a raised area's name, height and base height and a raised area you
   added where the scan has nothing** (slice 32; the DJ booth tick is kept
-  too, slices 30 and 31), and does not put carried fixtures back.
+  too, slices 30 and 31), **a line's or ring's name and hanging height,
+  one you added where the scan has no truss, and a raised area you
+  deleted, which stays out** (slice 33), and does not put carried fixtures
+  back.
 
 ## The API
 
@@ -666,6 +680,32 @@ The answer, for both:
     kept" in `applied`).
   - The preview's `room_shell` and `summary.raised_areas` are of the room
     with all of it carried. See "What slice 32 built" for the rule.
+  - Five more keys (slice 33), **each sent only when it has something in
+    it**, so an answer about raised areas alone has the five keys above and
+    no other. Any one of them is enough for `hand_edits` to be sent.
+    - `overhead_kept`: one entry for each overhead line or ring of the new
+      room that keeps a hand edit: `kind` (`truss_lines` or `truss_rings`,
+      the list `index` is a place in), `index`, `name`, `edits` (which of
+      `"name"`, `"height"`: the height it hangs at) and `overlap`.
+    - `overhead_added_kept`: the lines and rings added by hand that are
+      kept as they were, each `kind`, `index` (at the end of its list) and
+      `name`.
+    - `overhead_added_replaced`: the ones added by hand that the scan now
+      has one in the place of, each `kind`, `name`, `by_index` and `by`.
+    - `deleted_left_out`: the raised areas of this scan left out of the
+      room because a person deleted them from the room it replaces, each
+      `name` (what it was called when it was deleted), `kind` and `overlap`.
+      They are not in the preview's `room_shell` or its
+      `summary.raised_areas`; the room's `deleted_areas` lists them.
+    - `warnings`: what is kept that the new room does not hold, each
+      `kind` (`risers`, `truss_lines` or `truss_rings`), `index`, `name` and
+      `reason` ("above the ceiling", "outside the walls", "partly outside
+      the walls", or two of them joined by "and"). It is kept all the same.
+    - `message` says all of it, in this order: left out, kept, added and
+      kept, replaced, to check ("Will leave out 1 raised area you deleted:
+      Riser. Will keep your edits on 1 overhead line: Front truss (name,
+      hanging height). Check Podium: it is outside the walls of the room as
+      this scan reads it.").
 
 Refusals, each with a `detail` that says what to do:
 
@@ -823,7 +863,8 @@ JSON body, every field optional; anything left out (or `null`) is kept:
   name is kept. It gets `suggested: false` and "Kind set by hand." added to
   its `basis`, once. The kind it already is changes nothing. No fixture is
   moved.
-- **Which field was set by hand** (slice 32, raised areas only). The
+- **Which field was set by hand** (slice 32 for raised areas; slice 33 for
+  overhead lines and rings, see the end of this point). The
   `basis` of a raised area also gets, once each: **"Name set by hand."**
   when a `name` is sent that differs from the one it has (`suggested` is
   left as it is: a rename does not make its place a person's);
@@ -831,8 +872,11 @@ JSON body, every field optional; anything left out (or `null`) is kept:
   by hand."** when its `base_height` changes (both beside "Resized by
   hand."). These are what a scan applied again reads to keep the name and
   the heights. "Resized by hand." alone covers a width, a depth and a
-  heading as well and says none of the three. A line or a ring gets none
-  of them.
+  heading as well and says none of the three. **A line and a ring get the
+  first two** (slice 33): "Name set by hand." when a `name` is sent that
+  differs, with `suggested` left as it is, and "Height set by hand." beside
+  "Resized by hand." when the `height` it hangs at changes. A length, a
+  radius, a heading and a move leave neither. They have no base height.
 - **`base_height`** is stored to the millimetre and set before the height,
   whose limit goes by it (`ceiling - base_height`, at most 3 m). A top that
   would be above the ceiling is refused (422, "Give it a lower base or a
@@ -982,10 +1026,26 @@ its list **move up one place**. A deleted line or ring is also taken out of
 the `hanging_bands` entry that counted it: a band left with nothing in it is
 dropped, and with no line or ring left in the room there are no bands at all.
 Deleting a raised area leaves the bands alone. The undo route brings the item
-back to the place it had; reading the scan again brings it back too, and
-replaces every other edit with it but those slice 32 keeps (a raised area's
-name, height and base height, and a raised area added by hand that the scan
-has nothing in the place of).
+back to the place it had. Reading the scan again brings back a deleted line
+or ring, and replaces every other edit but those slices 32 and 33 keep.
+
+**A deleted raised area that the scan read is remembered** (slice 33), so
+that reading the scan again does not bring it back. The room gets a
+`deleted_areas` list with one small record for it: `kind`, `name`,
+`center_x`, `center_z`, `width`, `depth`, `heading_deg` where it stood at a
+heading, and `basis: "Kind set by hand."` where its kind was a person's. The
+key is stored only when there is a record, and holds 50 at most (the oldest
+goes). A raised area **added by hand** leaves no record when it is deleted:
+the scan never read it. Neither does a line or a ring. The record is part of
+the room, so:
+
+- the **room's Undo** that puts the area back takes the record away (it puts
+  back the whole room as it was before the delete);
+- **taking the room off the rig** (`DELETE .../room-shell`) takes the records
+  with it, so a scan applied to a rig with no room reads everything;
+- every other edit to the room keeps them.
+
+What a scan applied again does with a record is in "What slice 33 built".
 
 Answers `rig_id`, `kind`, `index`, `removed` (the item taken out),
 `room_shell`, `undo` and a `message` ("... was taken out of the stored room.
@@ -1634,6 +1694,151 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 33 built
+
+The three points slice 32 left open: overhead lines and rings keep what a
+person set on them, a raised area a person deleted stays deleted, and what
+is kept is checked against the new room.
+
+- **Still one matcher** (`services/room_scan/keep_mark.py`). `best_match`
+  and `footprint_overlap` are not changed. What is new is what a footprint
+  is, in `_footprint`, read from what an item stores:
+  - **an overhead line** (it stores ends): the strip that runs along it
+    from end to end, **0.6 m wide** (`LINE_STRIP_M`), or as wide as the
+    truss's own `across` if that is more. The strip is built from the two
+    ends, not from the heading (kept to a tenth of a degree). A truss is
+    about 0.3 m across, and at that width two readings of the same truss
+    0.1 m apart would share half and pass only just. Read a distance d to
+    one side, two strips of width W share (W - d) / (W + d), so the same
+    truss is matched up to 0.2 m off, and trusses hung 0.6 m apart or more
+    share nothing;
+  - **a ring** (it stores a radius): the disc it goes round, as a polygon
+    of 24 sides.
+  A line and a ring have no kind, so none is compared. A line is only ever
+  asked of the new reading's lines and a ring of its rings. Heights are not
+  looked at, as for a raised area.
+- **What says a field of a line or ring was set by hand** (`edit.py`).
+  There was none, so `edit_item` now writes for all three lists what it
+  wrote for raised areas: **"Name set by hand."** when a rename changes the
+  name (`suggested` left alone), and **"Height set by hand."** beside
+  "Resized by hand." when the height it hangs at changes. A length, a
+  radius, a heading and a move write neither. One **added by hand**
+  (`added_by_hand`) has its height from a person, and its name too unless
+  it is "Overhead line 3" or "Overhead ring 1", what it is called when
+  nobody names it.
+- **Lines and rings across a reading** (`keep_edits.py`: the slice 32 loop,
+  now run over `risers`, `truss_lines` and `truss_rings`; `_plan`).
+  1. A stored line or ring with a name or a hanging height set by hand that
+     matches a new one gives it **the name and the hanging height**, and
+     the new one's `basis` gets the same marks, so they hold at the reading
+     after. A kept height takes `top` with it (the truss stays as deep as
+     the scan reads it) and the line is counted again in `hanging_bands`,
+     as Edit Room does, so the bands still add up and
+     `summary.hanging_heights` and the suggested fixture moves use the kept
+     trim.
+  2. **Its ends, length, heading, radius and place are the scan's.**
+  3. **One added by hand that matches nothing is kept as it is**, at the
+     end of its list and counted in `hanging_bands`, **unless the new
+     reading has a line (or ring) sharing more than a fifth of the two
+     footprints with it** (`CROSSING`, 0.2). Then the scan's takes its
+     place and the answer names both. A fifth, and not any overlap at all
+     as for raised areas, because trusses cross and hang side by side: two
+     3 m trusses that cross share about a tenth, and a pipe 0.4 m beside a
+     truss shares exactly a fifth.
+  4. One added by hand that the scan now reads (it matches) gives the
+     scan's line its name and height, and is no longer `added_by_hand`.
+  5. Two stored that pick the same new one, and one added exactly over the
+     scan's own: as for raised areas (slice 32, points 3 and 8).
+- **Raised areas deleted by hand** (`edit.py` `delete_item` and
+  `tombstone`; `keep_edits.py` `_leave_out`).
+  1. **Deleting a scanned raised area leaves a record** in the room's
+     `deleted_areas`: its kind, its name, its footprint, and that its kind
+     was set by hand if it was. Not for one added by hand, a line or a
+     ring. (The API section on DELETE has the fields.)
+  2. **A scan applied again asks each record which raised area of the new
+     reading it is, by `best_match`**: the same kind (any kind, if the
+     kind was set by hand before it was deleted), half the two footprints
+     shared. One that matches is **left out of the new room** and reported
+     (`deleted_left_out`, "Left out 1 raised area you deleted: Riser."); a
+     preview reports the same and writes nothing.
+  3. **The record goes on to the new room**, standing where this reading
+     has the area, so the reading after leaves it out too.
+  4. **A record that matches nothing is dropped**: the scan no longer reads
+     anything there.
+  5. **This is done first.** Names, heights, added areas and the DJ booth
+     mark are then asked of the room without those areas. So a raised area
+     a person deleted and put in again by hand, their way, is kept as
+     theirs: the scan's is left out, and theirs then overlaps nothing.
+  6. **What forgets a record**: the room's Undo taking the delete back (the
+     record is part of the room, and Undo puts back the whole room as it
+     was before); taking the room off the rig, so that the next scan is
+     read from scratch. Nothing else: an apply empties the Undo steps, so
+     after a scan is applied again the way back is the room taken off and
+     scanned afresh.
+- **Checks** (`keep_edits.py` `_checks`, asking
+  `outline_edit.outside_report` of the room that will be stored: no new
+  rule for walls or ceilings). What is kept is kept whatever the new room
+  is, and flagged in `hand_edits.warnings` where:
+  - **a kept height is above the new ceiling**: a raised area whose height
+    or base height was kept and whose top is over it, or a line or ring
+    whose hanging height was kept and is over it. An item that kept only a
+    name is not flagged: its height is the scan's own reading;
+  - **an item added by hand and kept as it is** has any part outside the
+    new walls, or is above the new ceiling.
+- **The answers.** `hand_edits` gains `overhead_kept`,
+  `overhead_added_kept`, `overhead_added_replaced`, `deleted_left_out` and
+  `warnings`, **each only when it has something in it**, and `message`
+  says them. The five keys it had are as they were, and still speak of
+  raised areas only, so an answer about raised areas alone is exactly what
+  it was. With nothing kept, replaced or left out there is no `hand_edits`
+  at all, as before. The route is not changed but for its log line:
+  `keep_hand_edits` was already called once for a preview and an apply.
+- **The dialog** (`handEditsLine` in `utils/roomScan.ts`; no change to
+  `RoomScanDialog.tsx`). The one line counts the new things: "Will keep
+  your edits on 2 areas and 1 overhead item", "1 overhead item you added
+  will be kept", "Will leave out 1 area you deleted" (said first), and "1
+  to check against the new room" (said last). The line is a warning when
+  something added is replaced, as before, and now also when something is
+  to be checked. Strings for raised areas alone are what they were.
+- **Tests.** Backend, `tests/unit/test_room_scan_keep_overhead.py` (34):
+  the strip and the disc and what they share; the marks Edit Room writes
+  on a line and a ring and what is not one; a line's name kept read a
+  little off; a trim kept with `top` and the bands; holding at the reading
+  after; a ring; the next truss along and a line only moved keeping
+  nothing; an added line and ring kept, one that crosses kept, one beside a
+  truss replaced, one over the scan's own, one the scan now reads; the
+  record a delete leaves and what leaves none; an area left out and its
+  record carried on twice; the words; a record dropped; a kind set by hand
+  before the delete; deleted and put in again by hand; an edit kept beside
+  one left out; a kept height above the ceiling, a kept name that is not
+  flagged, an added item outside the walls; no key where nothing is
+  flagged; nothing carried with no edits.
+  `tests/integration/test_api_room_scan_keep_overhead.py` (8): over HTTP,
+  a line's name and trim kept twice running; an added line kept, and
+  replaced; a deleted raised area left out in a preview that writes
+  nothing (room, undo steps, fixtures) and in two applies; the room's Undo
+  forgetting the record; a room taken off and read from scratch; nothing
+  left behind by deleting an added area or a line, with both answers' keys
+  exactly what they were; a room read at half the size flagging an added
+  area outside the walls and an added line above the ceiling. Frontend,
+  `RoomScanDialogHandEditsOverhead.test.tsx` (7).
+- **One existing test was changed, because the behaviour was.**
+  `test_a_rename_changes_the_name_and_nothing_else` (unit) held, since
+  slice 32, that a renamed overhead line is the old one but for its name.
+  Its `basis` now also says "Name set by hand."; the test holds that for a
+  line and a ring. No other existing test changed: no existing test
+  compared a whole room after deleting a scanned raised area.
+- **What was run** (Nov 24). Backend, with the main checkout's venv, after
+  the last backend change: `python -m pytest tests/ -q` **2700 passed, 10
+  skipped, 5 xfailed** (2658 before; the 42 new ones are the two files
+  above). Frontend: `npx tsc --noEmit -p .` only the 13 older errors, none
+  in `roomScan.ts` or the new test file. **`npx vitest run` and `npx vite
+  build` were refused in the session**, so the 7 new frontend tests and
+  the 8 of slice 32 against the changed helper have not been run, and the
+  bundle has not been built with this change. See "What is left".
+- **No Art-Net, no DMX, no network call, no new dependency, no new
+  column**: the records are in the room's own JSON.
 
 ## What slice 32 built
 
@@ -3401,6 +3606,14 @@ All scans are built in code (`backend/tests/unit/room_scan_meshes.py`), but
 for binary USD: those files are in `backend/tests/fixtures/usdc/`, written by
 Pixar's USD library from the same rooms (slice 24).
 
+- `backend/tests/unit/test_room_scan_keep_overhead.py` and
+  `backend/tests/integration/test_api_room_scan_keep_overhead.py`: a name
+  and a hanging height set by hand kept on an overhead line and a ring, one
+  added by hand kept or replaced, a deleted raised area left out and
+  forgotten by the room's Undo, and what is flagged against the new ceiling
+  and walls (slice 33). Run. The frontend's
+  `RoomScanDialogHandEditsOverhead.test.tsx` has **not** been run (see
+  "What slice 33 built" and "What is left").
 - `backend/tests/unit/test_room_scan_keep_edits.py` and
   `backend/tests/integration/test_api_room_scan_keep_edits.py`: a name, a
   height and a base height set by hand kept when a scan is applied again,
@@ -4044,10 +4257,60 @@ Pixar's USD library from the same rooms (slice 24).
   `RoomScanDialogHandEdits.test.tsx`, 8 tests) and `npx vite build`. The
   likeliest thing for a first run to find is the `alert` role it tells the
   warning by. **Not seen in a browser**: the line under the preview note.
+- **Slice 33's frontend test has not been run, and nor has the build with
+  it.** `npx vitest run` and `npx vite build` were refused in the session
+  that wrote it, as for slices 29 to 32; `npx tsc --noEmit -p .` ran with
+  its 13 older errors and no new one, and the backend suite ran. Before
+  relying on it, in `frontend/`: `npx vitest run` (it adds one file,
+  `RoomScanDialogHandEditsOverhead.test.tsx`, 7 tests, and the 8 of
+  `RoomScanDialogHandEdits.test.tsx` must still pass with the helper
+  changed) and `npx vite build`. **Not seen in a browser.**
+- **What slice 33 leaves** (lines, rings, deleted areas and checks):
+  - **A deleted line or ring still comes back.** Only raised areas leave a
+    record; a truss taken out by hand is read again by the next scan.
+  - **Heights are not compared when a line is matched.** Two trusses one
+    above the other on the plan are told apart only by which overlaps
+    more, and of two equal the earlier: a name or a trim can land on the
+    other one.
+  - **A truss read more than 0.2 m to one side is another truss** (the
+    strip is 0.6 m wide, `LINE_STRIP_M`), and so is one read at much less
+    or much more than its length: its name and trim are not kept, and
+    nothing says so.
+  - **A line added by hand within about 0.4 m of a scanned truss and
+    running beside it is replaced** (they share more than a fifth of the
+    two strips, `CROSSING`); one that crosses a truss is kept. Two short
+    lines that cross (both under about 2 m) can share more than a fifth
+    and be replaced. A ring added by hand inside a scanned ring is replaced
+    when its radius is over about 0.45 of the scanned one's: a ring's
+    footprint is its whole disc.
+  - **A record that matches nothing is dropped.** If one scan misses the
+    deleted thing, or reads it less than half over where it stood, the
+    record goes, and a later scan that reads it again brings it back.
+    Reading the room a quarter turn round (**Turn the room**) drops every
+    record, as it drops every other match.
+  - **A record cannot be seen or removed on its own.** Nothing in Edit
+    Room lists `deleted_areas`. The ways to forget one are the room's Undo
+    (while the delete is still among its steps: a scan applied again
+    empties them) and taking the room off the rig.
+  - **A record takes the scan's raised area before anything else is
+    matched.** An edit cannot be kept on an area that is left out, and the
+    DJ booth mark cannot land on it.
+  - **Warnings are said, not acted on.** A kept trim above the new ceiling
+    stays where it is and still counts in `hanging_bands`, so a suggestion
+    can hang rows at it. Only what was kept is checked: something the scan
+    itself reads outside its own walls is not listed here
+    (`GET .../room-shell/outline` lists everything outside).
+  - **The dialog counts, and does not name.** "1 to check against the new
+    room" does not say which or why: that is in `hand_edits.message` and
+    `hand_edits.warnings`, which are not on screen. Lines and rings are
+    both "overhead items".
+  - **Edit Room shows no chip for a line's name or trim set by hand**, as
+    for a raised area's name.
 - **Keeping hand edits goes only so far** (slice 32):
-  - **Raised areas only.** A line or ring renamed, moved, raised, added or
-    deleted by hand is the scan's again; nothing matches lines across a
-    reading.
+  - *Closed by slice 33:* a line and a ring now keep a name and a hanging
+    height, and one added by hand is kept. A line's length, heading and
+    place set by hand are still the scan's again, as a raised area's
+    footprint is.
   - **A footprint set by hand is not kept**, on purpose: width, depth,
     heading and place are read again. An operator who widened a stage the
     scan reads too narrow has to widen it again. An area added by hand and
@@ -4056,8 +4319,8 @@ Pixar's USD library from the same rooms (slice 24).
     On any other raised area it lets the area match whatever kind is read
     there, so its name and heights are kept, but the kind is the scan's
     again.
-  - **A deleted raised area comes back**: nothing records that a person
-    took it out.
+  - *Closed by slice 33:* a deleted raised area no longer comes back. The
+    room remembers it (`deleted_areas`) and the next scan leaves it out.
   - **A room edited before this slice keeps nothing**: its basis says
     "Resized by hand." at most, which does not say a height was set, and a
     rename left no mark. Rename or set the height once more and it is kept
@@ -4073,11 +4336,10 @@ Pixar's USD library from the same rooms (slice 24).
     replaced** (a drum riser put on the scan's stage): it shares floor
     with the stage, and heights are not compared. Add it again after the
     scan, or scan with it in place.
-  - **A kept height is not checked against the new room.** A base height
-    and height carried into a room the scan now reads with a lower ceiling
-    can stand above it, and a raised area added by hand is kept where it
-    was even if the new walls leave it outside. `GET .../room-shell/outline`
-    lists what is outside.
+  - *Closed by slice 33:* a kept height above the new ceiling, and
+    something added by hand that the new walls leave outside, are still
+    kept, and are now listed in `hand_edits.warnings` and said in its
+    `message`.
   - **The moves follow the room with the edits**: a kept height on the
     first stage changes where the floor lights are suggested. Held by the
     slice 31 test for a kept kind, not by one of its own.
@@ -4135,8 +4397,9 @@ Pixar's USD library from the same rooms (slice 24).
     by hand are kept, and so is a raised area added by hand that the scan
     has nothing in the place of. **Still the scan's again:** a width, a
     depth, a heading and a place set by hand (by design: the scan measures
-    the footprint), a deleted raised area (it comes back), and every edit
-    to an overhead line or ring. See the slice 32 list above.
+    the footprint). A deleted raised area and an overhead line's or ring's
+    name and hanging height were closed by slice 33. See the slice 32 and
+    slice 33 lists above.
   - *Closed by slice 31:* the preview now says what will become of the
     mark (`dj_booth_mark`, and one line in the dialog). **It is said of the
     room as stored when the preview was read**: a room edited between the
