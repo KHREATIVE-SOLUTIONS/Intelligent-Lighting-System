@@ -69,7 +69,11 @@ class TestRename:
         edited, item = edit_item(before, "risers", 1, name="  The   bar ")
 
         assert item["name"] == "The bar"
-        assert edited["risers"][1] == {**before["risers"][1], "name": "The bar"}
+        # Slice 32: a raised area's basis also says the name is a person's, so a scan applied again keeps it.
+        was = before["risers"][1]
+        assert edited["risers"][1] == {**was, "name": "The bar", "basis": was["basis"] + " Name set by hand."}
+        # A line says nothing more: only raised areas are kept across a reading.
+        assert edit_item(before, "truss_lines", 0, name="Front")[1] == {**before["truss_lines"][0], "name": "Front"}
         # Still the scan's guess of where it is: only a move says otherwise.
         assert item["suggested"] is True and MOVED_BY_HAND not in item["basis"]
         assert without(edited, "risers", 1) == without(before, "risers", 1)

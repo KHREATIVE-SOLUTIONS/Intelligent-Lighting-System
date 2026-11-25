@@ -528,12 +528,14 @@ class TestRoomShellEdit:
         assert response.status_code == 200, response.text
         answer = response.json()
         assert (answer["rig_id"], answer["kind"], answer["index"]) == (rig_id, "risers", 1)
-        assert answer["item"] == {**before["risers"][1], "name": "The bar"}
+        # Slice 32: the basis says the name is a person's, so a scan applied again keeps it. Nothing else.
+        was = before["risers"][1]
+        assert answer["item"] == {**was, "name": "The bar", "basis": was["basis"] + " Name set by hand."}
 
         # Read back from the rig, as the views load it: the edit was written, not only answered.
         after = await self.shell_of(client, rig_id)
         assert after == answer["room_shell"]
-        assert after == {**before, "risers": [before["risers"][0], {**before["risers"][1], "name": "The bar"}]}
+        assert after == {**before, "risers": [before["risers"][0], answer["item"]]}
         assert await self.column(db_session, rig_id) == after
         # No fixture moved or was retagged, and the scan's moves can still be undone.
         assert await fixtures_by_name(client, rig_id) == fixtures
@@ -668,7 +670,12 @@ class TestRoomShellEdit:
         )
 
         assert again.status_code == 200, again.text
-        assert await self.shell_of(client, rig_id) == before
+        # Slice 32: a name set by hand on a raised area is kept across the reading (until then the
+        # whole room was the scan's again, and this was `== before`). Everything else still is the
+        # scan's: the deleted line is back.
+        stage = before["risers"][0]
+        named = {**stage, "name": "Main stage", "basis": stage["basis"] + " Name set by hand."}
+        assert await self.shell_of(client, rig_id) == {**before, "risers": [named, *before["risers"][1:]]}
 
 
 class TestRoomScanNeedsAnOperator:

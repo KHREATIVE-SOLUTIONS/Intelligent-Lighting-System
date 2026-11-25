@@ -49,12 +49,14 @@ class TestTheMarkAcrossAScanAppliedAgain:
         applied = answer["applied"]
         assert applied["dj_booth"] == riser_at and applied["dj_booth_dropped"] is False
         assert applied["dj_booth_overlap"] == 1.0
-        # The scan's own name for it: only the mark is carried over, not what was typed.
-        assert applied["dj_booth_message"] == "The DJ booth mark was kept on Riser."
-        # The room is the scan's again, with the mark and nothing else added: answered, stored and read back.
+        # Slice 32: the name typed by hand is kept with the mark. Until then this was "kept on Riser",
+        # the scan's own name, and the room was the scan's with the mark and nothing else.
+        assert applied["dj_booth_message"] == "The DJ booth mark was kept on DJ."
+        # The room is the scan's again, with the mark and the name: answered, stored and read back.
+        named = {"name": "DJ", "basis": scanned["risers"][riser_at]["basis"] + " Name set by hand.", KEY: True}
         expected = {
             **scanned,
-            "risers": [{**area, KEY: True} if n == riser_at else area for n, area in enumerate(scanned["risers"])],
+            "risers": [{**area, **named} if n == riser_at else area for n, area in enumerate(scanned["risers"])],
         }
         assert answer["room_shell"] == expected == await column(db_session, rig_id)
         assert marked(answer["room_shell"]) == [riser_at]
@@ -217,9 +219,10 @@ class TestTheMarkAcrossAScanAppliedAgain:
         preview = await scan_again(client, rig_id, apply=False)
 
         assert preview["applied"] is None
+        # Slice 32: named "DJ" by hand, it is called that in the new room too (it was "Riser" until then).
         assert preview["dj_booth_mark"] == {
-            "kept": True, "dropped": False, "index": riser_at, "name": "Riser", "overlap": 1.0,
-            "kind_kept": None, "message": "The DJ booth mark will be kept on Riser.",
+            "kept": True, "dropped": False, "index": riser_at, "name": "DJ", "overlap": 1.0,
+            "kind_kept": None, "message": "The DJ booth mark will be kept on DJ.",
         }
         assert marked(preview["room_shell"]) == [riser_at]
         assert await column(db_session, rig_id) == stored_room and marked(stored_room) == [riser_at]

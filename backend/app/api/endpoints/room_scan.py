@@ -56,6 +56,14 @@ raised area is kept with the mark, whatever the scan reads there. The preview
 says the same beforehand in `dj_booth_mark` (kept, on which raised area, or
 dropped), and its `room_shell` is the room apply would store, mark included.
 
+The same apply keeps what a person set on a raised area of the room it
+replaces, matched the same way (services/room_scan/keep_edits.py): a name, a
+height and a base height set by hand go onto the raised area of the new
+reading that stands there, whose place and size stay the scan's; a raised
+area added by hand that the scan has nothing in the place of is kept as it
+is, and one the scan now overlaps is replaced. `hand_edits`, in a preview and
+in `applied`, lists them, and is sent only where there is something to list.
+
 PATCH /api/rigs/{rig_id}/room-shell/outline redraws the room's walls (every
 corner of its floor) and sets its height; PATCH, POST and DELETE under
 .../room-shell/outline/corners move, add and take out one corner; GET
@@ -88,6 +96,7 @@ from app.services.room_scan.edit import (
     one_dj_booth,
 )
 from app.services.room_scan.edit_undo import pop_step, push_step, undo_summary
+from app.services.room_scan.keep_edits import keep_hand_edits
 from app.services.room_scan.keep_mark import keep_dj_booth
 from app.services.room_scan.mesh import MAX_UPLOAD_BYTES
 from app.services.room_scan.outline_edit import (
@@ -172,7 +181,13 @@ async def import_room_scan(
     # it (keep_mark.py). Worked out once, here, for a preview and an apply alike, and before the
     # fixtures are looked at: a kept kind can change which raised area is the first stage, and the
     # moves suggested must be for the room that would be stored. Pure: nothing is written.
-    mark = keep_dj_booth(rig.room_shell, found.shell)
+    #
+    # Before the mark, what else a person set on the raised areas of that room is carried onto the
+    # reading by the same matching (keep_edits.py): a name, a height, a base height, and a raised area
+    # added by hand that the scan has nothing in the place of. The mark is then asked of that room, so
+    # a marked booth added by hand keeps its mark and the mark's sentence uses a kept name.
+    edits = keep_hand_edits(rig.room_shell, found.shell)
+    mark = keep_dj_booth(rig.room_shell, edits.shell)
     shell = mark.shell
     moves, move_notes = suggest_positions(rig.fixtures, shell)
     unconfirmed = sum(1 for rf in rig.fixtures if is_unconfirmed(rf.tags))
@@ -212,6 +227,9 @@ async def import_room_scan(
         # so every other preview is what it was. Apply says the same in `applied`.
         if mark.was_marked:
             preview["dj_booth_mark"] = mark.preview()
+        # What applying would keep of the edits made by hand, said only where there is something to say.
+        if edits.any:
+            preview["hand_edits"] = edits.report(shell)
         return preview
 
     moved: List[Dict[str, Any]] = []
@@ -269,6 +287,13 @@ async def import_room_scan(
                else "No fixture was moved.")
         ),
     }
+    # Said only where an edit made by hand was kept, or a raised area added by hand kept or replaced.
+    if edits.any:
+        preview["applied"]["hand_edits"] = edits.report(shell, applied=True)
+        logger.info(
+            "Room scan: rig %s hand edits kept on %d raised areas, %d added by hand kept, %d replaced",
+            rig.id, len(edits.kept), len(edits.added_kept), len(edits.added_replaced),
+        )
     # Said only where the room this replaced had a marked booth, so every other answer is what it was.
     if mark.was_marked:
         preview["applied"].update({

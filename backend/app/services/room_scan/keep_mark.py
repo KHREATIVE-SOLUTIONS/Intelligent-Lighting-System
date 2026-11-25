@@ -33,11 +33,15 @@ The rule, in full:
    never given to the nearest thing, or to the scan's first booth: a mark set
    by hand is only ever kept where it was, not moved.
 
-Only the mark is carried, and with it a kind set by hand. A name or a size
-set by hand on the old raised area is not: the new reading is the scan's.
+Only the mark is carried here, and with it a kind set by hand. A name, a
+height and a base height set by hand are carried by keep_edits.py (slice 32),
+for every raised area and by the same matching (`best_match`, points 2 and
+3); a width, a depth, a heading and a place set by hand are not: those are
+the scan's.
 
-The route calls this once, before it answers a preview or applies: what a
-preview says will become of the mark is what apply then does.
+The route calls this once, after keep_edits.py and on the room that returns,
+before it answers a preview or applies: what a preview says will become of
+the mark is what apply then does.
 
 Pure: the shells given are never changed, and a new one is returned only when
 there is a mark to write.

@@ -64,6 +64,13 @@ MOVED_BY_HAND = "Moved by hand."
 RESIZED_BY_HAND = "Resized by hand."
 ADDED_BY_HAND = "Added by hand."
 KIND_BY_HAND = "Kind set by hand."
+# Which field of a raised area a person set, for a scan applied again to keep it (keep_edits.py, slice
+# 32). "Resized by hand." covers width, depth, heading and both heights at once and cannot say which,
+# and a rename said nothing at all. Matched as written, capitals included: the first is not found in
+# the second.
+NAME_BY_HAND = "Name set by hand."
+HEIGHT_BY_HAND = "Height set by hand."
+BASE_BY_HAND = "Base height set by hand."
 
 # The key a raised area carries when a person has said it is the DJ's booth. Stored only when true:
 # a raised area that is not the booth says nothing, like every one stored before the mark could be set.
@@ -510,12 +517,17 @@ def _line_length(item: Dict[str, Any]) -> Optional[float]:
     return _mm(math.hypot(ends[2] - ends[0], ends[3] - ends[1]))
 
 
-def _mark(item: Dict[str, Any], mark: str) -> None:
-    """A person set this: it is no longer the scan's guess, and its basis says what was done, once."""
-    item["suggested"] = False
+def _note(item: Dict[str, Any], mark: str) -> None:
+    """The basis says what a person did, once. Whether it is still the scan's suggestion is left as it is."""
     basis = str(item.get("basis") or "").strip()
     if mark not in basis:
         item["basis"] = f"{basis} {mark}".strip()
+
+
+def _mark(item: Dict[str, Any], mark: str) -> None:
+    """A person set this: it is no longer the scan's guess, and its basis says what was done, once."""
+    item["suggested"] = False
+    _note(item, mark)
 
 
 def edit_item(
@@ -570,7 +582,14 @@ def edit_item(
     Everything is stored to the millimetre. An item that actually shifts is no
     longer a suggestion (`suggested` false) and its `basis` says it was moved
     by hand; one whose size, height or heading actually changes says it was
-    resized by hand. A rename changes the name and nothing else.
+    resized by hand. A rename changes the name and nothing else of a line or
+    a ring.
+
+    A raised area's `basis` also says which of three fields a person set, so
+    that a scan applied again can keep them (keep_edits.py): "Name set by
+    hand." for a name that actually changes (it stays the scan's suggestion
+    otherwise: `suggested` is not touched), "Height set by hand." and "Base
+    height set by hand." for those two, each beside "Resized by hand.".
     """
     _find(shell, kind, index)
     sizes = _given_sizes(kind, {
@@ -594,6 +613,9 @@ def edit_item(
 
     if name is not None:
         item["name"] = clean_name(name)
+        if kind == "risers" and item["name"] != before.get("name"):
+            # Where it stands and how big it is are still the scan's: only the basis says the name is a person's.
+            _note(item, NAME_BY_HAND)
 
     if riser_kind is not None and item.get("kind") != riser_kind:
         had = item.get("kind")
@@ -623,6 +645,7 @@ def edit_item(
         if _mm(base_of(item)) != value:
             item["base_height"] = value
             resized = rebased = True
+            _mark(item, BASE_BY_HAND)
 
     if center_x is not None or center_z is not None or shaped:
         centre = item_centre(kind, item)
@@ -728,7 +751,9 @@ def edit_item(
         if not _number(had) or _mm(had) != value:
             item["height"] = value
             resized = True
-            if kind != "risers":
+            if kind == "risers":
+                _mark(item, HEIGHT_BY_HAND)
+            else:
                 top = item.get("top")
                 if _number(top) and _number(had):
                     # The truss is as deep as it was: its top goes up or down with its underside.

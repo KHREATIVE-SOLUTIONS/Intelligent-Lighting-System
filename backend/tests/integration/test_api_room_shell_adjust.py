@@ -419,10 +419,15 @@ class TestUndo:
         )
         assert again.status_code == 200, again.text
         rig = await rig_of(client, rig_id)
-        assert rig["room_shell"] == scanned and rig["room_shell_edits"] == NO_EDITS
+        # Slice 32: the name set by hand is kept across the reading (until then the room was `scanned`
+        # again). The steps are cleared as before, and the deleted line is the scan's again.
+        stage = scanned["risers"][0]
+        named = {**stage, "name": "Main stage", "basis": stage["basis"] + " Name set by hand."}
+        kept = {**scanned, "risers": [named, *scanned["risers"][1:]]}
+        assert rig["room_shell"] == kept and rig["room_shell_edits"] == NO_EDITS
         assert await column(db_session, rig_id, "room_shell_undo") is None
         assert (await client.post(f"{path}/undo")).status_code == 409
-        assert (await rig_of(client, rig_id))["room_shell"] == scanned
+        assert (await rig_of(client, rig_id))["room_shell"] == kept
 
     @pytest.mark.asyncio
     async def test_taking_the_room_off_clears_the_steps(
