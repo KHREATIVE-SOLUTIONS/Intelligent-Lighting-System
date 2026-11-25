@@ -67,7 +67,8 @@ KIND_BY_HAND = "Kind set by hand."
 # Which field of a raised area a person set, for a scan applied again to keep it (keep_edits.py, slice
 # 32). "Resized by hand." covers width, depth, heading and both heights at once and cannot say which,
 # and a rename said nothing at all. Matched as written, capitals included: the first is not found in
-# the second.
+# the second. The first two are written for an overhead line and a ring as well (slice 33): the
+# height of one of those is the height it hangs at.
 NAME_BY_HAND = "Name set by hand."
 HEIGHT_BY_HAND = "Height set by hand."
 BASE_BY_HAND = "Base height set by hand."
@@ -582,14 +583,14 @@ def edit_item(
     Everything is stored to the millimetre. An item that actually shifts is no
     longer a suggestion (`suggested` false) and its `basis` says it was moved
     by hand; one whose size, height or heading actually changes says it was
-    resized by hand. A rename changes the name and nothing else of a line or
-    a ring.
+    resized by hand.
 
-    A raised area's `basis` also says which of three fields a person set, so
-    that a scan applied again can keep them (keep_edits.py): "Name set by
-    hand." for a name that actually changes (it stays the scan's suggestion
-    otherwise: `suggested` is not touched), "Height set by hand." and "Base
-    height set by hand." for those two, each beside "Resized by hand.".
+    The `basis` also says which fields a person set, so that a scan applied
+    again can keep them (keep_edits.py): "Name set by hand." for a name that
+    actually changes (it stays the scan's suggestion otherwise: `suggested`
+    is not touched), "Height set by hand." for a height (a raised area's
+    deck, and the height a line or ring hangs at) and "Base height set by
+    hand." for a raised area's base, each beside "Resized by hand.".
     """
     _find(shell, kind, index)
     sizes = _given_sizes(kind, {
@@ -613,7 +614,7 @@ def edit_item(
 
     if name is not None:
         item["name"] = clean_name(name)
-        if kind == "risers" and item["name"] != before.get("name"):
+        if item["name"] != before.get("name"):
             # Where it stands and how big it is are still the scan's: only the basis says the name is a person's.
             _note(item, NAME_BY_HAND)
 
@@ -751,9 +752,8 @@ def edit_item(
         if not _number(had) or _mm(had) != value:
             item["height"] = value
             resized = True
-            if kind == "risers":
-                _mark(item, HEIGHT_BY_HAND)
-            else:
+            _mark(item, HEIGHT_BY_HAND)
+            if kind != "risers":
                 top = item.get("top")
                 if _number(top) and _number(had):
                     # The truss is as deep as it was: its top goes up or down with its underside.
