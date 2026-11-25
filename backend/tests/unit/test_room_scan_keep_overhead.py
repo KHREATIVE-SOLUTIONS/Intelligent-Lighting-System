@@ -14,6 +14,11 @@ reading that has it again leaves it out, reports it and carries the record
 on. A kept height above the new ceiling, and something added by hand outside
 the new walls, are kept and flagged. With none of these the reading comes
 back as the same object. docs/ROOM_SCAN.md.
+
+Slice 34: a scanned line or ring a person deleted leaves the same record and
+is left out the same way, and a line or ring of the reading hanging more than
+1.0 m from where the scan read the stored one is not it, so two trusses hung
+one above the other keep their own names and trims.
 """
 
 import copy
@@ -21,11 +26,11 @@ import copy
 import pytest
 
 from app.services.room_scan.edit import (
-    DELETED_KEY, HEIGHT_BY_HAND, KIND_BY_HAND, NAME_BY_HAND, RESIZED_BY_HAND, add_item, delete_item, edit_item,
-    tombstone,
+    DELETED_KEY, HEIGHT_BY_HAND, KIND_BY_HAND, NAME_BY_HAND, RESIZED_BY_HAND, SCAN_HEIGHT_KEY, add_item, delete_item,
+    edit_item, tombstone,
 )
 from app.services.room_scan.keep_edits import CROSSING, hand_edits, keep_hand_edits
-from app.services.room_scan.keep_mark import LINE_STRIP_M, MATCH_IOU, best_match, footprint_overlap
+from app.services.room_scan.keep_mark import HANG_MATCH_M, LINE_STRIP_M, MATCH_IOU, best_match, footprint_overlap
 from tests.unit.test_room_scan_edit import shell
 
 LINES, RINGS = "truss_lines", "truss_rings"
@@ -272,7 +277,7 @@ class TestALineAddedByHand:
 
 class TestARaisedAreaDeletedByHand:
 
-    def test_a_scanned_one_leaves_a_record_and_one_added_by_hand_a_line_or_a_ring_none(self):
+    def test_a_scanned_one_leaves_a_record_and_one_added_by_hand_none(self):
         found = shell()
         gone, removed = delete_item(found, "risers", 1)
         assert gone[DELETED_KEY] == [{
@@ -284,8 +289,7 @@ class TestARaisedAreaDeletedByHand:
 
         added, _, at = add_item(found, "risers", center_x=-4.0, center_z=3.0, width=1.0, depth=1.0, height=0.3)
         assert DELETED_KEY not in delete_item(added, "risers", at)[0]
-        assert DELETED_KEY not in delete_item(found, LINES, 0)[0]
-        assert DELETED_KEY not in delete_item(found, RINGS, 0)[0]
+        # (A scanned line or ring left none until slice 34: TestALineOrRingDeletedByHand.)
         assert tombstone({"kind": "riser", "center_x": 0.0}) is None and tombstone(None) is None
 
     def test_a_heading_and_a_kind_set_by_hand_are_remembered(self):
@@ -359,6 +363,234 @@ class TestARaisedAreaDeletedByHand:
         assert [item["name"] for item in got.shell["risers"]] == ["The bar"]
         assert got.kept == [{"index": 0, "edits": ["name"], "overlap": 1.0}]
         assert got.report()["kept"][0]["name"] == "The bar"
+
+
+def stacked():
+    """shell() with its third truss (5.5 m) hung straight above its first (4.2 m): one footprint on the plan."""
+    room = shell()
+    room[LINES][2].update({"z1": -2.0, "z2": -2.0})
+    return room
+
+
+def turned_over(room):
+    """The same room with its first and third lines read in the other order."""
+    again = copy.deepcopy(room)
+    again[LINES][0], again[LINES][2] = again[LINES][2], again[LINES][0]
+    return again
+
+
+class TestALineOrRingDeletedByHand:
+    """Slice 34: the record slice 33 keeps for a raised area, kept for a scanned line and ring too."""
+
+    def test_a_scanned_line_and_ring_leave_a_record_and_one_added_by_hand_none(self):
+        found = shell()
+        gone, removed = delete_item(found, LINES, 0)
+        assert gone[DELETED_KEY] == [{
+            "name": "Overhead line 1", "x1": -4.0, "z1": -2.0, "x2": 4.0, "z2": -2.0, "across": 0.3, "height": 4.2,
+        }] == [tombstone(removed, LINES)]
+        both = delete_item(gone, RINGS, 0)[0]
+        assert both[DELETED_KEY][1] == {
+            "name": "Overhead ring 1", "center_x": 3.0, "center_z": 2.0, "radius": 1.5, "height": 4.2,
+        }
+        # Neither stores a kind: a line and a ring of a reading have none to be the same as.
+        assert all("kind" not in left for left in both[DELETED_KEY])
+        assert DELETED_KEY not in found
+
+        added, _, at = add_item(found, LINES, **PIPE)
+        assert DELETED_KEY not in delete_item(added, LINES, at)[0]
+        ringed, _, ring_at = add_item(found, RINGS, **HALO)
+        assert DELETED_KEY not in delete_item(ringed, RINGS, ring_at)[0]
+        assert tombstone({"x1": 0.0, "z1": 0.0, "x2": 0.0, "z2": 0.0}, LINES) is None
+        assert tombstone({"center_x": 0.0, "center_z": 0.0, "radius": 0}, RINGS) is None
+
+    def test_the_record_holds_the_height_the_scan_read_not_a_trim_set_by_hand(self):
+        trimmed = edit_item(shell(), LINES, 0, height=3.0)[0]
+        assert trimmed[LINES][0][SCAN_HEIGHT_KEY] == 4.2
+        assert delete_item(trimmed, LINES, 0)[0][DELETED_KEY][0]["height"] == 4.2
+        # A trim set before the scan's height was kept beside it: no height is remembered, and none compared.
+        old = copy.deepcopy(trimmed)
+        del old[LINES][0][SCAN_HEIGHT_KEY]
+        left = delete_item(old, LINES, 0)[0][DELETED_KEY][0]
+        assert "height" not in left and best_match(left, shell()[LINES]) == (0, pytest.approx(1.0))
+
+    def test_the_reading_that_has_the_line_again_leaves_it_out_and_carries_the_record_on(self):
+        old = delete_item(shell(), LINES, 0)[0]
+        new = moved(shell(), LINES, 0, x1=-4.2, x2=3.8, height=4.22, top=4.5)
+
+        got = keep_hand_edits(old, new)
+
+        assert got.shell[LINES] == new[LINES][1:] and got.shell[RINGS] == new[RINGS]
+        assert got.shell["risers"] == new["risers"]
+        assert got.left_out == [{"name": "Overhead line 1", "kind": LINES, "overlap": got.left_out[0]["overlap"]}]
+        assert MATCH_IOU <= got.left_out[0]["overlap"] < 1.0
+        # No longer counted where it hung.
+        bands_add_up(got.shell)
+        assert [(b["height"], b["lines"], b["rings"]) for b in got.shell["hanging_bands"]] == [(4.2, 1, 1), (5.5, 1, 0)]
+        # The record stands, and hangs, where this reading has the line, for the reading after.
+        assert got.shell[DELETED_KEY] == [{
+            "name": "Overhead line 1", "x1": -4.2, "z1": -2.0, "x2": 3.8, "z2": -2.0, "across": 0.3, "height": 4.22,
+        }]
+        assert DELETED_KEY not in new and len(new[LINES]) == 3 and new["hanging_bands"][0]["lines"] == 2
+
+        again = keep_hand_edits(got.shell, shell())
+        assert len(again.shell[LINES]) == 2 and len(again.left_out) == 1 and len(again.shell[DELETED_KEY]) == 1
+        bands_add_up(again.shell)
+
+    def test_the_reading_that_has_the_ring_again_leaves_it_out(self):
+        old = delete_item(shell(), RINGS, 0)[0]
+        new = moved(shell(), RINGS, 0, center_x=3.1, radius=1.55)
+
+        got = keep_hand_edits(old, new)
+
+        assert got.shell[RINGS] == [] and got.shell[LINES] == new[LINES]
+        assert [(e["name"], e["kind"]) for e in got.left_out] == [("Overhead ring 1", RINGS)]
+        bands_add_up(got.shell)
+        assert got.shell[DELETED_KEY] == [{
+            "name": "Overhead ring 1", "center_x": 3.1, "center_z": 2.0, "radius": 1.55, "height": 4.2,
+        }]
+        assert keep_hand_edits(got.shell, shell()).shell[RINGS] == []
+
+    def test_the_only_line_of_a_room_left_out_leaves_no_bands(self):
+        one = {**shell(), LINES: shell()[LINES][2:], RINGS: [], "hanging_bands": shell()["hanging_bands"][1:]}
+        got = keep_hand_edits(delete_item(one, LINES, 0)[0], copy.deepcopy(one))
+        assert got.shell[LINES] == [] and got.shell["hanging_bands"] == []
+
+    def test_what_is_said_of_each_kind_and_which_keys_are_sent(self):
+        old = delete_item(delete_item(delete_item(shell(), "risers", 1)[0], LINES, 0)[0], RINGS, 0)[0]
+        got = keep_hand_edits(old, shell())
+        before, after = got.report(), got.report(applied=True)
+        assert before["message"] == (
+            "Will leave out 1 raised area you deleted: Booth or counter. "
+            "Will leave out 1 overhead line you deleted: Overhead line 1. "
+            "Will leave out 1 overhead ring you deleted: Overhead ring 1."
+        )
+        assert after["message"] == before["message"].replace("Will leave", "Left")
+        assert after["deleted_left_out"] == [
+            {"name": "Booth or counter", "kind": "booth", "overlap": 1.0},
+            {"name": "Overhead line 1", "kind": LINES, "overlap": 1.0},
+            {"name": "Overhead ring 1", "kind": RINGS, "overlap": 1.0},
+        ]
+        assert set(after) == {"areas", "kept", "added_kept", "added_replaced", "message", "deleted_left_out"}
+        assert (after["areas"], after["kept"], after["added_kept"], after["added_replaced"]) == (0, [], [], [])
+
+    def test_a_record_the_reading_has_nothing_for_is_dropped_and_a_line_hung_elsewhere_is_not_it(self):
+        old = delete_item(shell(), LINES, 0)[0]
+        for new in (
+            {**shell(), LINES: shell()[LINES][1:]},
+            moved(shell(), LINES, 0, z1=-1.3, z2=-1.3),
+            # Over the same floor, but more than HANG_MATCH_M above where the deleted one hung.
+            moved(shell(), LINES, 0, height=4.2 + HANG_MATCH_M + 0.1, top=5.6),
+        ):
+            got = keep_hand_edits(old, new)
+            assert got.shell is new and not got.any and DELETED_KEY not in got.shell
+
+    def test_a_record_of_a_line_is_never_asked_of_raised_areas_or_rings(self):
+        old = delete_item(shell(), LINES, 0)[0]
+        new = {**shell(), LINES: []}
+        got = keep_hand_edits(old, new)
+        assert got.shell is new and not got.any
+
+    def test_one_deleted_and_put_in_again_by_hand_is_kept_as_the_persons(self):
+        gone = delete_item(shell(), LINES, 0)[0]
+        old, pipe, _ = add_item(gone, LINES, name="My truss", center_x=0.0, center_z=-2.0, length=7.0, height=3.8)
+
+        got = keep_hand_edits(old, shell())
+
+        assert got.shell[LINES] == [*shell()[LINES][1:], pipe]
+        assert len(got.left_out) == 1 and got.overhead_added_replaced == []
+        assert got.overhead_added_kept == [{"kind": LINES, "index": 2}]
+        bands_add_up(got.shell)
+
+
+class TestTrussesHungOneAboveTheOther:
+    """Slice 34: a line or ring read more than HANG_MATCH_M from where the scan read the stored one is not it."""
+
+    def test_the_two_share_all_of_the_plan(self):
+        room = stacked()
+        assert footprint_overlap(room[LINES][0], room[LINES][2]) == pytest.approx(1.0)
+        assert abs(room[LINES][0]["height"] - room[LINES][2]["height"]) > HANG_MATCH_M
+        assert best_match(room[LINES][0], turned_over(room)[LINES]) == (2, pytest.approx(1.0))
+        assert best_match(room[LINES][2], turned_over(room)[LINES]) == (0, pytest.approx(1.0))
+
+    def test_each_keeps_its_own_name_and_trim_whichever_is_read_first(self):
+        old = edit_item(stacked(), LINES, 0, name="Low truss", height=3.9)[0]
+        old = edit_item(old, LINES, 2, name="High truss", height=5.2)[0]
+        new = turned_over(stacked())
+
+        got = keep_hand_edits(old, new)
+
+        high, low = got.shell[LINES][0], got.shell[LINES][2]
+        assert (high["name"], high["height"], high["top"], high[SCAN_HEIGHT_KEY]) == ("High truss", 5.2, 5.5, 5.5)
+        assert (low["name"], low["height"], low["top"], low[SCAN_HEIGHT_KEY]) == ("Low truss", 3.9, 4.2, 4.2)
+        assert sorted((e["index"], tuple(e["edits"])) for e in got.overhead_kept) == [
+            (0, ("name", "height")), (2, ("name", "height")),
+        ]
+        bands_add_up(got.shell)
+
+        # And at the reading after, read the first way round again: matched by where the scan read them.
+        again = keep_hand_edits(got.shell, stacked())
+        assert [(line["name"], line["height"]) for line in again.shell[LINES]] == [
+            ("Low truss", 3.9), ("Overhead line 2", 4.25), ("High truss", 5.2),
+        ]
+
+    def test_a_trim_set_onto_the_other_ones_height_is_still_this_ones(self):
+        # The lower one is hung by hand at 5.4 m, beside where the scan reads the upper one.
+        old = edit_item(stacked(), LINES, 0, name="Low truss", height=5.4)[0]
+        got = keep_hand_edits(old, turned_over(stacked()))
+        assert [(line["name"], line["height"]) for line in got.shell[LINES]] == [
+            ("Overhead line 3", 5.5), ("Overhead line 2", 4.25), ("Low truss", 5.4),
+        ]
+
+    def test_a_deleted_one_takes_out_only_the_one_at_its_height(self):
+        new = turned_over(stacked())
+        low_gone = keep_hand_edits(delete_item(stacked(), LINES, 0)[0], new)
+        assert [line["height"] for line in low_gone.shell[LINES]] == [5.5, 4.25]
+        high_gone = keep_hand_edits(delete_item(stacked(), LINES, 2)[0], new)
+        assert [line["height"] for line in high_gone.shell[LINES]] == [4.25, 4.2]
+        for got in (low_gone, high_gone):
+            assert len(got.left_out) == 1
+            bands_add_up(got.shell)
+
+    def test_one_read_within_the_tolerance_is_the_same_and_one_beyond_it_is_not(self):
+        old = edit_item(shell(), LINES, 0, name="Front truss")[0]
+        near = keep_hand_edits(old, moved(shell(), LINES, 0, height=4.2 + HANG_MATCH_M - 0.1, top=5.4))
+        assert near.shell[LINES][0]["name"] == "Front truss"
+        new = moved(shell(), LINES, 0, height=4.2 + HANG_MATCH_M + 0.1, top=5.6)
+        far = keep_hand_edits(old, new)
+        assert far.shell is new and not far.any
+
+    def test_a_ring_is_told_from_one_above_it_too(self):
+        ring = shell()[RINGS][0]
+        above = {**ring, "name": "Overhead ring 2", "height": 5.5, "top": 5.8}
+        assert best_match(ring, [above, ring]) == (1, pytest.approx(1.0))
+        assert best_match(ring, [above]) == (None, 0.0)
+
+    def test_a_trim_set_before_the_scans_height_was_kept_is_matched_without_one(self):
+        old = edit_item(shell(), LINES, 0, height=3.0)[0]
+        del old[LINES][0][SCAN_HEIGHT_KEY]
+        got = keep_hand_edits(old, shell())
+        line = got.shell[LINES][0]
+        # Kept as slice 33 kept it, and from here on the scan's height is beside it.
+        assert (line["height"], line[SCAN_HEIGHT_KEY]) == (3.0, 4.2)
+
+    def test_the_scans_height_is_written_once_and_not_for_a_line_added_by_hand(self):
+        once = edit_item(shell(), LINES, 0, height=3.0)[0]
+        twice = edit_item(once, LINES, 0, height=3.4)[0]
+        assert twice[LINES][0][SCAN_HEIGHT_KEY] == 4.2
+        assert SCAN_HEIGHT_KEY not in edit_item(shell(), LINES, 0, name="Front truss")[1]
+        added, _, at = add_item(shell(), LINES, **PIPE)
+        assert SCAN_HEIGHT_KEY not in edit_item(added, LINES, at, height=3.9)[1]
+        assert SCAN_HEIGHT_KEY not in edit_item(shell(), "risers", 1, height=1.2)[1]
+
+    def test_a_raised_areas_height_is_still_not_compared(self):
+        old = edit_item(shell(), "risers", 1, name="The bar")[0]
+        got = keep_hand_edits(old, moved(shell(), "risers", 1, height=2.9))
+        assert got.shell["risers"][1]["name"] == "The bar"
+
+    def test_a_stack_nobody_edited_comes_back_as_it_was_read(self):
+        for new in (stacked(), turned_over(stacked())):
+            got = keep_hand_edits(stacked(), new)
+            assert got.shell is new and not got.any and got.report() is None
 
 
 class TestWhatTheNewRoomDoesNotHold:

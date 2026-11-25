@@ -671,11 +671,16 @@ class TestRoomShellEdit:
 
         assert again.status_code == 200, again.text
         # Slice 32: a name set by hand on a raised area is kept across the reading (until then the
-        # whole room was the scan's again, and this was `== before`). Everything else still is the
-        # scan's: the deleted line is back.
+        # whole room was the scan's again, and this was `== before`). Slice 34: the deleted line stays
+        # out too (until then it was back), and the room remembers it. Everything else is the scan's.
         stage = before["risers"][0]
         named = {**stage, "name": "Main stage", "basis": stage["basis"] + " Name set by hand."}
-        assert await self.shell_of(client, rig_id) == {**before, "risers": [named, *before["risers"][1:]]}
+        truss = before["truss_lines"][0]
+        record = {key: truss[key] for key in ("name", "x1", "z1", "x2", "z2", "across", "height")}
+        assert await self.shell_of(client, rig_id) == {
+            **before, "risers": [named, *before["risers"][1:]], "truss_lines": [], "hanging_bands": [],
+            "deleted_areas": [record],
+        }
 
 
 class TestRoomScanNeedsAnOperator:

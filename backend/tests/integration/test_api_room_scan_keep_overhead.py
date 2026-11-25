@@ -208,25 +208,80 @@ class TestARaisedAreaDeletedByHandAcrossAScanAppliedAgain:
         assert set(answer["applied"]) == APPLIED_KEYS
 
     @pytest.mark.asyncio
-    async def test_one_added_by_hand_and_deleted_and_a_deleted_line_leave_nothing_behind(
+    async def test_one_added_by_hand_and_deleted_leaves_nothing_behind(
         self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
     ):
+        # Until slice 34 this also deleted the scan's line and saw it come back: that is now
+        # TestAnOverheadLineDeletedByHandAcrossAScanAppliedAgain, below.
         rig_id, scanned, _, _, room = await room_of(client, sample_rig_data, sample_fixture_data)
         made = await client.post(f"{room}/risers", json={
             "name": "Podium", "center_x": -3.0, "center_z": 2.0, "width": 1.5, "depth": 1.5, "height": 0.4,
         })
-        assert made.status_code == 201, made.text
+        pipe = await client.post(f"{room}/{LINES}", json=beside(scanned[LINES][0], 2.0))
+        assert made.status_code == 201 and pipe.status_code == 201, (made.text, pipe.text)
+        assert (await client.delete(f"{room}/{LINES}/{pipe.json()['index']}")).status_code == 200
         assert (await client.delete(f"{room}/risers/{made.json()['index']}")).status_code == 200
-        assert (await client.delete(f"{room}/{LINES}/0")).status_code == 200
         assert "deleted_areas" not in await column(db_session, rig_id)
 
         preview = await scan_again(client, rig_id, apply=False)
         answer = await scan_again(client, rig_id)
 
-        # With nothing kept, left out or flagged both answers have exactly the keys they had, and the
-        # deleted line comes back as it always did.
+        # With nothing kept, left out or flagged both answers have exactly the keys they had.
         assert set(preview) == PREVIEW_KEYS and set(answer["applied"]) == APPLIED_KEYS
         assert preview["room_shell"] == answer["room_shell"] == scanned == await column(db_session, rig_id)
+
+
+class TestAnOverheadLineDeletedByHandAcrossAScanAppliedAgain:
+    """Slice 34: the scan's truss, deleted in Edit Room, stays out of a scan applied again."""
+
+    @pytest.mark.asyncio
+    async def test_it_is_left_out_and_reported_in_a_preview_that_writes_nothing_and_in_each_apply(
+        self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, scanned, _, _, room = await room_of(client, sample_rig_data, sample_fixture_data)
+        truss = scanned[LINES][0]
+        gone = await client.delete(f"{room}/{LINES}/0")
+        assert gone.status_code == 200, gone.text
+        record = {key: truss[key] for key in ("name", "x1", "z1", "x2", "z2", "across", "height")}
+        stored_room = await column(db_session, rig_id)
+        assert stored_room["deleted_areas"] == [record] == gone.json()["room_shell"]["deleted_areas"]
+
+        preview = await scan_again(client, rig_id, apply=False)
+
+        assert preview["applied"] is None
+        said = preview["hand_edits"]
+        assert said["deleted_left_out"] == [{"name": truss["name"], "kind": LINES, "overlap": 1.0}]
+        assert said["message"] == f"Will leave out 1 overhead line you deleted: {truss['name']}."
+        assert set(said) == AREA_KEYS | {"deleted_left_out"}
+        assert preview["room_shell"][LINES] == [] and preview["room_shell"]["hanging_bands"] == []
+        assert preview["summary"]["overhead_lines"] == 0
+        assert await column(db_session, rig_id) == stored_room
+
+        for _ in range(2):
+            # And at the reading after: the record went on to the new room.
+            answer = await scan_again(client, rig_id)
+
+            assert answer["room_shell"] == preview["room_shell"] == await column(db_session, rig_id)
+            assert answer["room_shell"]["deleted_areas"] == [record]
+            assert answer["room_shell"]["risers"] == scanned["risers"]
+            done = answer["applied"]["hand_edits"]
+            assert done["deleted_left_out"] == said["deleted_left_out"]
+            assert done["message"] == f"Left out 1 overhead line you deleted: {truss['name']}."
+
+    @pytest.mark.asyncio
+    async def test_the_rooms_undo_putting_it_back_forgets_it(
+        self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, scanned, _, _, room = await room_of(client, sample_rig_data, sample_fixture_data)
+        assert (await client.delete(f"{room}/{LINES}/0")).status_code == 200
+
+        undone = await client.post(f"{room}/undo")
+
+        assert undone.status_code == 200, undone.text
+        assert undone.json()["room_shell"] == scanned
+        answer = await scan_again(client, rig_id)
+        assert answer["room_shell"] == scanned == await column(db_session, rig_id)
+        assert set(answer["applied"]) == APPLIED_KEYS
 
 
 class TestWhatTheNewRoomDoesNotHoldIsFlagged:

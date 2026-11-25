@@ -420,10 +420,16 @@ class TestUndo:
         assert again.status_code == 200, again.text
         rig = await rig_of(client, rig_id)
         # Slice 32: the name set by hand is kept across the reading (until then the room was `scanned`
-        # again). The steps are cleared as before, and the deleted line is the scan's again.
+        # again). The steps are cleared as before. Slice 34: the deleted line stays out (until then it
+        # was the scan's again), and the room remembers it.
         stage = scanned["risers"][0]
         named = {**stage, "name": "Main stage", "basis": stage["basis"] + " Name set by hand."}
-        kept = {**scanned, "risers": [named, *scanned["risers"][1:]]}
+        truss = scanned["truss_lines"][0]
+        record = {key: truss[key] for key in ("name", "x1", "z1", "x2", "z2", "across", "height")}
+        kept = {
+            **scanned, "risers": [named, *scanned["risers"][1:]], "truss_lines": [], "hanging_bands": [],
+            "deleted_areas": [record],
+        }
         assert rig["room_shell"] == kept and rig["room_shell_edits"] == NO_EDITS
         assert await column(db_session, rig_id, "room_shell_undo") is None
         assert (await client.post(f"{path}/undo")).status_code == 409
