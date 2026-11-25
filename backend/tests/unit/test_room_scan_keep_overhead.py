@@ -29,7 +29,7 @@ from app.services.room_scan.edit import (
     DELETED_KEY, HEIGHT_BY_HAND, KIND_BY_HAND, NAME_BY_HAND, RESIZED_BY_HAND, SCAN_HEIGHT_KEY, add_item, delete_item,
     edit_item, tombstone,
 )
-from app.services.room_scan.keep_edits import CROSSING, hand_edits, keep_hand_edits
+from app.services.room_scan.keep_edits import CROSSING, LOST_HEIGHT, LOST_RECORD, hand_edits, keep_hand_edits
 from app.services.room_scan.keep_mark import HANG_MATCH_M, LINE_STRIP_M, MATCH_IOU, best_match, footprint_overlap
 from tests.unit.test_room_scan_edit import shell
 
@@ -325,7 +325,8 @@ class TestARaisedAreaDeletedByHand:
         assert before["message"] == "Will leave out 1 raised area you deleted: Booth or counter."
         assert after["message"] == "Left out 1 raised area you deleted: Booth or counter."
         assert after["deleted_left_out"] == [{"name": "Booth or counter", "kind": "booth", "overlap": 1.0}]
-        assert set(after) == {"areas", "kept", "added_kept", "added_replaced", "message", "deleted_left_out"}
+        # "items" since slice 35.
+        assert set(after) == {"areas", "kept", "added_kept", "added_replaced", "message", "deleted_left_out", "items"}
 
     def test_a_record_the_reading_has_nothing_for_is_dropped_and_another_kind_is_not_it(self):
         old = delete_item(shell(), "risers", 1)[0]
@@ -335,7 +336,9 @@ class TestARaisedAreaDeletedByHand:
             moved(shell(), "risers", 1, kind="riser", name="Riser"),
         ):
             got = keep_hand_edits(old, new)
-            assert got.shell is new and not got.any and DELETED_KEY not in got.shell
+            assert got.shell is new and DELETED_KEY not in got.shell and not got.left_out
+            # Slice 35: dropped, and said (until then nothing was: `not got.any`).
+            assert got.lost == [{"kind": "risers", "name": "Booth or counter", "reason": LOST_RECORD}]
 
     def test_a_kind_set_by_hand_before_it_was_deleted_matches_what_the_scan_reads(self):
         old = delete_item(edit_item(shell(), "risers", 1, riser_kind="riser")[0], "risers", 1)[0]
@@ -470,7 +473,8 @@ class TestALineOrRingDeletedByHand:
             {"name": "Overhead line 1", "kind": LINES, "overlap": 1.0},
             {"name": "Overhead ring 1", "kind": RINGS, "overlap": 1.0},
         ]
-        assert set(after) == {"areas", "kept", "added_kept", "added_replaced", "message", "deleted_left_out"}
+        # "items" since slice 35.
+        assert set(after) == {"areas", "kept", "added_kept", "added_replaced", "message", "deleted_left_out", "items"}
         assert (after["areas"], after["kept"], after["added_kept"], after["added_replaced"]) == (0, [], [], [])
 
     def test_a_record_the_reading_has_nothing_for_is_dropped_and_a_line_hung_elsewhere_is_not_it(self):
@@ -482,13 +486,17 @@ class TestALineOrRingDeletedByHand:
             moved(shell(), LINES, 0, height=4.2 + HANG_MATCH_M + 0.1, top=5.6),
         ):
             got = keep_hand_edits(old, new)
-            assert got.shell is new and not got.any and DELETED_KEY not in got.shell
+            assert got.shell is new and DELETED_KEY not in got.shell and not got.left_out
+            # Slice 35: dropped, and said (until then nothing was: `not got.any`).
+            assert got.lost == [{"kind": LINES, "name": "Overhead line 1", "reason": LOST_RECORD}]
 
     def test_a_record_of_a_line_is_never_asked_of_raised_areas_or_rings(self):
         old = delete_item(shell(), LINES, 0)[0]
         new = {**shell(), LINES: []}
         got = keep_hand_edits(old, new)
-        assert got.shell is new and not got.any
+        # Slice 35: nothing is left out, and the dropped record is said (until then: `not got.any`).
+        assert got.shell is new and not got.left_out
+        assert got.lost == [{"kind": LINES, "name": "Overhead line 1", "reason": LOST_RECORD}]
 
     def test_one_deleted_and_put_in_again_by_hand_is_kept_as_the_persons(self):
         gone = delete_item(shell(), LINES, 0)[0]
@@ -557,7 +565,9 @@ class TestTrussesHungOneAboveTheOther:
         assert near.shell[LINES][0]["name"] == "Front truss"
         new = moved(shell(), LINES, 0, height=4.2 + HANG_MATCH_M + 0.1, top=5.6)
         far = keep_hand_edits(old, new)
-        assert far.shell is new and not far.any
+        # Slice 35: nothing is kept, and that is said (until then nothing was: `not far.any`).
+        assert far.shell is new and not far.overhead_kept
+        assert [(entry["name"], entry["reason"]) for entry in far.lost] == [("Front truss", LOST_HEIGHT)]
 
     def test_a_ring_is_told_from_one_above_it_too(self):
         ring = shell()[RINGS][0]
@@ -650,6 +660,7 @@ class TestWhatTheNewRoomDoesNotHold:
         assert got.warnings == []
         assert set(got.report()) == {
             "areas", "kept", "added_kept", "added_replaced", "message", "overhead_kept", "overhead_added_kept",
+            "items",    # since slice 35
         }
 
 

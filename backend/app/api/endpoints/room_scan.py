@@ -73,6 +73,11 @@ forgets it. A line or ring is matched by where it hangs as well as where it
 is on the plan (within 1.0 m of where the scan read it). Something kept that is above the new ceiling,
 or added by hand and now outside the new walls, is still kept and is listed
 in `warnings`. Each of those keys is sent only when it has something in it.
+`items` lists the same one thing at a time: what it is ("raised area", "line",
+"ring"), its name and what happened to it. `warnings` also names what was
+lost: a line's or ring's name or trim where the scan read a truss there at
+another height or to one side, and a record of a deleted item that was
+dropped because the scan did not see it (each with its own `message`).
 
 PATCH /api/rigs/{rig_id}/room-shell/outline redraws the room's walls (every
 corner of its floor) and sets its height; PATCH, POST and DELETE under
@@ -301,16 +306,17 @@ async def import_room_scan(
                else "No fixture was moved.")
         ),
     }
-    # Said only where an edit made by hand was kept, something added by hand kept or replaced, or a
-    # raised area a person deleted left out.
+    # Said only where an edit made by hand was kept, something added by hand kept or replaced, a
+    # raised area a person deleted left out, or (slice 35) a name, a trim or a record of a deleted
+    # item lost.
     if edits.any:
         preview["applied"]["hand_edits"] = edits.report(shell, applied=True)
         logger.info(
             "Room scan: rig %s hand edits kept on %d raised areas, %d added by hand kept, %d replaced; "
-            "overhead: %d kept, %d added kept, %d replaced; %d deleted areas left out; %d to check",
+            "overhead: %d kept, %d added kept, %d replaced; %d deleted areas left out; %d to check; %d lost",
             rig.id, len(edits.kept), len(edits.added_kept), len(edits.added_replaced),
             len(edits.overhead_kept), len(edits.overhead_added_kept), len(edits.overhead_added_replaced),
-            len(edits.left_out), len(edits.warnings),
+            len(edits.left_out), len(edits.warnings), len(edits.lost),
         )
     # Said only where the room this replaced had a marked booth, so every other answer is what it was.
     if mark.was_marked:

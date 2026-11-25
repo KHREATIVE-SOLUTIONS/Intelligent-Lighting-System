@@ -300,6 +300,12 @@ class TestWhatAnAnswerSays:
                 "Will keep your edits on 2 raised areas: Stage (base height), Drum riser (name, height). "
                 "1 raised area you added will be kept as it is: Podium."
             ),
+            # Slice 35: the same, one thing at a time.
+            "items": [
+                {"kind": "raised area", "name": "Stage", "outcome": "kept your edits"},
+                {"kind": "raised area", "name": "Drum riser", "outcome": "kept your edits"},
+                {"kind": "raised area", "name": "Podium", "outcome": "added by hand, kept"},
+            ],
         }
         after = got.report(applied=True)
         assert {**after, "message": None} == {**before, "message": None}

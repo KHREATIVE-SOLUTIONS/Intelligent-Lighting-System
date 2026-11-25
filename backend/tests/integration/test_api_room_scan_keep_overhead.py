@@ -29,7 +29,8 @@ PREVIEW_KEYS = {
     "assumptions", "warnings", "fixtures", "operator_guide", "applied",
 }
 APPLIED_KEYS = {"room_shell_stored", "fixtures_moved", "fixtures_still_unconfirmed", "undo_available", "message"}
-AREA_KEYS = {"areas", "kept", "added_kept", "added_replaced", "message"}
+# "items" since slice 35: an answer that kept, left out or replaced something lists it one thing at a time.
+AREA_KEYS = {"areas", "kept", "added_kept", "added_replaced", "message", "items"}
 
 
 def beside(truss: dict, by: float) -> dict:

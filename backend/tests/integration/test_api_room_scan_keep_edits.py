@@ -108,6 +108,8 @@ class TestHandEditsAcrossAScanAppliedAgain:
                 "areas": 0, "kept": [], "added_replaced": [],
                 "added_kept": [{"index": at, "name": "Podium"}],
                 "message": "1 raised area you added was kept as it is: Podium.",
+                # Slice 35: the same, one thing at a time.
+                "items": [{"kind": "raised area", "name": "Podium", "outcome": "added by hand, kept"}],
             }
 
     @pytest.mark.asyncio
@@ -127,6 +129,10 @@ class TestHandEditsAcrossAScanAppliedAgain:
             "message": (
                 "Drum riser, which you added, was replaced by the scan's Riser: the scan has a raised area there now."
             ),
+            # Slice 35: the same, one thing at a time.
+            "items": [
+                {"kind": "raised area", "name": "Drum riser", "outcome": "replaced (a scanned item overlaps it)"},
+            ],
         }
         # Gone, so there is nothing to say at the reading after.
         assert "hand_edits" not in (await scan_again(client, rig_id))["applied"]
