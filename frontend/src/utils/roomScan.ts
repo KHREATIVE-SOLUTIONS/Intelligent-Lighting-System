@@ -125,7 +125,14 @@ export interface RoomScanPreview {
   };
 }
 
-/** The hand edits a scan applied again keeps on the room's raised areas, and what became of the ones added by hand. */
+/** An overhead line or ring spoken of in `hand_edits`: the list it is in, and its place there. */
+type OverheadKind = 'truss_lines' | 'truss_rings';
+
+/**
+ * The hand edits a scan applied again keeps on the room's raised areas, and what became of the ones added by hand.
+ * The five keys after `message` are for overhead lines and rings, deleted raised areas and checks (slice 33),
+ * and each is sent only when it has something in it.
+ */
 export interface RoomScanHandEdits {
   /** How many raised areas of the new room keep a name, a height or a base height set by hand. */
   areas?: number;
@@ -136,16 +143,34 @@ export interface RoomScanHandEdits {
   /** Raised areas added by hand that the scan now has something in the place of. */
   added_replaced?: { name: string; by_index: number; by: string }[];
   message?: string | null;
+  /** Overhead lines and rings of the new room that keep a name or a hanging height set by hand. */
+  overhead_kept?: { kind: OverheadKind; index: number; name: string; edits: string[]; overlap?: number }[];
+  /** Overhead lines and rings added by hand that the scan has nothing in the place of: kept as they were. */
+  overhead_added_kept?: { kind: OverheadKind; index: number; name: string }[];
+  /** Overhead lines and rings added by hand that the scan now has one in the place of. */
+  overhead_added_replaced?: { kind: OverheadKind; name: string; by_index: number; by: string }[];
+  /** Scanned raised areas deleted by hand that this scan reads again and leaves out. */
+  deleted_left_out?: { name: string; kind?: string | null; overlap?: number }[];
+  /** Kept things the new room does not hold: above its ceiling, or outside its walls. Kept all the same. */
+  warnings?: { kind: 'risers' | OverheadKind; index: number; name: string; reason: string }[];
 }
 
 const areasText = (count: number) => `${count} area${count === 1 ? '' : 's'}`;
+const overheadText = (count: number) => `${count} overhead item${count === 1 ? '' : 's'}`;
+/** "2 areas", "1 overhead item" or "2 areas and 1 overhead item"; empty with neither. */
+const thingsText = (areas: number, overhead: number) =>
+  [areas > 0 ? areasText(areas) : '', overhead > 0 ? overheadText(overhead) : ''].filter(Boolean).join(' and ');
+const howMany = (list: unknown) => (Array.isArray(list) ? list.length : 0);
 
 /**
  * The one line the dialog says about edits made by hand: "Will keep your edits on 2 areas" before
  * Apply and "Kept your edits on 2 areas" after it, with "1 area you added will be kept" and
- * "1 area you added will be replaced by the scan" joined on where there are any. `replaced` is
- * true when something added by hand is lost, which the dialog shows as a warning. Null where the
- * server sent nothing: no hand edit was there to keep.
+ * "1 area you added will be replaced by the scan" joined on where there are any. Overhead lines
+ * and rings are counted beside the areas ("2 areas and 1 overhead item"), a raised area deleted by
+ * hand that the scan leaves out is said first ("will leave out 1 area you deleted"), and what the
+ * new room does not hold last ("1 to check against the new room"). `replaced` is true when
+ * something added by hand is lost or something is to be checked, which the dialog shows as a
+ * warning. Null where the server sent nothing: no hand edit was there to keep.
  */
 export function handEditsLine(
   answer: RoomScanPreview | null | undefined,
@@ -154,18 +179,20 @@ export function handEditsLine(
   const done = !!answer.applied;
   const edits = done ? answer.applied?.hand_edits : answer.hand_edits;
   if (!edits) return null;
-  const kept = Array.isArray(edits.kept) ? edits.kept.length : 0;
-  const added = Array.isArray(edits.added_kept) ? edits.added_kept.length : 0;
-  const replaced = Array.isArray(edits.added_replaced) ? edits.added_replaced.length : 0;
+  const kept = thingsText(howMany(edits.kept), howMany(edits.overhead_kept));
+  const added = thingsText(howMany(edits.added_kept), howMany(edits.overhead_added_kept));
+  const replaced = thingsText(howMany(edits.added_replaced), howMany(edits.overhead_added_replaced));
+  const leftOut = howMany(edits.deleted_left_out);
+  const toCheck = howMany(edits.warnings);
   const parts: string[] = [];
-  if (kept > 0) parts.push(`${done ? 'kept' : 'will keep'} your edits on ${areasText(kept)}`);
-  if (added > 0) parts.push(`${areasText(added)} you added ${done ? 'kept' : 'will be kept'}`);
-  if (replaced > 0) {
-    parts.push(`${areasText(replaced)} you added ${done ? 'replaced' : 'will be replaced'} by the scan`);
-  }
+  if (leftOut > 0) parts.push(`${done ? 'left' : 'will leave'} out ${areasText(leftOut)} you deleted`);
+  if (kept) parts.push(`${done ? 'kept' : 'will keep'} your edits on ${kept}`);
+  if (added) parts.push(`${added} you added ${done ? 'kept' : 'will be kept'}`);
+  if (replaced) parts.push(`${replaced} you added ${done ? 'replaced' : 'will be replaced'} by the scan`);
+  if (toCheck > 0) parts.push(`${toCheck} to check against the new room`);
   if (parts.length === 0) return null;
   const text = parts.join('; ');
-  return { text: text.charAt(0).toUpperCase() + text.slice(1), replaced: replaced > 0 };
+  return { text: text.charAt(0).toUpperCase() + text.slice(1), replaced: replaced !== '' || toCheck > 0 };
 }
 
 export const DJ_BOOTH_WILL_DROP_TEXT ='DJ booth mark will be dropped';
