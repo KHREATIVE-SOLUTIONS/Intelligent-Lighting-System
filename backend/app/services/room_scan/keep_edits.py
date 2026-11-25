@@ -36,6 +36,9 @@ What is done:
    is the scan's too (only the marked DJ booth keeps a kind: keep_mark.py).
 2. Two stored areas that pick the same new one: the greater overlap has it,
    the earlier of two equal. The other is treated as one that matched nothing.
+   Every stored raised area is asked, with or without anything to keep: a
+   riser a person added on top of the scan's own does not rename the scan's
+   riser when it is read again; it is replaced (4).
 3. A raised area **added by hand** that matches nothing and shares no floor
    with any raised area of the new reading is kept as it is, at the end of
    the list, so every place the scan gave is what it was.
@@ -163,18 +166,20 @@ def keep_hand_edits(old_shell: Optional[Dict[str, Any]], new_shell: Dict[str, An
         return KeptEdits(shell=new_shell)
 
     # Every stored raised area with something to keep, and the new one it is (or None).
-    wanted: List[Tuple[int, Tuple[str, ...], Optional[int], float]] = []
+    wanted: List[Tuple[int, Tuple[str, ...]]] = []
     for place, item in enumerate(old):
         edits = hand_edits(item)
         if edits or (isinstance(item, dict) and item.get("added_by_hand") is True):
-            match, overlap = best_match(item, new)
-            wanted.append((place, edits, match, overlap))
+            wanted.append((place, edits))
     if not wanted:
         return KeptEdits(shell=new_shell)
 
-    # One stored area for each new one: the greater overlap, and of two equal the earlier.
+    # One stored area for each new one: the greater overlap, and of two equal the earlier. Every
+    # stored area is asked, not only those with something to keep: the scan's own riser, read again,
+    # is that riser, and one a person added on top of it does not take its place.
+    matches = [best_match(item, new) for item in old]
     winner: Dict[int, Tuple[int, float]] = {}
-    for place, _, match, overlap in wanted:
+    for place, (match, overlap) in enumerate(matches):
         if match is not None and (match not in winner or overlap > winner[match][1]):
             winner[match] = (place, overlap)
 
@@ -183,8 +188,9 @@ def keep_hand_edits(old_shell: Optional[Dict[str, Any]], new_shell: Dict[str, An
     kept: List[Dict[str, Any]] = []
     added_kept: List[Dict[str, Any]] = []
     added_replaced: List[Dict[str, Any]] = []
-    for place, edits, match, overlap in wanted:
+    for place, edits in wanted:
         was = old[place]
+        match, overlap = matches[place]
         if match is not None and winner[match][0] == place:
             if not edits:
                 continue

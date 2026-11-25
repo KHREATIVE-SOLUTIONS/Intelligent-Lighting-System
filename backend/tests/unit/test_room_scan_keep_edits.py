@@ -233,6 +233,23 @@ class TestARaisedAreaAddedByHand:
         # Now the scan's, with the marks: the reading after keeps the same.
         assert keep_hand_edits(got.shell, new).shell == got.shell
 
+    def test_one_added_on_top_of_the_scans_own_does_not_take_its_place(self):
+        # Exactly over the scan's riser, floating at 3 m under another name. The scan's riser, read
+        # again, is the scan's riser (the earlier of two that overlap as much): the added one is
+        # replaced, and the riser is not renamed or lifted.
+        over = {**self.DRUM, "center_x": RISER["center_x"], "center_z": RISER["center_z"], "width": 2.0, "depth": 1.0}
+        old = added(stored(), **{**over, "name": "Balcony", "base_height": 3.0})
+        new = stored()
+
+        got = keep_hand_edits(old, new)
+
+        assert got.shell is new and got.kept == [] and got.added_kept == []
+        assert got.added_replaced == [{"name": "Balcony", "by_index": 2}]
+        # A name set on the scan's riser itself is still kept, with the added one replaced beside it.
+        both = keep_hand_edits(edited(old, 2, name="Drum riser"), new)
+        assert both.shell["risers"][2]["name"] == "Drum riser" and both.shell["risers"][2]["base_height"] == 0.0
+        assert both.added_replaced == [{"name": "Balcony", "by_index": 2}] and len(both.shell["risers"]) == 3
+
     def test_a_marked_booth_added_by_hand_and_kept_keeps_its_mark(self):
         old = added(stored(), **{**self.DRUM, "name": "DJ", "riser_kind": "booth", "is_dj_booth": True})
         got = keep_hand_edits(old, stored())

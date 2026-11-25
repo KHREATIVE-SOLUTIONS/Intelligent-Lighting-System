@@ -569,8 +569,10 @@ it is open.
   moves" keeps its record, but a fixture a truss or a raised area has
   carried no longer
   stands where the scan put it, so that undo leaves it alone as "moved since
-  the scan". Reading the scan again **replaces every edit made here**, and
-  does not put carried fixtures back.
+  the scan". Reading the scan again **replaces the edits made here, but
+  for a raised area's name, height and base height and a raised area you
+  added where the scan has nothing** (slice 32; the DJ booth tick is kept
+  too, slices 30 and 31), and does not put carried fixtures back.
 
 ## The API
 
@@ -981,7 +983,9 @@ the `hanging_bands` entry that counted it: a band left with nothing in it is
 dropped, and with no line or ring left in the room there are no bands at all.
 Deleting a raised area leaves the bands alone. The undo route brings the item
 back to the place it had; reading the scan again brings it back too, and
-replaces every other edit with it.
+replaces every other edit with it but those slice 32 keeps (a raised area's
+name, height and base height, and a raised area added by hand that the scan
+has nothing in the place of).
 
 Answers `rig_id`, `kind`, `index`, `removed` (the item taken out),
 `room_shell`, `undo` and a `message` ("... was taken out of the stored room.
@@ -1686,6 +1690,11 @@ scanning a venue a second time cost every correction made since the first.
      under point 1: the scan's footprint with the person's name and
      heights, and no longer `added_by_hand`.
   7. Anything else that matches nothing is not carried and not reported.
+  8. **Every stored raised area is asked which new one it is**, with or
+     without anything to keep, before point 3 is settled. A riser a person
+     added exactly over the scan's own riser therefore does not rename or
+     lift the scan's riser when it is read again: the scan's riser is
+     itself (the earlier of two equal), and the added one is replaced (5).
   - Pure: neither room is changed, and with nothing to carry the reading
     comes back as the same object.
 - **The route** (`api/endpoints/room_scan.py`). `keep_hand_edits` is called
@@ -1707,7 +1716,10 @@ scanning a venue a second time cost every correction made since the first.
   "1 area you added will be replaced by the scan" are joined on with a
   semicolon, and the line is a warning when one is replaced. Nothing where
   the server sends no `hand_edits`.
-- **Tests.** Backend, `tests/unit/test_room_scan_keep_edits.py` (23): the
+- **Edit Room's help text** (`RoomShellEditDialog.tsx`) no longer says a
+  scan read again replaces every change: it says what is kept.
+- **Tests.** Backend, `tests/unit/test_room_scan_keep_edits.py` (24, one
+  of them an area added exactly over the scan's own riser): the
   marks Edit Room writes and what is not one (a width, a move, a kind,
   "Resized by hand." alone); a name kept on a raised area read a little
   off; a height and a base height kept against the reading; the footprint
@@ -4047,6 +4059,10 @@ Pixar's USD library from the same rooms (slice 24).
     is replaced whole**, even a sliver of overlap, and its name and height
     go with it unless it matches (half the two footprints together). The
     answer names it, so it can be added again.
+  - **A raised area added by hand on top of a scanned one is always
+    replaced** (a drum riser put on the scan's stage): it shares floor
+    with the stage, and heights are not compared. Add it again after the
+    scan, or scan with it in place.
   - **A kept height is not checked against the new room.** A base height
     and height carried into a room the scan now reads with a lower ceiling
     can stand above it, and a raised area added by hand is kept where it

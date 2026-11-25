@@ -488,8 +488,9 @@ export default function RoomShellEditDialog({
           at its top) goes with it too, with its own fixtures. Tick DJ booth on the one raised area
           the DJ plays at (a scan calls a bar a booth too): the 3D view puts the decks and the DJ
           there and aims its DJ and Floor cameras at it. Undo takes back one change at a time, with
-          the fixtures it moved; reading the scan again replaces every change, and then there is
-          nothing left to undo.
+          the fixtures it moved. Reading the scan again keeps a raised area&apos;s name, height and
+          base height, the DJ booth tick, and a raised area you added where the scan finds nothing;
+          every other change is replaced by the scan, and then there is nothing left to undo.
         </Typography>
 
         {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
