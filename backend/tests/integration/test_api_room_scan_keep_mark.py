@@ -8,6 +8,10 @@ same place keeps the mark, stored and answered; where none matches the mark
 is dropped and `applied` says so; a room nobody marked answers exactly as it
 did; a preview writes nothing; and the room's Undo is emptied by the apply as
 it always was, so it does not bring a dropped mark back.
+
+Slice 31: the preview says beforehand what apply will do to the mark
+(`dj_booth_mark`), still writing nothing, and a kind set by hand on the marked
+raised area is kept with the mark, at this reading and the next.
 """
 
 import pytest
@@ -107,17 +111,48 @@ class TestTheMarkAcrossAScanAppliedAgain:
         assert applied["message"] == "The room is stored on the rig as a suggestion. No fixture was moved."
 
     @pytest.mark.asyncio
-    async def test_a_kind_changed_by_hand_drops_the_mark(
-        self, client: AsyncClient, sample_rig_data, sample_fixture_data,
+    async def test_a_kind_changed_by_hand_keeps_the_mark_and_the_kind(
+        self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
     ):
+        # Slice 31. Until then this was dropped (the test was test_a_kind_changed_by_hand_drops_the_mark):
+        # the scan calls it a riser again, and the match was on the kind alone.
         rig_id, scanned, _, riser_at, room = await room_of(client, sample_rig_data, sample_fixture_data)
+        riser = scanned["risers"][riser_at]
         made = await client.patch(f"{room}/risers/{riser_at}", json={KEY: True, "riser_kind": "booth"})
         assert made.status_code == 200 and made.json()["dj_booth"] == riser_at
+        by_hand = made.json()["item"]
+        assert by_hand["kind"] == "booth" and "Kind set by hand." in by_hand["basis"]
+
+        for _ in range(2):
+            # The second time over the room the first one stored: the kind is still known to be a person's.
+            answer = await scan_again(client, rig_id)
+
+            applied = answer["applied"]
+            assert applied["dj_booth"] == riser_at and applied["dj_booth_dropped"] is False
+            assert applied["dj_booth_kind_kept"] == "booth"
+            assert applied["dj_booth_message"] == (
+                "The DJ booth mark was kept on Booth or counter. It stays a booth, as set by hand: "
+                "this scan reads it as a riser."
+            )
+            # Where and as big as the scan reads it; the kind, and that it was set by hand, the person's.
+            kept = answer["room_shell"]["risers"][riser_at]
+            assert kept == {
+                **riser, "kind": "booth", "name": "Booth or counter", "suggested": False,
+                "basis": by_hand["basis"], KEY: True,
+            }
+            assert answer["room_shell"] == await column(db_session, rig_id)
+            assert marked(answer["room_shell"]) == [riser_at]
+
+    @pytest.mark.asyncio
+    async def test_a_kind_the_scan_agrees_with_says_nothing_of_the_kind(
+        self, client: AsyncClient, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, _, _, riser_at, room = await room_of(client, sample_rig_data, sample_fixture_data)
+        await client.patch(f"{room}/risers/{riser_at}", json={KEY: True})
 
         answer = await scan_again(client, rig_id)
 
-        # The scan calls it a riser again: same place, not the same kind.
-        assert answer["applied"]["dj_booth_dropped"] is True and marked(answer["room_shell"]) == []
+        assert answer["applied"]["dj_booth"] == riser_at and "dj_booth_kind_kept" not in answer["applied"]
 
     @pytest.mark.asyncio
     async def test_the_rooms_undo_is_emptied_as_before_and_does_not_bring_a_dropped_mark_back(
@@ -168,18 +203,101 @@ class TestTheMarkAcrossAScanAppliedAgain:
         assert answer["room_shell"] == scanned == await column(db_session, rig_id)
 
     @pytest.mark.asyncio
-    async def test_a_preview_over_a_marked_room_writes_nothing_and_says_nothing_of_the_mark(
+    async def test_a_preview_over_a_marked_room_writes_nothing_and_says_the_mark_will_be_kept(
+        self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
+    ):
+        # Until slice 31 a preview said nothing of the mark and its room_shell carried none
+        # (test_a_preview_over_a_marked_room_writes_nothing_and_says_nothing_of_the_mark). It now
+        # shows the room apply would store. What it writes is what it always did: nothing.
+        rig_id, scanned, _, riser_at, room = await room_of(client, sample_rig_data, sample_fixture_data)
+        await client.patch(f"{room}/risers/{riser_at}", json={KEY: True, "name": "DJ"})
+        stored_room = await column(db_session, rig_id)
+        fixtures = await fixtures_by_name(client, rig_id)
+
+        preview = await scan_again(client, rig_id, apply=False)
+
+        assert preview["applied"] is None
+        assert preview["dj_booth_mark"] == {
+            "kept": True, "dropped": False, "index": riser_at, "name": "Riser", "overlap": 1.0,
+            "kind_kept": None, "message": "The DJ booth mark will be kept on Riser.",
+        }
+        assert marked(preview["room_shell"]) == [riser_at]
+        assert await column(db_session, rig_id) == stored_room and marked(stored_room) == [riser_at]
+        assert stored_room["risers"][riser_at]["name"] == "DJ"
+        assert (await rig_of(client, rig_id))["room_shell_edits"]["available"] == 1
+        assert await fixtures_by_name(client, rig_id) == fixtures
+
+        # Apply then does what the preview said, to the letter of the room it showed.
+        answer = await scan_again(client, rig_id)
+        assert answer["applied"]["dj_booth"] == preview["dj_booth_mark"]["index"]
+        assert answer["room_shell"] == preview["room_shell"]
+        assert "dj_booth_mark" not in answer
+
+    @pytest.mark.asyncio
+    async def test_a_preview_says_the_mark_will_be_dropped_and_writes_nothing(
         self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
     ):
         rig_id, scanned, _, riser_at, room = await room_of(client, sample_rig_data, sample_fixture_data)
-        await client.patch(f"{room}/risers/{riser_at}", json={KEY: True})
+        riser = scanned["risers"][riser_at]
+        await client.patch(f"{room}/risers/{riser_at}", json={
+            KEY: True, "name": "DJ", "center_x": riser["center_x"] - 4.0, "carry_fixtures": False,
+        })
+        stored_room = await column(db_session, rig_id)
+        undo = await column(db_session, rig_id, "room_shell_undo")
+
+        preview = await scan_again(client, rig_id, apply=False)
+
+        assert preview["applied"] is None
+        assert preview["dj_booth_mark"] == {
+            "kept": False, "dropped": True, "index": None, "name": None, "overlap": None, "kind_kept": None,
+            "message": (
+                "The DJ booth mark will be dropped: no raised area in this scan stands where DJ does. "
+                "Mark the DJ booth again in Edit Room after applying."
+            ),
+        }
+        assert preview["room_shell"] == scanned
+        # Still marked, still where it was moved to, and the edit still there to be undone.
+        assert await column(db_session, rig_id) == stored_room and marked(stored_room) == [riser_at]
+        assert await column(db_session, rig_id, "room_shell_undo") == undo and undo is not None
+
+        answer = await scan_again(client, rig_id)
+        assert answer["applied"]["dj_booth_dropped"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_preview_says_a_kind_set_by_hand_will_be_kept_and_writes_nothing(
+        self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, scanned, _, riser_at, room = await room_of(client, sample_rig_data, sample_fixture_data)
+        await client.patch(f"{room}/risers/{riser_at}", json={KEY: True, "riser_kind": "booth"})
         stored_room = await column(db_session, rig_id)
 
         preview = await scan_again(client, rig_id, apply=False)
 
-        assert preview["applied"] is None and marked(preview["room_shell"]) == []
-        assert await column(db_session, rig_id) == stored_room and marked(stored_room) == [riser_at]
-        assert (await rig_of(client, rig_id))["room_shell_edits"]["available"] == 1
+        said = preview["dj_booth_mark"]
+        assert (said["kept"], said["index"], said["name"], said["kind_kept"]) == (
+            True, riser_at, "Booth or counter", "booth",
+        )
+        assert said["message"] == (
+            "The DJ booth mark will be kept on Booth or counter. It stays a booth, as set by hand: "
+            "this scan reads it as a riser."
+        )
+        # The room shown is the one that would be stored: a booth, not the scan's riser.
+        assert preview["room_shell"]["risers"][riser_at]["kind"] == "booth"
+        assert await column(db_session, rig_id) == stored_room
+
+    @pytest.mark.asyncio
+    async def test_a_preview_over_a_room_nobody_marked_answers_as_it_always_did(
+        self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, scanned, _, _, _ = await room_of(client, sample_rig_data, sample_fixture_data)
+
+        preview = await scan_again(client, rig_id, apply=False)
+
+        assert "dj_booth_mark" not in preview and preview["room_shell"] == scanned
+        assert set(preview) == {
+            "rig_id", "rig_name", "file", "format", "room_shell", "replaces_existing_shell", "summary",
+            "assumptions", "warnings", "fixtures", "operator_guide", "applied",
+        }
 
     @pytest.mark.asyncio
     async def test_a_room_read_a_quarter_turn_round_drops_the_mark(

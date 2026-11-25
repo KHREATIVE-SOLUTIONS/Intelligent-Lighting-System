@@ -6,7 +6,7 @@ A person marks one raised area of the stored room as the DJ's booth
 (`is_dj_booth`, edit.py). A scan read again makes a whole new room, and its
 raised areas carry no mark: the lists have no ids, so nothing says which of
 the new ones is the one that was marked. This says which, by where it stands
-(docs/ROOM_SCAN.md, slice 30).
+(docs/ROOM_SCAN.md, slices 30 and 31).
 
 The rule, in full:
 
@@ -20,14 +20,24 @@ The rule, in full:
    turned to their headings (`area_corners`), so a booth that stands at a
    heading is compared as it stands, and the same rectangle stored as 2 x 1 at
    0 degrees or 1 x 2 at 90 is the same footprint.
+   A kind set by hand is not compared (slice 31, `kind_set_by_hand`): where
+   the marked one's stored `basis` says "Kind set by hand." (edit.py writes
+   that when a person changes a kind), or it was added by hand
+   (`added_by_hand`), the scan will read what stands there as what it always
+   did, so a raised area of any kind that overlaps enough is the same one. It
+   takes the mark and the kind the person gave, and its `basis` says the kind
+   was set by hand, so the reading after this one keeps it too.
 3. Of several that pass, the one with the greatest overlap takes it; of two
    that overlap exactly as much, the earlier in the list.
 4. With none that passes, the mark is dropped and the answer says so. It is
    never given to the nearest thing, or to the scan's first booth: a mark set
    by hand is only ever kept where it was, not moved.
 
-Only the mark is carried. A name, a kind or a size set by hand on the old
-raised area is not: the new reading is the scan's.
+Only the mark is carried, and with it a kind set by hand. A name or a size
+set by hand on the old raised area is not: the new reading is the scan's.
+
+The route calls this once, before it answers a preview or applies: what a
+preview says will become of the mark is what apply then does.
 
 Pure: the shells given are never changed, and a new one is returned only when
 there is a mark to write.
@@ -37,7 +47,9 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services.room_scan.edit import DJ_BOOTH_KEY, _number, area_corners, dj_booth_place, item_name
+from app.services.room_scan.edit import (
+    DJ_BOOTH_KEY, KIND_BY_HAND, RISER_KINDS, _mark, _number, area_corners, dj_booth_place, item_name,
+)
 
 # How much of the two footprints together must be shared for a raised area of the new reading to be
 # the marked one: intersection over union. 0.5 lets a booth be read a little off, a little bigger or
@@ -55,10 +67,48 @@ class KeptMark:
     place: Optional[int] = None     # where the mark now is in the new room's risers, or None
     overlap: Optional[float] = None  # the intersection over union it was kept at
     name: Optional[str] = None      # what the marked raised area was called, for the sentence
+    # A kind set by hand that was kept against the reading: what the person made it, and what the scan
+    # read there. Both None where the reading agrees, or the kind was the scan's own.
+    kind_kept: Optional[str] = None
+    scan_kind: Optional[str] = None
 
     @property
     def dropped(self) -> bool:
         return self.was_marked and self.place is None
+
+    @property
+    def kept_on(self) -> Optional[str]:
+        """What the raised area that keeps the mark is called in the new room, or None."""
+        if self.place is None:
+            return None
+        return item_name("risers", self.shell["risers"][self.place])
+
+    @property
+    def _kind_words(self) -> str:
+        if self.kind_kept is None:
+            return ""
+        return f" It stays a {self.kind_kept}, as set by hand: this scan reads it as a {self.scan_kind}."
+
+    def preview(self) -> Optional[Dict[str, Any]]:
+        """What a preview says will become of the mark on apply, or None when there is no mark to speak of."""
+        if not self.was_marked:
+            return None
+        return {
+            "kept": self.place is not None,
+            "dropped": self.dropped,
+            # Where the mark will be in the new room's risers and what that raised area is called, or null.
+            "index": self.place,
+            "name": self.kept_on,
+            "overlap": self.overlap,
+            # The kind set by hand that is kept against the reading, or null.
+            "kind_kept": self.kind_kept,
+            "message": (
+                f"The DJ booth mark will be dropped: no raised area in this scan stands where {self.name} does. "
+                "Mark the DJ booth again in Edit Room after applying."
+                if self.place is None else
+                f"The DJ booth mark will be kept on {self.kept_on}.{self._kind_words}"
+            ),
+        }
 
     @property
     def message(self) -> Optional[str]:
@@ -70,8 +120,19 @@ class KeptMark:
                 f"The DJ booth mark was dropped: no raised area in this scan stands where {self.name} did. "
                 "Mark the DJ booth again in Edit Room."
             )
-        kept_on = item_name("risers", self.shell["risers"][self.place])
-        return f"The DJ booth mark was kept on {kept_on}."
+        return f"The DJ booth mark was kept on {self.kept_on}.{self._kind_words}"
+
+
+def kind_set_by_hand(item: Any) -> bool:
+    """Whether a person, not the scan, said what kind of raised area this is.
+
+    Read from what is already stored: edit.py writes "Kind set by hand." into
+    the `basis` of a raised area whose kind a person changed, and marks one a
+    person added (`added_by_hand`), whose kind was theirs from the start.
+    """
+    if not isinstance(item, dict):
+        return False
+    return item.get("added_by_hand") is True or KIND_BY_HAND in str(item.get("basis") or "")
 
 
 def _footprint(item: Any) -> Optional[List[Point]]:
@@ -147,10 +208,12 @@ def keep_dj_booth(old_shell: Optional[Dict[str, Any]], new_shell: Dict[str, Any]
     name = item_name("risers", marked)
     risers = new_shell.get("risers") if isinstance(new_shell, dict) else None
 
+    # A kind a person set is theirs, not one the scan can be expected to read again: any kind may match.
+    by_hand = kind_set_by_hand(marked) and marked.get("kind") in RISER_KINDS
     best: Optional[int] = None
     best_overlap = 0.0
     for index, item in enumerate(risers if isinstance(risers, list) else []):
-        if not isinstance(item, dict) or item.get("kind") != marked.get("kind"):
+        if not isinstance(item, dict) or (item.get("kind") != marked.get("kind") and not by_hand):
             continue
         overlap = footprint_overlap(marked, item)
         # Strictly greater: of two that overlap as much, the earlier keeps it.
@@ -167,5 +230,18 @@ def keep_dj_booth(old_shell: Optional[Dict[str, Any]], new_shell: Dict[str, Any]
         kept["risers"][index].pop(DJ_BOOTH_KEY, None)
     if best is None:
         return KeptMark(shell=kept, was_marked=True, name=name)
-    kept["risers"][best][DJ_BOOTH_KEY] = True
-    return KeptMark(shell=kept, was_marked=True, place=best, overlap=round(best_overlap, 3), name=name)
+    item = kept["risers"][best]
+    item[DJ_BOOTH_KEY] = True
+    kind_kept = scan_kind = None
+    if item.get("kind") != marked.get("kind"):
+        # Only reached for a kind set by hand. It is kept as edit.py would have changed it, and the
+        # basis says so: that is what keeps it at the reading after this one.
+        scan_kind, kind_kept = item.get("kind"), marked["kind"]
+        item["kind"] = kind_kept
+        if item.get("name") == RISER_KINDS.get(scan_kind if isinstance(scan_kind, str) else ""):
+            item["name"] = RISER_KINDS[kind_kept]
+        _mark(item, KIND_BY_HAND)
+    return KeptMark(
+        shell=kept, was_marked=True, place=best, overlap=round(best_overlap, 3), name=name,
+        kind_kept=kind_kept, scan_kind=scan_kind,
+    )

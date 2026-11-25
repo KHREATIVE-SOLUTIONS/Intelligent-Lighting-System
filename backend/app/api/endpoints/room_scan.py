@@ -51,7 +51,10 @@ A scan applied over a room with a raised area marked as the DJ's booth keeps
 the mark on the raised area of the new reading that is the same kind and
 stands in the same place, and says so in `applied` (`dj_booth`,
 `dj_booth_dropped`); with none that does, the mark is dropped and the answer
-says that (services/room_scan/keep_mark.py).
+says that (services/room_scan/keep_mark.py). A kind set by hand on the marked
+raised area is kept with the mark, whatever the scan reads there. The preview
+says the same beforehand in `dj_booth_mark` (kept, on which raised area, or
+dropped), and its `room_shell` is the room apply would store, mark included.
 
 PATCH /api/rigs/{rig_id}/room-shell/outline redraws the room's walls (every
 corner of its floor) and sets its height; PATCH, POST and DELETE under
@@ -164,9 +167,15 @@ async def import_room_scan(
     except RoomScanError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    moves, move_notes = suggest_positions(rig.fixtures, found.shell)
+    # The raised area a person marked as the DJ's booth in the room this would replace keeps the mark
+    # where the new reading has the same one standing in the same place, and a kind set by hand with
+    # it (keep_mark.py). Worked out once, here, for a preview and an apply alike, and before the
+    # fixtures are looked at: a kept kind can change which raised area is the first stage, and the
+    # moves suggested must be for the room that would be stored. Pure: nothing is written.
+    mark = keep_dj_booth(rig.room_shell, found.shell)
+    shell = mark.shell
+    moves, move_notes = suggest_positions(rig.fixtures, shell)
     unconfirmed = sum(1 for rf in rig.fixtures if is_unconfirmed(rf.tags))
-    shell = found.shell
     preview: Dict[str, Any] = {
         "rig_id": rig.id,
         "rig_name": rig.name,
@@ -199,6 +208,10 @@ async def import_room_scan(
         "applied": None,
     }
     if not apply:
+        # What applying this would do to the DJ booth mark, said only where the stored room has one,
+        # so every other preview is what it was. Apply says the same in `applied`.
+        if mark.was_marked:
+            preview["dj_booth_mark"] = mark.preview()
         return preview
 
     moved: List[Dict[str, Any]] = []
@@ -231,12 +244,8 @@ async def import_room_scan(
                 entry["rotation_y_after"] = rf.rotation_y
             moved.append(entry)
 
-    # The raised area a person marked as the DJ's booth in the room this replaces keeps the mark
-    # where the new reading has the same one standing in the same place (keep_mark.py). Looked at
-    # only here: a preview stores nothing, and the room may be edited before it is applied.
-    mark = keep_dj_booth(rig.room_shell, shell)
-    shell = mark.shell
-    preview["room_shell"] = shell
+    # The shell already carries the kept DJ booth mark (worked out above, against the room as it is
+    # stored now: one edited since the preview was read is matched as it stands at apply).
     # A new dict: the column is plain JSON, so a change made in place is never written.
     rig.room_shell = dict(shell)
     # The edits made by hand were to the room this one replaces: there is nothing of it to go back to.
@@ -268,6 +277,9 @@ async def import_room_scan(
             "dj_booth_overlap": mark.overlap,
             "dj_booth_message": mark.message,
         })
+        # Only where a kind set by hand was kept against the reading, so every other answer is what it was.
+        if mark.kind_kept is not None:
+            preview["applied"]["dj_booth_kind_kept"] = mark.kind_kept
         logger.info(
             "Room scan: rig %s DJ booth mark %s", rig.id,
             f"kept on raised area {mark.place} (overlap {mark.overlap})" if not mark.dropped else "dropped: no match",

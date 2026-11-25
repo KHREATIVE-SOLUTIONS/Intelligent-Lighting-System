@@ -17,8 +17,8 @@ import copy
 
 import pytest
 
-from app.services.room_scan.edit import DJ_BOOTH_KEY, dj_booth_place
-from app.services.room_scan.keep_mark import MATCH_IOU, footprint_overlap, keep_dj_booth
+from app.services.room_scan.edit import DJ_BOOTH_KEY, KIND_BY_HAND, dj_booth_place
+from app.services.room_scan.keep_mark import MATCH_IOU, footprint_overlap, keep_dj_booth, kind_set_by_hand
 
 
 def area(kind, x, z, width, depth, heading=None, name=None, **more):
@@ -161,8 +161,9 @@ class TestKeepingTheMark:
         assert kept.dropped and marked(kept.shell) == []
 
     def test_a_kind_changed_by_hand_is_the_kind_that_is_matched(self):
-        # The scan called it a riser; a person made it a booth and marked it. Read again it is a riser
-        # again, so the mark is dropped: this is the rule's known cost (docs/ROOM_SCAN.md, "What is left").
+        # A booth whose stored basis does not say its kind was set by hand (a shell written before that
+        # was recorded, or by another client): read again as a riser, nothing says it is the same one,
+        # so the mark is dropped. One whose basis does say so is kept: TestAKindSetByHand, slice 31.
         by_hand = old_room()
         scanned_again = room(STAGE, BAR, {**DJ, "kind": "riser", "name": "Riser"})
         assert keep_dj_booth(by_hand, scanned_again).dropped
@@ -223,6 +224,138 @@ class TestKeepingTheMark:
         old = old_room(area("booth", -3.0, 1.0, 2.0, 1.0, heading=8.0))
         kept = keep_dj_booth(old, room(STAGE, area("booth", -3.0, 1.0, 2.0, 1.0)))
         assert kept.place == 1 and 0.5 < kept.overlap < 1.0
+
+
+HAND_BASIS = f"scan: a level area. {KIND_BY_HAND}"
+
+
+def hand_booth(**more):
+    """The DJ's booth as Edit Room leaves a scan's riser made a booth and marked: the basis says so."""
+    return {**DJ, "name": "DJ", "suggested": False, "basis": HAND_BASIS, DJ_BOOTH_KEY: True, **more}
+
+
+class TestAKindSetByHand:
+    """Slice 31: a kind a person set is kept with the mark, whatever the scan reads there."""
+
+    def test_what_says_a_kind_was_set_by_hand(self):
+        assert kind_set_by_hand(hand_booth()) is True
+        assert kind_set_by_hand({**DJ, "added_by_hand": True, "basis": "Added by hand."}) is True
+        # The scan's own, and one only moved or resized by hand.
+        assert kind_set_by_hand(DJ) is False
+        assert kind_set_by_hand({**DJ, "suggested": False, "basis": "scan: a level area. Moved by hand."}) is False
+        assert kind_set_by_hand({**DJ, "added_by_hand": "yes"}) is False
+        for odd in (None, "booth", {}, {"basis": None}):
+            assert kind_set_by_hand(odd) is False
+
+    @pytest.mark.parametrize("read_as", ["riser", "stage"])
+    def test_a_booth_set_by_hand_read_as_a_riser_or_stage_keeps_the_mark_and_the_kind(self, read_as):
+        old = room(BAR, hand_booth())
+        reading = area(read_as, -3.9, 0.05, 2.1, 1.05)
+        new = room(BAR, reading)
+        was_old, was_new = copy.deepcopy(old), copy.deepcopy(new)
+
+        kept = keep_dj_booth(old, new)
+
+        assert (kept.place, kept.dropped, kept.kind_kept, kept.scan_kind) == (1, False, "booth", read_as)
+        # The reading's place and size; the person's kind, said in the basis; and the name of that kind,
+        # not "Riser": a name typed by hand is not carried, as before.
+        assert kept.shell["risers"][1] == {
+            **reading, "kind": "booth", "name": "Booth or counter", "suggested": False,
+            "basis": HAND_BASIS, DJ_BOOTH_KEY: True,
+        }
+        assert kept.shell["risers"][0] == BAR and marked(kept.shell) == [1]
+        assert kept.message == (
+            "The DJ booth mark was kept on Booth or counter. It stays a booth, as set by hand: "
+            f"this scan reads it as a {read_as}."
+        )
+        assert old == was_old and new == was_new
+
+    def test_it_is_kept_at_the_reading_after_that_too(self):
+        reading = room(STAGE, BAR, area("riser", -4.0, 0.0, 2.0, 1.0))
+        once = keep_dj_booth(room(STAGE, BAR, hand_booth()), reading)
+        twice = keep_dj_booth(once.shell, reading)
+        thrice = keep_dj_booth(twice.shell, reading)
+        assert once.place == twice.place == thrice.place == 2
+        assert once.shell == twice.shell == thrice.shell
+        assert thrice.shell["risers"][2]["kind"] == "booth" and thrice.kind_kept == "booth"
+        # Said once in the basis, however often it is read.
+        assert thrice.shell["risers"][2]["basis"].count(KIND_BY_HAND) == 1
+
+    def test_the_overlap_is_still_asked_of_it(self):
+        # Set by hand or not, one that only stands near is not the same raised area.
+        near = area("riser", -3.2, 0.0, 2.0, 1.0)
+        kept = keep_dj_booth(room(STAGE, hand_booth()), room(STAGE, near))
+        assert kept.dropped and kept.kind_kept is None and kept.shell["risers"][1] == near
+        # Exactly a half is enough, as for any other.
+        twice = area("riser", -4.0, 0.0, 4.0, 1.0)
+        assert keep_dj_booth(room(STAGE, hand_booth()), room(STAGE, twice)).place == 1
+
+    def test_the_greatest_overlap_takes_it_whatever_its_kind(self):
+        lesser = area("booth", -3.5, 0.0, 2.0, 1.0)      # 0.6, and already a booth
+        better = area("riser", -3.8, 0.0, 2.0, 1.0)      # 0.818
+        kept = keep_dj_booth(room(hand_booth()), room(lesser, better))
+        assert kept.place == 1 and kept.kind_kept == "booth" and kept.shell["risers"][1]["kind"] == "booth"
+        assert kept.shell["risers"][0] == lesser
+
+    def test_a_reading_that_agrees_with_the_hand_is_left_the_scans(self):
+        # The scan now reads a booth there itself: the mark and nothing else, and nothing to say of the kind.
+        new = room(STAGE, DJ)
+        kept = keep_dj_booth(room(STAGE, hand_booth()), new)
+        assert kept.place == 1 and kept.kind_kept is None and kept.scan_kind is None
+        assert kept.shell["risers"][1] == {**DJ, DJ_BOOTH_KEY: True}
+        assert kept.message == "The DJ booth mark was kept on Booth or counter."
+
+    def test_a_name_the_scan_did_not_give_is_left_alone(self):
+        # Only the scan's own word for its kind ("Riser") is swapped for the kept kind's.
+        new = room(area("riser", -4.0, 0.0, 2.0, 1.0, name="Platform 2"))
+        kept = keep_dj_booth(room(hand_booth()), new)
+        assert kept.shell["risers"][0]["name"] == "Platform 2" and kept.shell["risers"][0]["kind"] == "booth"
+
+    def test_any_kind_set_by_hand_is_kept_and_so_is_one_added_by_hand(self):
+        # A scan's booth a person made a riser, marked; the scan reads a booth there again.
+        old = room({**DJ, "kind": "riser", "name": "Riser", "basis": HAND_BASIS, DJ_BOOTH_KEY: True})
+        kept = keep_dj_booth(old, room(DJ))
+        assert (kept.place, kept.kind_kept, kept.scan_kind) == (0, "riser", "booth")
+        assert kept.shell["risers"][0]["name"] == "Riser"
+        # A booth a person added where the scan had found nothing, which a better scan now reads as a riser.
+        added = room({**DJ, "added_by_hand": True, "suggested": False, "basis": "Added by hand.", DJ_BOOTH_KEY: True})
+        again = keep_dj_booth(added, room(area("riser", -4.0, 0.0, 2.0, 1.0)))
+        assert again.place == 0 and again.shell["risers"][0]["kind"] == "booth"
+        assert KIND_BY_HAND in again.shell["risers"][0]["basis"]
+        assert "added_by_hand" not in again.shell["risers"][0]
+
+
+class TestWhatAPreviewSays:
+    """Slice 31: the same answer, worded for before the apply."""
+
+    def test_a_mark_that_will_be_kept(self):
+        kept = keep_dj_booth(old_room(), room(STAGE, BAR, area("booth", -3.9, 0.0, 2.0, 1.0)))
+        assert kept.preview() == {
+            "kept": True, "dropped": False, "index": 2, "name": "Booth or counter",
+            "overlap": kept.overlap, "kind_kept": None,
+            "message": "The DJ booth mark will be kept on Booth or counter.",
+        }
+
+    def test_a_mark_that_will_be_dropped(self):
+        assert keep_dj_booth(old_room(), room(STAGE, BAR)).preview() == {
+            "kept": False, "dropped": True, "index": None, "name": None, "overlap": None, "kind_kept": None,
+            "message": (
+                "The DJ booth mark will be dropped: no raised area in this scan stands where DJ does. "
+                "Mark the DJ booth again in Edit Room after applying."
+            ),
+        }
+
+    def test_a_kind_that_will_be_kept_with_it(self):
+        said = keep_dj_booth(room(hand_booth()), room(area("riser", -4.0, 0.0, 2.0, 1.0))).preview()
+        assert (said["kept"], said["index"], said["name"], said["kind_kept"]) == (True, 0, "Booth or counter", "booth")
+        assert said["message"] == (
+            "The DJ booth mark will be kept on Booth or counter. It stays a booth, as set by hand: "
+            "this scan reads it as a riser."
+        )
+
+    def test_a_room_with_no_mark_has_nothing_to_say(self):
+        assert keep_dj_booth(room(STAGE, DJ), room(STAGE, DJ)).preview() is None
+        assert keep_dj_booth(None, room(STAGE, DJ)).preview() is None
 
 
 class TestNothingToKeep:
