@@ -214,7 +214,10 @@ Rig editor toolbar, **Room Scan**:
    and why. Its **Turn** column says how many degrees a fixture is turned
    with a stage that stands at a heading (clockwise seen from above), with a
    dash where it is not turned; the sentence above the table says how many
-   will be.
+   will be. Where the room already stored has a raised area ticked as the
+   **DJ booth**, one line says what applying will do to the tick: "DJ booth
+   mark: kept on Riser", or a warning, "DJ booth mark will be dropped"
+   (slice 31).
 3. If the room came out wrong, correct the guess and the preview is read again:
    **Units** (metres, centimetres, millimetres), **Up axis** (Y or Z), **Turn
    the room** in quarter turns when the wrong wall was taken as upstage.
@@ -223,7 +226,9 @@ Rig editor toolbar, **Room Scan**:
    replaces had a raised area ticked as the **DJ booth**, the tick is kept
    on the same raised area of the new room; if the new scan has none of
    that kind standing there, the dialog says the mark was dropped, and it
-   is ticked again in Edit Room (slice 30).
+   is ticked again in Edit Room (slice 30). A kind you set by hand on the
+   ticked raised area (a scan's riser made a booth) is kept with the tick,
+   whatever the scan reads there (slice 31).
 5. **See it in the 3D view.** Then run Identify Lights: the moved fixtures are
    still unconfirmed.
 
@@ -613,9 +618,21 @@ The answer, for both:
   keeps the mark, or null), `dj_booth_dropped` (true when none does and the
   mark is gone), `dj_booth_overlap` (the intersection over union it was
   kept at, or null) and `dj_booth_message` (the sentence for the
-  operator). A room with no marked booth has none of the four. The
-  `room_shell` of an applied answer carries the kept mark; a preview's
-  never does. See "What slice 30 built" for the rule.
+  operator). A room with no marked booth has none of the four. Where a
+  kind set by hand was kept against what the scan read there, also
+  `dj_booth_kind_kept` (that kind; absent otherwise, slice 31). See "What
+  slice 30 built" for the rule.
+- `dj_booth_mark` (slice 31): **in a preview only, and only where the room
+  already stored has a marked DJ booth**; what applying would do to the
+  mark. `kept` and `dropped` (one of them true), `index` (the place in
+  `risers` of the raised area that would keep it, or null), `name` (what
+  that raised area is called, or null), `overlap`, `kind_kept` (a kind set
+  by hand that would be kept against the reading, or null) and `message`
+  ("The DJ booth mark will be kept on Riser." / "The DJ booth mark will be
+  dropped: no raised area in this scan stands where DJ does. Mark the DJ
+  booth again in Edit Room after applying."). The `room_shell` of a preview
+  is the room apply would store: it carries the kept mark, and a kept kind.
+  Nothing is written.
 
 Refusals, each with a `detail` that says what to do:
 
@@ -1573,6 +1590,109 @@ A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
 
+## What slice 31 built
+
+The preview says what will become of the DJ booth mark, and a kind set by
+hand no longer loses it. Slice 30 kept the mark on apply and said so
+afterwards; the operator found out only once the room was replaced, and a
+scan's riser made a booth by hand lost the mark at every reading, because
+the scan calls it a riser again.
+
+- **One rule, asked once** (`api/endpoints/room_scan.py`). The route calls
+  `keep_dj_booth` once, before it knows whether this is a preview or an
+  apply, and before the fixture moves are suggested. A preview answers
+  from the result; an apply stores it. There is no second copy of the
+  rule: what a preview says is what `keep_mark.py` would do, and it is
+  pure, so asking writes nothing.
+- **The preview's answer.** `dj_booth_mark`, **only in a preview and only
+  where the room already stored has a marked booth** (`KeptMark.preview()`):
+  `kept`, `dropped`, `index` and `name` (the raised area of the new room
+  that would keep the mark), `overlap`, `kind_kept` and `message`. A
+  preview over a room nobody marked has exactly the keys it had.
+  - The preview's `room_shell` is now **the room apply would store**: it
+    carries the kept mark and a kept kind. Before, it was the bare reading
+    and never carried a mark. With no mark to keep it is the same object as
+    before.
+  - It is worked out against the room as stored when the preview is read.
+    Apply asks again, of the room as it stands then.
+- **The kind rule** (`keep_mark.py`, `kind_set_by_hand`). **A kind is "set
+  by hand" when the stored raised area says so**: its `basis` contains
+  "Kind set by hand." (`KIND_BY_HAND`, which `edit_item` writes whenever a
+  kind is changed, in Edit Room or through the API), or it is `added_by_hand` (a person made
+  it, kind and all). Nothing new is stored to decide it.
+  - For such a marked raised area **the kind is not compared**: a raised
+    area of the new reading of any kind whose footprint overlaps by 0.5 or
+    more is the same one. The greatest overlap still takes it, and of two
+    equal the earlier; a same-kind candidate is not preferred over a
+    better-overlapping one of another kind.
+  - The one that takes the mark **keeps the person's kind**. It is changed
+    as Edit Room would change it: `kind` set, `suggested` false, "Kind set
+    by hand." added to its `basis` once, and a name that was only the
+    scan's word for what it read ("Riser") becomes the kept kind's
+    ("Booth or counter"). The `basis` is what makes it hold at the reading
+    after this one, and the one after that.
+  - It is any hand-set kind, not only booth: a scan's booth made a riser
+    and marked stays a riser.
+  - Where the reading agrees with the hand (the scan now reads a booth
+    there itself), only the mark is written and nothing is said of the
+    kind: the raised area is the scan's again.
+  - A marked raised area whose kind was **not** set by hand is matched on
+    its kind exactly as in slice 30.
+  - `applied` gains `dj_booth_kind_kept` only where a kind was kept, and
+    `dj_booth_message` then reads "The DJ booth mark was kept on Booth or
+    counter. It stays a booth, as set by hand: this scan reads it as a
+    riser."
+- **The moves follow the room that would be stored.** `suggest_positions`
+  is now given the shell with the kept kind, since it reads the room's
+  first stage. For every room without a kept kind the shell differs from
+  the reading only by the mark, which the suggestion does not read.
+- **The dialog** (`RoomScanDialog.tsx`, `djBoothPreviewLine` in
+  `utils/roomScan.ts`). Under the "This is a preview" note, before Apply:
+  "DJ booth mark: kept on Riser" as a plain line, or "DJ booth mark will be
+  dropped" as a warning (`room-scan-dj-booth-preview`). A kept kind adds
+  "(stays a booth, as set by hand)". Nothing for a room with no marked
+  booth, and the line goes once the scan is applied: slice 30's warning
+  speaks then.
+- **Tests.** Backend, `tests/unit/test_room_scan_keep_mark.py` (+13, 52):
+  what says a kind was set by hand; a hand-set booth read as a riser and as
+  a stage keeps mark and kind, with the reading's place and size; the same
+  at the reading after and the one after that, the basis saying it once;
+  the overlap still asked (near is dropped, a half is enough); the greatest
+  overlap of any kind; a reading that agrees left the scan's; a name the
+  scan did not give left alone; a hand-set riser and an added booth; and
+  what a preview says for kept, dropped, a kept kind and no mark.
+  `tests/integration/test_api_room_scan_keep_mark.py` (+4, 12): a preview
+  that says kept, writes nothing (room, undo steps, fixtures) and is then
+  applied to the same room it showed; a preview that says dropped and
+  writes nothing; a preview that says a hand-set kind will be kept; a
+  preview over an unmarked room with exactly its old keys; a hand-set kind
+  applied twice over HTTP; a kept mark with no kind to speak of. Frontend,
+  `RoomScanDialogDjBoothPreview.test.tsx` (8): both lines in the dialog,
+  the kept kind, nothing without a mark, gone after Apply, and the helper.
+- **Two existing tests were changed, because the behaviour was.**
+  `test_a_kind_changed_by_hand_drops_the_mark` is now
+  `..._keeps_the_mark_and_the_kind`: it asserted the very loss this slice
+  removes. `test_a_preview_over_a_marked_room_writes_nothing_and_says_
+  nothing_of_the_mark` is now `..._says_the_mark_will_be_kept`: its
+  `marked(preview["room_shell"]) == []` no longer holds, the preview
+  showing the room apply would store; what it checked about writes is kept
+  and widened. One unit test's comment was corrected, not its assertions.
+- **What was run** (Nov 24). Backend, with the main checkout's venv:
+  `python -m pytest tests/ -q` **2625 passed, 1 failed, 10 skipped, 5
+  xfailed** (2609 passed before the slice; the 17 new ones are in the two
+  files above). The one failure is not this slice's:
+  `tests/integration/test_dmx_review_fixes.py::test_strobe_test_pattern_
+  stays_under_the_show_flash_limit` counts flashes over one second of wall
+  clock, counted 4 against a limit of 3 while the type-check was running
+  beside it, and passed when its file was run again alone (22 passed). The
+  room scan, room shell and DJ booth tests run on their own: 1080 passed.
+  Frontend: `npx tsc --noEmit -p .` only the 13 older errors, none in
+  `roomScan.ts`, `RoomScanDialog.tsx` or the new test file. **`npx vitest
+  run` and `npx vite build` were refused in the session**, so the 8 new
+  frontend tests have not been run and the bundle has not been built with
+  this change. See "What is left".
+- **No Art-Net, no DMX, no network call, no new dependency.**
+
 ## What slice 30 built
 
 The DJ booth mark is kept when the scan is read again. Slice 28 put the
@@ -1604,6 +1724,7 @@ lost every time.
   - *Only the mark is carried.* The name, kind, size and place set by hand
     on the old raised area are not: the new room is the scan's, and the
     kept raised area is still its suggestion (`suggested`, `basis` as read).
+    (Slice 31 carries a kind set by hand as well, and does not compare it.)
   - *One at a time.* The kept mark is the only one in the new room.
   - Pure: neither room is changed, and a room with no mark to keep comes
     back as the same object.
@@ -1613,9 +1734,9 @@ lost every time.
   and `dj_booth_message` ("The DJ booth mark was kept on Booth or counter."
   / "The DJ booth mark was dropped: no raised area in this scan stands where
   DJ did. Mark the DJ booth again in Edit Room."), **only where the room
-  replaced had a mark**; `applied.message` is not changed. A preview looks
-  at nothing and says nothing of the mark: it stores nothing, and the room
-  can be edited before it is applied.
+  replaced had a mark**; `applied.message` is not changed. In this slice a
+  preview looked at nothing and said nothing of the mark; since slice 31 it
+  says what apply will do.
 - **The room's Undo is emptied by an apply, as before.** Its steps were
   edits to the room that was replaced, so after a scan is applied again
   there is nothing to take back: a dropped mark is not brought back by
@@ -1627,7 +1748,8 @@ lost every time.
   `utils/roomScan.ts`). After Apply, where `dj_booth_dropped` is true, a
   warning under the stored message with the server's sentence (or the
   dialog's own, `DJ_BOOTH_DROPPED_TEXT`, where none was sent). Nothing is
-  shown for a kept mark, a room that had none, or a preview.
+  shown for a kept mark, a room that had none, or a preview (a preview has
+  its own line since slice 31).
 - **Tests.** Backend: `tests/unit/test_room_scan_keep_mark.py` (39): the
   overlap in numbers worked by hand (a shift, one inside another, a quarter
   turn stored either way, two squares 45 degrees apart sharing an octagon,
@@ -3100,9 +3222,11 @@ Pixar's USD library from the same rooms (slice 24).
 
 - `backend/tests/unit/test_room_scan_keep_mark.py` and
   `backend/tests/integration/test_api_room_scan_keep_mark.py`: the DJ booth
-  mark kept or dropped when a scan is applied again (slice 30). Run. The
-  frontend's `RoomScanDialogDjBoothDropped.test.tsx` has **not** been run
-  (see "What slice 30 built" and "What is left").
+  mark kept or dropped when a scan is applied again (slice 30), what a
+  preview says of it beforehand, and a kind set by hand kept with it (slice
+  31). Run. The frontend's `RoomScanDialogDjBoothDropped.test.tsx` (slice
+  30) and `RoomScanDialogDjBoothPreview.test.tsx` (slice 31) have **not**
+  been run (see "What slice 31 built" and "What is left").
 - `backend/tests/unit/test_room_scan_dj_booth.py` and
   `backend/tests/integration/test_api_room_shell_dj_booth.py`: the DJ booth
   mark (slice 28). Run. The frontend's `boothPick.test.ts`,
@@ -3724,6 +3848,18 @@ Pixar's USD library from the same rooms (slice 24).
 
 ## What is left
 
+- **Slice 31's frontend tests have not been run, and nor has the build
+  with it.** `npx vitest run` and `npx vite build` were refused in the
+  session that wrote it, as for slices 29 and 30; `npx tsc --noEmit -p .`
+  ran with its 13 older errors and no new one, and the backend suite ran.
+  Before relying on it, in `frontend/`: `npx vitest run` (it adds one file,
+  `RoomScanDialogDjBoothPreview.test.tsx`, 8 tests) and `npx vite build`.
+  The likeliest thing for a first run to find is in that file: it tells
+  the warning from the plain line by the `alert` role and a class name of
+  the MUI Alert. **Not seen in a browser**: the line under the preview
+  note.
+- **The preview's mark goes only so far** (slice 31): see the slice 30
+  list below, which it closes two points of and adds to.
 - **Slice 30's frontend tests have not been run, and nor has the build
   with it.** `npx vitest run` and `npx vite build` were refused in the
   session that wrote it; `npx tsc --noEmit -p .` ran with its 13 older
@@ -3731,22 +3867,37 @@ Pixar's USD library from the same rooms (slice 24).
   in `frontend/`: `npx vitest run` (it adds one file,
   `RoomScanDialogDjBoothDropped.test.tsx`, 6 tests) and `npx vite build`.
   **Not seen in a browser**: the warning under the stored message.
-- **Keeping the DJ booth mark goes only so far** (slice 30):
-  - **A kind changed by hand loses the mark at the next scan.** The match
-    is on the kind the marked raised area has now. A scan's "riser" made a
-    booth and marked comes back a riser, so the mark is dropped (and said).
-    Marked without changing its kind, it is kept.
+- **Keeping the DJ booth mark goes only so far** (slices 30 and 31):
+  - *Closed by slice 31:* a kind changed by hand no longer loses the mark
+    at the next scan. It is kept, mark and kind, where the stored `basis`
+    says the kind was set by hand. **What is still dropped:** a marked
+    raised area whose kind differs from the reading's and whose `basis`
+    does not say "Kind set by hand." (a room written by another client, or
+    by hand into the column). Nothing records it as a person's, so it is
+    matched on its kind as before.
+  - **A kept kind can change the fixture moves.** The moves are suggested
+    for the room that would be stored, and the suggestion reads the first
+    `stage`. A marked booth the scan reads as its first stage is stored as
+    a booth, so it is no longer that stage. Not covered by a test: the
+    test room's marked riser is not a stage.
+  - **A name typed by hand is still not kept**, only the kind: the kept
+    raised area is called what its kind is called ("Booth or counter")
+    where the scan called it what it read ("Riser").
   - **A booth moved or resized by hand past half its footprint is
     dropped**: the new reading has it where the scan sees it. So is every
     mark when the room is read a quarter turn round (**Turn the room**):
     nothing stands where it did.
-  - **Only the mark is kept.** A name, a size, a heading or a base height
-    set by hand, and every added or deleted item, are still the scan's
-    again.
-  - **The preview does not say what will become of the mark.** It is
-    worked out, and said, on apply only.
-  - **A kept mark is said in the answer and not in the dialog**
-    (`dj_booth_message`); the dialog speaks only of a dropped one.
+  - **Only the mark and a kind set by hand are kept.** A name, a size, a
+    heading or a base height set by hand, and every added or deleted item,
+    are still the scan's again.
+  - *Closed by slice 31:* the preview now says what will become of the
+    mark (`dj_booth_mark`, and one line in the dialog). **It is said of the
+    room as stored when the preview was read**: a room edited between the
+    preview and Apply is matched again at Apply, as it then stands, and the
+    answer says what was done.
+  - **After Apply a kept mark is said in the answer and not in the
+    dialog** (`dj_booth_message`); after Apply the dialog speaks only of a
+    dropped one. Before Apply it says both.
   - **The room's Undo does not go back across a scan applied again**, for
     the mark as for everything else (it never did).
   - **Heights are not compared.** Two raised areas of one kind stacked on
