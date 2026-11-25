@@ -138,7 +138,7 @@ class TestATrussReadAtAnotherHeight:
         assert got.lost == [fact]
         before, after = got.report(), got.report(applied=True)
         assert after["warnings"] == [{**fact, "message": (
-            "The scan read a truss where Front truss was at 5.3 m, against its trim of 4.2 m: "
+            "The scan read a truss at 5.3 m where Front truss was, against its trim of 4.2 m: "
             "more than 1 m from where the scan read it before, so its name was not kept."
         )}]
         assert before["warnings"][0]["message"].endswith("so its name will not be kept.")
@@ -155,7 +155,7 @@ class TestATrussReadAtAnotherHeight:
 
         assert got.shell is new
         assert got.report(applied=True)["message"] == (
-            "The scan read a truss where Front truss was at 5.3 m, against its trim of 3 m "
+            "The scan read a truss at 5.3 m where Front truss was, against its trim of 3 m "
             "(the scan read it at 4.2 m before): more than 1 m from where the scan read it before, "
             "so its name and trim were not kept."
         )
@@ -181,7 +181,7 @@ class TestATrussReadAtAnotherHeight:
         old = edit_item(shell(), RINGS, 0, name="Mirror ball ring")[0]
         got = keep_hand_edits(old, moved(shell(), RINGS, 0, height=5.5, top=5.8))
         assert [(e["kind"], e["name"], e["reason"]) for e in got.lost] == [(RINGS, "Mirror ball ring", LOST_HEIGHT)]
-        assert got.report(applied=True)["message"].startswith("The scan read a ring where Mirror ball ring was at 5.5 m")
+        assert got.report(applied=True)["message"].startswith("The scan read a ring at 5.5 m where Mirror ball ring was")
 
     def test_the_other_truss_of_a_stack_is_itself_and_not_this_one_read_higher(self):
         # The lower one is named and no longer read; the upper one, over the same floor, still is.

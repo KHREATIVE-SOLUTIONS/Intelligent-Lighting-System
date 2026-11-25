@@ -46,7 +46,7 @@ const SEVEN: RoomScanHandEditItem[] = [
   { kind: 'line', name: 'Back truss', outcome: KEPT },
 ];
 
-const RETRIM = 'The scan read a truss where Front truss was at 2.8 m, against its trim of 3.5 m '
+const RETRIM = 'The scan read a truss at 2.8 m where Front truss was, against its trim of 3.5 m '
   + '(the scan read it at 4 m before): more than 1 m from where the scan read it before, '
   + 'so its name and trim will not be kept.';
 const DROPPED = 'The scan did not see Riser; the record that keeps it deleted will be dropped, '

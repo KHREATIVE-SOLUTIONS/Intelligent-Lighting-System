@@ -359,7 +359,7 @@ def _lost_words(entry: Dict[str, Any], applied: bool) -> str:
         before = entry.get("scan_height")
         beside = "" if before is None or before == entry["trim"] else f" (the scan read it at {_metres(before)} m before)"
         return (
-            f"The scan read {read} where {name} was at {_metres(entry['read_height'])} m, against its trim of "
+            f"The scan read {read} at {_metres(entry['read_height'])} m where {name} was, against its trim of "
             f"{_metres(entry['trim'])} m{beside}: more than {_metres(HANG_MATCH_M)} m from where the scan read it "
             f"before, so {gone}."
         )

@@ -143,7 +143,7 @@ class TestATrussTheScanReadsSomewhereElse:
             "read_height": line["height"], "trim": 3.5, "scan_height": truss["height"],
         }
         sentence = (
-            f"The scan read a truss where Front truss was at {line['height']:g} m, against its trim of 3.5 m "
+            f"The scan read a truss at {line['height']:g} m where Front truss was, against its trim of 3.5 m "
             f"(the scan read it at {truss['height']:g} m before): more than 1 m from where the scan read it before, "
         )
         assert said["warnings"] == [{**fact, "message": sentence + "so its name and trim were not kept."}]
