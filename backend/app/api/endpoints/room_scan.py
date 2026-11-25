@@ -63,6 +63,14 @@ reading that stands there, whose place and size stay the scan's; a raised
 area added by hand that the scan has nothing in the place of is kept as it
 is, and one the scan now overlaps is replaced. `hand_edits`, in a preview and
 in `applied`, lists them, and is sent only where there is something to list.
+An overhead line and a ring keep a name and a hanging height set by hand the
+same way (`overhead_kept`, `overhead_added_kept`, `overhead_added_replaced`).
+A scanned raised area deleted by hand (DELETE .../room-shell/risers/{index})
+is remembered in the room (`deleted_areas`) and left out of a scan applied
+again (`deleted_left_out`); the room's Undo putting it back, or taking the
+room off the rig, forgets it. Something kept that is above the new ceiling,
+or added by hand and now outside the new walls, is still kept and is listed
+in `warnings`. Each of those keys is sent only when it has something in it.
 
 PATCH /api/rigs/{rig_id}/room-shell/outline redraws the room's walls (every
 corner of its floor) and sets its height; PATCH, POST and DELETE under
@@ -186,6 +194,10 @@ async def import_room_scan(
     # reading by the same matching (keep_edits.py): a name, a height, a base height, and a raised area
     # added by hand that the scan has nothing in the place of. The mark is then asked of that room, so
     # a marked booth added by hand keeps its mark and the mark's sentence uses a kept name.
+    #
+    # Slice 33, in the same call: an overhead line or ring keeps a name and a hanging height set by
+    # hand, a scanned raised area a person deleted is left out of the reading (and stays remembered in
+    # the new room), and what is kept is flagged where the new ceiling or walls do not hold it.
     edits = keep_hand_edits(rig.room_shell, found.shell)
     mark = keep_dj_booth(rig.room_shell, edits.shell)
     shell = mark.shell
@@ -287,12 +299,16 @@ async def import_room_scan(
                else "No fixture was moved.")
         ),
     }
-    # Said only where an edit made by hand was kept, or a raised area added by hand kept or replaced.
+    # Said only where an edit made by hand was kept, something added by hand kept or replaced, or a
+    # raised area a person deleted left out.
     if edits.any:
         preview["applied"]["hand_edits"] = edits.report(shell, applied=True)
         logger.info(
-            "Room scan: rig %s hand edits kept on %d raised areas, %d added by hand kept, %d replaced",
+            "Room scan: rig %s hand edits kept on %d raised areas, %d added by hand kept, %d replaced; "
+            "overhead: %d kept, %d added kept, %d replaced; %d deleted areas left out; %d to check",
             rig.id, len(edits.kept), len(edits.added_kept), len(edits.added_replaced),
+            len(edits.overhead_kept), len(edits.overhead_added_kept), len(edits.overhead_added_replaced),
+            len(edits.left_out), len(edits.warnings),
         )
     # Said only where the room this replaced had a marked booth, so every other answer is what it was.
     if mark.was_marked:

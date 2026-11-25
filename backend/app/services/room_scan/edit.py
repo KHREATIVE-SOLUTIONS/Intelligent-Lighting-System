@@ -77,6 +77,12 @@ BASE_BY_HAND = "Base height set by hand."
 # a raised area that is not the booth says nothing, like every one stored before the mark could be set.
 DJ_BOOTH_KEY = "is_dj_booth"
 
+# The list, in the stored room, of the scanned raised areas a person deleted: one small record each
+# (`tombstone`), so that a scan applied again leaves them out instead of bringing them back
+# (keep_edits.py, slice 33). Stored only when there is one. It is part of the room, so the room's Undo,
+# which puts back the whole room as it was before the delete, takes the record away with it.
+DELETED_KEY = "deleted_areas"
+
 # Slack when deciding which hanging-height band a truss was counted in: the
 # shell's heights are rounded to the centimetre.
 BAND_SLACK_M = 0.011
@@ -865,13 +871,49 @@ def delete_item(shell: Optional[Dict[str, Any]], kind: str, index: int) -> Tuple
     Items after it move up one place in their list. A truss or ring is also
     taken out of the hanging-height band that counted it, and a band left with
     nothing in it goes too.
+
+    A raised area the scan read leaves a record of where it stood in the
+    room's `deleted_areas` (`tombstone`), so a scan applied again does not
+    bring it back. One added by hand leaves none, and neither does a line or
+    a ring.
     """
     _find(shell, kind, index)
     edited = copy.deepcopy(shell)
     removed = edited[kind].pop(index)
     if kind in ("truss_lines", "truss_rings"):
         _uncount(edited, kind, removed)
+    else:
+        left = tombstone(removed)
+        if left is not None:
+            had = edited.get(DELETED_KEY)
+            edited[DELETED_KEY] = ([one for one in had if isinstance(one, dict)] if isinstance(had, list) else [])
+            edited[DELETED_KEY] = (edited[DELETED_KEY] + [left])[-ITEMS_MAX:]
     return edited, removed
+
+
+def tombstone(item: Any) -> Optional[Dict[str, Any]]:
+    """What is remembered of a scanned raised area a person deleted, or None when nothing is.
+
+    Its footprint, its kind and its name, shaped as a raised area is so that
+    the one matching rule can be asked which raised area of a later reading
+    it is (keep_mark.best_match); a kind that was set by hand says so, as it
+    did. Nothing for one added by hand (the scan never read it, so it will
+    not read it again), or for one with no footprint to match by.
+    """
+    if not isinstance(item, dict) or item.get("added_by_hand") is True:
+        return None
+    numbers = [item.get(key) for key in ("center_x", "center_z", "width", "depth")]
+    if not all(_number(value) for value in numbers) or numbers[2] <= 0 or numbers[3] <= 0:
+        return None
+    left: Dict[str, Any] = {
+        "kind": item.get("kind"), "name": item_name("risers", item),
+        "center_x": numbers[0], "center_z": numbers[1], "width": numbers[2], "depth": numbers[3],
+    }
+    if area_heading(item) != 0.0:
+        left["heading_deg"] = area_heading(item)
+    if KIND_BY_HAND in str(item.get("basis") or ""):
+        left["basis"] = KIND_BY_HAND
+    return left
 
 
 def add_item(

@@ -43,11 +43,21 @@ The route calls this once, after keep_edits.py and on the room that returns,
 before it answers a preview or applies: what a preview says will become of
 the mark is what apply then does.
 
+Overhead lines and rings are matched by the same rule (slice 33): only what a
+footprint is differs (`_footprint`). A line's is the strip `LINE_STRIP_M` wide
+that runs along it from end to end (or as wide as the truss is, if that is
+wider): a truss is 0.3 m across, and two readings of the same one 0.1 m apart
+would share only half of that. A ring's is the disc it goes round, as a polygon
+of `RING_SIDES` sides. Neither has a kind, so none is compared, and a line is
+only ever asked of lines and a ring of rings: the caller gives the list.
+Heights are not looked at for them either.
+
 Pure: the shells given are never changed, and a new one is returned only when
 there is a mark to write.
 """
 
 import copy
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -59,6 +69,13 @@ from app.services.room_scan.edit import (
 # the marked one: intersection over union. 0.5 lets a booth be read a little off, a little bigger or
 # a few degrees round, and refuses the next booth along.
 MATCH_IOU = 0.5
+
+# How wide the strip is that stands for an overhead line on the plan. Two readings of one truss a
+# distance d apart sideways share (W - d) / (W + d) of the two strips together, so they are the same
+# truss up to d = W / 3: 0.2 m. Trusses hung 0.6 m apart or more share nothing.
+LINE_STRIP_M = 0.6
+# How many sides the polygon has that stands for a ring's disc.
+RING_SIDES = 24
 
 Point = Tuple[float, float]
 
@@ -139,10 +156,50 @@ def kind_set_by_hand(item: Any) -> bool:
     return item.get("added_by_hand") is True or KIND_BY_HAND in str(item.get("basis") or "")
 
 
+def _line_footprint(item: Dict[str, Any]) -> Optional[List[Point]]:
+    """The strip along an overhead line, from its ends as they are stored (not its heading, kept to a tenth)."""
+    ends = [item.get(key) for key in ("x1", "z1", "x2", "z2")]
+    if not all(_number(end) for end in ends):
+        return None
+    run_x, run_z = ends[2] - ends[0], ends[3] - ends[1]
+    length = math.hypot(run_x, run_z)
+    if length <= 0:
+        return None
+    across = item.get("across")
+    half = max(LINE_STRIP_M, float(across) if _number(across) else 0.0) / 2.0
+    side_x, side_z = -run_z / length * half, run_x / length * half
+    return [
+        (ends[0] - side_x, ends[1] - side_z), (ends[2] - side_x, ends[3] - side_z),
+        (ends[2] + side_x, ends[3] + side_z), (ends[0] + side_x, ends[1] + side_z),
+    ]
+
+
+def _ring_footprint(item: Dict[str, Any]) -> Optional[List[Point]]:
+    """The disc an overhead ring goes round, as a polygon."""
+    numbers = [item.get(key) for key in ("center_x", "center_z", "radius")]
+    if not all(_number(value) for value in numbers) or numbers[2] <= 0:
+        return None
+    return [
+        (numbers[0] + numbers[2] * math.cos(2 * math.pi * k / RING_SIDES),
+         numbers[1] + numbers[2] * math.sin(2 * math.pi * k / RING_SIDES))
+        for k in range(RING_SIDES)
+    ]
+
+
 def _footprint(item: Any) -> Optional[List[Point]]:
-    """A raised area's corners on the plan, anticlockwise in (x, z), or None when it has no footprint to compare."""
+    """An item's footprint on the plan, anticlockwise in (x, z), or None when it has none to compare.
+
+    A raised area's four corners, turned to its heading; the strip along an
+    overhead line (one that stores ends); the disc of a ring (one that stores
+    a radius). What an item is, is read from what it stores.
+    """
     if not isinstance(item, dict):
         return None
+    if "x1" in item or "radius" in item:
+        corners = _line_footprint(item) if "x1" in item else _ring_footprint(item)
+        if corners is None:
+            return None
+        return corners if _signed_area(corners) > 0 else corners[::-1]
     numbers = [item.get(key) for key in ("center_x", "center_z", "width", "depth")]
     if not all(_number(value) for value in numbers) or numbers[2] <= 0 or numbers[3] <= 0:
         return None
@@ -183,7 +240,7 @@ def _clip(subject: List[Point], clip: List[Point]) -> List[Point]:
 
 
 def footprint_overlap(one: Any, other: Any) -> float:
-    """How much two raised areas share on the plan: intersection over union, 0 to 1.
+    """How much two raised areas (or two lines, or two rings) share on the plan: intersection over union, 0 to 1.
 
     0 when either has no footprint (a number missing, or no size). Heights are
     not looked at: a booth read 5 cm taller is the same booth.
@@ -207,6 +264,10 @@ def best_match(area: Any, risers: Any) -> Tuple[Optional[int], float]:
     (keep_edits.py): the same kind, unless the stored one's kind was set by
     hand; an intersection over union of at least `MATCH_IOU`; the greatest
     overlap, and of two equal the earlier. (None, 0.0) when none passes.
+
+    Asked the same way of an overhead line among the new reading's lines, a
+    ring among its rings (neither stores a kind, so none differs), and a
+    raised area a person deleted among its raised areas (slice 33).
     """
     if not isinstance(area, dict) or not isinstance(risers, list):
         return None, 0.0
