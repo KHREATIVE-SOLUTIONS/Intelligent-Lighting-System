@@ -5,7 +5,7 @@ Keeping what a person set in a room when the room is scanned again
 A scan applied again writes a whole new room. A person who had corrected the
 old one (typed a name, set a height, put in a riser the scan never saw, taken
 out a "riser" that was a flight case) lost all of it. This carries those
-corrections onto the new reading (docs/ROOM_SCAN.md, slices 32 and 33), for
+corrections onto the new reading (docs/ROOM_SCAN.md, slices 32 to 34), for
 raised areas, overhead lines and overhead rings.
 
 Which stored item is which new one is `keep_mark.best_match`, the rule the DJ
@@ -398,7 +398,7 @@ def keep_hand_edits(old_shell: Optional[Dict[str, Any]], new_shell: Dict[str, An
     if not isinstance(old_shell, dict) or not isinstance(new_shell, dict):
         return KeptEdits(shell=new_shell)
 
-    # The raised areas a person deleted go first: the rest is asked of the room without them.
+    # What a person deleted goes first: the rest is asked of the room without it.
     read, left_out = _leave_out(old_shell, new_shell)
 
     plans: Dict[str, Any] = {}
