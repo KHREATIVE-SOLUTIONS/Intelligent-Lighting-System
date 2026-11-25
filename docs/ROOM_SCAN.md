@@ -224,7 +224,17 @@ Rig editor toolbar, **Room Scan**:
    you deleted" where the scan reads again a raised area you took out, and
    turns into a warning with "1 to check against the new room" where
    something kept is above the new ceiling or outside the new walls (slice
-   33).
+   33). **Under that line is the same by name** (slice 35): one row for
+   each thing, "Front truss (line): kept your edits", "Riser (raised area):
+   left out (you deleted it)", "Side pipe (line): replaced (a scanned item
+   overlaps it)", "Podium (raised area): added by hand, kept". The first
+   five are shown; **Show all** opens the rest. **Anything lost is said in
+   a warning of its own**: a truss you named or trimmed that the scan now
+   reads more than 1.0 m higher or lower, or to one side of where it was,
+   loses the name and trim, and the warning says where the scan read it; a
+   thing you deleted that this scan did not see is no longer remembered as
+   deleted, and may come back on a later scan. What is to be checked
+   against the new room is said in full the same way.
 3. If the room came out wrong, correct the guess and the preview is read again:
    **Units** (metres, centimetres, millimetres), **Up axis** (Y or Z), **Turn
    the room** in quarter turns when the wrong wall was taken as upstage.
@@ -718,6 +728,40 @@ The answer, for both:
       Riser. Will keep your edits on 1 overhead line: Front truss (name,
       hanging height). Check Podium: it is outside the walls of the room as
       this scan reads it.").
+  - `items` (slice 35), **sent only when it has something in it**: all of
+    the above one thing at a time, in the order `message` says them (left
+    out, kept, added and kept, replaced; within each, raised areas, then
+    lines, then rings). Each entry has exactly three keys:
+    - `kind`: `"raised area"`, `"line"` or `"ring"`;
+    - `name`: what it is called (for one replaced or left out, what the
+      person's was called);
+    - `outcome`: `"kept your edits"`, `"left out (you deleted it)"`,
+      `"replaced (a scanned item overlaps it)"` or `"added by hand, kept"`.
+      The same words in a preview and in `applied`.
+  - `warnings` also names **what was lost** (slice 35), after the checks.
+    These entries have **no `index`** (the thing is not in the new room)
+    and each has its own `message`, which `hand_edits.message` ends with.
+    Any one of them is enough for `hand_edits` to be sent, with `areas` 0
+    and the lists empty.
+    - `reason` `"hanging height"`: a line or ring whose name or trim was
+      set by hand matched nothing, and the scan read one over the same plan
+      more than 1.0 m from where it read this one. `kind` (the list),
+      `name`, `edits`, `read_height` (where the scan read that one), `trim`
+      (the height stored on this one) and `scan_height` (where the scan
+      last read this one, or null). "The scan read a truss at 2.8 m where
+      Front truss was, against its trim of 3.5 m (the scan read it at 4 m
+      before): more than 1 m from where the scan read it before, so its
+      name and trim were not kept."
+    - `reason` `"read beside"`: the same, where the scan read one that
+      shares some of the plan with it but less than the half a match needs.
+      `offset` (metres between the two middles) and `overlap`. "The scan
+      read a truss 0.3 m from where Front truss was, sharing 33% of the
+      plan with it where half is needed, so its name was not kept."
+    - `reason` `"record dropped"`: the record of a deleted raised area,
+      line or ring matched nothing in this scan and is gone. `kind` and
+      `name`. "The scan did not see Riser; the record that keeps it deleted
+      was dropped, so it may come back on a later scan."
+    - A preview says "will not be kept" and "will be dropped".
 
 Refusals, each with a `detail` that says what to do:
 
@@ -1721,6 +1765,139 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 35 built
+
+A scan applied again says by name what it kept, left out and lost. Until
+now the answer counted ("1 overhead item you deleted") and a sentence named
+things only in `hand_edits.message`, which is not on screen; and three
+things were lost without a word: a name and trim on a truss re-trimmed by
+more than 1.0 m, a name and trim on a truss read to one side, and the
+record that keeps a deleted thing deleted.
+
+- **The list** (`keep_edits.py`, `KeptEdits.report`; `ITEM_WORDS`, `KEPT`,
+  `LEFT_OUT`, `REPLACED`, `ADDED_KEPT`). `hand_edits`, in a preview and in
+  `applied`, gains `items`: one entry for each thing acted on, `kind`
+  (`"raised area"`, `"line"`, `"ring"`), `name` and `outcome` (`"kept your
+  edits"`, `"left out (you deleted it)"`, `"replaced (a scanned item
+  overlaps it)"`, `"added by hand, kept"`). It is built from the lists the
+  answer already had, in the order `message` says them, so the two cannot
+  disagree. The outcome is worded the same before and after Apply. A name
+  is read from the room as it will be stored, as the other lists read it.
+  **The key for what happened is `outcome`**: the task named the other two
+  keys and not this one. Sent only when it has something in it.
+- **`message`, `areas` and every list the answer had are what they were.**
+  `message` gains a sentence only for a new warning (below).
+- **Nothing lost silently** (`keep_edits.py`: `_near_miss`, `_lost_words`,
+  the third value `_leave_out` returns; `KeptEdits.lost`). Three more kinds
+  of entry in `hand_edits.warnings`, each with a `reason` and its own
+  `message`, after the checks slice 33 put there:
+  1. **`"hanging height"`.** A line or ring with a name or a trim set by
+     hand (not one added by hand) matched nothing, and the reading has one
+     that shares half the plan with it and was passed over only for hanging
+     more than `HANG_MATCH_M` from where the scan read this one. The
+     sentence gives where the scan read that one, this one's trim, and,
+     where the trim was set by hand, where the scan read this one before:
+     the 1.0 m is measured from the last reading (slice 34), so "2.8 m
+     against its trim of 3.5 m" alone would read as inside it.
+  2. **`"read beside"`.** The same, where the reading has one within the
+     height that shares some of the plan with it and less than the half a
+     match needs: read to one side, or much shorter. The sentence gives the
+     distance between the two middles and the share of the plan. Any
+     overlap at all counts, as the task says, so a truss read up to 0.6 m
+     to one side is said; read clear of where it was, nothing is.
+  3. **`"record dropped"`.** A record of a deleted raised area, line or
+     ring that matched nothing in this reading (or lost the item to another
+     record) and is not carried on: "The scan did not see Riser; the record
+     that keeps it deleted was dropped, so it may come back on a later
+     scan."
+  - **Only items of the reading that no stored item is are looked at**
+    for 1 and 2 (the same "who has it" that settles two stored items
+    picking one new one). So the other truss of a stack is itself, not the
+    lower one read 1.3 m higher, and a truss that crosses is itself, not
+    this one read beside. This fails without the rule: the stack test and
+    the crossing test are in the unit file.
+  - Height is asked before beside; of several, the greatest overlap.
+  - **`hand_edits` is now sent for a warning alone.** Until this slice a
+    dropped record or a name lost to the height gave no `hand_edits` at
+    all; now it is there with `areas` 0, the lists empty, `warnings` and
+    the sentence. The room is still the reading as it came, the same
+    object: a warning writes nothing.
+  - These entries are kept apart from slice 33's checks inside
+    (`KeptEdits.lost`, not `KeptEdits.warnings`): a check has an `index`
+    in the new room and a lost thing has none.
+- **The route** is not changed but for its log line, which counts what was
+  lost, and its docstring.
+- **The dialog** (`RoomScanDialog.tsx`; `handEditItems`,
+  `handEditItemText`, `handEditWarnings`, `HAND_EDIT_ITEMS_SHOWN` in
+  `utils/roomScan.ts`). Under the line of counts
+  (`room-scan-hand-edit-items`): one row for each entry, "Front truss
+  (line): kept your edits". With more than five, the first five and a
+  button, "Show all 7", which becomes "Show fewer"
+  (`room-scan-hand-edit-items-toggle`); a new preview closes it again.
+  Under that, **each entry of `hand_edits.warnings` as a warning of its
+  own** (`room-scan-hand-edit-warning`), as the scan's own warnings are
+  shown: the server's `message` for what was lost, and for a check, which
+  has none, "Check Podium: it is outside the walls of the room as this
+  scan reads it." as the server's `message` words it. So the checks of
+  slice 33 are on screen by name too.
+  - **The line of counts is what it was.** "N to check against the new
+    room" counts only warnings with a place in the new room: a lost name
+    or a dropped record is not something to check against it, and is said
+    in full underneath. An answer with only those has no line of counts.
+- **Tests.** Backend, `tests/unit/test_room_scan_keep_named.py` (32): the
+  four outcomes' words; one of each thing listed in order, the same before
+  and after Apply, beside counts and a sentence that are what they were; a
+  name the DJ booth mark gives afterwards; no list where nothing was done;
+  a name lost to the height, with a trim set by hand, a trim alone, a
+  ring; a trim far from the reading that is no loss; inside the tolerance;
+  the other truss of a stack; a truss no longer read; one added by hand; a
+  name lost 0.3 m to one side, read much shorter, read a little off and
+  read clear; a truss that crosses; a ring; height before beside; a
+  dropped record of a raised area, a line and a ring, said once, beside
+  what was left out, of two that pick one area, with no name; a check
+  before what was lost; neither room changed.
+  `tests/integration/test_api_room_scan_keep_named.py` (5), over HTTP with
+  readings made in the test (the truss hung 1.2 m lower, read 0.3 m to
+  one side, the riser gone): the list in a preview that writes nothing and
+  in the apply, the same in both; the re-trim warning with its numbers,
+  said once; the offset warning; a dropped record named, the room without
+  its `deleted_areas`, and the riser back at the scan after. Frontend,
+  `RoomScanDialogHandEditItems.test.tsx` (13): the list under the line, no
+  toggle for five, the toggle opening and closing seven, no list where
+  none was sent, after Apply; the warnings as alerts with no line; a check
+  said in full beside the count; the helpers.
+- **Existing tests changed, because the behaviour was.**
+  - **`items` is a new key** wherever something was kept, left out or
+    replaced. Seven assertions held the exact keys or the whole answer:
+    `test_a_preview_and_an_apply` (unit, keep_edits); the two whole-answer
+    equalities of `test_a_raised_area_added_by_hand_is_kept_where_the_
+    scan_has_nothing` and `..._is_replaced_where_the_scan_overlaps_it`
+    (integration, keep_edits); `AREA_KEYS` (integration, keep_overhead,
+    used by two tests); and `test_what_is_said_before_apply_and_after_it`,
+    `test_what_is_said_of_each_kind_and_which_keys_are_sent` and
+    `test_nothing_is_flagged_and_no_key_sent_where_the_room_holds_it_all`
+    (unit, keep_overhead). They hold the same and `items`.
+  - **`not got.any` no longer holds where something is lost.** Four unit
+    tests in keep_overhead: the two `test_a_record_the_reading_has_
+    nothing_for_is_dropped_...` (raised areas; lines),
+    `test_a_record_of_a_line_is_never_asked_of_raised_areas_or_rings` and
+    `test_one_read_within_the_tolerance_is_the_same_and_one_beyond_it_is_
+    not`. They hold what they held of the room (the reading, the same
+    object; nothing left out or kept) and the warning.
+  - No frontend test was changed: the older fixtures' warnings all have an
+    `index`, so the line of counts is what it was for them.
+- **What was run** (Nov 24). Backend, with the main checkout's venv:
+  `python -m pytest tests/ -q` **2758 passed, 10 skipped, 5 xfailed**
+  (2721 before; the 37 new ones are the two files above), run again after
+  the last change to the wording of a warning. **Frontend: nothing was run.**
+  `npx vitest run` and `npx vite build` were refused in the session, and
+  the worktree has no `frontend/node_modules`, so `npx tsc --noEmit -p .`
+  found no compiler. The dialog change and its 13 tests are unchecked by
+  any tool. See "What is left".
+- **No Art-Net, no DMX, no network call, no new dependency, no new
+  column, nothing new stored in the room**: the list and the warnings are
+  in the answer only.
 
 ## What slice 34 built
 
@@ -3747,6 +3924,14 @@ All scans are built in code (`backend/tests/unit/room_scan_meshes.py`), but
 for binary USD: those files are in `backend/tests/fixtures/usdc/`, written by
 Pixar's USD library from the same rooms (slice 24).
 
+- `backend/tests/unit/test_room_scan_keep_named.py` and
+  `backend/tests/integration/test_api_room_scan_keep_named.py`: the list of
+  what a scan applied again did, one thing at a time and by name; the
+  warning for a truss read more than 1.0 m higher or lower, for one read
+  to one side, and for a record of a deleted item that is dropped; and
+  what says nothing (slice 35). Run. The frontend's
+  `RoomScanDialogHandEditItems.test.tsx` has **not** been run (see "What
+  slice 35 built" and "What is left").
 - `backend/tests/unit/test_room_scan_keep_overhead.py` and
   `backend/tests/integration/test_api_room_scan_keep_overhead.py`: a name
   and a hanging height set by hand kept on an overhead line and a ring, one
@@ -4413,11 +4598,45 @@ Pixar's USD library from the same rooms (slice 24).
   Before relying on it, in `frontend/`: `npx vitest run` (two new tests,
   and three older ones hold the new delete question) and `npx vite build`.
   **Not seen in a browser.**
+- **Slice 35's frontend test has not been run, nor the type-check, nor
+  the build.** `npx vitest run` and `npx vite build` were refused in the
+  session that wrote it, as for slices 29 to 34, and this time the
+  worktree had no `frontend/node_modules`, so `npx tsc --noEmit -p .`
+  could not run either: **the dialog change is checked by no tool.**
+  Before relying on it, in `frontend/`: `npx tsc --noEmit -p .` (13 older
+  errors; none should be in `roomScan.ts`, `RoomScanDialog.tsx` or the new
+  test), `npx vitest run` (one new file,
+  `RoomScanDialogHandEditItems.test.tsx`, 13 tests; the tests of the
+  two older hand-edits files, 8 each, must still pass with
+  `handEditsLine` changed) and `npx vite build`. **Not seen in a browser.**
+- **What slice 35 leaves** (the list by name, and what is lost):
+  - **A raised area's name or height lost to a reading to one side says
+    nothing**, as before: the two warnings are for lines and rings. A
+    raised area added by hand that is replaced is named, as it was.
+  - **A truss the scan no longer reads at all says nothing**: there is no
+    reading to point at. Its name and trim go with it.
+  - **Of two stored trusses that pick the same new one, the one that does
+    not have it keeps nothing and says nothing** (slice 32, point 3).
+  - **A record dropped because the scan read the thing at another height
+    or to one side is said as "the scan did not see"**, and the thing is
+    back in the room at once, not "on a later scan". The warning for a
+    record does not say what the scan read there instead.
+  - **A new truss that crosses the place of a named one the scan no
+    longer reads** is taken for that one read beside it (they share a
+    little of the plan, and no stored truss is the new one), and the
+    warning gives the distance between their middles.
+  - **Warnings are still said, not acted on**: the name and trim are not
+    put onto the truss the warning speaks of. Rename and trim it again in
+    Edit Room.
+  - **The list is not kept** once the dialog is closed: it is in the
+    answer to the scan, and nowhere in the stored room.
 - **What slice 34 leaves** (deleted lines and rings, hanging heights):
-  - **A truss re-trimmed by more than 1.0 m between two scans is another
-    truss** (`HANG_MATCH_M`): its name and trim are not kept, and a record
-    of it deleted is dropped, so it comes back. Nothing says so. The scan
-    has to read it within 1.0 m of where the last scan did.
+  - *Said since slice 35:* **a truss re-trimmed by more than 1.0 m between
+    two scans is another truss** (`HANG_MATCH_M`): its name and trim are
+    not kept, and a record of it deleted is dropped, so it comes back.
+    Both are now named in `hand_edits.warnings` and shown in the dialog.
+    The scan still has to read it within 1.0 m of where the last scan did
+    for anything to be kept.
   - **Two trusses on one footprint less than 1.0 m apart in height** are
     still told apart only by overlap and order, as before this slice.
   - **A trim set by hand before this slice is matched without a height**
@@ -4434,9 +4653,9 @@ Pixar's USD library from the same rooms (slice 24).
   - **A deleted line's record takes the scan's line before anything else
     is matched**, as a raised area's does (see the slice 33 point below),
     and it cannot be seen or removed on its own.
-  - **The dialog still counts and does not name**: "1 overhead item you
-    deleted" does not say which, or whether it is a line or a ring. That
-    is in `hand_edits.message`.
+  - *Closed by slice 35:* the dialog names. Under the line of counts each
+    thing is listed with what it is ("line", "ring", "raised area") and
+    what happened to it.
 - **What slice 33 leaves** (lines, rings, deleted areas and checks):
   - *Closed by slice 34:* a deleted line or ring no longer comes back. A
     scanned one leaves a record, as a raised area does, and the next scan
@@ -4445,10 +4664,12 @@ Pixar's USD library from the same rooms (slice 24).
     ring is matched (within 1.0 m of where the scan read it), so two
     trusses one above the other on the plan keep their own names and
     trims.
-  - **A truss read more than 0.2 m to one side is another truss** (the
-    strip is 0.6 m wide, `LINE_STRIP_M`), and so is one read at much less
-    or much more than its length: its name and trim are not kept, and
-    nothing says so.
+  - *Said since slice 35:* **a truss read more than 0.2 m to one side is
+    another truss** (the strip is 0.6 m wide, `LINE_STRIP_M`), and so is
+    one read at much less or much more than its length: its name and trim
+    are not kept. Where the two readings still share some of the plan (up
+    to 0.6 m to one side) a warning names it and says how far off the scan
+    read it; read clear of where it was, nothing is said.
   - **A line added by hand within about 0.4 m of a scanned truss and
     running beside it is replaced** (they share more than a fifth of the
     two strips, `CROSSING`); one that crosses a truss is kept. Two short
@@ -4459,6 +4680,7 @@ Pixar's USD library from the same rooms (slice 24).
   - **A record that matches nothing is dropped.** If one scan misses the
     deleted thing, or reads it less than half over where it stood, the
     record goes, and a later scan that reads it again brings it back.
+    *Said since slice 35:* a warning names each record dropped.
     Reading the room a quarter turn round (**Turn the room**) drops every
     record, as it drops every other match.
   - **A record cannot be seen or removed on its own.** Nothing in Edit
@@ -4477,10 +4699,11 @@ Pixar's USD library from the same rooms (slice 24).
     can hang rows at it. Only what was kept is checked: something the scan
     itself reads outside its own walls is not listed here
     (`GET .../room-shell/outline` lists everything outside).
-  - **The dialog counts, and does not name.** "1 to check against the new
-    room" does not say which or why: that is in `hand_edits.message` and
-    `hand_edits.warnings`, which are not on screen. Lines and rings are
-    both "overhead items".
+  - *Closed by slice 35:* the dialog names. Each entry of
+    `hand_edits.warnings` is on screen as a warning ("Check Podium: it is
+    outside the walls of the room as this scan reads it."), and the list
+    under the line of counts says "line" or "ring". The line of counts
+    itself still says "overhead items".
   - **Edit Room shows no chip for a line's name or trim set by hand**, as
     for a raised area's name.
 - **Keeping hand edits goes only so far** (slice 32):
@@ -4526,8 +4749,9 @@ Pixar's USD library from the same rooms (slice 24).
     other.
   - **Edit Room shows no chip for a name set by hand**, and after a scan
     is applied again a kept height shows as "Resized by hand".
-  - **After Apply the dialog's line counts areas**; which fields, and the
-    names, are in the answer's `hand_edits.message` and not on screen.
+  - **After Apply the dialog's line counts areas**; the names are in the
+    list under it since slice 35. Which fields were kept (name, height)
+    is still only in the answer's `hand_edits.message`.
 - **Slice 31's frontend tests have not been run, and nor has the build
   with it.** `npx vitest run` and `npx vite build` were refused in the
   session that wrote it, as for slices 29 and 30; `npx tsc --noEmit -p .`
