@@ -143,6 +143,9 @@ class TestARaisedAreaDeletedByHandAcrossAScanAppliedAgain:
         # Another edit made afterwards keeps the record: it is part of the room.
         named = await client.patch(f"{room}/risers/0", json={"name": "Main stage"})
         assert named.status_code == 200 and named.json()["room_shell"]["deleted_areas"] == [record]
+        # So does a change to the walls.
+        raised = await client.patch(f"{room}/outline", json={"height": scanned["room"]["height"] + 0.5})
+        assert raised.status_code == 200, raised.text
         stored_room = await column(db_session, rig_id)
         undo = await column(db_session, rig_id, "room_shell_undo")
         fixtures = await fixtures_by_name(client, rig_id)

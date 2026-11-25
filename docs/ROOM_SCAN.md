@@ -1794,6 +1794,11 @@ is kept is checked against the new room.
   it was. With nothing kept, replaced or left out there is no `hand_edits`
   at all, as before. The route is not changed but for its log line:
   `keep_hand_edits` was already called once for a preview and an apply.
+- **Edit Room's help text** (`RoomShellEditDialog.tsx`) says what is now
+  kept, and that a deleted raised area stays out. The question asked
+  before a delete is not changed ("Undo here brings it back, until the
+  scan is read again"): it is still true, but does not say that a raised
+  area then stays deleted.
 - **The dialog** (`handEditsLine` in `utils/roomScan.ts`; no change to
   `RoomScanDialog.tsx`). The one line counts the new things: "Will keep
   your edits on 2 areas and 1 overhead item", "1 overhead item you added
@@ -4294,7 +4299,11 @@ Pixar's USD library from the same rooms (slice 24).
     empties them) and taking the room off the rig.
   - **A record takes the scan's raised area before anything else is
     matched.** An edit cannot be kept on an area that is left out, and the
-    DJ booth mark cannot land on it.
+    DJ booth mark cannot land on it. It takes it even where a raised area
+    still in the room overlaps that new area more: where the scan read two
+    risers on one spot, one was deleted, and the next scan reads only one
+    there, that one is left out (and reported), and the riser that was
+    kept is gone with it.
   - **Warnings are said, not acted on.** A kept trim above the new ceiling
     stays where it is and still counts in `hanging_bands`, so a suggestion
     can hang rows at it. Only what was kept is checked: something the scan
