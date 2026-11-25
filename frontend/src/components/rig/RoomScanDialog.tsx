@@ -41,6 +41,7 @@ import RoomScanUndoButton from './RoomScanUndoButton';
 import {
   DEFAULT_SCAN_OPTIONS,
   ROOM_SCAN_ACCEPT,
+  djBoothDroppedText,
   fileProblem,
   fixtureMoveText,
   foundLines,
@@ -344,6 +345,13 @@ export default function RoomScanDialog({
         {applied?.applied && (
           <Alert severity="success" sx={{ mb: 2 }}>
             {applied.applied.message}
+          </Alert>
+        )}
+
+        {/* A scan applied over a room with a marked DJ booth that the new reading does not have there. */}
+        {djBoothDroppedText(applied?.applied) && (
+          <Alert severity="warning" sx={{ mb: 2 }} data-testid="room-scan-dj-booth-dropped">
+            {djBoothDroppedText(applied?.applied)}
           </Alert>
         )}
 

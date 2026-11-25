@@ -88,7 +88,32 @@ export interface RoomScanPreview {
     /** How many fixture moves an undo would now take back. */
     undo_available?: number;
     message: string;
+    /**
+     * The four below are sent only where the room this one replaced had a raised area marked as
+     * the DJ's booth. Where the mark now is in the new room's raised areas, or null.
+     */
+    dj_booth?: number | null;
+    /** True when no raised area of the new reading stands where the marked one did: the mark is gone. */
+    dj_booth_dropped?: boolean;
+    dj_booth_overlap?: number | null;
+    /** The server's sentence for what became of the mark. */
+    dj_booth_message?: string | null;
   };
+}
+
+export const DJ_BOOTH_DROPPED_TEXT =
+  'The DJ booth mark was dropped: no raised area in this scan stands where the marked one did. '
+  + 'Mark the DJ booth again in Edit Room.';
+
+/**
+ * What to tell the operator when a scan applied again lost the DJ booth mark: the server's own
+ * sentence, or DJ_BOOTH_DROPPED_TEXT where it sent none. '' when the mark was kept, when the room
+ * had none, and for a preview: only a `dj_booth_dropped` that is exactly true is a dropped mark.
+ */
+export function djBoothDroppedText(applied: RoomScanPreview['applied'] | undefined): string {
+  if (!applied || applied.dj_booth_dropped !== true) return '';
+  const said = typeof applied.dj_booth_message === 'string' ? applied.dj_booth_message.trim() : '';
+  return said || DJ_BOOTH_DROPPED_TEXT;
 }
 
 /** A fixture an undo left alone, and why: a person has placed, confirmed or moved it since. */
