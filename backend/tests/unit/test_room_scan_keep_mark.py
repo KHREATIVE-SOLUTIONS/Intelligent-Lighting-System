@@ -8,7 +8,8 @@ is kept on the raised area of the new reading that is the same kind and
 overlaps the marked one by an intersection over union of at least 0.5; of two
 that do, the one that overlaps more, and of two that overlap as much, the
 earlier; with none, the mark is dropped and that is said; a mark is never
-given to another kind or to something that only stands near; a booth at a
+given to another kind (unless the marked one's kind was set by hand, which is
+then kept with the mark: slice 31) or to something that only stands near; a booth at a
 heading is compared as it stands; at most one raised area is marked
 afterwards; and neither shell given is changed. docs/ROOM_SCAN.md.
 """

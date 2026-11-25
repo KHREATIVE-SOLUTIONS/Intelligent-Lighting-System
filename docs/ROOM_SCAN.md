@@ -1661,7 +1661,10 @@ the scan calls it a riser again.
   overlap of any kind; a reading that agrees left the scan's; a name the
   scan did not give left alone; a hand-set riser and an added booth; and
   what a preview says for kept, dropped, a kept kind and no mark.
-  `tests/integration/test_api_room_scan_keep_mark.py` (+4, 12): a preview
+  `tests/integration/test_api_room_scan_keep_mark.py` (+5, 13; the fifth,
+  a stage made a booth by hand whose previewed moves are the ones applied,
+  was added after the full run below and run with these two files, 65
+  passed): a preview
   that says kept, writes nothing (room, undo steps, fixtures) and is then
   applied to the same room it showed; a preview that says dropped and
   writes nothing; a preview that says a hand-set kind will be kept; a
@@ -3878,8 +3881,9 @@ Pixar's USD library from the same rooms (slice 24).
   - **A kept kind can change the fixture moves.** The moves are suggested
     for the room that would be stored, and the suggestion reads the first
     `stage`. A marked booth the scan reads as its first stage is stored as
-    a booth, so it is no longer that stage. Not covered by a test: the
-    test room's marked riser is not a stage.
+    a booth, so it is no longer that stage. One test over HTTP makes the
+    test room's stage a booth and holds the preview's moves to be the ones
+    apply makes; where the floor lights then go is not asserted.
   - **A name typed by hand is still not kept**, only the kind: the kept
     raised area is called what its kind is called ("Booth or counter")
     where the scan called it what it read ("Riser").
@@ -3936,7 +3940,8 @@ Pixar's USD library from the same rooms (slice 24).
 - **The DJ booth mark goes only so far** (slice 28):
   - **Reading the scan again no longer drops it** where the new reading
     has the same raised area standing in the same place (slice 30); it is
-    dropped, and the answer and the dialog say so, where it has not. Every
+    dropped, and the answer and the dialog say so, where it has not. A kind
+    set by hand on the marked raised area is kept with it (slice 31). Every
     other change made by hand is still dropped: the scan writes a new room.
   - **A change of kind made through the API without `is_dj_booth` takes the
     mark off.** Edit Room sends it; another client has to.

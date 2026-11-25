@@ -286,6 +286,27 @@ class TestTheMarkAcrossAScanAppliedAgain:
         assert await column(db_session, rig_id) == stored_room
 
     @pytest.mark.asyncio
+    async def test_a_stage_made_a_booth_by_hand_is_stored_a_booth_and_the_moves_are_the_previews(
+        self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
+    ):
+        # The moves read the room's first stage, so they are worked out for the room that would be
+        # stored: what the preview lists is what apply moves.
+        rig_id, scanned, stage_at, _, room = await room_of(client, sample_rig_data, sample_fixture_data)
+        made = await client.patch(f"{room}/risers/{stage_at}", json={KEY: True, "riser_kind": "booth"})
+        assert made.status_code == 200 and made.json()["dj_booth"] == stage_at
+
+        preview = await scan_again(client, rig_id, apply=False, move_fixtures=True)
+        answer = await scan_again(client, rig_id, move_fixtures=True)
+
+        assert preview["dj_booth_mark"]["index"] == stage_at and preview["dj_booth_mark"]["kind_kept"] == "booth"
+        assert answer["applied"]["dj_booth"] == stage_at and answer["applied"]["dj_booth_kind_kept"] == "booth"
+        stored_room = await column(db_session, rig_id)
+        assert stored_room["risers"][stage_at]["kind"] == "booth" and marked(stored_room) == [stage_at]
+        assert answer["room_shell"] == preview["room_shell"] == stored_room
+        assert answer["fixtures"]["moves"] == preview["fixtures"]["moves"]
+        assert answer["applied"]["fixtures_moved"] == preview["fixtures"]["would_move"]
+
+    @pytest.mark.asyncio
     async def test_a_preview_over_a_room_nobody_marked_answers_as_it_always_did(
         self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
     ):
