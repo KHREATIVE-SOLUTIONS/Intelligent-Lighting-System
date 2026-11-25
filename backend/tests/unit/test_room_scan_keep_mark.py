@@ -149,6 +149,11 @@ class TestKeepingTheMark:
         assert keep_dj_booth(old_room(), room(STAGE, just_under)).dropped
         assert keep_dj_booth(old_room(), room(STAGE, area("booth", -4.0 + 0.6, 0.0, 2.0, 1.0))).place == 1
         assert MATCH_IOU == 0.5
+        # Exactly a half, with no rounding in it: 4 x 1 on the same middle shares 2 of the 4 it covers.
+        twice = area("booth", -4.0, 0.0, 4.0, 1.0)
+        assert footprint_overlap(DJ, twice) == 0.5
+        exact = keep_dj_booth(old_room(), room(STAGE, twice))
+        assert exact.place == 1 and exact.overlap == 0.5
 
     def test_another_kind_in_the_same_place_does_not_take_the_mark(self):
         # The scan now calls what stands there a riser. Same footprint, not the same kind: dropped, and said.
