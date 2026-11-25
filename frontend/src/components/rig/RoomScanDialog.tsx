@@ -42,6 +42,7 @@ import {
   DEFAULT_SCAN_OPTIONS,
   ROOM_SCAN_ACCEPT,
   djBoothDroppedText,
+  djBoothPreviewLine,
   fileProblem,
   fixtureMoveText,
   foundLines,
@@ -214,6 +215,8 @@ export default function RoomScanDialog({
 
   const shown = applied ?? preview;
   const wouldMove = preview?.fixtures.would_move ?? 0;
+  // Said of the preview only: once applied, the answer's own words take over.
+  const markLine = applied ? null : djBoothPreviewLine(preview);
   // How many of the moves on screen turn their fixture. Once applied it is said
   // only when fixtures were moved: with the box unticked nothing was turned.
   const turnSummary = !shown
@@ -363,6 +366,17 @@ export default function RoomScanDialog({
                 {shown.replaces_existing_shell && ' Applying it replaces the room already stored on this rig.'}
               </Alert>
             )}
+
+            {/* Before Apply: what it would do to the DJ booth mark of the room already stored. */}
+            {markLine && (markLine.dropped ? (
+              <Alert severity="warning" sx={{ mb: 2 }} data-testid="room-scan-dj-booth-preview">
+                {markLine.text}
+              </Alert>
+            ) : (
+              <Typography variant="body2" sx={{ mb: 2 }} data-testid="room-scan-dj-booth-preview">
+                {markLine.text}
+              </Typography>
+            ))}
 
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
               <Typography variant="subtitle1">Suggested room</Typography>

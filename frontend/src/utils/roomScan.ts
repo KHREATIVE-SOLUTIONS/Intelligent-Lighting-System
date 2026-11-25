@@ -80,6 +80,21 @@ export interface RoomScanPreview {
     moves: RoomScanMove[];
   };
   operator_guide: string;
+  /**
+   * What applying would do to the DJ booth mark (slice 31). Sent with a preview only, and only
+   * where the room already stored has a raised area marked as the DJ's booth.
+   */
+  dj_booth_mark?: {
+    kept: boolean;
+    dropped: boolean;
+    /** Where the mark would be in the new room's raised areas, and what that one is called; null when dropped. */
+    index: number | null;
+    name: string | null;
+    overlap?: number | null;
+    /** The kind set by hand that is kept against what the scan reads there, or null. */
+    kind_kept?: string | null;
+    message?: string | null;
+  } | null;
   /** Null for a preview: nothing was written. */
   applied: null | {
     room_shell_stored: boolean;
@@ -98,7 +113,32 @@ export interface RoomScanPreview {
     dj_booth_overlap?: number | null;
     /** The server's sentence for what became of the mark. */
     dj_booth_message?: string | null;
+    /** Sent only where a kind set by hand was kept against what the scan read there (slice 31). */
+    dj_booth_kind_kept?: string | null;
   };
+}
+
+export const DJ_BOOTH_WILL_DROP_TEXT = 'DJ booth mark will be dropped';
+
+/**
+ * The one line a preview says about the DJ booth mark before Apply: "DJ booth mark: kept on Riser",
+ * or DJ_BOOTH_WILL_DROP_TEXT as a warning. A kind set by hand that is kept with it is said too:
+ * "DJ booth mark: kept on Booth or counter (stays a booth, as set by hand)". Null when the stored
+ * room has no marked booth (the server then sends nothing), and once the scan is applied.
+ */
+export function djBoothPreviewLine(
+  preview: RoomScanPreview | null | undefined,
+): { text: string; dropped: boolean } | null {
+  const mark = preview?.dj_booth_mark;
+  if (!preview || preview.applied || !mark) return null;
+  if (mark.kept !== true) return mark.dropped === true ? { text: DJ_BOOTH_WILL_DROP_TEXT, dropped: true } : null;
+  const name = typeof mark.name === 'string' && mark.name.trim()
+    ? mark.name.trim()
+    : (typeof mark.index === 'number' ? `raised area ${mark.index + 1}` : 'the same raised area');
+  const kind = typeof mark.kind_kept === 'string' && mark.kind_kept.trim()
+    ? ` (stays a ${mark.kind_kept.trim()}, as set by hand)`
+    : '';
+  return { text: `DJ booth mark: kept on ${name}${kind}`, dropped: false };
 }
 
 export const DJ_BOOTH_DROPPED_TEXT =
