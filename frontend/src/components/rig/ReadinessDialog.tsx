@@ -12,6 +12,7 @@ import {
   Typography,
 } from '@mui/material';
 import { readinessApi } from '../../services/api';
+import HandoffPackButton from './HandoffPackButton';
 import {
   FIX_AUTO_GROUPS,
   FIX_LABELS,
@@ -469,6 +470,10 @@ export default function ReadinessDialog({
             </Typography>
           </>
         )}
+        {/* Never waits on the report: a rig whose checks cannot be read can still be handed off. */}
+        <Box sx={{ mt: 2 }}>
+          <HandoffPackButton rigId={rigId} failCount={report?.counts.fail} />
+        </Box>
       </DialogContent>
       <DialogActions>
         <Button onClick={() => { void load(); }} disabled={loading || fixing}>Check again</Button>

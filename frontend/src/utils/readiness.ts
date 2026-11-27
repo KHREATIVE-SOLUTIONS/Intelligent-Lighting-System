@@ -138,6 +138,17 @@ export const autoGroupsPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/a
 export const readdressPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/readdress`;
 export const setModesPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/set-modes`;
 export const undoFixPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/undo`;
+export const handoffPackPath = (rigId: number) => `/rigs/${rigId}/handoff-pack`;
+
+/**
+ * The line shown before the handoff pack download when any check fails. Null when
+ * none does. It warns and never blocks: the pack says the same in README.txt.
+ */
+export function handoffWarning(failCount: number | null | undefined): string | null {
+  if (!failCount) return null;
+  return `${failCount} readiness check${failCount === 1 ? '' : 's'} fail${failCount === 1 ? 's' : ''}. `
+    + 'The pack still downloads, and its README.txt and readiness.md say what to fix before programming.';
+}
 
 /** "only mode", "matches its 24ch footprint": why Set modes chose this mode. */
 export function modeReasonText(p: SetModesProposal): string {

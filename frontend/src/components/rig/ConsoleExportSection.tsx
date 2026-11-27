@@ -19,23 +19,14 @@ import { consoleExportApi, readinessApi } from '../../services/api';
 import { CONSOLE_EXPORT_OPTIONS, summaryHeadline } from '../../utils/consoleExport';
 import { exportSummaryText } from '../../utils/readiness';
 import type { ReadinessReport, ReadinessStatus } from '../../utils/readiness';
+import { saveBlob } from '../../utils/download';
+import HandoffPackButton from './HandoffPackButton';
 import ReadinessDialog from './ReadinessDialog';
 import type {
   ConsoleExportKind,
   ConsoleExportSummary,
   ConsoleExportTarget,
 } from '../../utils/consoleExport';
-
-function saveBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
 
 function targetKey(target: ConsoleExportTarget): string {
   return 'rigId' in target ? `rig:${target.rigId}` : `preset:${target.preset}`;
@@ -52,7 +43,9 @@ const READINESS_SEVERITY: Record<ReadinessStatus, 'success' | 'warning' | 'error
  * checks warn or fail, with a button that opens the Readiness panel. It never
  * blocks the downloads; if it cannot be read it is simply left out.
  */
-export function ExportReadinessSummary({ rigId }: { rigId: number }) {
+export function ExportReadinessSummary({
+  rigId, onReport,
+}: { rigId: number; onReport?: (report: ReadinessReport | null) => void }) {
   const [report, setReport] = useState<ReadinessReport | null>(null);
   const [open, setOpen] = useState(false);
 
@@ -60,10 +53,11 @@ export function ExportReadinessSummary({ rigId }: { rigId: number }) {
     let current = true;
     readinessApi
       .get(rigId)
-      .then((data) => { if (current) setReport(data); })
-      .catch(() => { if (current) setReport(null); });
+      .then((data) => { if (current) { setReport(data); onReport?.(data); } })
+      .catch(() => { if (current) { setReport(null); onReport?.(null); } });
     return () => { current = false; };
-  }, [rigId]);
+    // onReport is the parent's state setter, which is stable.
+  }, [rigId, onReport]);
 
   useEffect(() => load(), [load]);
 
@@ -111,6 +105,7 @@ export function ConsoleExportSection({ target }: ConsoleExportSectionProps) {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [markNames, setMarkNames] = useState(false);
+  const [readinessReport, setReadinessReport] = useState<ReadinessReport | null>(null);
   const key = targetKey(target);
 
   useEffect(() => {
@@ -154,7 +149,7 @@ export function ConsoleExportSection({ target }: ConsoleExportSectionProps) {
       <Typography variant="subtitle2" gutterBottom>
         Export to a console
       </Typography>
-      {'rigId' in target && <ExportReadinessSummary rigId={target.rigId} />}
+      {'rigId' in target && <ExportReadinessSummary rigId={target.rigId} onReport={setReadinessReport} />}
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         Patch, 3D positions, rotations and groups, from the rig as it is now.
         {summary ? ` ${summaryHeadline(summary)}` : ''} Not tested on a desk: read
@@ -229,6 +224,13 @@ export function ConsoleExportSection({ target }: ConsoleExportSectionProps) {
       )}
 
       {busy && <LinearProgress sx={{ mt: 1.5 }} />}
+
+      {/* A database rig only: a demo preset has no readiness and no pack. */}
+      {'rigId' in target && (
+        <Box sx={{ mt: 2 }}>
+          <HandoffPackButton rigId={target.rigId} failCount={readinessReport?.counts.fail} />
+        </Box>
+      )}
     </Box>
   );
 }

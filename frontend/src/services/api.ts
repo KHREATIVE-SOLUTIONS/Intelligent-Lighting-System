@@ -40,7 +40,9 @@ import {
   roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellListPath, roomShellPath, roomShellUndoPath,
 } from '../utils/roomScan';
 import type { OutlineAnswer, OutlineChanges, OutlineRead } from '../utils/roomWallsEdit';
-import { autoGroupsPath, readdressPath, readinessPath, setModesPath, undoFixPath } from '../utils/readiness';
+import {
+  autoGroupsPath, handoffPackPath, readdressPath, readinessPath, setModesPath, undoFixPath,
+} from '../utils/readiness';
 import type {
   AutoGroupsResult, ReaddressResult, ReadinessReport, SetModesResult, UndoFixResult,
 } from '../utils/readiness';
@@ -1660,6 +1662,15 @@ export const readinessApi = {
   undoFix: async (rigId: number): Promise<UndoFixResult> => {
     const response = await api.post(undoFixPath(rigId));
     return response.data;
+  },
+
+  /** The venue handoff pack zip (docs/HANDOFF_PACK.md). Reads only. */
+  handoffPack: async (rigId: number): Promise<{ blob: Blob; filename: string }> => {
+    const response = await api.get(handoffPackPath(rigId), { responseType: 'blob' });
+    return {
+      blob: response.data as Blob,
+      filename: filenameFromDisposition(response.headers?.['content-disposition'], `rig_${rigId}_handoff_pack.zip`),
+    };
   },
 };
 
