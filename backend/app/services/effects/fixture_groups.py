@@ -47,6 +47,12 @@ class Fixture:
     # Fixture type for grouping
     fixture_type: str = "mover"  # mover, wash, bar, strobe
 
+    # Which way the body is turned, in degrees about the vertical: 0 faces
+    # downstage (+Z), +90 faces +X. The rig's `rotation_y`. Aiming a beam at a
+    # point in the room has to take it off the pan, or a head hung turned
+    # round points somewhere else.
+    yaw: float = 0.0
+
     # Physical capability, read from the fixture profile
     pan_range: float = 540.0
     tilt_range: float = 270.0

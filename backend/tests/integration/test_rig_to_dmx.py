@@ -679,3 +679,17 @@ async def test_inactive_patches_are_not_driven(db):
 
     assert len(manager.fixtures) == 1
     assert next(iter(manager.fixtures.values())).dmx_address == 101
+
+
+async def test_the_way_a_fixture_is_turned_reaches_the_engine(db):
+    """A head hung turned round has to be aimed from where it actually faces."""
+    rig = await _make_rig(db, "Yaw Rig", [
+        (BEAM_SOURCE, BEAM_MODE, {"name": "Faces Downstage", "universe": 0, "dmx_address": 1}),
+        (BEAM_SOURCE, BEAM_MODE, {"name": "Faces Stage Left", "universe": 0, "dmx_address": 101,
+                                  "rotation_y": 90.0}),
+    ])
+
+    manager = await build_manager_for_rig_id(db, rig.id)
+
+    assert _by_name(manager, "Faces Downstage").yaw == 0.0
+    assert _by_name(manager, "Faces Stage Left").yaw == 90.0

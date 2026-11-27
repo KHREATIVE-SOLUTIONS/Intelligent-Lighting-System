@@ -182,6 +182,23 @@ async def provision_operator(
     return token
 
 
+@pytest.fixture(autouse=True)
+def _repeatable_looks(monkeypatch):
+    """An engine built without a look seed chooses its looks at random, which
+    is right for a venue and wrong for a test: a failure has to happen again
+    when it is run again. Unseeded engines get seed 1 here. A test that passes
+    its own seed keeps it, and the tests that must hold for any night run
+    several."""
+    from app.services.effects import live_library
+
+    real_init = live_library.LibraryChooser.__init__
+
+    def seeded_init(self, seed=None):
+        real_init(self, seed=1 if seed is None else seed)
+
+    monkeypatch.setattr(live_library.LibraryChooser, "__init__", seeded_init)
+
+
 @pytest.fixture(scope="session")
 async def test_engine():
     """Create test database engine."""

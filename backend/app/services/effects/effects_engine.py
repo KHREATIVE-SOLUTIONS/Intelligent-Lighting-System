@@ -38,6 +38,8 @@ from .decision_engine import (
     DecisionEngine, LightingState, AudioState, EffectSelection
 )
 from .lfo_engine import LFOEngine
+from . import live_library
+from . import live_looks
 from . import live_moves
 from . import live_roles
 from ..lighting.section_templates import get_section_template
@@ -137,6 +139,10 @@ class EffectsConfig:
     # Research-pack runtime context flags
     accessibility_mode: str = "no_strobe"     # no_strobe | conservative | performance
     venue_mode: str = "concert"               # theatre | broadcast | corporate | concert | club
+    # Seed for the look library's weighted-random choices. None seeds from the
+    # system, so no two nights are alike; a number replays the same show from
+    # the same music, which is how a change is compared before and after.
+    look_seed: Optional[int] = None
     camera_mode: bool = False
     major_change_min_bars: int = 2
 
@@ -359,32 +365,43 @@ _IDLE_HELD_ATTRS = ("strobe", "white", "amber", "uv", "lime", "indigo")
 # big, how bright and how fast the show is; a style only leans the colours and
 # the character of the movement, the way an operator plays a techno room colder
 # and tighter than a house room. `speed` and `amp` scale the section's own
-# movement speed and size, `patterns` narrows the section's pattern pool (when
-# at least two survive), `palettes` are the song palettes cycled through.
+# movement speed and size, `patterns` leans the look library toward looks that
+# move in those ways (they are made likelier, never the only choice; see
+# live_library), `palettes` are the song palettes cycled through.
 _CLUB_STYLE_LOOKS = {
-    # Pattern names are the live_moves vocabulary.
+    # `patterns` are movements from live_looks, and only ones the look library
+    # uses: a movement no look performs would lean toward nothing.
     "house": {"palettes": (ColorPalette.HOUSE, ColorPalette.POP), "speed": 1.0, "amp": 1.0,
-              "patterns": ("circle", "figure8", "fan_sweep", "fly_out")},
+              "patterns": ("fan_circle_ripple", "columns_circle_unison", "fan_sweep_unison", "fan_sweep_rows",
+                           "centre_fly_fan", "fan_tilt_unison")},
     "techno": {"palettes": (ColorPalette.TECHNO, ColorPalette.EDM), "speed": 1.15, "amp": 0.85,
-               "patterns": ("sym_tilt", "tilt_ripple", "fly_out", "circle")},
+               "patterns": ("columns_tilt_rows", "columns_tilt_ripple", "cross_tilt_unison", "centre_fly_fan",
+                            "cross_hold", "columns_sweep_unison")},
     "dnb": {"palettes": (ColorPalette.DUBSTEP, ColorPalette.TECHNO), "speed": 1.25, "amp": 1.1,
-            "patterns": ("tilt_ripple", "sym_tilt", "figure8", "fly_out")},
+            "patterns": ("cross_tilt_unison", "columns_tilt_ripple", "cross_circle_rows", "centre_fly_fan",
+                         "columns_fly_fan", "cross_hold")},
     "trance": {"palettes": (ColorPalette.EDM, ColorPalette.AMBIENT), "speed": 0.9, "amp": 1.15,
-               "patterns": ("circle", "fly_out", "fan_sweep", "figure8")},
+               "patterns": ("fan_circle_ripple", "centre_fly_fan", "fan_sweep_unison", "columns_circle_unison",
+                            "fan_tilt_unison", "columns_sweep_ripple")},
     "edm": {"palettes": (ColorPalette.EDM, ColorPalette.DUBSTEP), "speed": 1.0, "amp": 1.0,
             "patterns": None},
     "hip_hop": {"palettes": (ColorPalette.HIP_HOP, ColorPalette.ROCK), "speed": 0.8, "amp": 0.85,
-                "patterns": ("sym_tilt", "tilt_ripple", "fan_sweep")},
+                "patterns": ("columns_tilt_rows", "centre_tilt_unison", "cross_tilt_unison", "fan_sweep_unison",
+                             "cross_hold", "fan_tilt_unison")},
     "latin": {"palettes": (ColorPalette.HOUSE, ColorPalette.POP), "speed": 0.9, "amp": 1.05,
-              "patterns": ("figure8", "fan_sweep", "circle")},
+              "patterns": ("fan_sweep_unison", "fan_circle_ripple", "columns_circle_unison", "columns_sweep_unison",
+                           "fan_sweep_rows", "fan_tilt_unison")},
     "afro": {"palettes": (ColorPalette.HOUSE, ColorPalette.HIP_HOP), "speed": 0.9, "amp": 1.0,
-             "patterns": ("fan_sweep", "figure8", "circle")},
+             "patterns": ("fan_sweep_unison", "columns_circle_unison", "columns_sweep_unison", "columns_tilt_rows",
+                          "fan_sweep_rows", "columns_tilt_ripple")},
     "open_format": {"palettes": (ColorPalette.POP, ColorPalette.HOUSE), "speed": 1.0, "amp": 1.0,
                     "patterns": None},
     "rock": {"palettes": (ColorPalette.ROCK, ColorPalette.POP), "speed": 1.05, "amp": 1.0,
-             "patterns": ("sym_tilt", "tilt_ripple", "fan_sweep", "circle")},
+             "patterns": ("columns_tilt_rows", "cross_tilt_unison", "fan_sweep_unison", "cross_circle_rows",
+                          "columns_fly_fan", "fan_tilt_unison")},
     "lounge": {"palettes": (ColorPalette.AMBIENT, ColorPalette.HOUSE), "speed": 0.7, "amp": 0.7,
-               "patterns": ("fan_sweep", "circle", "sym_tilt")},
+               "patterns": ("centre_tilt_unison", "columns_tilt_ripple", "fan_sweep_unison", "columns_circle_unison",
+                            "columns_sweep_ripple", "fan_tilt_unison")},
 }
 # A style is adopted after this many fresh, agreeing answers at or above this
 # confidence (the model answers every 5 s, so about 15 s of agreement). A
@@ -586,7 +603,10 @@ class EffectsEngine:
         self._rebuild_base_color: RGB = RGB(1.0, 1.0, 1.0)
         self._rebuild_snare_strobe_until: float = -999.0
         self._rebuild_snare_last_trigger: float = -999.0
-        self._rebuild_active_pattern: str = live_moves.DEFAULT_PATTERN
+        # The look library's current look, by name, and the movement it uses.
+        self._rebuild_active_pattern: str = live_looks.DEFAULT_LOOK
+        self._rebuild_look_movement: str = live_looks.DEFAULT_LOOK
+        self._look_library = live_library.LibraryChooser(seed=getattr(self.config, "look_seed", None))
         # Where each head was last sent, so the next frame can only ask for a
         # move a fixture can make. Keyed by fixture id.
         self._rebuild_head_pos: Dict[str, Tuple[float, float]] = {}
@@ -596,7 +616,6 @@ class EffectsEngine:
         # Phrase grid for look changes; see `_phrase_index`.
         self._phrase_origin_bar: Optional[int] = None
         self._rebuild_pattern_key: Optional[Tuple[str, int]] = None
-        self._rebuild_pattern_index: int = 0
         self._rebuild_color_key: Optional[Tuple[str, int]] = None
 
         # Which record is playing, as the analyser reports it.
@@ -659,6 +678,10 @@ class EffectsEngine:
         # would jump the heads.
         self._rebuild_style_speed = 1.0
         self._rebuild_style_amp = 1.0
+        # The running look's own speed and size, from the look library. Taken
+        # at the same moment and for the same reason.
+        self._rebuild_look_speed = 1.0
+        self._rebuild_look_amp = 1.0
 
         # Fixture phase choreography controls
         self._leader_follower_enabled: bool = True
@@ -1235,58 +1258,52 @@ class EffectsEngine:
             chase_order.extend(fx for fx in selected_rows[ridx] if roles.get(str(fx.id)) == live_roles.BEAM)
         chase_index = {fx.id: idx for idx, fx in enumerate(chase_order)}
 
-        # Where each head sits on its truss, for mirrored movement: how far along
-        # from the truss's own centre (-1 left end, +1 right end), which way the
-        # truss leans to face the room, and which truss it is.
-        head_geometry: Dict[str, Tuple[float, float, int]] = {}
-        z_mid = (row_keys[0] + row_keys[-1]) / 2.0 if row_keys else 0.0
-        z_half = (row_keys[-1] - row_keys[0]) / 2.0 if row_keys else 0.0
-        for row_i, row_fixtures in selected_rows.items():
-            xs = [float(getattr(fx, "x", 0.0)) for fx in row_fixtures]
-            x_mid = (min(xs) + max(xs)) / 2.0
-            x_half = (max(xs) - min(xs)) / 2.0
-            # A downstage truss leans back toward the booth; the rest lean out
-            # toward the audience.
-            leans_upstage = z_half > 0.0 and (row_keys[row_i] - z_mid) > 0.33 * z_half
-            for fx, x in zip(row_fixtures, xs):
-                u = (x - x_mid) / x_half if x_half > 1e-6 else 0.0
-                head_geometry[str(fx.id)] = (u, 1.0 if leans_upstage else -1.0, row_i)
+        # The geometry the looks need: each head's place on its truss, which
+        # way its truss faces, and the point the rig plays to. See live_looks.
+        look_rig = live_looks.build_rig([f for f in movers if _is_motion_capable(f)])
 
-        # Movement is beat-locked and section-aware; the vocabulary is live_moves.
+        # Movement is beat-locked and section-aware. Which look runs is the
+        # look library's choice: one that fits the moment, never the one
+        # already running and not one of its last few. A look is asked for on
+        # a new section or a new phrase, and its movement is a position for
+        # every head to aim at with a motion laid over it (live_looks).
         bar_clock = int(math.floor(self._beat_clock_bars()))
-        pattern_pool = list(live_moves.SECTION_POOLS.get(section, live_moves.DEFAULT_POOL))
-        motion = live_moves.SECTION_MOTION.get(section, live_moves.DEFAULT_MOTION)
+        motion = live_looks.SECTION_MOTION.get(section, live_looks.DEFAULT_MOTION)
         style_look = _CLUB_STYLE_LOOKS.get(self._club_style or "")
-        if style_look and style_look["patterns"]:
-            narrowed = [p for p in pattern_pool if p in style_look["patterns"]]
-            if len(narrowed) >= 2:
-                pattern_pool = narrowed
         style_speed = float(style_look["speed"]) if style_look else 1.0
         style_amp = float(style_look["amp"]) if style_look else 1.0
         phrase = self._phrase_index()
+        new_look = False
         if phrase is None:
-            # No phrase grid without a locked clock: rotate every few bars.
-            target_pattern = pattern_pool[bar_clock % len(pattern_pool)]
+            # No phrase grid without a locked clock: a new look every few bars.
             if bar_clock >= self._rebuild_pattern_hold_until_bar:
-                if target_pattern != self._rebuild_active_pattern:
-                    self._rebuild_active_pattern = target_pattern
-                    self._rebuild_style_speed = style_speed
-                    self._rebuild_style_amp = style_amp
+                new_look = True
                 hold_bars = max(1, int(getattr(self.config, "major_change_min_bars", 2) or 2))
                 self._rebuild_pattern_hold_until_bar = bar_clock + hold_bars
         elif (section, phrase) != self._rebuild_pattern_key:
-            # A new section or a new phrase: the next movement in this section's
-            # pool, never the one already running.
             self._rebuild_pattern_key = (section, phrase)
-            for _ in range(len(pattern_pool)):
-                self._rebuild_pattern_index += 1
-                candidate = pattern_pool[self._rebuild_pattern_index % len(pattern_pool)]
-                if candidate != self._rebuild_active_pattern or len(pattern_pool) == 1:
-                    break
-            self._rebuild_active_pattern = candidate
+            new_look = True
+        if new_look:
+            programme = self._programme_level
+            look = self._look_library.choose(
+                section=section,
+                energy=live_library.look_energy(section, programme),
+                mood=live_library.mood_of(self._smoothed_valence, self._smoothed_arousal),
+                characters=live_library.audio_characters(
+                    energy=energy, bass=bass, flux=flux, section=section,
+                    programme_level=programme, impact=self.time < self._drop_hit_until,
+                ),
+                bar=bar_clock,
+                style_movements=style_look["patterns"] if style_look else None,
+            )
+            movement, look_speed, look_amp = live_library.movement_of(look)
+            self._rebuild_active_pattern = look.name if look is not None else movement
+            self._rebuild_look_movement = movement
             self._rebuild_style_speed = style_speed
             self._rebuild_style_amp = style_amp
-        pattern = self._rebuild_active_pattern
+            self._rebuild_look_speed = look_speed
+            self._rebuild_look_amp = look_amp
+        pattern = self._rebuild_look_movement
 
         base_floor = 0.62
         chase_floor = 0.26
@@ -1484,15 +1501,17 @@ class EffectsEngine:
             ftype = str(getattr(fixture, "fixture_type", "") or "").lower()
             is_mover = _is_motion_capable(fixture)
 
-            # Position: a designer's movement, mirrored about each truss's centre
-            # line and locked to the beat clock. The club style leans its size
-            # and speed. See live_moves for the vocabulary and the conventions.
-            if is_mover:
-                fid = str(fixture.id)
-                u, row_dir, ridx = head_geometry.get(fid, (0.0, -1.0, 0))
-                target_pan, target_tilt = live_moves.head_target(
-                    pattern, u=u, row_dir=row_dir, row_index=ridx, beats=beats, motion=motion,
-                    speed=self._rebuild_style_speed, amp=self._rebuild_style_amp,
+            # Position: the look gives this head a point in the room to aim
+            # at, moving in time with the beat clock, and the aim turns that
+            # into pan and tilt from where the head hangs. The club style leans
+            # the size and speed.
+            head = look_rig.by_id.get(str(fixture.id)) if is_mover else None
+            if head is not None:
+                fid = head.fid
+                target_pan, target_tilt = live_looks.head_pan_tilt(
+                    pattern, head, look_rig, beats, motion,
+                    speed=self._rebuild_style_speed * self._rebuild_look_speed,
+                    amp=self._rebuild_style_amp * self._rebuild_look_amp,
                 )
                 # Never ask for a step a head cannot make: a change of pattern
                 # or section is a glide to the new position, not a jump.
@@ -4082,7 +4101,13 @@ class EffectsEngine:
     def get_pro_lighting_state(self) -> Dict:
         """Get current professional lighting state for API/WebSocket."""
         if not self._pro_lighting_enabled:
-            return {"enabled": False, **self.idle_look_status()}
+            # The live renderer runs a look whether or not the pro modules are on.
+            return {
+                "enabled": False,
+                **self.idle_look_status(),
+                "look": self._rebuild_active_pattern,
+                "look_movement": self._rebuild_look_movement,
+            }
         timing_debug = self.decision.get_transition_debug()
         state = {
             "enabled": True,
@@ -4098,6 +4123,10 @@ class EffectsEngine:
             "strobe_allowed": self.section_manager.is_strobe_allowed(),
             "buildup_progress": round(self.section_manager.get_buildup_progress(), 3),
             "pro_movement_pattern": self.pro_movement.params.pattern.value,
+            # What the live renderer is actually running: the look library's
+            # current look, and the movement performing it.
+            "look": self._rebuild_active_pattern,
+            "look_movement": self._rebuild_look_movement,
             "pro_strobe_active": self.pro_effects.strobe.is_active(),
             "pro_build_active": self.pro_effects.build.is_active,
             "key_lighting_zones": [z.value for z in self.key_lighting.get_active_zones()],

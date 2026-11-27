@@ -209,9 +209,11 @@ def decode(taps: List[Tap], frames: Dict[int, List[int]]):
 # --------------------------------------------------------------------------
 # Run
 # --------------------------------------------------------------------------
-async def run(rig_spec: str, track_specs: List[str], armed: bool):
+async def run(rig_spec: str, track_specs: List[str], armed: bool, seed: Optional[int] = 1):
     manager, rig_name = await load_rig(rig_spec)
-    engine = M.build_venue_engine()
+    # A fixed seed, so the look library makes the same choices on every run and
+    # two runs can be compared.
+    engine = M.build_venue_engine(look_seed=seed)
     engine.set_fixture_manager(manager)
     if armed:
         from app.api.endpoints.audio import arm_show_for_live_audio
@@ -222,7 +224,7 @@ async def run(rig_spec: str, track_specs: List[str], armed: bool):
     captured: Dict[int, List[int]] = {}
     engine.set_dmx_callback(lambda universe, frame: captured.__setitem__(int(universe), frame))
 
-    times, levels, rgbs, pans, tilts, sections = [], [], [], [], [], []
+    times, levels, rgbs, pans, tilts, sections, looks = [], [], [], [], [], [], []
     chunk_t, chunk_e = [], []
     bounds = []                                    # (name, start, end, truth, beats)
     clock = M._Clock()
@@ -255,6 +257,7 @@ async def run(rig_spec: str, track_specs: List[str], armed: bool):
                     pans.append(p)
                     tilts.append(q)
                     sections.append(M._engine_section(engine))
+                    looks.append(str(getattr(engine, "_rebuild_active_pattern", "")))
             end = offset + n / float(track.sample_rate)
             bounds.append((track.name, offset, end, track.truth,
                            None if track.beat_times is None else track.beat_times + offset))
@@ -263,7 +266,7 @@ async def run(rig_spec: str, track_specs: List[str], armed: bool):
     return {
         "rig_name": rig_name, "taps": taps, "t": np.array(times),
         "level": np.vstack(levels), "rgb": np.stack(rgbs),
-        "pan": np.vstack(pans), "tilt": np.vstack(tilts), "sections": sections,
+        "pan": np.vstack(pans), "tilt": np.vstack(tilts), "sections": sections, "looks": looks,
         "chunk_t": np.array(chunk_t), "chunk_e": np.array(chunk_e), "bounds": bounds,
     }
 
@@ -333,6 +336,12 @@ def measure(res: dict, lo: float, hi: float) -> dict:
     sections = [s for s, keep in zip(res["sections"], m) if keep]
     rig = level.mean(axis=1)
     out: dict = {"seconds": round(hi - lo, 1), "sections": timeline(t[m] - lo, sections)}
+    look_line = timeline(t[m] - lo, [k for k, keep in zip(res["looks"], m) if keep])
+    names = [name for _, name in look_line]
+    out["looks"] = {
+        "timeline": look_line, "changes": max(0, len(names) - 1), "distinct": len(set(names)),
+        "immediate_repeats": sum(a == b for a, b in zip(names, names[1:])),
+    }
 
     out["level"] = {
         "rig_mean": round(float(rig.mean()), 3), "rig_p5": round(float(np.percentile(rig, 5)), 3),
@@ -458,7 +467,7 @@ def draw(res: dict, report: dict, path: Path, label: str) -> None:
 
     plt.rcParams.update({"font.size": 9, "text.color": "#dddddd", "axes.labelcolor": "#bbbbbb",
                          "xtick.color": "#999999", "ytick.color": "#999999", "axes.edgecolor": "#444444"})
-    heights = [0.5, max(2.6, 0.13 * len(taps)), 1.5, 1.6, 1.6] if movers else [0.5, max(2.6, 0.13 * len(taps)), 1.5]
+    heights = [0.5, 0.5, max(2.6, 0.13 * len(taps)), 1.5] + ([1.6, 1.6] if movers else [])
     fig, axes = plt.subplots(len(heights), 1, figsize=(max(14.0, min(40.0, total / 6.0)), sum(heights) + 1.6),
                              sharex=True, gridspec_kw={"height_ratios": heights, "hspace": 0.12},
                              facecolor="#101012")
@@ -487,8 +496,20 @@ def draw(res: dict, report: dict, path: Path, label: str) -> None:
     ax.set_ylabel("section", rotation=0, ha="right", va="center")
     marks(ax, text=True)
 
-    # 2. the show: one row per fixture, colour x level, gamma-lifted so low levels read
+    # 2. which look the library chose
     ax = axes[1]
+    look_line = timeline(t, res["looks"])
+    shades = ("#26323f", "#33291f")
+    for k, ((start, name), nxt) in enumerate(zip(look_line, look_line[1:] + [(total, "")])):
+        ax.axvspan(start, nxt[0], color=shades[k % 2])
+        if nxt[0] - start > total * 0.035:
+            ax.text((start + nxt[0]) / 2, 0.5, name, ha="center", va="center", fontsize=6.5, color="#dddddd")
+    ax.set_yticks([])
+    ax.set_ylabel("look", rotation=0, ha="right", va="center")
+    marks(ax)
+
+    # 3. the show: one row per fixture, colour x level, gamma-lifted so low levels read
+    ax = axes[2]
     bins = np.arange(0.0, total, 0.05)
     idx = np.clip(np.searchsorted(t, bins), 0, len(t) - 1)
     img = (rgb[idx] * level[idx][:, :, None]) ** (1 / 2.2)
@@ -507,8 +528,8 @@ def draw(res: dict, report: dict, path: Path, label: str) -> None:
     ax.set_yticklabels(names)
     marks(ax)
 
-    # 3. how bright against how loud
-    ax = axes[2]
+    # 4. how bright against how loud
+    ax = axes[3]
     ax.fill_between(res["chunk_t"], 0, res["chunk_e"], color="#2f3a4a", lw=0, label="music energy")
     ax.plot(t, rig, color="#ffffff", lw=0.8, label="rig level")
     ax.set_ylim(0, 1.02)
@@ -522,8 +543,8 @@ def draw(res: dict, report: dict, path: Path, label: str) -> None:
         span = max(1e-6, float(np.abs(xs).max()))
         cmap = plt.get_cmap("coolwarm")
         for ax, data, ranges, name in (
-            (axes[3], pan, [taps[i].pan_range for i in movers], "pan  deg"),
-            (axes[4], tilt, [taps[i].tilt_range for i in movers], "tilt  deg"),
+            (axes[4], pan, [taps[i].pan_range for i in movers], "pan  deg"),
+            (axes[5], tilt, [taps[i].tilt_range for i in movers], "tilt  deg"),
         ):
             for k, i in enumerate(movers):
                 ax.plot(t, (data[:, i] - 0.5) * ranges[k], lw=0.6, color=cmap(0.5 + 0.5 * xs[k] / span), alpha=0.85)
@@ -544,7 +565,8 @@ def draw(res: dict, report: dict, path: Path, label: str) -> None:
             f"pan sweep {mv.get('pan_sweep_deg_median', 0):.0f} deg  tilt {mv.get('tilt_sweep_deg_median', 0):.0f} deg  "
             f"mirror pan/tilt {mv.get('mirror_symmetry_pan')}/{mv.get('mirror_symmetry_tilt')}  "
             f"lit step {mv.get('biggest_step_deg_while_lit', 0):.0f} deg  "
-            f"peaks/s {tr['flash']['worst_luminance_peaks_in_1s']}"
+            f"peaks/s {tr['flash']['worst_luminance_peaks_in_1s']}  "
+            f"looks {tr['looks']['distinct']} distinct in {tr['looks']['changes']} changes"
             + ("" if not drop else f"  drop {'caught' if drop['caught'] else 'MISSED'} "
                                    f"({drop['level_8s_before']:.2f}->{drop['level_8s_after']:.2f})")
         )
@@ -561,11 +583,12 @@ def main() -> None:
     ap.add_argument("--out", default="look_bench_out")
     ap.add_argument("--label", default="run")
     ap.add_argument("--armed", action="store_true")
+    ap.add_argument("--seed", type=int, default=1, help="seed for the look library's choices")
     args = ap.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    res = asyncio.run(run(args.rig, [s.strip() for s in args.tracks.split(",") if s.strip()], args.armed))
+    res = asyncio.run(run(args.rig, [s.strip() for s in args.tracks.split(",") if s.strip()], args.armed, args.seed))
     report = summarise(res)
     report["label"] = args.label
     (out / f"{args.label}.json").write_text(json.dumps(report, indent=1))

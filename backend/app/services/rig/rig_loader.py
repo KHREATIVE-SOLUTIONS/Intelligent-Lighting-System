@@ -407,6 +407,13 @@ def _build_fixture(
     fixture.channel_limits = limits
     fixture.channel_defaults = defaults
     fixture.range_values = ranges
+    # Which way the body is turned. Without it the engine aims every head as
+    # if it faced downstage, and the 3D view - which does turn the body - shows
+    # a beam the engine never meant.
+    try:
+        fixture.yaw = float(rf.rotation_y or 0.0)
+    except (TypeError, ValueError):
+        fixture.yaw = 0.0
     # What the light points at, or None when the rig declares nothing. Every
     # fixture carries the attribute so a consumer never has to tell "no zone"
     # apart from "built by a path that predates zones".
