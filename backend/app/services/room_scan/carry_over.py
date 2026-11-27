@@ -72,8 +72,12 @@ def refuse_shared_targets(entries: Any) -> List[Dict[str, Any]]:
         raise ShellEditError(422, "`entries` must be a list of the carry_over entries to keep, at least one.")
     seen: Dict[Tuple[Any, Any], Dict[str, Any]] = {}
     for entry in entries:
-        target = (entry.get("kind"), entry.get("new_index"))
-        if target in seen and isinstance(target[0], str) and target[0] in KINDS:
+        kind, index = entry.get("kind"), entry.get("new_index")
+        # Only a real target is compared (a list or dict cannot be a key): carry_over refuses the rest in a sentence.
+        if not isinstance(kind, str) or kind not in KINDS or isinstance(index, bool) or not isinstance(index, int):
+            continue
+        target = (kind, index)
+        if target in seen:
             first = seen[target]
             raise ShellEditError(
                 422,

@@ -286,6 +286,7 @@ export default function RoomScanDialog({
   // After Apply, what was lost that can be put on an item of the new room (slice 36). With no scan on
   // screen, what the last one applied left open, as kept with the stored room (slice 37).
   const fromStore = !applied && !preview && !file;
+  const carryOverTarget = (entry: RoomScanCarryOver) => `${entry.kind}:${entry.new_index}`;
   const carryOver = applied ? handEditCarryOver(applied) : fromStore ? pendingCarryOver : [];
   // Slice 37: a button finds its warning by the warning's id; an entry from before ids, by the server's place.
   const belongsTo = (entry: RoomScanCarryOver, warning: { id?: string; place: number }) => (
@@ -293,7 +294,11 @@ export default function RoomScanDialog({
   );
   const carryOverFor = (warning: { id?: string; place: number }) => carryOver.filter((entry) => belongsTo(entry, warning));
   const carryOverUnplaced = carryOver.filter((entry) => !editWarnings.some((warning) => belongsTo(entry, warning)));
-  const stillToKeep = carryOver.filter((entry) => !carried.includes(carryOverKey(entry)));
+  // The items something has been kept on: another entry for the same item is spent with it (the server
+  // drops it too), so it is neither a live button nor sent with "Keep all".
+  const keptOn = carryOver.filter((entry) => carried.includes(carryOverKey(entry))).map(carryOverTarget);
+  const spent = (entry: RoomScanCarryOver) => carried.includes(carryOverKey(entry)) || keptOn.includes(carryOverTarget(entry));
+  const stillToKeep = carryOver.filter((entry) => !spent(entry));
   const carryOverButton = (entry: RoomScanCarryOver) => {
     const key = carryOverKey(entry);
     return (
@@ -303,7 +308,7 @@ export default function RoomScanDialog({
         variant="outlined"
         color="inherit"
         data-testid="room-scan-carry-over"
-        disabled={carried.includes(key) || carrying !== null || busy !== null}
+        disabled={spent(entry) || carrying !== null || busy !== null}
         onClick={() => { void handleCarryOver(entry); }}
       >
         {carried.includes(key) ? `Kept ${entry.old_name} on ${entry.new_name}` : carryOverButtonText(entry)}

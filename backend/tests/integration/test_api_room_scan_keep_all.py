@@ -135,6 +135,37 @@ class TestKeepAll:
         assert undone.status_code == 200 and await column(db_session, rig_id) == applied
 
     @pytest.mark.asyncio
+    async def test_two_entries_on_two_lists_are_one_undo_step(
+        self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id, room, _, answer, entry = await lost_trim(client, sample_rig_data, sample_fixture_data)
+        applied = await column(db_session, rig_id)
+        riser = answer["room_shell"]["risers"][0]
+        # A second entry made by hand against a raised area of the room as stored: carry_over reads only
+        # the shape of an entry and the item's name now, so it stands in for a second loss.
+        other = {
+            "kind": "risers", "old_name": "The bar", "old_trim_or_height": None, "edits": ["name"],
+            "new_index": 0, "new_name": riser.get("name") or "The raised area", "reason": "read beside",
+            "warning_id": "lost-1",
+        }
+
+        response = await client.post(all_path(rig_id), json={"entries": [entry, other]})
+
+        assert response.status_code == 200, response.text
+        done = response.json()
+        assert [said["changed"] for said in done["carried"]] == [True, True]
+        assert [said["warning_id"] for said in done["carried"]] == [entry["warning_id"], "lost-1"]
+        assert done["room_shell"][LINES][0]["name"] == "Front truss"
+        assert done["room_shell"]["risers"][0]["name"] == "The bar"
+        assert done["undo"] == {"available": 1, "label": "2 names and trims kept from the last scan"}
+        assert done["room_shell"] == await column(db_session, rig_id)
+
+        undone = await client.post(f"{room}/undo")
+        assert undone.status_code == 200, undone.text
+        assert await column(db_session, rig_id) == applied
+        assert len(await stored_list(client, rig_id)) == 1
+
+    @pytest.mark.asyncio
     async def test_one_stale_entry_writes_nothing(
         self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data,
     ):
@@ -164,7 +195,11 @@ class TestKeepAll:
         assert await column(db_session, rig_id) == stored
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("body", [{}, {"entries": []}, {"entries": "all"}, {"entries": [1]}])
+    @pytest.mark.parametrize("body", [
+        {}, {"entries": []}, {"entries": "all"}, {"entries": [1]},
+        # Not hashable: refused in a sentence, never a 500.
+        {"entries": [{"kind": [], "new_index": 0}]}, {"entries": [{"kind": "risers", "new_index": {}}]},
+    ])
     async def test_a_body_that_is_not_a_list_of_entries_is_a_422(
         self, client: AsyncClient, db_session, sample_rig_data, sample_fixture_data, body,
     ):
