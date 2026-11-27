@@ -23,6 +23,11 @@ checks warn or fail, with **Open Readiness**. It never blocks a download, and
 it is left out when readiness cannot be read or the export is of a preset
 rather than a rig.
 
+When the rig is ready, **Download handoff pack** at the foot of the panel (and
+in the MA2 / MVR export) gives one zip with the patch, the groups, this report
+and the console files. A Fail shows a warning line first but never blocks it.
+See [HANDOFF_PACK.md](HANDOFF_PACK.md).
+
 ## The checks
 
 | Check | Fails when | Warns when |
