@@ -54,7 +54,7 @@ does not disagree with the rest of the system:
   neighbour 12 channels on. Pick the mode and check again.
 - **Fixture profiles**: the `unmatched_type` tag and the import's placeholder
   profile. Unmatched fixtures are switched off and a console cannot patch them.
-- **DMX modes**: each matched fixture's `dmx_mode_id` against its profile's
+- **DMX modes**: each matched fixture's `mode_id` against its profile's
   modes. Unmatched fixtures are left to Fixture profiles. A mode from another
   profile gives the wrong channel count and layout, so it fails; no mode warns,
   because the addresses check is then guessing. Pick the mode in the patch
@@ -90,8 +90,9 @@ one step is kept:
 - when any fixture the fix changed has been **changed or removed since**,
   nothing is put back: the answer is 409 and the panel says which fixtures,
   in words ("Cannot undo Re-address: 1 of the fixtures it changed has been
-  changed or removed since (Spot 2)."). Put them back by hand from the fix's
-  answer instead;
+  changed or removed since (Spot 2). Nothing was put back. Set the address
+  by hand."). Put them back by hand from the fix's answer instead. Any other
+  failure writes nothing and leaves the Undo button to try again;
 - with nothing to undo it says so and changes nothing; an undo that ran is
   spent, so a second one finds nothing.
 
