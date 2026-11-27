@@ -1570,6 +1570,8 @@ export default function StageView2D({
               onMouseDown={(e) => handleMouseDown(e, f.id)}
               onPointerDown={(e) => handleFixturePointerDown(e, f.id)}
               onClick={(e) => {
+                // Calibrating a stage plot: a point under a fixture is still a point on the plot.
+                if (picking) return;
                 e.stopPropagation();
                 skipBackgroundClick.current = false;
               }}
@@ -1590,9 +1592,7 @@ export default function StageView2D({
                   stroke={GUESS_RING}
                   strokeWidth={0.04}
                   strokeDasharray="0.1 0.07"
-                >
-                  <title>Position is a guess: drag it to where it hangs</title>
-                </circle>
+                />
               )}
 
               {/* Fixture icon */}

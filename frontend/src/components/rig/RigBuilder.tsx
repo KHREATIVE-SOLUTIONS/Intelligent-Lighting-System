@@ -994,10 +994,11 @@ export default function RigBuilder() {
             // what is shown, and never under a dialog that is in front of it.
             // Nor in walls mode, where nothing is selected or nudged.
             // Nor while the room's items are arranged, which has keys of its own.
-            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn && !itemsOn}
+            // Nor while a stage plot is calibrated, when a nudge would move (and confirm) a fixture.
+            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn && !itemsOn && !stagePlot.calibrating}
             // The same keys as buttons over the plan, for a phone or a
             // tablet: shown while something is selected, on the same terms.
-            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn && !itemsOn}
+            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn && !itemsOn && !stagePlot.calibrating}
             // Edit Room's "Arrange room items on the plan": a raised area, a
             // truss line or a ring is dragged, or nudged with the arrow keys,
             // each change one request and one step of the room's own undo.

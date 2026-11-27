@@ -87,6 +87,17 @@ describe('StageView2D: the stage plot underlay', () => {
     expect(onFixtureClick).not.toHaveBeenCalled();
   });
 
+  it('in calibrate mode a click on a fixture is still a point picked on the plot', () => {
+    const onPlanPick = vi.fn();
+    const { container } = plan({ underlay: UNDERLAY, onPlanPick });
+    const fixture = container.querySelector('g[transform="translate(6, 5)"]')!;
+    fireEvent.click(fixture, onStage(0, 0));
+    expect(onPlanPick).toHaveBeenCalledTimes(1);
+    const [x, z] = onPlanPick.mock.calls[0];
+    expect(x).toBeCloseTo(0, 9);
+    expect(z).toBeCloseTo(0, 9);
+  });
+
   it('in calibrate mode a fixture takes no press', () => {
     const onFixtureDragStart = vi.fn();
     const { container } = plan({ underlay: UNDERLAY, onPlanPick: vi.fn(), onFixtureDragStart });

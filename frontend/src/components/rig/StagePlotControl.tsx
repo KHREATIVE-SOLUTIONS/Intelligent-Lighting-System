@@ -77,7 +77,7 @@ export default function StagePlotControl({ plot, disabled = false }: StagePlotCo
                 value={plot.opacity}
                 disabled={off}
                 onChange={(_, v) => plot.setOpacity(v as number)}
-                onChangeCommitted={() => { void plot.commitOpacity(); }}
+                onChangeCommitted={(_, v) => { void plot.commitOpacity(v as number); }}
                 aria-labelledby="stage-plot-opacity"
                 sx={{ width: 100 }}
               />

@@ -66,7 +66,7 @@ export interface StagePlotState {
   remove: () => Promise<void>;
   setVisible: (visible: boolean) => void;
   setOpacity: (opacity: number) => void;
-  commitOpacity: () => Promise<void>;
+  commitOpacity: (opacity: number) => Promise<void>;
   startCalibrate: () => void;
   cancelCalibrate: () => void;
   repick: () => void;
@@ -223,11 +223,13 @@ export default function useStagePlot(rigId: number | null | undefined, stageWidt
   }, [draft, opacity, send]);
 
   // Outside calibration the slider's value is kept with a stored calibration; without one it is only on screen.
-  const commitOpacity = useCallback(async () => {
+  // The value is passed in: for a key press the slider commits in the same tick as it changes, before state has it.
+  const commitOpacity = useCallback(async (value: number) => {
+    setOpacity(value);
     const stored = info?.calibration;
-    if (calibrating || !stored || stored.opacity === opacity) return;
-    await send({ ...stored, opacity });
-  }, [calibrating, info, opacity, send]);
+    if (calibrating || !stored || stored.opacity === value) return;
+    await send({ ...stored, opacity: value });
+  }, [calibrating, info, send]);
 
   const startCalibrate = useCallback(() => {
     const stored = info?.calibration;
