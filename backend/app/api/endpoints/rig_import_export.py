@@ -334,8 +334,8 @@ async def export_rig_csv(rig_id: int, db: AsyncSession = Depends(get_db)):
 # Back to the console: grandMA2 and MVR. See docs/CONSOLE_EXPORT.md.
 # ---------------------------------------------------------------------------
 
-async def _export_rig_and_focus(rig_id: int, db: AsyncSession):
-    """The rig as every console export reads it and its focus table, or a 404.
+async def _rig_rows(rig_id: int, db: AsyncSession):
+    """The rig and its fixture rows as every console export reads them, or a 404.
 
     Loaded from the same rows the layout view edits and the 3D view and the
     engine read, at the moment of the request: nothing is cached. Channels are
@@ -351,13 +351,19 @@ async def _export_rig_and_focus(rig_id: int, db: AsyncSession):
         .where(RigFixture.rig_id == rig_id)
         .options(selectinload(RigFixture.fixture), selectinload(RigFixture.mode).selectinload(FixtureMode.channels))
     )
-    rows = result.scalars().all()
+    return rig, result.scalars().all()
+
+
+async def _export_rig_and_focus(rig_id: int, db: AsyncSession):
+    """The rig for the MA2 script, and its focus table. Only the script route builds the table."""
+    rig, rows = await _rig_rows(rig_id, db)
     export = from_rig(rig, rows)
     return export, build_focus_table(rig, rows, export)
 
 
 async def _export_rig(rig_id: int, db: AsyncSession) -> ExportRig:
-    return (await _export_rig_and_focus(rig_id, db))[0]
+    rig, rows = await _rig_rows(rig_id, db)
+    return from_rig(rig, rows)
 
 
 @router.get("/rigs/{rig_id}/export/console-summary")
