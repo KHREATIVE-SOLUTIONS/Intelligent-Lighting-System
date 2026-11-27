@@ -61,6 +61,10 @@ import {
 import type { Point3 } from './previs/fixtureDrag';
 import RoomScanUndoButton from './RoomScanUndoButton';
 import { undoCount, undoResultText } from '../../utils/roomScan';
+import { StagePlotFloor } from './previs/StagePlotFloor';
+import type { StagePlotFloorProps } from './previs/StagePlotFloor';
+import StagePlot3dToggle from './previs/StagePlot3dToggle';
+import useStagePlot3d from './previs/useStagePlot3d';
 
 type BeamDebugSnapshot = {
   fixtureId: number;
@@ -873,8 +877,11 @@ function Scene({
   feed,
   debug,
   move,
+  stagePlot = null,
 }: {
   rig: Rig;
+  /** The calibrated stage plot to lay on the floor, or null. */
+  stagePlot?: StagePlotFloorProps | null;
   debugBuffer: MutableRefObject<Record<number, BeamDebugSnapshot>>;
   cameraMode: CameraMode;
   qualityMode: QualityMode;
@@ -1107,6 +1114,8 @@ function Scene({
       ) : (
         <Stage width={rig.stage_width} depth={rig.stage_depth} />
       )}
+      {/* The calibrated stage plot, flat on the floor; never hit, so dragging goes through it. */}
+      {stagePlot && <StagePlotFloor {...stagePlot} />}
       <KeyZoneHighlights
         width={rig.stage_width}
         depth={rig.stage_depth}
@@ -1348,6 +1357,8 @@ export default function RigVisualizer() {
   // The beam debug table. Off, no fixture writes a row for it.
   const [showDebug, setShowDebug] = useState(false);
   const isDemo = !id; // No rig ID = demo mode
+  // The rig's stage plot, on the floor once it is calibrated (docs/STAGE_PLOT.md). The demo rig has none to ask for.
+  const stagePlot = useStagePlot3d(isDemo ? null : Number(id), rig?.stage_width ?? 10, rig?.stage_depth ?? 8);
   const [demoPresets, setDemoPresets] = useState<DemoPresetSummary[]>([]);
   const [demoPresetError, setDemoPresetError] = useState<string | null>(null);
 
@@ -1703,6 +1714,7 @@ export default function RigVisualizer() {
             </Button>
           </Tooltip>
         </ButtonGroup>
+        <StagePlot3dToggle status={stagePlot.status} on={stagePlot.on} onChange={stagePlot.setOn} />
         {/* The rig on screen, written out for a desk or a visualiser. */}
         {isDemo ? (
           rig.venue && demoPresets.some((d) => d.name === rig.venue) && (
@@ -1792,6 +1804,7 @@ export default function RigVisualizer() {
             feed={outputFeed}
             debug={showDebug}
             move={sceneMove}
+            stagePlot={stagePlot.floor}
           />
         </Canvas>
       </Box>
