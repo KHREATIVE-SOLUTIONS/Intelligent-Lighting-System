@@ -272,9 +272,13 @@ class TestLiv:
 
         booth = {i for i, n in names.items() if n and n.startswith("Booth Wash")}
         assert not booth & {p["id"] for p in body["proposals"] + body["by_hand"]}
-        # The LIV library profiles each have one mode, so the answer is the mode it lost.
-        assert len(modes) == 1
-        assert [(p["id"], p["mode_id"], p["reason"]) for p in body["proposals"]] == [(victim_id, original, "only_mode")]
+        # Its profile has two modes (Standard 16ch, Extended 18ch): the next fixture starts
+        # 16 channels on, so the address span names the mode it lost.
+        assert sorted(m.channel_count for m in modes) == [16, 18]
+        assert [(p["id"], p["mode_id"], p["reason"]) for p in body["proposals"]] == [
+            (victim_id, original, "address_span"),
+        ]
+        assert body["by_hand"] == [] and body["clashes"] == []
         await set_modes(client, rig_id)
         assert (await fixture_row(db_session, victim_id)).mode_id == original
         _, checks = await get(client, rig_id)
