@@ -98,16 +98,12 @@ jobs:
           cd frontend
           npm ci
 
-      # The repo carries no ESLint configuration, so `npm run lint` cannot run at
-      # all. Skip loudly rather than failing every job on a missing config file.
+      # Configured in frontend/eslint.config.js. Legacy debt is reported as
+      # warnings; only errors fail the job.
       - name: Run linting
         run: |
           cd frontend
-          if ls .eslintrc* eslint.config.* >/dev/null 2>&1; then
-            npm run lint
-          else
-            echo "::warning file=frontend/package.json::no ESLint configuration found - lint skipped"
-          fi
+          npm run lint
 
       # Non-blocking: the existing sources do not type-check clean yet. The
       # errors are annotated so the debt stays visible instead of gating docker-build.
