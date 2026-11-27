@@ -22,7 +22,7 @@ import PatchTable from './PatchTable';
 import FixtureProperties from './FixtureProperties';
 import IdentifyWalkthrough from './IdentifyWalkthrough';
 import RoomScanDialog from './RoomScanDialog';
-import { undoCount } from '../../utils/roomScan';
+import { pendingCarryOverOf, undoCount } from '../../utils/roomScan';
 import RoomShellEditDialog from './RoomShellEditDialog';
 import {
   carriedCount, carryBoxName, carryLabel, editResultText, shellEditErrorText, shellItemKey, shellItemTitle, shellItems,
@@ -1013,6 +1013,7 @@ export default function RigBuilder() {
         rigName={rig.name}
         hasRoom={rig.room_shell?.source === 'scan'}
         undoMoves={undoCount(rig)}
+        pendingCarryOver={pendingCarryOverOf(rig.room_shell)}
         onClose={() => setRoomScanOpen(false)}
         onChanged={() => {
           clearHistory();

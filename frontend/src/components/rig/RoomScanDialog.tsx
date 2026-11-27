@@ -45,11 +45,13 @@ import {
   djBoothPreviewLine,
   HAND_EDIT_ITEMS_SHOWN,
   carryOverButtonText,
+  carryOverKey,
   handEditCarryOver,
   handEditItems,
   handEditItemText,
-  handEditWarnings,
+  handEditWarningEntries,
   handEditsLine,
+  keepAllButtonText,
   fileProblem,
   fixtureMoveText,
   foundLines,
@@ -84,6 +86,11 @@ interface RoomScanDialogProps {
   onChanged: () => void;
   /** Opens the 3D view, where the stored room is drawn. */
   onView3D?: () => void;
+  /**
+   * What the last scan applied lost that can still be put back, as kept with the stored room
+   * (`room_shell.pending_carry_over`, slice 37): shown, with its buttons, when the dialog is opened again.
+   */
+  pendingCarryOver?: RoomScanCarryOver[];
 }
 
 type Busy = 'preview' | 'apply' | 'remove' | null;
@@ -102,6 +109,7 @@ export default function RoomScanDialog({
   onClose,
   onChanged,
   onView3D,
+  pendingCarryOver = [],
 }: RoomScanDialogProps) {
   const [file, setFile] = useState<File | null>(null);
   const [options, setOptions] = useState<RoomScanOptions>(DEFAULT_SCAN_OPTIONS);
@@ -115,9 +123,10 @@ export default function RoomScanDialog({
   const [askRemove, setAskRemove] = useState(false);
   // The list of what a scan applied again did shows its first few, until asked for all of it.
   const [showAllItems, setShowAllItems] = useState(false);
-  // Which entries of the applied answer's `carry_over` have been put back (by place), and the one being sent.
-  const [carried, setCarried] = useState<number[]>([]);
-  const [carrying, setCarrying] = useState<number | null>(null);
+  // Which `carry_over` entries have been put back (by `carryOverKey`, not by place: the list kept with the
+  // room shrinks as the rig is read again), and the one being sent ('all' for "Keep all").
+  const [carried, setCarried] = useState<string[]>([]);
+  const [carrying, setCarrying] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Only the newest preview may land: changing the units while one is in
   // flight must not show the old reading under the new setting.
@@ -210,12 +219,30 @@ export default function RoomScanDialog({
   };
 
   // "Keep Front truss on this one": the old name and trim onto the item the scan read in its place (slice 36).
-  const handleCarryOver = async (entry: RoomScanCarryOver, place: number) => {
+  const handleCarryOver = async (entry: RoomScanCarryOver) => {
+    const key = carryOverKey(entry);
     setError(null);
-    setCarrying(place);
+    setCarrying(key);
     try {
       const result = await roomScanApi.carryOver(rigId, entry);
-      setCarried((done) => [...done, place]);
+      setCarried((done) => [...done, key]);
+      setNotice(result.message);
+      onChanged();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setCarrying(null);
+    }
+  };
+
+  // "Keep all" (slice 37): every entry not yet kept, in one request and one step of the room's Undo.
+  // All or none: a refusal leaves every button as it was, to try again or one at a time.
+  const handleKeepAll = async (entries: RoomScanCarryOver[]) => {
+    setError(null);
+    setCarrying('all');
+    try {
+      const result = await roomScanApi.carryOverAll(rigId, entries);
+      setCarried((done) => [...done, ...entries.map(carryOverKey)]);
       setNotice(result.message);
       onChanged();
     } catch (err) {
@@ -255,25 +282,46 @@ export default function RoomScanDialog({
   const editsLine = handEditsLine(shown);
   // The same by name, one thing at a time, and what was lost or is to be checked (slice 35).
   const editItems = handEditItems(shown);
-  const editWarnings = handEditWarnings(shown);
-  // After Apply, what was lost that can be put on an item of the new room (slice 36), each with its place.
-  const carryOver = handEditCarryOver(applied).map((entry, place) => ({ entry, place }));
-  const carryOverFor = (warning: number | undefined) => carryOver.filter(({ entry }) => (
-    warning === undefined
-      ? typeof entry.warning !== 'number' || entry.warning < 0 || entry.warning >= editWarnings.length
-      : entry.warning === warning
-  ));
-  const carryOverButton = ({ entry, place }: { entry: RoomScanCarryOver; place: number }) => (
+  const editWarnings = handEditWarningEntries(shown);
+  // After Apply, what was lost that can be put on an item of the new room (slice 36). With no scan on
+  // screen, what the last one applied left open, as kept with the stored room (slice 37).
+  const fromStore = !applied && !preview && !file;
+  const carryOver = applied ? handEditCarryOver(applied) : fromStore ? pendingCarryOver : [];
+  // Slice 37: a button finds its warning by the warning's id; an entry from before ids, by the server's place.
+  const belongsTo = (entry: RoomScanCarryOver, warning: { id?: string; place: number }) => (
+    entry.warning_id !== undefined ? entry.warning_id === warning.id : entry.warning === warning.place
+  );
+  const carryOverFor = (warning: { id?: string; place: number }) => carryOver.filter((entry) => belongsTo(entry, warning));
+  const carryOverUnplaced = carryOver.filter((entry) => !editWarnings.some((warning) => belongsTo(entry, warning)));
+  const stillToKeep = carryOver.filter((entry) => !carried.includes(carryOverKey(entry)));
+  const carryOverButton = (entry: RoomScanCarryOver) => {
+    const key = carryOverKey(entry);
+    return (
+      <Button
+        key={key}
+        size="small"
+        variant="outlined"
+        color="inherit"
+        data-testid="room-scan-carry-over"
+        disabled={carried.includes(key) || carrying !== null || busy !== null}
+        onClick={() => { void handleCarryOver(entry); }}
+      >
+        {carried.includes(key) ? `Kept ${entry.old_name} on ${entry.new_name}` : carryOverButtonText(entry)}
+      </Button>
+    );
+  };
+  // Shown where there are two or more to keep: one at a time is the button in each warning.
+  const keepAllButton = carryOver.length >= 2 && (
     <Button
-      key={place}
       size="small"
-      variant="outlined"
+      variant="contained"
       color="inherit"
-      data-testid="room-scan-carry-over"
-      disabled={carried.includes(place) || carrying !== null || busy !== null}
-      onClick={() => { void handleCarryOver(entry, place); }}
+      sx={{ mb: 2 }}
+      data-testid="room-scan-carry-over-all"
+      disabled={stillToKeep.length === 0 || carrying !== null || busy !== null}
+      onClick={() => { void handleKeepAll(stillToKeep); }}
     >
-      {carried.includes(place) ? `Kept ${entry.old_name} on ${entry.new_name}` : carryOverButtonText(entry)}
+      {stillToKeep.length === 0 ? 'Kept all' : keepAllButtonText(stillToKeep.length)}
     </Button>
   );
   // How many of the moves on screen turn their fixture. Once applied it is said
@@ -417,6 +465,22 @@ export default function RoomScanDialog({
           </Alert>
         )}
 
+        {/* Opened again with no scan on screen: what the last one applied lost and is still to put back (slice 37). */}
+        {fromStore && carryOver.length > 0 && (
+          <Box data-testid="room-scan-pending-carry-over" sx={{ mb: 2 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              From the last scan applied: what it could not keep, still to put back
+            </Typography>
+            {carryOver.map((entry) => (
+              <Alert key={carryOverKey(entry)} severity="warning" sx={{ mb: 1 }} data-testid="room-scan-pending-warning">
+                {entry.message ?? `${entry.old_name} was not kept: the scan reads ${entry.new_name} in its place.`}
+                <Stack direction="row" spacing={1} sx={{ mt: 1 }}>{carryOverButton(entry)}</Stack>
+              </Alert>
+            ))}
+            {keepAllButton}
+          </Box>
+        )}
+
         {shown && (
           <Box>
             {!applied && (
@@ -474,18 +538,19 @@ export default function RoomScanDialog({
             )}
 
             {/* What was lost, and what was kept that the new room does not hold: shown as the scan's own warnings are. */}
-            {editWarnings.map((warning, index) => (
-              <Alert key={index} severity="warning" sx={{ mb: 1 }} data-testid="room-scan-hand-edit-warning">
-                {warning}
+            {editWarnings.map((warning) => (
+              <Alert key={warning.place} severity="warning" sx={{ mb: 1 }} data-testid="room-scan-hand-edit-warning">
+                {warning.text}
                 {/* Slice 36: the old name and trim can be put on the item the scan read in their place. */}
-                {carryOverFor(index).length > 0 && (
-                  <Stack direction="row" spacing={1} sx={{ mt: 1 }}>{carryOverFor(index).map(carryOverButton)}</Stack>
+                {carryOverFor(warning).length > 0 && (
+                  <Stack direction="row" spacing={1} sx={{ mt: 1 }}>{carryOverFor(warning).map(carryOverButton)}</Stack>
                 )}
               </Alert>
             ))}
-            {carryOverFor(undefined).length > 0 && (
-              <Stack direction="row" spacing={1} sx={{ mb: 1 }}>{carryOverFor(undefined).map(carryOverButton)}</Stack>
+            {carryOverUnplaced.length > 0 && (
+              <Stack direction="row" spacing={1} sx={{ mb: 1 }}>{carryOverUnplaced.map(carryOverButton)}</Stack>
             )}
+            {keepAllButton}
 
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
               <Typography variant="subtitle1">Suggested room</Typography>

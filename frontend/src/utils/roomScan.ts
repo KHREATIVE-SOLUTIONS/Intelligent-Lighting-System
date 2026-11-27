@@ -175,6 +175,8 @@ export interface RoomScanHandEdits {
     scan_height?: number | null;
     offset?: number;
     overlap?: number;
+    /** Slice 37: on each warning that has a `carry_over` entry, the same as that entry's `warning_id`. */
+    id?: string;
   }[];
   /**
    * Everything above one thing at a time, in the order `message` says it (slice 35): what it is, what
@@ -201,7 +203,52 @@ export interface RoomScanCarryOver {
   new_index: number;
   new_name: string;
   reason: string;
+  /** The place of its warning in `warnings` (slice 36). Kept; `warning_id` is what the dialog matches by. */
   warning?: number;
+  /** The `id` of its warning (slice 37): stable however the warnings are shown. */
+  warning_id?: string;
+  /** On an entry kept with the stored room (slice 37): its warning's sentence, to show when the answer is gone. */
+  message?: string;
+}
+
+/** The answer to POST /room-scan/carry-over/all ("Keep all", slice 37). */
+export interface RoomScanCarriedAll {
+  rig_id: number;
+  /** Per entry, in the order sent: what was put back. */
+  carried: {
+    warning_id?: string | null; kind: string; index: number; old_name: string; new_name?: string;
+    changed: boolean; fixtures_moved: number; message: string;
+  }[];
+  changed: boolean;
+  message: string;
+  pending_carry_over?: RoomScanCarryOver[];
+  undo?: { available: number; label?: string | null };
+}
+
+const isCarryOverEntry = (entry: RoomScanCarryOver | null | undefined): entry is RoomScanCarryOver => (
+  !!entry && typeof entry.old_name === 'string' && entry.old_name !== ''
+  && typeof entry.new_name === 'string' && typeof entry.new_index === 'number'
+);
+
+/**
+ * What the last scan applied lost that can still be put back, as kept with the stored room
+ * (`room_shell.pending_carry_over`, slice 37): the dialog opened again shows these. [] for none.
+ */
+export function pendingCarryOverOf(shell: unknown): RoomScanCarryOver[] {
+  const entries = shell && typeof shell === 'object'
+    ? (shell as { pending_carry_over?: unknown }).pending_carry_over
+    : undefined;
+  return Array.isArray(entries) ? (entries as RoomScanCarryOver[]).filter(isCarryOverEntry) : [];
+}
+
+/** A key for an entry that does not depend on where it is listed: its warning's id, or failing that its item. */
+export function carryOverKey(entry: RoomScanCarryOver): string {
+  return entry.warning_id ?? `${entry.kind}:${entry.new_index}:${entry.old_name}`;
+}
+
+/** "Keep all 3". */
+export function keepAllButtonText(count: number): string {
+  return `Keep all ${count}`;
 }
 
 /** The answer to POST /room-scan/carry-over. */
@@ -222,8 +269,7 @@ export interface RoomScanCarriedOver {
 export function handEditCarryOver(answer: RoomScanPreview | null | undefined): RoomScanCarryOver[] {
   const entries = answer?.applied?.hand_edits?.carry_over;
   if (!Array.isArray(entries)) return [];
-  return entries.filter((entry) => !!entry && typeof entry.old_name === 'string' && entry.old_name !== ''
-    && typeof entry.new_name === 'string' && typeof entry.new_index === 'number');
+  return entries.filter(isCarryOverEntry);
 }
 
 /** "Keep Front truss on this one". */
@@ -272,14 +318,25 @@ export function handEditItemText(item: RoomScanHandEditItem): string {
  * walls of the room as this scan reads it.", as the server's `message` says it.
  */
 export function handEditWarnings(answer: RoomScanPreview | null | undefined): string[] {
+  return handEditWarningEntries(answer).map((warning) => warning.text);
+}
+
+/**
+ * The same sentences, each with the `id` the server gave its warning (slice 37) and its place in the
+ * server's list, so a "Keep" button finds its warning by id even where a warning is passed over here.
+ */
+export function handEditWarningEntries(
+  answer: RoomScanPreview | null | undefined,
+): { text: string; id?: string; place: number }[] {
   const warnings = handEditsOf(answer)?.warnings;
   if (!Array.isArray(warnings)) return [];
-  const said: string[] = [];
-  warnings.forEach((warning) => {
+  const said: { text: string; id?: string; place: number }[] = [];
+  warnings.forEach((warning, place) => {
     if (!warning) return;
-    if (typeof warning.message === 'string' && warning.message !== '') said.push(warning.message);
+    const id = typeof warning.id === 'string' && warning.id !== '' ? warning.id : undefined;
+    if (typeof warning.message === 'string' && warning.message !== '') said.push({ text: warning.message, id, place });
     else if (warning.name && warning.reason) {
-      said.push(`Check ${warning.name}: it is ${warning.reason} of the room as this scan reads it.`);
+      said.push({ text: `Check ${warning.name}: it is ${warning.reason} of the room as this scan reads it.`, id, place });
     }
   });
   return said;
@@ -405,6 +462,11 @@ export function undoCount(rig: { room_scan_undo?: { moves?: unknown[] | null } |
 
 export function roomScanPath(rigId: number): string {
   return `/rigs/${rigId}/room-scan`;
+}
+
+/** POST: "Keep all", every entry at once as one room Undo step, all or none (slice 37). */
+export function roomScanCarryOverAllPath(rigId: number): string {
+  return `${roomScanCarryOverPath(rigId)}/all`;
 }
 
 /** POST: put a lost name and trim onto the item a scan read in its place (slice 36). */

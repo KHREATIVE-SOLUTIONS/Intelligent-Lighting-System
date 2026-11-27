@@ -36,7 +36,7 @@ import type {
   ConsoleExportTarget,
 } from '../utils/consoleExport';
 import {
-  fixturePositionPath, roomOutlineCornerPath, roomOutlineCornersPath, roomOutlinePath, roomScanCarryOverPath,
+  fixturePositionPath, roomOutlineCornerPath, roomOutlineCornersPath, roomOutlinePath, roomScanCarryOverAllPath, roomScanCarryOverPath,
   roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellListPath, roomShellPath, roomShellUndoPath,
 } from '../utils/roomScan';
 import type { OutlineAnswer, OutlineChanges, OutlineRead } from '../utils/roomWallsEdit';
@@ -45,7 +45,7 @@ import type {
   ShellEditUndone, ShellItemAdd, ShellItemAdded, ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
 } from '../utils/roomShellEdit';
 import type {
-  RoomScanCarriedOver, RoomScanCarryOver, RoomScanOptions, RoomScanPreview, RoomScanUndoResult, RoomShellRemoved,
+  RoomScanCarriedAll, RoomScanCarriedOver, RoomScanCarryOver, RoomScanOptions, RoomScanPreview, RoomScanUndoResult, RoomShellRemoved,
 } from '../utils/roomScan';
 
 const API_BASE_URL = '/api';
@@ -1464,6 +1464,15 @@ export const roomScanApi = {
    */
   carryOver: async (rigId: number, entry: RoomScanCarryOver): Promise<RoomScanCarriedOver> => {
     const response = await api.post(roomScanCarryOverPath(rigId), entry);
+    return response.data;
+  },
+
+  /**
+   * "Keep all" (slice 37): every entry at once, as ONE step of the room's Undo. All or none: one
+   * stale entry is a 409 and two for the same item a 422, and nothing is written either way.
+   */
+  carryOverAll: async (rigId: number, entries: RoomScanCarryOver[]): Promise<RoomScanCarriedAll> => {
+    const response = await api.post(roomScanCarryOverAllPath(rigId), { entries });
     return response.data;
   },
 
