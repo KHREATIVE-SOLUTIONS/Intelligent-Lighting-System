@@ -14,6 +14,8 @@ this module never disagrees with the view a check sends the operator to:
 - addresses: PatchingService.find_conflicts, the same overlap rule
   /patch-conflicts uses, and the programming audit's 1-512 footprint rule;
 - profiles: the `unmatched_type` tag and the import's placeholder profile;
+- modes: the fixture's own DMX mode and the footprint fixture_rows counts
+  (NO_MODE_CHANNELS when it has none), against the modes of its profile;
 - room: the scanned room's box and outline as fixture_position reads them;
 - groups: the groups an export writes (console_export.model.from_rig);
 - carry-over: room_shell.pending_carry_over (room_scan/pending_carry.py);
@@ -264,23 +266,67 @@ def check_addresses(rows: Sequence[Any], data: Sequence[Dict[str, Any]]) -> Dict
 
 def check_profiles(rows: Sequence[Any]) -> Dict[str, Any]:
     unmatched = [rf for rf in rows if is_unmatched(rf)]
-    no_mode = [rf for rf in rows if not is_unmatched(rf) and rf.mode is None]
     if unmatched:
-        message = (
-            f"{_fixtures(len(unmatched))} have no fixture profile that matched ({_named(unmatched)}). "
-            "They are switched off and a console cannot patch them: choose a profile for each."
-        )
-        if no_mode:
-            message += f" {_fixtures(len(no_mode))} more have a profile but no DMX mode."
-        return _check("profiles", "Fixture profiles", FAIL, message, (rf.id for rf in unmatched + no_mode))
-    if no_mode:
         return _check(
-            "profiles", "Fixture profiles", WARN,
-            f"{_fixtures(len(no_mode))} have a profile but no DMX mode ({_named(no_mode)}), "
-            "so their channels are not known. Pick a mode for each.",
-            (rf.id for rf in no_mode),
+            "profiles", "Fixture profiles", FAIL,
+            f"{_fixtures(len(unmatched))} have no fixture profile that matched ({_named(unmatched)}). "
+            "They are switched off and a console cannot patch them: choose a profile for each.",
+            (rf.id for rf in unmatched),
         )
-    return _check("profiles", "Fixture profiles", OK, "Every fixture has a matched profile and a DMX mode.")
+    return _check("profiles", "Fixture profiles", OK, "Every fixture has a matched profile.")
+
+
+def mode_problem(rf: Any) -> Optional[str]:
+    """"foreign" when the fixture's mode is not one of its profile's, "guessed" when it has none, else None.
+
+    A mode id that points at no mode at all is foreign too: it is not a mode
+    of the profile. Reads `rf.mode` only (loaded with the rows); the
+    profile's own list of modes is not needed to know a mode is its.
+    """
+    mode = getattr(rf, "mode", None)
+    if mode is None:
+        return "foreign" if getattr(rf, "mode_id", None) is not None else "guessed"
+    if getattr(mode, "fixture_id", None) != getattr(rf, "fixture_id", None):
+        return "foreign"
+    return None
+
+
+def check_modes(rows: Sequence[Any], data: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Each matched fixture's DMX mode is set on it, and is a mode of its profile.
+
+    Unmatched fixtures are left to the profiles check: they have no profile
+    to hold a mode to.
+    """
+    counted = {d["id"]: d["channel_count"] for d in data}
+    matched = [rf for rf in rows if not is_unmatched(rf)]
+    foreign = [rf for rf in matched if mode_problem(rf) == "foreign"]
+    guessed = [rf for rf in matched if mode_problem(rf) == "guessed"]
+    if not foreign and not guessed:
+        return _check(
+            "modes", "DMX modes", OK,
+            "Every fixture has a DMX mode of its own profile, so its channel count is known.",
+        )
+    sentences = []
+    if foreign:
+        shown = []
+        for rf in foreign[:3]:
+            mode = getattr(rf, "mode", None)
+            what = f"mode {mode.name!r} ({counted.get(rf.id)}ch)" if mode is not None else f"mode id {rf.mode_id}, which no longer exists"
+            shown.append(f"{_label(rf)}: {what}")
+        sentences.append(
+            f"{_fixtures(len(foreign))} have a DMX mode that is not a mode of their profile ("
+            + "; ".join(shown) + (" and more" if len(foreign) > 3 else "")
+            + "). Their channels would be patched wrong: pick one of the profile's modes for each."
+        )
+    if guessed:
+        sentences.append(
+            f"{_fixtures(len(guessed))} have no DMX mode set ({_named(guessed)}), so each one's footprint "
+            f"is only guessed as {NO_MODE_CHANNELS} channels. Pick the mode each fixture is set to."
+        )
+    return _check(
+        "modes", "DMX modes", FAIL if foreign else WARN, " ".join(sentences),
+        (rf.id for rf in foreign + guessed),
+    )
 
 
 def _room(rig: Any) -> Optional[Tuple[float, float, float]]:
@@ -407,6 +453,7 @@ def readiness(rig: Any, rows: Sequence[Any]) -> Dict[str, Any]:
         check_positions(rows),
         check_addresses(rows, data),
         check_profiles(rows),
+        check_modes(rows, data),
         check_room(rig, rows),
         check_groups(rows, export),
         check_carry_over(rig),

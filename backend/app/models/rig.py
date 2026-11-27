@@ -61,6 +61,13 @@ class Rig(Base):
     # `room_shell_edits` below is what a reader gets.
     room_shell_undo = Column(JSON, nullable=True)
 
+    # What the last readiness fix changed, so it can be undone as one step:
+    # `fix` ("auto-groups" or "readdress"), `at`, and `entries` (id, name,
+    # `before` and `after` of only the columns that fix writes). The next fix
+    # that changes something replaces it; an undo spends it. Written by the
+    # readiness endpoints only (services/rig/readiness_undo.py).
+    readiness_undo = Column(JSON, nullable=True)
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

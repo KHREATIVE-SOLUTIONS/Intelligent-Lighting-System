@@ -22,7 +22,7 @@ from app.services.venue_import.apply import TAG_UNCONFIRMED, TAG_UNMATCHED, TAG_
 
 SAMPLES = Path(__file__).resolve().parent.parent / "fixtures" / "import"
 CHECK_IDS = [
-    "fixtures", "positions", "addresses", "profiles", "room", "groups", "carry_over", "export_ma2", "export_mvr",
+    "fixtures", "positions", "addresses", "profiles", "modes", "room", "groups", "carry_over", "export_ma2", "export_mvr",
 ]
 SCANNED_ROOM = {"source": "scan", "room": {"width": 12.0, "depth": 10.0, "height": 6.0}}
 
@@ -238,14 +238,17 @@ class TestEachCheck:
         no_mode = await profile(db_session, channels=0, model="Modeless")
         rig, rows = await make_rig(db_session, [{"profile": no_mode}])
         _, checks = await get(client, rig.id)
-        assert checks["profiles"]["status"] == "warn"
-        assert checks["profiles"]["fixture_ids"] == [rows[0].id]
+        # A missing mode is the DMX modes check's to say, not the profiles check's.
+        assert checks["profiles"]["status"] == "ok"
+        assert checks["modes"]["status"] == "warn"
+        assert checks["modes"]["fixture_ids"] == [rows[0].id]
         assert "16 channels" in checks["addresses"]["message"]
 
         rig2, rows2 = await make_rig(db_session, [{"tags": ["position_source:mvr", TAG_UNMATCHED]}, {}])
         _, checks2 = await get(client, rig2.id)
         assert checks2["profiles"]["status"] == "fail"
         assert checks2["profiles"]["fixture_ids"] == [rows2[0].id]
+        assert checks2["modes"]["status"] == "ok", "an unmatched fixture is left to the profiles check"
 
     @pytest.mark.asyncio
     async def test_a_fixture_outside_the_scanned_room_warns(self, client: AsyncClient, db_session):
