@@ -8,11 +8,11 @@ import ReadinessDialog from '../components/rig/ReadinessDialog';
 import { readinessApi } from '../services/api';
 import { exportSummaryText, fixturesText, headline, sortedChecks } from '../utils/readiness';
 import type {
-  AutoGroupsResult, ReaddressMove, ReaddressResult, ReadinessCheck, ReadinessReport,
+  AutoGroupsResult, ReaddressMove, ReaddressResult, ReadinessCheck, ReadinessReport, SetModesResult,
 } from '../utils/readiness';
 
 vi.mock('../services/api', () => ({
-  readinessApi: { get: vi.fn(), autoGroups: vi.fn(), readdress: vi.fn(), undoFix: vi.fn() },
+  readinessApi: { get: vi.fn(), autoGroups: vi.fn(), readdress: vi.fn(), setModes: vi.fn(), undoFix: vi.fn() },
 }));
 
 const api = vi.mocked(readinessApi);
@@ -66,10 +66,35 @@ const PLAN: ReaddressResult = {
   message: 'Would move 1 fixture: Spot 2 1.005 to 1.017.',
 };
 
+const MODES = check({
+  id: 'modes', title: 'DMX modes', status: 'fail',
+  message: 'Spot 3 is set to mode "Basic", which its profile does not have.', fixture_ids: [13, 14, 15],
+  fixture_count: 3, fix: 'set-modes',
+});
+const MODES_PLAN: SetModesResult = {
+  rig_id: 7,
+  dry_run: true,
+  proposals: [{
+    id: 13, name: 'Spot 3', problem: 'foreign', mode_id_before: 90, mode_name_before: 'Basic',
+    channel_count_before: 24, reason: 'footprint', mode_id: 31, mode_name: 'Extended', channel_count: 24,
+  }, {
+    id: 14, name: 'Old Par', problem: 'guessed', mode_id_before: null, mode_name_before: null,
+    channel_count_before: 16, reason: 'only_mode', mode_id: 40, mode_name: '7ch', channel_count: 7,
+  }],
+  by_hand: [{
+    id: 15, name: 'Twin', problem: 'guessed', mode_id_before: null, mode_name_before: null, channel_count_before: 16,
+    candidates: [{ id: 51, name: 'Basic', channel_count: 8 }, { id: 52, name: 'Full', channel_count: 12 }],
+    why: 'its profile has 2 modes and nothing on the rig says which',
+  }],
+  clashes: [{ kind: 'overlap', fixture_ids: [13, 16], names: ['Spot 3', 'Spot 4'], message: 'Spot 3 and Spot 4 would overlap.' }],
+  message: 'Would set the DMX mode of 2 fixtures.',
+};
+
 beforeEach(() => {
   api.get.mockReset();
   api.autoGroups.mockReset();
   api.readdress.mockReset();
+  api.setModes.mockReset();
   api.undoFix.mockReset();
 });
 afterEach(cleanup);
@@ -96,12 +121,9 @@ describe('ReadinessDialog', () => {
     expect(within(rows[2]).queryByRole('button')).toBeNull();
   });
 
-  it('shows the DMX modes check like any other, with no fix to press', async () => {
-    const MODES = check({
-      id: 'modes', title: 'DMX modes', status: 'fail',
-      message: 'Spot 3 is set to mode "Basic", which its profile does not have.', fixture_ids: [13], fixture_count: 1,
-    });
+  it('shows the DMX modes check with its Set modes fix, which writes nothing when pressed', async () => {
     api.get.mockResolvedValue(report([POSITIONS, MODES]));
+    api.setModes.mockResolvedValue(MODES_PLAN);
     render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} />);
     await flush();
 
@@ -110,6 +132,95 @@ describe('ReadinessDialog', () => {
     expect(within(row).getByText('Fail')).toBeTruthy();
     expect(within(row).getByText(/its profile does not have/)).toBeTruthy();
     expect(within(row).queryByRole('button', { name: /Make groups|Re-address/ })).toBeNull();
+
+    fireEvent.click(within(row).getByRole('button', { name: 'Set modes' }));
+    await flush();
+
+    expect(api.setModes).toHaveBeenCalledTimes(1);
+    expect(api.setModes).toHaveBeenCalledWith(7, true);
+  });
+
+  it('Set modes shows what changes, what to pick by hand and the clash, then asks before setting', async () => {
+    api.get
+      .mockResolvedValueOnce(report([MODES]))
+      .mockResolvedValueOnce(report([{ ...MODES, status: 'warn', fixture_ids: [15], fixture_count: 1 }]));
+    api.setModes
+      .mockResolvedValueOnce(MODES_PLAN)
+      .mockResolvedValueOnce({
+        ...MODES_PLAN, dry_run: false, message: 'Set the DMX mode of 2 fixtures.',
+        undo: { fix: 'set-modes', label: 'Undo Set modes', count: 2 },
+      });
+    api.undoFix.mockResolvedValue({
+      rig_id: 7, fix: 'set-modes', undo: null,
+      restored: [{ id: 13, name: 'Spot 3', from: { mode_id: 31 }, to: { mode_id: 90 } }],
+      message: 'Undid Set modes: 2 fixtures back on the DMX mode they had (or none).',
+    });
+    const onChanged = vi.fn();
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} onChanged={onChanged} />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set modes' }));
+    await flush();
+
+    const plan = screen.getByTestId('readiness-set-modes-plan');
+    expect(plan.textContent).toContain('Spot 3: Basic to Extended (24ch), the only mode of its present 24ch footprint');
+    expect(plan.textContent).toContain("Old Par: no mode to 7ch (7ch), the profile's only mode");
+    expect(within(plan).getByTestId('readiness-set-modes-by-hand').textContent)
+      .toContain('Twin: Basic (8ch), Full (12ch)');
+    expect(within(plan).getByTestId('readiness-set-modes-clashes').textContent).toContain('Spot 3 and Spot 4 would overlap.');
+    expect(plan.textContent).toContain('run Re-address');
+    expect(api.setModes).toHaveBeenCalledTimes(1); // asked, nothing set yet
+    expect(onChanged).not.toHaveBeenCalled();
+
+    fireEvent.click(within(plan).getByRole('button', { name: 'Set 2' }));
+    await flush();
+
+    expect(api.setModes).toHaveBeenLastCalledWith(7, false);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Set the DMX mode of 2 fixtures.')).toBeTruthy();
+    expect(screen.queryByTestId('readiness-set-modes-plan')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo Set modes' }));
+    await flush();
+
+    expect(api.undoFix).toHaveBeenCalledWith(7);
+    expect(onChanged).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Undid Set modes: 2 fixtures back on the DMX mode they had (or none).')).toBeTruthy();
+    expect(screen.queryByTestId('readiness-undo')).toBeNull();
+  });
+
+  it('Set modes with only fixtures to pick by hand offers Close, not Set, and Cancel writes nothing', async () => {
+    api.get.mockResolvedValue(report([MODES]));
+    api.setModes.mockResolvedValue({ ...MODES_PLAN, proposals: [], clashes: [] });
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set modes' }));
+    await flush();
+
+    const plan = screen.getByTestId('readiness-set-modes-plan');
+    expect(within(plan).getByTestId('readiness-set-modes-by-hand')).toBeTruthy();
+    expect(within(plan).queryByRole('button', { name: /^Set / })).toBeNull();
+    expect(within(plan).queryByTestId('readiness-set-modes-clashes')).toBeNull();
+    fireEvent.click(within(plan).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByTestId('readiness-set-modes-plan')).toBeNull();
+    expect(api.setModes).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Set modes plan that cannot be read says nothing was changed', async () => {
+    api.get.mockResolvedValue(report([MODES]));
+    api.setModes.mockRejectedValue(new Error('offline'));
+    const onChanged = vi.fn();
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} onChanged={onChanged} />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set modes' }));
+    await flush();
+
+    expect(screen.getByText('Could not work out the DMX modes: nothing was changed. Try again.')).toBeTruthy();
+    expect(screen.queryByTestId('readiness-set-modes-plan')).toBeNull();
+    expect(onChanged).not.toHaveBeenCalled();
   });
 
   it('hands the fixtures a check names to the editor', async () => {
