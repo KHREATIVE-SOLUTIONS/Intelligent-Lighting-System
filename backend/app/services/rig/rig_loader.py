@@ -21,6 +21,7 @@ from app.models.fixture import (
     FixtureType,
 )
 from app.models.rig import Rig, RigFixture
+from app.services.dmx.channel_ranges import ChannelRangeValues, resolve_channel_ranges
 from app.services.effects.fixture_groups import Fixture, FixtureGroupManager
 from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
 
@@ -241,8 +242,12 @@ def _build_channel_map(
     rf: RigFixture,
     profile: FixtureProfile,
     diagnostics: RigLoadDiagnostics,
-) -> Tuple[Dict[str, int], Dict[str, tuple], Dict[str, int], int]:
+) -> Tuple[Dict[str, int], Dict[str, tuple], Dict[str, int], Dict[str, ChannelRangeValues], int]:
     """Map a mode's channels to engine channel names and 0-based offsets.
+
+    Alongside the offsets come each channel's clamps, its home value, and - for
+    a shutter, strobe or dimmer whose profile carries value ranges - which bytes
+    open it, close it and strobe it.
 
     channel_number is 1-based. A channel type that appears more than once in a
     mode keeps the lowest channel_number under its canonical name; the rest are
@@ -254,6 +259,7 @@ def _build_channel_map(
     channels: Dict[str, int] = {}
     limits: Dict[str, tuple] = {}
     defaults: Dict[str, int] = {}
+    ranges: Dict[str, ChannelRangeValues] = {}
     seen: Dict[str, int] = {}
     aliases = 0
     span = 0
@@ -273,10 +279,11 @@ def _build_channel_map(
 
         raw_type = channel.channel_type
         name = raw_type.value if isinstance(raw_type, ChannelType) else str(raw_type or ChannelType.OTHER.value)
+        channel_type = name
+        is_fine = bool(getattr(channel, "is_fine", False)) or getattr(channel, "coarse_channel", None) is not None
 
         seen[name] = seen.get(name, 0) + 1
         if seen[name] > 1:
-            is_fine = bool(getattr(channel, "is_fine", False)) or getattr(channel, "coarse_channel", None) is not None
             if is_fine and not name.endswith("_fine"):
                 name = f"{name}_fine_{seen[name]}"
             else:
@@ -295,6 +302,12 @@ def _build_channel_map(
         if default:
             defaults[name] = max(0, min(255, default))
 
+        # The low byte of a 16-bit channel has no slots of its own.
+        if not is_fine:
+            resolved = resolve_channel_ranges(channel_type, getattr(channel, "value_ranges", None))
+            if resolved is not None:
+                ranges[name] = resolved
+
     if aliases:
         diagnostics.channel_aliases.append({
             "rig_fixture_id": rf.id,
@@ -303,7 +316,7 @@ def _build_channel_map(
             "count": aliases,
         })
 
-    return channels, limits, defaults, max(span, int(mode.channel_count or 0))
+    return channels, limits, defaults, ranges, max(span, int(mode.channel_count or 0))
 
 
 def _build_fixture(
@@ -344,11 +357,12 @@ def _build_fixture(
     mode = _select_mode(rf, profile, diagnostics)
 
     if mode is not None:
-        channels, limits, defaults, span = _build_channel_map(mode, rf, profile, diagnostics)
+        channels, limits, defaults, ranges, span = _build_channel_map(mode, rf, profile, diagnostics)
     else:
         channels = dict(GENERIC_CHANNEL_MAPS.get(engine_type, GENERIC_CHANNEL_MAPS["effect"]))
         limits = {}
         defaults = {}
+        ranges = {}
         span = GENERIC_CHANNEL_SPANS.get(engine_type, len(channels))
         diagnostics.generic_maps.append({
             "rig_fixture_id": rf.id,
@@ -392,6 +406,7 @@ def _build_fixture(
     fixture.tilt_range = _travel_range(profile.tilt_range, DEFAULT_TILT_RANGE) if 'tilt' in channels else 0.0
     fixture.channel_limits = limits
     fixture.channel_defaults = defaults
+    fixture.range_values = ranges
     # What the light points at, or None when the rig declares nothing. Every
     # fixture carries the attribute so a consumer never has to tell "no zone"
     # apart from "built by a path that predates zones".

@@ -24,7 +24,9 @@
         {"channel_number": 3, "channel_type": "tilt", "name": "Tilt", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 4, "channel_type": "tilt_fine", "name": "Tilt Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 3},
         {"channel_number": 5, "channel_type": "speed", "name": "Pan/Tilt Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 6, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Intensity 0->100% (assumed)", "min_value": 0, "max_value": 255}
+        ]},
         {"channel_number": 7, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 6},
         {"channel_number": 8, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
           {"name": "Closed", "min_value": 0, "max_value": 19},
@@ -135,7 +137,9 @@
         {"channel_number": 3, "channel_type": "tilt", "name": "Tilt", "default_value": 128, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
         {"channel_number": 4, "channel_type": "tilt_fine", "name": "Tilt Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 3},
         {"channel_number": 5, "channel_type": "speed", "name": "Pan/Tilt Speed", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
-        {"channel_number": 6, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null},
+        {"channel_number": 6, "channel_type": "dimmer", "name": "Dimmer", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
+          {"name": "Intensity 0->100% (assumed)", "min_value": 0, "max_value": 255}
+        ]},
         {"channel_number": 7, "channel_type": "dimmer", "name": "Dimmer Fine", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": true, "coarse_channel": 6},
         {"channel_number": 8, "channel_type": "shutter", "name": "Shutter/Strobe", "default_value": 0, "min_value": 0, "max_value": 255, "is_fine": false, "coarse_channel": null, "value_ranges": [
           {"name": "Closed", "min_value": 0, "max_value": 19},
