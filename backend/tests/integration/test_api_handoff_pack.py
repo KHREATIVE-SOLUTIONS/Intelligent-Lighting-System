@@ -49,7 +49,7 @@ class TestTheLivDemoRig:
         zf = await pack(client, rig_id)
 
         names = set(zf.namelist())
-        assert {"README.txt", "patch.csv", "groups.csv", "readiness.md"} <= names
+        assert {"README.txt", "patch.csv", "groups.csv", "readiness.md", "patch-sheet.html"} <= names
         assert {"Readiness_LIV_ma2.xml", "Readiness_LIV_ma2_script.txt", "Readiness_LIV.mvr"} <= names
         assert header(zf, "patch.csv") == handoff_pack.PATCH_COLUMNS
         assert header(zf, "groups.csv") == handoff_pack.GROUP_COLUMNS

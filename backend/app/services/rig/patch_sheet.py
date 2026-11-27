@@ -115,7 +115,7 @@ tr.none td { background: #f0f0f0; }
 ul { margin: 0; padding-left: 5mm; }
 li { margin-bottom: 1mm; }
 .legend { font-size: 9pt; color: #333; }
-@page { size: A4 landscape; margin: 10mm; }
+@page { size: landscape; margin: 10mm; }
 @media print {
   body { margin: 0; font-size: 9pt; }
   thead { display: table-header-group; }

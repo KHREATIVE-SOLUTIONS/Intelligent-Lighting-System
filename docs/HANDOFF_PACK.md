@@ -51,7 +51,10 @@ defaults (no "(position unconfirmed)" in names, groups from 1, notes on). See
 ## Printable patch sheet
 
 Press **Open printable patch sheet** next to **Download handoff pack**. It opens
-in a new tab; print it with the browser's Print (landscape, A4 or Letter).
+in a new tab; print it with the browser's Print (landscape, A4 or Letter). The
+app fetches the sheet with the operator token and shows it from a blob URL,
+because every `/api` route needs the token and a bare link would not carry it.
+If the browser blocks the tab, the panel says so.
 
 API: `GET /api/rigs/{rig_id}/patch-sheet` answers `text/html`, one
 self-contained page: inline CSS, no script, no external file, every value
