@@ -137,7 +137,8 @@ class TestATrussTheScanReadsSomewhereElse:
         assert answer["room_shell"] == preview["room_shell"] == await column(db_session, rig_id)
         bands_add_up(answer["room_shell"])
         said = answer["applied"]["hand_edits"]
-        assert set(said) == WARNING_KEYS == set(preview["hand_edits"])
+        # Slice 36: the truss read there can be given the name and trim back, so `carry_over` says which it is.
+        assert set(said) == WARNING_KEYS | {"carry_over"} == set(preview["hand_edits"])
         fact = {
             "kind": LINES, "name": "Front truss", "edits": ["name", "height"], "reason": "hanging height",
             "read_height": line["height"], "trim": 3.5, "scan_height": truss["height"],
@@ -175,7 +176,7 @@ class TestATrussTheScanReadsSomewhereElse:
         line = answer["room_shell"][LINES][0]
         assert abs(line["z1"] - truss["z1"]) == pytest.approx(0.3, abs=0.03) and line["name"] == truss["name"]
         said = answer["applied"]["hand_edits"]
-        assert set(said) == WARNING_KEYS
+        assert set(said) == WARNING_KEYS | {"carry_over"}
         [warning] = said["warnings"]
         assert (warning["kind"], warning["name"], warning["edits"], warning["reason"]) == (
             LINES, "Front truss", ["name"], "read beside",

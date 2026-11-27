@@ -5,7 +5,7 @@ Keeping what a person set in a room when the room is scanned again
 A scan applied again writes a whole new room. A person who had corrected the
 old one (typed a name, set a height, put in a riser the scan never saw, taken
 out a "riser" that was a flight case) lost all of it. This carries those
-corrections onto the new reading (docs/ROOM_SCAN.md, slices 32 to 35), for
+corrections onto the new reading (docs/ROOM_SCAN.md, slices 32 to 36), for
 raised areas, overhead lines and overhead rings.
 
 Which stored item is which new one is `keep_mark.best_match`, the rule the DJ
@@ -70,8 +70,9 @@ What is done, in this order:
 4. One added by hand that matches nothing but does share the plan with a new
    one is not kept: the scan has something there now, and two things in one
    place is worse than one. It is reported, with what replaced it.
-5. Anything else that matches nothing is not carried and not reported: a
-   name has nowhere to go.
+5. Anything else that matches nothing is not carried: a name has nowhere to
+   go. It is said (point 7), but for a raised area the scan no longer reads
+   at all, or reads as another kind.
 6. **Checks.** What was kept is kept whatever the new room is, but it is
    flagged (`warnings`) where the new room cannot hold it: a kept height (a
    raised area's top, a line's or ring's hanging height) above the new
@@ -93,10 +94,29 @@ What is done, in this order:
    Only the reading's items that no stored item is are looked at: the other
    truss of a stack, and a truss that crosses, are themselves and not this
    one read differently.
+   Slice 36 says three more, and lists each in `items` as `LOST`:
+   - A raised area with a name, a height or a base height set by hand that
+     matches nothing, where the new reading has a raised area that no stored
+     one is and that shares some floor with it but less than the half a match
+     needs (`LOST_BESIDE`). The warning names it and the new area.
+   - A line or ring with a name or a trim set by hand that matches nothing
+     and has no such item of the reading near it: the scan no longer reads it
+     at all (`LOST_GONE`).
+   - Of two stored items that pick the same new one (point 2), the one that
+     does not have it, where it had something set by hand and was not added
+     by hand (that one is replaced, point 4): `LOST_OTHER`. The warning names
+     both, and what the scan reads there.
+8. **What can be put back** (slice 36; `carry`, said as `carry_over`). Every
+   warning of point 7 that has an item of the new room behind it (read at
+   another height, read beside, lost to another) is also given in a form a
+   program can act on: the list, the old name, the old trim or height, the
+   place and name of the new item, and why. Nothing is written for it here:
+   carry_over.py puts the old name and trim onto that item when asked.
 
 What was done is also listed one thing at a time (`items` in the answer,
 slice 35): what it is ("raised area", "line", "ring"), its name, and which of
-four things happened to it (`KEPT`, `LEFT_OUT`, `REPLACED`, `ADDED_KEPT`).
+five things happened to it (`KEPT`, `LEFT_OUT`, `REPLACED`, `ADDED_KEPT`, and
+since slice 36 `LOST`).
 
 "Shares the plan" (`SHARED`): two raised areas share it with any floor in
 common at all; two that only touch along an edge do not. Trusses cross and
@@ -141,11 +161,15 @@ KEPT = "kept your edits"
 LEFT_OUT = "left out (you deleted it)"
 REPLACED = "replaced (a scanned item overlaps it)"
 ADDED_KEPT = "added by hand, kept"
+# Slice 36: a name, a trim or a height set by hand that went nowhere (the three new warnings only).
+LOST = "lost"
 
 # Why something was lost: the `reason` of a warning that has no place in the new room (slice 35).
 LOST_HEIGHT = "hanging height"      # read over the same plan, more than HANG_MATCH_M from where it was read
 LOST_BESIDE = "read beside"         # read sharing some of the plan, less than the half a match needs
 LOST_RECORD = "record dropped"      # a record of a deleted item that this reading has nothing for
+LOST_GONE = "no longer read"        # a line or ring the reading has nothing near (slice 36)
+LOST_OTHER = "another has it"       # of two stored items that pick one new item, the one that does not have it
 # What the scan read in the place of a line and of a ring, in a sentence.
 _READ_WORDS: Dict[str, str] = {"truss_lines": "a truss", "truss_rings": "a ring"}
 
@@ -225,7 +249,14 @@ class KeptEdits:
     # at (slice 35). `kind` is the list. A line's or ring's name or trim lost to the height it was read at
     # (LOST_HEIGHT: "edits", "read_height", "trim", "scan_height") or to where on the plan (LOST_BESIDE:
     # "edits", "offset", "overlap"), and a record of a deleted item dropped (LOST_RECORD).
+    # Slice 36 adds: a raised area read beside (LOST_BESIDE with "by_index", the new area), a line or ring
+    # no longer read (LOST_GONE), and one that lost its new item to another stored one (LOST_OTHER:
+    # "kept", the stored one that has it, "read", what the scan calls the new item, and "by_index").
     lost: List[Dict[str, Any]] = field(default_factory=list)
+    # Each {"kind", "old_name", "old_trim_or_height", "edits", "new_index", "reason", "lost"}: an entry of
+    # `lost` (at place "lost") that has an item of the new room behind it, in the form carry_over.py
+    # takes (slice 36). `kind` is the list; a raised area's also has "old_base_height".
+    carry: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def any(self) -> bool:
@@ -244,8 +275,8 @@ class KeptEdits:
         `areas`, `kept`, `added_kept`, `added_replaced` and `message` are
         always there, and speak of raised areas. `overhead_kept`,
         `overhead_added_kept`, `overhead_added_replaced`, `deleted_left_out`,
-        `warnings` and `items` are there only when they have something in
-        them.
+        `warnings`, `items` and `carry_over` are there only when they have
+        something in them.
 
         `items` (slice 35) is everything above one thing at a time, in the
         order `message` says them: {"kind": "raised area" | "line" | "ring",
@@ -254,6 +285,14 @@ class KeptEdits:
         the checks ({"kind", "index", "reason", "name"}) and then what was
         lost ({"kind", "name", "reason", "message"} and its numbers, with no
         index: it is not in the new room).
+
+        Slice 36: `items` ends with what was lost in one of the three ways
+        that slice names, each with the outcome LOST. `carry_over` is every
+        warning with an item of the new room behind it, for a program:
+        {"kind" (the list), "old_name", "old_trim_or_height", "edits",
+        "new_index", "new_name", "reason", "warning"} and, for a raised area,
+        "old_base_height". `warning` is the place of its warning in
+        `warnings`. POST .../room-scan/carry-over takes one as it is.
         """
         if not self.any:
             return None
@@ -306,7 +345,12 @@ class KeptEdits:
                     )
         for entry in warnings:
             said.append(f"Check {entry['name']}: it is {entry['reason']} of the room as this scan reads it.")
-        lost = [{**entry, "message": _lost_words(entry, applied)} for entry in self.lost]
+        lost = []
+        for entry in self.lost:
+            if "by_index" in entry:
+                # What the item of the new room is called as it will be stored.
+                entry = {**entry, "by": called(entry["by_index"], entry["kind"])}
+            lost.append({**entry, "message": _lost_words(entry, applied)})
         said.extend(entry["message"] for entry in lost)
 
         # One thing at a time, in the order the sentences above say them.
@@ -322,6 +366,20 @@ class KeptEdits:
                 for entry in areas if kind == "risers" else overhead:
                     if entry.get("kind", "risers") == kind:
                         items.append({"kind": ITEM_WORDS[kind], "name": entry["name"], "outcome": outcome})
+        # Then what was lost in one of the three ways slice 36 says, in the order the warnings say them.
+        items.extend(
+            {"kind": ITEM_WORDS[entry["kind"]], "name": entry["name"], "outcome": LOST}
+            for entry in self.lost if _listed_as_lost(entry)
+        )
+        carry_over = [
+            {
+                **{key: value for key, value in entry.items() if key != "lost"},
+                "new_name": called(entry["new_index"], entry["kind"]),
+                # The checks are said before what was lost.
+                "warning": len(warnings) + entry["lost"],
+            }
+            for entry in self.carry
+        ]
 
         answer: Dict[str, Any] = {
             "areas": len(kept),
@@ -333,7 +391,7 @@ class KeptEdits:
         for key, entries in (
             ("overhead_kept", over_kept), ("overhead_added_kept", over_added),
             ("overhead_added_replaced", over_replaced), ("deleted_left_out", list(self.left_out)),
-            ("warnings", warnings + lost), ("items", items),
+            ("warnings", warnings + lost), ("items", items), ("carry_over", carry_over),
         ):
             if entries:
                 answer[key] = entries
@@ -349,12 +407,22 @@ def _lost_words(entry: Dict[str, Any], applied: bool) -> str:
             "dropped, so it may come back on a later scan."
         )
     edits = entry["edits"]
-    what = " and ".join("trim" if key == "height" else key for key in edits)
-    if applied:
-        gone = f"its {what} {'was' if len(edits) == 1 else 'were'} not kept"
-    else:
-        gone = f"its {what} will not be kept"
-    read = _READ_WORDS[kind]
+    # A line's or ring's height is its trim; a raised area's is its height, and it has a base height too.
+    words = EDIT_WORDS if kind == "risers" else {"name": "name", "height": "trim"}
+    said = [words[key] for key in edits]
+    what = said[0] if len(said) == 1 else f"{', '.join(said[:-1])} and {said[-1]}"
+    if entry["reason"] == LOST_GONE:
+        go = "went" if applied else ("goes" if len(edits) == 1 else "go")
+        return f"The scan no longer reads {name}; its {what} {go} with it."
+    kept = f"{'was' if len(edits) == 1 else 'were'} not kept" if applied else "will not be kept"
+    gone = f"its {what} {kept}"
+    if entry["reason"] == LOST_OTHER:
+        return (
+            f"{name} and {entry['kept']} both stand where the scan reads {entry['read']}: {entry['kept']} "
+            f"{'has' if applied else 'will have'} it, so the {what} of {name} {kept}."
+        )
+    # A raised area of the reading is named: there may be several, and one is to be pointed at.
+    read = entry["by"] if kind == "risers" else _READ_WORDS[kind]
     if entry["reason"] == LOST_HEIGHT:
         before = entry.get("scan_height")
         beside = "" if before is None or before == entry["trim"] else f" (the scan read it at {_metres(before)} m before)"
@@ -369,8 +437,19 @@ def _lost_words(entry: Dict[str, Any], applied: bool) -> str:
     )
 
 
-def _near_miss(kind: str, was: Dict[str, Any], new: List[Any], taken: Any) -> Optional[Dict[str, Any]]:
-    """Why a stored line or ring that matched nothing was not matched, where the reading says. Point 7.
+def _listed_as_lost(entry: Dict[str, Any]) -> bool:
+    """Whether something lost is one of the three slice 36 lists in `items`: the rest are warnings only, as they were."""
+    return entry["reason"] in (LOST_GONE, LOST_OTHER) or (entry["reason"] == LOST_BESIDE and entry["kind"] == "risers")
+
+
+def _near_miss(
+    kind: str, was: Dict[str, Any], new: List[Any], taken: Any,
+) -> Tuple[Optional[Dict[str, Any]], Optional[int]]:
+    """(why a stored item that matched nothing was not matched, the place of the one it was not). Point 7.
+
+    (None, None) where the reading does not say. A raised area has no height
+    to be passed over for (its height is never compared), and its kind is not
+    looked at: only one that shares some floor and less than half.
 
     Asked only of the reading's items that no stored item is (`taken` holds
     the places of the rest). One that shares half the plan and was passed over
@@ -378,7 +457,7 @@ def _near_miss(kind: str, was: Dict[str, Any], new: List[Any], taken: Any) -> Op
     of several, the greatest overlap, the earlier of two equal. None where the
     reading has nothing there: the scan no longer reads it at all.
     """
-    read_at = scan_read_height(was)
+    read_at = scan_read_height(was) if kind in OVERHEAD else None
     found: Dict[str, Tuple[int, float]] = {}
     for index, item in enumerate(new):
         if index in taken or not isinstance(item, dict):
@@ -394,17 +473,18 @@ def _near_miss(kind: str, was: Dict[str, Any], new: List[Any], taken: Any) -> Op
         if reason not in found or overlap > found[reason][1]:
             found[reason] = (index, overlap)
     if LOST_HEIGHT in found:
-        read = new[found[LOST_HEIGHT][0]]
+        index = found[LOST_HEIGHT][0]
+        read = new[index]
         return {
             "reason": LOST_HEIGHT, "read_height": read["height"],
             "trim": was["height"] if _number(was.get("height")) else read_at, "scan_height": read_at,
-        }
+        }, index
     if LOST_BESIDE in found:
         index, overlap = found[LOST_BESIDE]
         here, there = item_centre(kind, was), item_centre(kind, new[index])
         offset = math.hypot(here[0] - there[0], here[1] - there[1]) if here and there else 0.0
-        return {"reason": LOST_BESIDE, "offset": round(offset, 3), "overlap": round(overlap, 3)}
-    return None
+        return {"reason": LOST_BESIDE, "offset": round(offset, 3), "overlap": round(overlap, 3)}, index
+    return None, None
 
 
 def _winners(matches: List[Tuple[Optional[int], float]]) -> Dict[int, Tuple[int, float]]:
@@ -478,13 +558,16 @@ def _leave_out(
 
 def _plan(
     kind: str, old: List[Any], new: List[Any],
-) -> Tuple[List[Tuple[int, int, Tuple[str, ...], float]], List[int], List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[
+    List[Tuple[int, int, Tuple[str, ...], float]], List[int], List[Dict[str, Any]],
+    List[Tuple[Dict[str, Any], Optional[int], Dict[str, Any]]],
+]:
     """What becomes of one list's stored items: (kept, added and kept, added and replaced, lost). Points 1 to 5, 7.
 
     `kept`: (place in the old list, place in the new, the fields, the overlap).
-    `added and kept`: places in the old list. `lost`: a line or ring whose
-    name or trim the reading had one near enough to name but not to match
-    (`_near_miss`). Nothing is written here.
+    `added and kept`: places in the old list. `lost`: what went nowhere and
+    is said (point 7), each (the entry, the place in the new list of the item
+    it points at or None, the stored item). Nothing is written here.
     """
     # Every stored item with something to keep.
     wanted: List[Tuple[int, Tuple[str, ...]]] = []
@@ -504,7 +587,7 @@ def _plan(
     kept: List[Tuple[int, int, Tuple[str, ...], float]] = []
     added_kept: List[int] = []
     added_replaced: List[Dict[str, Any]] = []
-    lost: List[Dict[str, Any]] = []
+    lost: List[Tuple[Dict[str, Any], Optional[int], Dict[str, Any]]] = []
     for place, edits in wanted:
         was = old[place]
         match, overlap = matches[place]
@@ -519,11 +602,25 @@ def _plan(
                 added_replaced.append({"name": item_name(kind, was), "by_index": shared.index(most)})
             else:
                 added_kept.append(place)
-        elif match is None and edits and kind in OVERHEAD:
-            # Its name or trim goes nowhere. Said where the reading has one there that is not it.
-            why = _near_miss(kind, was, new, winner)
+        elif not edits:
+            continue
+        elif match is not None:
+            # Another stored item has the one it picked (point 2). What a person set on this one goes nowhere.
+            lost.append(({
+                "kind": kind, "name": item_name(kind, was), "edits": list(edits), "reason": LOST_OTHER,
+                "kept": item_name(kind, old[winner[match][0]]), "read": item_name(kind, new[match]),
+                "by_index": match,
+            }, match, was))
+        else:
+            # Its name or trim goes nowhere. Said with the one the reading has there that is not it,
+            # and for a line or ring also where the reading has none.
+            why, index = _near_miss(kind, was, new, winner)
+            fact = {"kind": kind, "name": item_name(kind, was), "edits": list(edits)}
             if why is not None:
-                lost.append({"kind": kind, "name": item_name(kind, was), "edits": list(edits), **why})
+                # A raised area's warning names the new area: its place is part of what is said.
+                lost.append(({**fact, **why, **({"by_index": index} if kind == "risers" else {})}, index, was))
+            elif kind in OVERHEAD:
+                lost.append(({**fact, "reason": LOST_GONE}, None, was))
     return kept, added_kept, added_replaced, lost
 
 
@@ -569,12 +666,28 @@ def keep_hand_edits(old_shell: Optional[Dict[str, Any]], new_shell: Dict[str, An
     risers_replaced = replaced.get("risers", [])
     overhead_replaced = [{"kind": kind, **entry} for kind in OVERHEAD for entry in replaced.get(kind, [])]
     # What went nowhere: names and trims the reading had one near but not at, then the records dropped.
-    lost = [entry for kind in OVERHEAD if kind in plans for entry in plans[kind][5]] + dropped
+    lost: List[Dict[str, Any]] = []
+    carry: List[Dict[str, Any]] = []
+    for kind in KINDS:
+        for entry, index, was in (plans[kind][5] if kind in plans else []):
+            if index is not None:
+                # The place is in the reading without what was left out, which is the room's own: what is
+                # kept is written where it is, and what is added by hand goes after it.
+                edits = entry["edits"]
+                carry.append({
+                    "kind": kind, "old_name": entry["name"],
+                    "old_trim_or_height": _mm(was["height"]) if "height" in edits else None,
+                    **({"old_base_height": _mm(base_of(was)) if "base_height" in edits else None}
+                       if kind == "risers" else {}),
+                    "edits": list(edits), "new_index": index, "reason": entry["reason"], "lost": len(lost),
+                })
+            lost.append(entry)
+    lost += dropped
     if not any(plan[2] or plan[3] for plan in plans.values()):
         # Nothing to write: the room is the reading as it came (but for what was left out of it).
         return KeptEdits(
             shell=read, added_replaced=risers_replaced, overhead_added_replaced=overhead_replaced, left_out=left_out,
-            lost=lost,
+            lost=lost, carry=carry,
         )
 
     shell = copy.deepcopy(read)
@@ -630,4 +743,5 @@ def keep_hand_edits(old_shell: Optional[Dict[str, Any]], new_shell: Dict[str, An
         left_out=left_out,
         warnings=_checks(shell, kept, added),
         lost=lost,
+        carry=carry,
     )

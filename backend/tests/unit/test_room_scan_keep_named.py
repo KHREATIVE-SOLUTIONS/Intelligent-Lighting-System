@@ -21,7 +21,7 @@ import pytest
 
 from app.services.room_scan.edit import DELETED_KEY, SCAN_HEIGHT_KEY, add_item, delete_item, edit_item
 from app.services.room_scan.keep_edits import (
-    ADDED_KEPT, KEPT, LEFT_OUT, LOST_BESIDE, LOST_HEIGHT, LOST_RECORD, REPLACED, keep_hand_edits,
+    ADDED_KEPT, KEPT, LEFT_OUT, LOST_BESIDE, LOST_GONE, LOST_HEIGHT, LOST_RECORD, REPLACED, keep_hand_edits,
 )
 from app.services.room_scan.keep_mark import HANG_MATCH_M, MATCH_IOU
 from tests.unit.test_room_scan_edit import shell
@@ -143,7 +143,8 @@ class TestATrussReadAtAnotherHeight:
         )}]
         assert before["warnings"][0]["message"].endswith("so its name will not be kept.")
         assert after["message"] == after["warnings"][0]["message"]
-        assert set(after) == BARE | {"warnings"}
+        # Slice 36: the truss the scan read there can be given the name back, so the answer says which it is.
+        assert set(after) == BARE | {"warnings", "carry_over"}
         assert (after["areas"], after["kept"], after["added_kept"], after["added_replaced"]) == (0, [], [], [])
 
     def test_a_trim_set_by_hand_is_said_beside_where_the_scan_read_it_before(self):
@@ -188,12 +189,14 @@ class TestATrussReadAtAnotherHeight:
         old = edit_item(stacked(), LINES, 0, name="Low truss")[0]
         new = {**stacked(), LINES: stacked()[LINES][1:]}
         got = keep_hand_edits(old, new)
-        assert got.shell is new and not got.any and got.report() is None
+        # Slice 36: the lower one is said as no longer read, and nothing points at the upper one.
+        assert got.shell is new and [entry["reason"] for entry in got.lost] == [LOST_GONE] and got.carry == []
 
-    def test_a_truss_no_longer_read_and_one_nobody_edited_say_nothing(self):
+    def test_a_truss_no_longer_read_is_said_as_that_and_one_nobody_edited_says_nothing(self):
         old = edit_item(shell(), LINES, 0, name="Front truss", height=3.0)[0]
         gone = {**shell(), LINES: shell()[LINES][1:]}
-        assert not keep_hand_edits(old, gone).any
+        # Slice 36: it was silent until then.
+        assert [entry["reason"] for entry in keep_hand_edits(old, gone).lost] == [LOST_GONE]
         # Read 1.1 m higher, but nothing on it was a person's: there is nothing to lose.
         assert not keep_hand_edits(shell(), moved(shell(), LINES, 0, height=5.3, top=5.6)).any
 
@@ -224,19 +227,20 @@ class TestATrussReadBesideWhereItWas:
             "where half is needed, so its name and trim were not kept."
         )}]
         assert got.report()["message"].endswith("so its name and trim will not be kept.")
-        assert set(after) == BARE | {"warnings"}
+        assert set(after) == BARE | {"warnings", "carry_over"}
 
     def test_one_read_much_shorter_is_said_the_same_way(self):
         old = edit_item(shell(), LINES, 0, name="Front truss")[0]
         got = keep_hand_edits(old, moved(shell(), LINES, 0, x2=-1.0, length=3.0))
         assert [(e["reason"], e["offset"], e["overlap"]) for e in got.lost] == [(LOST_BESIDE, 2.5, 0.375)]
 
-    def test_one_read_a_little_off_is_kept_and_one_read_clear_of_it_says_nothing(self):
+    def test_one_read_a_little_off_is_kept_and_one_read_clear_of_it_is_no_longer_read(self):
         old = edit_item(shell(), LINES, 0, name="Front truss")[0]
         near = keep_hand_edits(old, moved(shell(), LINES, 0, z1=-1.9, z2=-1.9))
         assert near.lost == [] and near.shell[LINES][0]["name"] == "Front truss"
-        # 0.7 m aside the strips share nothing: the next truss along, not this one.
-        assert not keep_hand_edits(old, moved(shell(), LINES, 0, z1=-1.3, z2=-1.3)).any
+        # 0.7 m aside the strips share nothing: the next truss along, not this one. Said since slice 36.
+        clear = keep_hand_edits(old, moved(shell(), LINES, 0, z1=-1.3, z2=-1.3))
+        assert [entry["reason"] for entry in clear.lost] == [LOST_GONE] and clear.carry == []
 
     def test_a_truss_that_crosses_is_itself_and_not_this_one_read_beside(self):
         cross = {
@@ -248,7 +252,8 @@ class TestATrussReadBesideWhereItWas:
         old = edit_item(both, LINES, 0, name="Front truss")[0]
         new = {**copy.deepcopy(both), LINES: copy.deepcopy(both[LINES][1:])}
         got = keep_hand_edits(old, new)
-        assert got.shell is new and not got.any
+        # Slice 36: the named one is no longer read and says so; nothing points at the truss that crosses.
+        assert got.shell is new and [entry["reason"] for entry in got.lost] == [LOST_GONE] and got.carry == []
 
     def test_a_ring_read_beside_is_said_as_a_ring(self):
         old = edit_item(shell(), RINGS, 0, name="Mirror ball ring")[0]
@@ -374,10 +379,11 @@ class TestNothingElseChanges:
         assert said["items"] == [one("line", "Back truss", KEPT)]
         assert [entry["name"] for entry in said["warnings"]] == ["Front truss"]
 
-    def test_a_raised_area_read_beside_where_it_was_still_says_nothing(self):
-        # Slice 35 speaks of lines and rings: a raised area's name lost to a reading to one side is as it was.
+    def test_a_raised_area_read_beside_where_it_was_is_said_since_slice_36(self):
+        # Slice 35 spoke of lines and rings only, and this held that a raised area said nothing.
         old = edit_item(shell(), AREAS, 1, name="The bar")[0]
-        assert not keep_hand_edits(old, moved(shell(), AREAS, 1, center_x=5.0)).any
+        got = keep_hand_edits(old, moved(shell(), AREAS, 1, center_x=5.0))
+        assert [(entry["name"], entry["reason"]) for entry in got.lost] == [("The bar", LOST_BESIDE)]
 
     def test_the_tolerance_is_the_one_the_match_uses(self):
         assert HANG_MATCH_M == pytest.approx(1.0)

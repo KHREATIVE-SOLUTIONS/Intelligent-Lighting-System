@@ -187,7 +187,9 @@ class TestALineNamedOrHungByHand:
         old = edit_item(shell(), LINES, 0, name="Front truss", height=3.0)[0]
         for new in (moved(shell(), LINES, 0, z1=-1.3, z2=-1.3), {**shell(), LINES: shell()[LINES][1:]}):
             got = keep_hand_edits(old, new)
-            assert got.shell is new and not got.any and got.report() is None
+            # Slice 36: nothing is kept, as before, and it is now said that the scan no longer reads it.
+            assert got.shell is new and got.overhead_kept == []
+            assert [(entry["name"], entry["reason"]) for entry in got.lost] == [("Front truss", "no longer read")]
 
     def test_a_line_only_moved_or_made_longer_carries_nothing(self):
         old = edit_item(shell(), LINES, 0, center_z=-1.8, length=7.0)[0]

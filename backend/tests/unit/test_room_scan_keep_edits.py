@@ -138,9 +138,12 @@ class TestANameAndAHeightSetByHand:
     def test_the_same_rule_as_the_mark_another_kind_or_too_far_keeps_nothing(self):
         old = edited(stored(), 2, name="Drum riser")
         # A booth read where the riser stood; and the riser read 1.5 m along (a quarter shared).
-        for new in (stored(STAGE, BAR, {**RISER, "kind": "booth"}), stored(STAGE, BAR, area("riser", -2.5, 0.0, 2.0, 1.0))):
-            got = keep_hand_edits(old, new)
-            assert got.shell is new and not got.any and got.report() is None
+        another, along = stored(STAGE, BAR, {**RISER, "kind": "booth"}), stored(STAGE, BAR, area("riser", -2.5, 0.0, 2.0, 1.0))
+        got = keep_hand_edits(old, another)
+        assert got.shell is another and not got.any and got.report() is None
+        # Slice 36: the one read along from it keeps nothing, as before, and is now said (it shares some floor).
+        got = keep_hand_edits(old, along)
+        assert got.shell is along and got.kept == [] and [entry["reason"] for entry in got.lost] == ["read beside"]
 
     def test_two_stored_that_pick_one_new_area_the_greater_overlap_has_it(self):
         near = {**RISER, "name": "Near", "basis": f"{SCAN} {NAME_BY_HAND}"}
