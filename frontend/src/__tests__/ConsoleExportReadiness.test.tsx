@@ -11,6 +11,13 @@ vi.mock('../services/api', () => ({
   consoleExportApi: { summary: vi.fn(), download: vi.fn() },
   readinessApi: { get: vi.fn(), autoGroups: vi.fn(), readdress: vi.fn() },
 }));
+// The Focus presets panel sits under the pack for a database rig; it is tested in FocusPresetsPanel.test.tsx.
+vi.mock('../services/focusPresetsApi', () => ({
+  focusPresetsApi: {
+    get: vi.fn(() => Promise.reject(new Error('not needed here'))),
+    csv: vi.fn(), addTarget: vi.fn(), removeTarget: vi.fn(),
+  },
+}));
 
 const exportApi = vi.mocked(consoleExportApi);
 const readiness = vi.mocked(readinessApi);
@@ -68,5 +75,6 @@ describe('readiness summary in the console export', () => {
 
     expect(readiness.get).not.toHaveBeenCalled();
     expect(screen.queryByTestId('export-readiness-summary')).toBeNull();
+    expect(screen.queryByTestId('focus-presets')).toBeNull();
   });
 });

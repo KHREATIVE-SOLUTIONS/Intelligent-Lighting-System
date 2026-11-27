@@ -20,6 +20,7 @@ import { CONSOLE_EXPORT_OPTIONS, summaryHeadline } from '../../utils/consoleExpo
 import { exportSummaryText } from '../../utils/readiness';
 import type { ReadinessReport, ReadinessStatus } from '../../utils/readiness';
 import { saveBlob } from '../../utils/download';
+import FocusPresetsPanel from './FocusPresetsPanel';
 import HandoffPackButton from './HandoffPackButton';
 import ReadinessDialog from './ReadinessDialog';
 import type {
@@ -229,6 +230,13 @@ export function ConsoleExportSection({ target }: ConsoleExportSectionProps) {
       {'rigId' in target && (
         <Box sx={{ mt: 2 }}>
           <HandoffPackButton rigId={target.rigId} failCount={readinessReport?.counts.fail} />
+        </Box>
+      )}
+
+      {/* Focus presets go into the script and the pack above; a demo preset has no room to aim in. */}
+      {'rigId' in target && (
+        <Box sx={{ mt: 3 }}>
+          <FocusPresetsPanel rigId={target.rigId} />
         </Box>
       )}
     </Box>
