@@ -1,15 +1,16 @@
 # Stage plot underlay
 
-Status: **built. The backend is tested (pytest, full suite passing). The
-frontend tests were written but not run**, and the frontend was not built, in
-the sessions that wrote them: `npm test -- --run`, `npx vitest run`,
-`npm run build` and `npx vite build` were each refused by the session's
-permissions. `npx tsc --noEmit -p .` was run and shows only the 13 errors
-already in the app. Run `npm test -- --run` and `npm run build` in
-`frontend/` before relying on it. The same holds for the 3D view's part
-("In the 3D view" below): its vitest files were written, and running them
-(`npx vitest run`, or vitest through `node`) was held for approval in the
-session that wrote them.
+Status: **built and tested, 2D plan and 3D view ("In the 3D view" below),
+but not yet seen in a browser.** On Nov 27 2026: the full frontend vitest
+run passed (79 files, 1403 tests, the 3D view's among them), `vite build`
+succeeded, `npx tsc --noEmit -p .` shows only the 13 errors already in the
+app, and the backend pytest suite passed (2945). Added after that run:
+`StagePlotFloor3dRecalibrate.test.tsx`. In it, a replaced image that the
+server keeps uncalibrated takes the plane away and frees the old texture and
+blob URL, and the calibration saved in the 2D plan brings the plane back at
+its new place and opacity without a reload. It also checks that the toggle,
+off then on, leaves one texture and does not fetch the image again. The
+session that wrote it could not run vitest: run it before relying on it.
 
 ## The problem it solves
 
