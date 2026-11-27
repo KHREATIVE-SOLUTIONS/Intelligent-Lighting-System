@@ -236,7 +236,10 @@ export interface RoomScanHandEditItem {
   /** 'raised area', 'line' or 'ring'. */
   kind: string;
   name: string;
-  /** 'kept your edits', 'left out (you deleted it)', 'replaced (a scanned item overlaps it)' or 'added by hand, kept'. */
+  /**
+   * 'kept your edits', 'left out (you deleted it)', 'replaced (a scanned item overlaps it)', 'added by hand, kept'
+   * or (slice 36) 'lost'.
+   */
   outcome: string;
 }
 

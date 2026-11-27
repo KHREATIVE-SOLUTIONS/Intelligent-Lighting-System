@@ -736,7 +736,8 @@ The answer, for both:
     - `name`: what it is called (for one replaced or left out, what the
       person's was called);
     - `outcome`: `"kept your edits"`, `"left out (you deleted it)"`,
-      `"replaced (a scanned item overlaps it)"` or `"added by hand, kept"`.
+      `"replaced (a scanned item overlaps it)"`, `"added by hand, kept"` or
+      (slice 36) `"lost"`.
       The same words in a preview and in `applied`.
   - `warnings` also names **what was lost** (slice 35), after the checks.
     These entries have **no `index`** (the thing is not in the new room)
@@ -762,6 +763,21 @@ The answer, for both:
       `name`. "The scan did not see Riser; the record that keeps it deleted
       was dropped, so it may come back on a later scan."
     - A preview says "will not be kept" and "will be dropped".
+    - Since slice 36 also: `"read beside"` for a **raised area** (with
+      `by_index` and `by`, the new area); `"no longer read"` for a line or
+      ring the scan reads nothing near ("The scan no longer reads Front
+      truss; its name and trim went with it."); and `"another has it"` for
+      the one of two stored items that pick one new item that does not get
+      it (`kept`, `read`, `by_index`, `by`: "Near and Nearer both stand
+      where the scan reads Riser: Nearer has it, so the name of Near was not
+      kept."). Each of the three is in `items` with the outcome `"lost"`.
+  - `carry_over` (slice 36), **sent only when it has something in it**: one
+    entry for each loss with an item of the new room behind it ("hanging
+    height", "read beside", "another has it"; not "no longer read" or
+    "record dropped"): `kind` (the list), `old_name`, `old_trim_or_height`,
+    `old_base_height` (raised areas), `edits`, `new_index`, `new_name`,
+    `reason`, and `warning` (its place in `warnings`). POST
+    `.../room-scan/carry-over` takes one as it is.
 
 Refusals, each with a `detail` that says what to do:
 
@@ -1256,6 +1272,20 @@ looked up (so a bad `index` on a rig that does not exist is 422, not 404);
 then "Rig not found"; then the locate walkthrough's 409 (so an edit that
 would have been a 404 or a 422 for another reason is a 409 while one runs);
 then the other 404s; then the fields; then the other 409s.
+
+### `POST /api/rigs/{rig_id}/room-scan/carry-over`
+
+The body is one entry of an applied scan's `hand_edits.carry_over`, as it
+came (keys it does not read, such as `reason` and `warning`, are passed
+over), with an optional `carry_fixtures` (default true, as for a PATCH). It
+puts the fields named in `edits` (`name`, `height`, `base_height`) onto the
+item at `kind`/`new_index`, marked as set by hand, as one step of the
+room's Undo; fixtures move only by Edit Room's carry rules. The answer has
+`kind`, `index`, `item`, `room_shell`, `changed` (false where the item
+already had all of it), `undo`, `fixtures_moved`, `items_moved` and a
+`message`. **409** where the item at `new_index` is gone or no longer
+called `new_name`; **422** for an entry that is not one; **404** with no
+room. Slice 36.
 
 ### `POST /api/rigs/{rig_id}/room-scan/undo`
 
@@ -1765,6 +1795,103 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 36 built
+
+Carry a lost name and trim over, and say every loss. Slice 35 named three
+losses and left three silent; this slice names those too, gives each loss
+that has an item of the new room behind it in a form a program can act on,
+and lets the operator put the old name and trim onto that item with one
+button.
+
+- **Every loss said** (`keep_edits.py`, `LOST_GONE`, `LOST_OTHER`, and
+  `LOST_BESIDE` for raised areas). Three more entries in
+  `hand_edits.warnings`, each with its own `message`, and each listed in
+  `items` with the new outcome **`"lost"`**:
+  1. **A raised area read to one side** (`"read beside"`). One with a name,
+     height or base height set by hand that matched nothing, where the
+     reading has a raised area no stored one is that shares some floor with
+     it but less than the half a match needs. The warning names it and the
+     new area.
+  2. **A line or ring no longer read at all** (`"no longer read"`). One
+     with a name or trim set by hand that matched nothing and has nothing
+     of the reading near it: "The scan no longer reads Front truss; its
+     name and trim go with it." There is nothing to carry it onto.
+  3. **Of two stored items that pick one new one, the one that loses**
+     (`"another has it"`). Where it had something set by hand and was not
+     added by hand (that one is replaced and named as before). The warning
+     names both.
+- **`hand_edits.carry_over`** (`KeptEdits.carry`). One entry for every loss
+  with a new item behind it ("hanging height", "read beside", "another has
+  it"): `{kind, old_name, old_trim_or_height, edits, new_index, new_name,
+  reason, warning}`, and `old_base_height` for a raised area. `kind` is the
+  list (`risers`, `truss_lines`, `truss_rings`), `edits` which fields would
+  be put back, `new_name` what the new room calls the item, `warning` the
+  place of its warning in `warnings`. Sent only when it has something in it,
+  in a preview and in `applied` alike. Nothing is written for it.
+- **`POST /api/rigs/{rig_id}/room-scan/carry-over`** (`carry_over.py`, the
+  route in `endpoints/room_scan.py`). Takes one entry as the answer gave it
+  and writes only the fields in its `edits` with Edit Room's own edit
+  (`edit_item`: the ceiling and floor limits, the top of a truss, the bands
+  counted again), then **marks each as set by hand** with the basis markers
+  Edit Room writes ("Name set by hand.", "Height set by hand.", "Base height
+  set by hand.", with "Resized by hand." for a size) **whether or not the
+  value changed**, so the next scan keeps it. A line's or ring's trim keeps
+  the height the scan read as `scan_height` (slice 34). An entry for a trim
+  alone does not write the scan's name or mark it.
+  - **Fixtures move only as Edit Room's rules move them**: the PATCH's carry
+    logic is shared (`_with_what_it_carries`, `_store_edit`), so the
+    fixtures hung on a truss whose trim changes go with it, and what stands
+    on a raised area whose height changes; `carry_fixtures: false` leaves
+    them. One that would leave the room refuses the whole carry-over.
+  - **One step of the room's Undo** (`POST .../room-shell/undo`), labelled
+    "Overhead line 1 given the name and trim of Front truss".
+  - **409 on a stale entry**: the item at `new_index` is gone or no longer
+    called `new_name` (the room was edited, or the same entry was already
+    carried over). **422** for an entry that is not one (an unknown `kind`,
+    a `new_index` that is not a whole number, `edits` empty or naming a
+    field that list cannot carry, a blank name, a trim that is not a
+    number). Nothing written either way. Refused during a locate
+    walkthrough, as every room edit is.
+- **The dialog** (`RoomScanDialog.tsx`; `handEditCarryOver`,
+  `carryOverButtonText`, `roomScanCarryOverPath` in `utils/roomScan.ts`;
+  `roomScanApi.carryOver`). After Apply only (before it nothing is stored
+  to put it on), each `carry_over` entry has a **"Keep Front truss on this
+  one"** button (`room-scan-carry-over`) inside the warning it belongs to;
+  one with no warning place sits under the warnings. It sends the entry as
+  it is, shows the server's message, tells the rig it changed, and then
+  reads "Kept Front truss on Overhead line 1", disabled. A 409 shows the
+  server's words and leaves the button to try again.
+- **Tests.** Backend, `tests/unit/test_room_scan_keep_lost.py` (27): the
+  three new warnings, their `items` entries and `carry_over` entries, and
+  the carry-over entries of slice 35's two warnings.
+  `tests/unit/test_room_scan_carry_over.py` (7): a real entry of each kind
+  (a raised area read beside with all three fields, a ring trim alone, a
+  line read at another height, both "another has it") fed to
+  `carry_over()` with the room the scan left: none stale, the markers on,
+  the same reading applied again keeping them; an entry carried twice is a
+  409; no room is a 404.
+  `tests/integration/test_api_room_scan_carry_over.py` (10), over HTTP with
+  the truss read 1.2 m lower: the entry as given puts the name and trim
+  back, marked, with `scan_height`, no fixture moved, and the same reading
+  applied again keeps them; one Undo puts the room back as the scan left
+  it; the same entry sent twice is a 409; an index past the end is a 409;
+  six entries that are not one are 422s, none writing anything. Frontend,
+  `RoomScanDialogCarryOver.test.tsx` (5): no button before Apply; the
+  button in its warning calling `carryOver` with the entry and saying what
+  was done; a 409 shown; the helpers.
+- **Existing tests changed** (all in step 1's commit, f9b3efd, which lists
+  each): key sets that gain `carry_over`, and five tests where a truss or
+  riser lost without a word is now said.
+- **What was run** (Nov 27). Backend, with the main checkout's venv:
+  `python -m pytest tests/ -q` **2795 passed, 10 skipped, 5 xfailed**,
+  then `test_room_scan_carry_over.py` (unit, 7), written after that run,
+  on its own: 7 passed. Frontend: `npx tsc --noEmit -p .` gave the 13
+  older errors and none new. **`npx vitest run` and `npx vite build` were
+  not run** (refused in the session): the dialog change and its 5 tests
+  are checked by the type-checker only.
+- **No Art-Net, no DMX, no network call, no new dependency, no new
+  column.**
 
 ## What slice 35 built
 
@@ -3932,6 +4059,14 @@ Pixar's USD library from the same rooms (slice 24).
   what says nothing (slice 35). Run. The frontend's
   `RoomScanDialogHandEditItems.test.tsx` has **not** been run (see "What
   slice 35 built" and "What is left").
+- `backend/tests/unit/test_room_scan_keep_lost.py`,
+  `backend/tests/unit/test_room_scan_carry_over.py` and
+  `backend/tests/integration/test_api_room_scan_carry_over.py`: the three
+  losses slice 36 says, `carry_over` for each with a new item behind it,
+  each kind's entry put back and kept by the next scan, and the route over
+  HTTP (success, Undo, stale 409, 422s). Run. The frontend's
+  `RoomScanDialogCarryOver.test.tsx` has **not** been run (see "What slice
+  36 built").
 - `backend/tests/unit/test_room_scan_keep_overhead.py` and
   `backend/tests/integration/test_api_room_scan_keep_overhead.py`: a name
   and a hanging height set by hand kept on an overhead line and a ring, one
@@ -4609,14 +4744,38 @@ Pixar's USD library from the same rooms (slice 24).
   `RoomScanDialogHandEditItems.test.tsx`, 13 tests; the tests of the
   two older hand-edits files, 8 each, must still pass with
   `handEditsLine` changed) and `npx vite build`. **Not seen in a browser.**
+- **Slice 36's frontend test has not been run, nor the build.** `npx
+  vitest run` was refused in the session that wrote it; `npx tsc --noEmit
+  -p .` ran with its 13 older errors and no new one, and the backend suite
+  ran. Before relying on it, in `frontend/`: `npx vitest run` (one new file,
+  `RoomScanDialogCarryOver.test.tsx`, 5 tests) and `npx vite build`.
+  **Not seen in a browser.**
+- **What slice 36 leaves** (carry-over):
+  - **A carry-over is one item at a time**: there is no "keep all".
+  - **The buttons are in the answer only**: closed, the dialog forgets
+    them, and the next scan's answer has nothing to carry (the room is
+    the scan's by then). Rename and trim in Edit Room.
+  - **A raised area's footprint is not carried**, on purpose, as slice 32
+    keeps none.
+  - **"No longer read" has no button**: there is no item to put it on.
+  - **Carrying over "another has it" replaces the winner's edits** on that
+    item: Near's name goes onto the area Nearer had, and Nearer's is gone.
+    The operator chose it; Undo takes it back.
+  - **The button finds its warning by place**: `warning` is a place in the
+    server's `warnings`, matched against the dialog's list of sentences. A
+    warning the dialog passes over (no message, no name) would shift them;
+    the server sends none such.
+  - **The carry-over route is not tested with fixtures hung on the truss**
+    or during a locate walkthrough: both rest on the PATCH's tests of the
+    shared rules.
 - **What slice 35 leaves** (the list by name, and what is lost):
-  - **A raised area's name or height lost to a reading to one side says
-    nothing**, as before: the two warnings are for lines and rings. A
-    raised area added by hand that is replaced is named, as it was.
-  - **A truss the scan no longer reads at all says nothing**: there is no
-    reading to point at. Its name and trim go with it.
-  - **Of two stored trusses that pick the same new one, the one that does
-    not have it keeps nothing and says nothing** (slice 32, point 3).
+  - *Closed by slice 36:* a raised area's name or height lost to a reading
+    to one side is named, with the new area, and can be carried over.
+  - *Closed by slice 36:* a truss the scan no longer reads at all is said:
+    "The scan no longer reads Front truss; its name and trim go with it."
+  - *Closed by slice 36:* of two stored items that pick the same new one,
+    the one that does not have it is named with the one that does, and
+    can be carried over onto it (slice 32, point 3).
   - **A record dropped because the scan read the thing at another height
     or to one side is said as "the scan did not see"**, and the thing is
     back in the room at once, not "on a later scan". The warning for a
@@ -4625,9 +4784,10 @@ Pixar's USD library from the same rooms (slice 24).
     longer reads** is taken for that one read beside it (they share a
     little of the plan, and no stored truss is the new one), and the
     warning gives the distance between their middles.
-  - **Warnings are still said, not acted on**: the name and trim are not
-    put onto the truss the warning speaks of. Rename and trim it again in
-    Edit Room.
+  - *Closed by slice 36:* warnings can be acted on. "Keep Front truss on
+    this one" puts the name and trim onto the truss the warning speaks of
+    (POST `.../room-scan/carry-over`), marked as set by hand, as one Undo
+    step.
   - **The list is not kept** once the dialog is closed: it is in the
     answer to the scan, and nowhere in the stored room.
 - **What slice 34 leaves** (deleted lines and rings, hanging heights):
