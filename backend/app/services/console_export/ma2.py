@@ -26,13 +26,15 @@ already hold that type under: the file describes where fixtures go, not what
 they are.
 
 ma2_script: plain command-line text that patches, labels and groups fixtures by
-fixture id. It creates no fixtures and carries no positions.
+fixture id. It creates no fixtures and carries no positions. Given a focus table
+(services/focus_presets), it also stores one Position preset per focus target
+(docs/FOCUS_PRESETS.md).
 
 Nothing here has been run on a desk. docs/CONSOLE_EXPORT.md says so, and lists
 what the operator still has to do.
 """
 
-from typing import Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 from xml.sax.saxutils import quoteattr
 
 from app.services.fixture_library.stage_axes import stage_euler_to_z_up, stage_to_z_up
@@ -157,6 +159,69 @@ def script_groups(rig: ExportRig) -> List[ExportGroup]:
     return groups
 
 
+def _focus_commands(focus: Any, first_preset: int, note: Callable[[str], None], out: List[str]) -> None:
+    """Position presets, one per focus target, from a focus_presets.table.FocusTable.
+
+    Each target keeps its own slot (first_preset + its place in the table), so
+    "Focus DJ booth" is the same preset number whether or not another target
+    was skipped. A head that cannot reach a target is left out of that preset.
+    """
+    targets = focus.targets
+    note()
+    if not focus.heads and not focus.left_out:
+        note("Focus presets: none. The rig has no moving heads.")
+        return
+    note(
+        f"Focus presets: {len(targets)} Position preset(s), at Preset 2.{first_preset} to "
+        f"2.{first_preset + len(targets) - 1}, one per target. A preset already there is asked about or replaced."
+    )
+    note("Pan and Tilt are degrees from the centre of each channel's travel, with the rig's invert and swap")
+    note("tags already applied: patch these fixtures without Invert or Swap on the desk. Not checked on a desk:")
+    note("whether it reads them as these degrees depends on its fixture type's pan and tilt range.")
+    note("Computed from the rig's positions: check each one in the room before the show.")
+    guessed = sorted({e.fixture.number for t in targets for e in t.entries if e.fixture.unconfirmed})
+    if guessed:
+        note(f"Position guessed, not checked against the room: fixture {selection(guessed)}. "
+             "Their presets will be off by as much as the guess.")
+    assumed = sorted({h.number for h in focus.heads if h.mount_assumed})
+    if assumed:
+        note(f"Hung or standing assumed from height, not stored: fixture {selection(assumed)}.")
+    for left in focus.left_out:
+        note(f"Fixture {left['fixture_id']} left out of every preset: {left['reason']}.")
+    stored = False
+    for index, row in enumerate(targets):
+        slot = f"2.{first_preset + index}"
+        target = row.target
+        label = f"Focus {target.name}"
+        note()
+        if target.skipped:
+            note(f"Preset {slot} {label}: not stored. {target.skipped}")
+            continue
+        reachable = row.reachable
+        if not reachable:
+            note(f"Preset {slot} {label}: not stored. No moving head can reach it.")
+            for entry in row.unreachable:
+                note(f"  fixture {entry.fixture.number}: {entry.aim.reason}")
+            continue
+        note(f"Preset {slot} {label}: {target.source}.")
+        for entry in row.unreachable:
+            note(f"  fixture {entry.fixture.number} left out: {entry.aim.reason}")
+        out.append("ClearAll")
+        stored = True
+        for entry in reachable:
+            if entry.fixture.unconfirmed:
+                note(f"  fixture {entry.fixture.number}: position guessed (unconfirmed), check this one first")
+            out += [
+                "ClearSelection",
+                f"Fixture {entry.fixture.number}",
+                f'Attribute "Pan" At {_number(entry.aim.pan_attr_deg)}',
+                f'Attribute "Tilt" At {_number(entry.aim.tilt_attr_deg)}',
+            ]
+        out += [f"Store Preset {slot}", f'Label Preset {slot} "{_label(label)}"']
+    if stored:
+        out.append("ClearAll")
+
+
 def ma2_script(
     rig: ExportRig,
     first_group: int = 1,
@@ -164,6 +229,8 @@ def ma2_script(
     include_groups: bool = True,
     notes: bool = True,
     mark_names: bool = False,
+    focus: Optional[Any] = None,
+    first_preset: int = 1,
 ) -> str:
     """Command-line text that patches, labels and groups the rig's fixtures.
 
@@ -229,6 +296,9 @@ def ma2_script(
             ]
         if groups:
             out.append("ClearSelection")
+
+    if focus is not None:
+        _focus_commands(focus, max(1, int(first_preset)), note, out)
 
     out.append("")
     return "\n".join(out)

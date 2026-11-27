@@ -11,7 +11,7 @@ Every route is a GET that reads and writes nothing: no rig is changed and
 nothing is sent to a console.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import Query
 from fastapi.responses import Response
@@ -26,7 +26,11 @@ MARK_NAMES = Query(
                 "position nobody has confirmed, so the mark shows on the desk",
 )
 FIRST_GROUP = Query(1, ge=1, le=9999, description="The group number the first group is stored at")
-INCLUDE = Query("all", pattern="^(all|patch|groups)$", description="Which part of the script to write")
+INCLUDE = Query(
+    "all", pattern="^(all|patch|groups|focus)$",
+    description="Which part of the script to write. Focus presets are written for a database rig only",
+)
+FIRST_PRESET = Query(1, ge=1, le=9999, description="The first focus target is stored at Preset 2.<this>")
 NOTES = Query(True, description="Write the '#' note lines. Off gives a file that is commands only")
 
 DOC = "docs/CONSOLE_EXPORT.md"
@@ -54,6 +58,8 @@ def ma2_script_response(
     include: str = "all",
     notes: bool = True,
     mark_names: bool = False,
+    focus: Optional[Any] = None,
+    first_preset: int = 1,
 ) -> Response:
     text = ma2_script(
         rig,
@@ -62,6 +68,8 @@ def ma2_script_response(
         include_groups=include in ("all", "groups"),
         notes=notes,
         mark_names=mark_names,
+        focus=focus if include in ("all", "focus") else None,
+        first_preset=first_preset,
     )
     return _download(text.encode("utf-8"), "text/plain; charset=utf-8", f"{rig.file_stem()}_ma2_script.txt")
 

@@ -10,8 +10,10 @@ memory (nothing is written to disk, nothing is sent anywhere):
 - readiness.md    the readiness report in words, worst first, with the time it was read
 - patch-sheet.html  the printable patch sheet (services/rig/patch_sheet.py), the same
   rows as patch.csv, one universe per printed page
+- focus-presets.csv  every focus target against every moving head (services/focus_presets)
 - <rig>_ma2.xml, <rig>_ma2_script.txt, <rig>.mvr   the console exports, from the
-  same writers the export routes use (console_export/ma2.py and mvr.py)
+  same writers the export routes use (console_export/ma2.py and mvr.py); the
+  script carries the focus presets as Position presets
 - README.txt      what each file is, which positions are guessed, any Fail check,
   and any file that is missing because its writer failed
 
@@ -33,6 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from app.services.console_export.ma2 import ma2_script, ma2_xml
 from app.services.console_export.model import ExportRig, from_rig
 from app.services.console_export.mvr import mvr_bytes
+from app.services.focus_presets.table import build_table as build_focus_table, focus_csv
 from app.services.rig.patch_sheet import (  # noqa: F401 - POSITION_* and worst_first are re-exported
     POSITION_CONFIRMED, POSITION_GUESSED, POSITION_NONE, STATUS_WORDS as _STATUS_WORDS,
     console_ids, patch_rows, patch_sheet_html, worst_first,
@@ -45,6 +48,7 @@ PATCH_COLUMNS = [
 ]
 GROUP_COLUMNS = ["group", "fixture_ids"]
 PATCH_SHEET = "patch-sheet.html"
+FOCUS_CSV = "focus-presets.csv"
 
 
 def patch_csv(rig: Any, rows: Sequence[Any], export: ExportRig) -> str:
@@ -152,13 +156,22 @@ def readme_txt(
     return "\n".join(lines) + "\n"
 
 
-def _exports(export: ExportRig) -> List[Tuple[str, str, Callable[[], bytes]]]:
+def _focus(rig: Any, rows: Sequence[Any], export: ExportRig) -> Tuple[Optional[Any], Optional[str]]:
+    """The focus table, or None and why it could not be built (the script then goes without presets)."""
+    try:
+        return build_focus_table(rig, rows, export), None
+    except Exception as e:  # noqa: BLE001 - the presets are left out, the pack still builds
+        return None, f"the focus presets stopped with an error: {type(e).__name__}: {e}"
+
+
+def _exports(export: ExportRig, focus: Optional[Any] = None) -> List[Tuple[str, str, Callable[[], bytes]]]:
     stem = export.file_stem()
     return [
         (f"{stem}_ma2.xml", "grandMA2 fixture layer XML: patch, positions and rotations. Import on the desk.",
          lambda: ma2_xml(export).encode("utf-8")),
-        (f"{stem}_ma2_script.txt", "grandMA2 command-line script: patch, labels and groups.",
-         lambda: ma2_script(export).encode("utf-8")),
+        (f"{stem}_ma2_script.txt",
+         "grandMA2 command-line script: patch, labels, groups" + (", and focus position presets." if focus else "."),
+         lambda: ma2_script(export, focus=focus).encode("utf-8")),
         (f"{stem}.mvr", "MVR for MA3D, Capture or another visualiser: patch, positions, rotations, groups.",
          lambda: mvr_bytes(export)),
     ]
@@ -186,7 +199,18 @@ def build_handoff_pack(rig: Any, rows: Sequence[Any], now: Optional[datetime] = 
                               "sorted by address, guessed positions marked, then groups and readiness.")
     except Exception as e:  # noqa: BLE001 - the sheet is left out, the pack still builds
         missing[PATCH_SHEET] = f"the patch sheet stopped with an error: {type(e).__name__}: {e}"
-    for name, what, write in _exports(export):
+    focus, focus_error = _focus(rig, rows, export)
+    if focus is None:
+        missing[FOCUS_CSV] = focus_error or "the focus presets could not be built"
+    else:
+        try:
+            built[FOCUS_CSV] = focus_csv(focus).encode("utf-8")
+            files[FOCUS_CSV] = ("Focus position presets: one row per target and moving head, pan and tilt in "
+                                "degrees and DMX, reachable or why not, position guessed or confirmed. "
+                                "The same presets are in the MA2 script. See docs/FOCUS_PRESETS.md.")
+        except Exception as e:  # noqa: BLE001 - the CSV is left out, the pack still builds
+            missing[FOCUS_CSV] = f"the writer stopped with an error: {type(e).__name__}: {e}"
+    for name, what, write in _exports(export, focus):
         try:
             built[name] = write()
             files[name] = what

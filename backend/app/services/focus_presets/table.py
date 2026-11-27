@@ -158,7 +158,9 @@ def focus_heads(rows: Sequence[Any], export: ExportRig) -> Tuple[List[FocusHead]
             mount="standing" if standing else "hung", mount_assumed=assumed,
             unconfirmed=exported.unconfirmed,
         ))
+    # Sorted, so the same rig gives the same table whatever order the rows came in.
     heads.sort(key=lambda h: h.number)
+    left_out.sort(key=lambda item: item["fixture_id"])
     return heads, left_out
 
 

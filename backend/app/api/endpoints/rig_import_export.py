@@ -22,6 +22,7 @@ from app.api.endpoints import console_export
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
 from app.services.console_export.model import ExportRig, from_rig
+from app.services.focus_presets.table import build_table as build_focus_table
 from app.models.fixture import Fixture, FixtureMode, FixtureChannel, FixtureType, ChannelType
 from app.services.fixture_library.gdtf_parser import parse_gdtf
 from app.services.fixture_library.mvr_parser import parse_mvr
@@ -333,11 +334,12 @@ async def export_rig_csv(rig_id: int, db: AsyncSession = Depends(get_db)):
 # Back to the console: grandMA2 and MVR. See docs/CONSOLE_EXPORT.md.
 # ---------------------------------------------------------------------------
 
-async def _export_rig(rig_id: int, db: AsyncSession) -> ExportRig:
-    """The rig as every console export reads it, or a 404.
+async def _export_rig_and_focus(rig_id: int, db: AsyncSession):
+    """The rig as every console export reads it and its focus table, or a 404.
 
     Loaded from the same rows the layout view edits and the 3D view and the
-    engine read, at the moment of the request: nothing is cached.
+    engine read, at the moment of the request: nothing is cached. Channels are
+    loaded too: the focus table reads pan, tilt and their fine channels.
     """
     result = await db.execute(select(Rig).where(Rig.id == rig_id))
     rig = result.scalar_one_or_none()
@@ -347,9 +349,15 @@ async def _export_rig(rig_id: int, db: AsyncSession) -> ExportRig:
     result = await db.execute(
         select(RigFixture)
         .where(RigFixture.rig_id == rig_id)
-        .options(selectinload(RigFixture.fixture), selectinload(RigFixture.mode))
+        .options(selectinload(RigFixture.fixture), selectinload(RigFixture.mode).selectinload(FixtureMode.channels))
     )
-    return from_rig(rig, result.scalars().all())
+    rows = result.scalars().all()
+    export = from_rig(rig, rows)
+    return export, build_focus_table(rig, rows, export)
+
+
+async def _export_rig(rig_id: int, db: AsyncSession) -> ExportRig:
+    return (await _export_rig_and_focus(rig_id, db))[0]
 
 
 @router.get("/rigs/{rig_id}/export/console-summary")
@@ -375,11 +383,13 @@ async def export_rig_ma2_macro(
     include: str = console_export.INCLUDE,
     notes: bool = console_export.NOTES,
     mark_names: bool = console_export.MARK_NAMES,
+    first_preset: int = console_export.FIRST_PRESET,
     db: AsyncSession = Depends(get_db),
 ):
-    """Export patch, labels and groups as grandMA2 command-line text."""
+    """Export patch, labels, groups and focus position presets as grandMA2 command-line text."""
+    export, focus = await _export_rig_and_focus(rig_id, db)
     return console_export.ma2_script_response(
-        await _export_rig(rig_id, db), first_group, include, notes, mark_names
+        export, first_group, include, notes, mark_names, focus=focus, first_preset=first_preset
     )
 
 
