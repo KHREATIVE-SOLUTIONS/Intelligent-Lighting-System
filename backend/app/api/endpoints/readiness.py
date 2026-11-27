@@ -8,6 +8,7 @@ POST /api/rigs/{rig_id}/readiness/fix/readdress    a free address for each fixtu
 POST /api/rigs/{rig_id}/readiness/fix/set-modes    the DMX mode, where only one is possible
 POST /api/rigs/{rig_id}/readiness/fix/undo         put back what the last of those three changed
 GET  /api/rigs/{rig_id}/handoff-pack               a zip of everything needed to program it (reads only)
+GET  /api/rigs/{rig_id}/patch-sheet                a printable HTML patch sheet, ?universe=N (reads only)
 
 The GET reads and writes nothing. Make groups writes `group_name` on the
 fixtures that are in no group, and nothing else. Re-address writes
@@ -20,8 +21,10 @@ that changes something also keeps what it changed on the rig
 docs/READINESS.md, services/rig/readiness.py and readiness_undo.py.
 """
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +33,7 @@ from app.db.database import get_db
 from app.models.fixture import FixtureMode
 from app.services.rig import readiness_undo
 from app.services.rig.handoff_pack import build_handoff_pack
+from app.services.rig.patch_sheet import build_patch_sheet
 from app.services.rig.readiness import plan_auto_groups, plan_readdress, plan_set_modes, readiness
 
 router = APIRouter()
@@ -56,6 +60,21 @@ async def download_handoff_pack(rig_id: int, db: AsyncSession = Depends(get_db))
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/rigs/{rig_id}/patch-sheet", response_class=HTMLResponse)
+async def read_patch_sheet(
+    rig_id: int,
+    universe: Optional[int] = Query(None, ge=1, description="Print this universe only (counted from 1)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """The printable patch sheet: one self-contained HTML page, inline CSS, no script.
+    One universe per printed page, sorted by address; groups and the Fail and Warn
+    checks after. Reads only. ?universe=N prints that universe's table only (the
+    summary, groups and readiness still describe the whole rig). See docs/HANDOFF_PACK.md.
+    """
+    rig, rows, _ = await _get_rig_fixtures_with_channels(rig_id, db)
+    return HTMLResponse(content=build_patch_sheet(rig, rows, universe=universe))
 
 
 @router.post("/rigs/{rig_id}/readiness/fix/auto-groups")
