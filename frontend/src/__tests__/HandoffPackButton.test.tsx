@@ -1,13 +1,14 @@
 // Venue handoff pack (docs/HANDOFF_PACK.md): one press downloads the zip; any failing readiness
 // check shows a warning line first but never disables or blocks the download. The Readiness
-// dialog shows the button even before (or without) its report.
+// dialog shows the button even before (or without) its report. Next to it, "Open printable patch
+// sheet" is a plain link to /api/rigs/{id}/patch-sheet in a new tab.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import HandoffPackButton from '../components/rig/HandoffPackButton';
 import ReadinessDialog from '../components/rig/ReadinessDialog';
 import { readinessApi } from '../services/api';
 import { saveBlob } from '../utils/download';
-import { handoffPackPath, handoffWarning } from '../utils/readiness';
+import { handoffPackPath, handoffWarning, patchSheetUrl } from '../utils/readiness';
 import type { ReadinessReport } from '../utils/readiness';
 
 vi.mock('../services/api', () => ({
@@ -85,6 +86,34 @@ describe('HandoffPackButton', () => {
 
     expect(save).not.toHaveBeenCalled();
     expect(screen.getByTestId('handoff-pack-note').textContent).toContain('did not download');
+  });
+});
+
+describe('Open printable patch sheet', () => {
+  it('builds the sheet URL with the /api prefix and an optional universe', () => {
+    expect(patchSheetUrl(7)).toBe('/api/rigs/7/patch-sheet');
+    expect(patchSheetUrl(7, 3)).toBe('/api/rigs/7/patch-sheet?universe=3');
+  });
+
+  it('is a link that opens the sheet in a new tab, next to the pack button, and starts no download', () => {
+    render(<HandoffPackButton rigId={7} failCount={2} />);
+
+    const link = screen.getByRole('link', { name: /open printable patch sheet/i });
+    expect(link.getAttribute('href')).toBe('/api/rigs/7/patch-sheet');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toContain('noopener');
+    expect(screen.getByTestId('handoff-pack').contains(link)).toBe(true);
+    expect(api.handoffPack).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('is in the Readiness dialog even when the checks cannot be read', async () => {
+    api.get.mockRejectedValue(new Error('down'));
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} />);
+    await flush();
+
+    const link = screen.getByRole('link', { name: /open printable patch sheet/i });
+    expect(link.getAttribute('href')).toBe('/api/rigs/7/patch-sheet');
   });
 });
 
