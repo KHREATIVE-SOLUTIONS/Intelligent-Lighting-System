@@ -68,6 +68,12 @@ class Rig(Base):
     # readiness endpoints only (services/rig/readiness_undo.py).
     readiness_undo = Column(JSON, nullable=True)
 
+    # Points a person added to focus moving heads on, beside the defaults the
+    # room gives: a list of {id, name, x, y, z}, metres in stage axes. Written
+    # by the focus-presets endpoints only (services/focus_presets/targets.py).
+    # Read-only for aiming: nothing reaches a device. docs/FOCUS_PRESETS.md.
+    focus_targets = Column(JSON, nullable=True)
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
