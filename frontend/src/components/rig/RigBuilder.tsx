@@ -57,6 +57,8 @@ export default function RigBuilder() {
   const [roomScanOpen, setRoomScanOpen] = useState(false);
   const [roomEditOpen, setRoomEditOpen] = useState(false);
   const [readinessOpen, setReadinessOpen] = useState(false);
+  // The fixtures Readiness's Locate these named: flash-and-tap walks just those.
+  const [locateIds, setLocateIds] = useState<number[] | undefined>(undefined);
   // Edit Room's walls mode: the dialog is put away and the corners of the
   // room's walls are dragged on the plan, where fixtures then take no press.
   const [wallsMode, setWallsMode] = useState(false);
@@ -1006,15 +1008,18 @@ export default function RigBuilder() {
             (f) => f.is_active !== false && (f.tags ?? []).includes('position_unconfirmed')
           ).length
         }
+        fixtureIds={locateIds}
         onClose={() => {
           setIdentifyOpen(false);
+          setLocateIds(undefined);
           // A walk stopped partway has still moved and confirmed lights.
           void fetchRig();
         }}
         onFinished={() => { void fetchRig(); }}
       />
 
-      {/* Readiness reads only; Make groups writes group names, so the rig is read again. */}
+      {/* Readiness reads only; Make groups and Re-address write, so the rig is read again.
+          Neither touches positions, so the editor's undo (positions only) stays true. */}
       <ReadinessDialog
         open={readinessOpen}
         rigId={rig.id}
@@ -1023,6 +1028,11 @@ export default function RigBuilder() {
         onSelectFixtures={(ids) => {
           selectFixtures(ids);
           setReadinessOpen(false);
+        }}
+        onLocate={(ids) => {
+          setReadinessOpen(false);
+          setLocateIds(ids);
+          setIdentifyOpen(true);
         }}
         onChanged={() => { void fetchRig(); }}
       />

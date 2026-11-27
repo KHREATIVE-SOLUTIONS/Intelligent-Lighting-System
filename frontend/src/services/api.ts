@@ -40,8 +40,8 @@ import {
   roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellListPath, roomShellPath, roomShellUndoPath,
 } from '../utils/roomScan';
 import type { OutlineAnswer, OutlineChanges, OutlineRead } from '../utils/roomWallsEdit';
-import { autoGroupsPath, readinessPath } from '../utils/readiness';
-import type { AutoGroupsResult, ReadinessReport } from '../utils/readiness';
+import { autoGroupsPath, readdressPath, readinessPath } from '../utils/readiness';
+import type { AutoGroupsResult, ReaddressResult, ReadinessReport } from '../utils/readiness';
 // Types only: the module itself reads the 3D view's checks, which this file has no use for.
 import type {
   ShellEditUndone, ShellItemAdd, ShellItemAdded, ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
@@ -537,8 +537,10 @@ const identifyPath = (rigId: number, sessionId?: string) =>
   sessionId ? `/rigs/${rigId}/identify/${sessionId}` : `/rigs/${rigId}/identify`;
 
 export const identifyApi = {
-  start: async (rigId: number, only?: 'unconfirmed'): Promise<IdentifySession> => {
-    const response = await api.post(`${identifyPath(rigId)}/start`, null, {
+  /** With `fixtureIds`, walks exactly those lights (the Readiness panel's Locate these). */
+  start: async (rigId: number, only?: 'unconfirmed', fixtureIds?: number[]): Promise<IdentifySession> => {
+    const body = fixtureIds && fixtureIds.length > 0 ? { fixture_ids: fixtureIds } : null;
+    const response = await api.post(`${identifyPath(rigId)}/start`, body, {
       params: only ? { only } : undefined,
     });
     return response.data;
@@ -1630,6 +1632,14 @@ export const readinessApi = {
   /** Puts each placed fixture that is in no group into one named for where it hangs and what it is. */
   autoGroups: async (rigId: number): Promise<AutoGroupsResult> => {
     const response = await api.post(autoGroupsPath(rigId));
+    return response.data;
+  },
+
+  /** Moves each fixture whose address clashes to a free one. `dryRun` answers the plan and changes nothing. */
+  readdress: async (rigId: number, dryRun: boolean): Promise<ReaddressResult> => {
+    const response = await api.post(readdressPath(rigId), null, {
+      params: dryRun ? { dry_run: true } : undefined,
+    });
     return response.data;
   },
 };

@@ -41,6 +41,11 @@ interface IdentifyWalkthroughProps {
    * Above zero, the intro offers to check just those, a row at a time.
    */
   unconfirmedCount?: number;
+  /**
+   * Walk exactly these lights (the Readiness panel's Locate these), a row at a
+   * time as locate mode walks. Nothing is lit until Start is pressed.
+   */
+  fixtureIds?: number[];
 }
 
 type Phase = 'intro' | 'working' | 'step' | 'done';
@@ -70,7 +75,9 @@ export default function IdentifyWalkthrough({
   stageDepth,
   onFinished,
   unconfirmedCount = 0,
+  fixtureIds,
 }: IdentifyWalkthroughProps) {
+  const named = fixtureIds && fixtureIds.length > 0 ? fixtureIds : null;
   const [heightInput, setHeightInput] = useState('');
   const [phase, setPhase] = useState<Phase>('intro');
   const [session, setSession] = useState<IdentifySession | null>(null);
@@ -209,12 +216,12 @@ export default function IdentifyWalkthrough({
     setHeightInput(rowHeight === null ? '' : String(rowHeight));
   }, [rowNumber, rowHeight]);
 
-  const start = async (only?: 'unconfirmed') => {
+  const start = async (only?: 'unconfirmed', ids?: number[]) => {
     setError(null);
     setPlaced([]);
     setPhase('working');
     try {
-      applyState(await identifyApi.start(rigId, only));
+      applyState(await (ids ? identifyApi.start(rigId, only, ids) : identifyApi.start(rigId, only)));
     } catch (err) {
       setPhase('intro');
       setError(messageOf(err, 'Could not start the walkthrough.'));
@@ -402,7 +409,14 @@ export default function IdentifyWalkthrough({
         tap "I can't see it" and we will make a note of it: that usually means it is unplugged or
         set to the wrong address.
       </Typography>
-      {unconfirmedCount > 0 && (
+      {named && (
+        <Alert severity="info" data-testid="identify-named">
+          The readiness check named {named.length} light{named.length === 1 ? '' : 's'} whose
+          position nobody has confirmed. Start walks just {named.length === 1 ? 'that one' : 'those'},
+          a row at a time.
+        </Alert>
+      )}
+      {!named && unconfirmedCount > 0 && (
         <Alert severity="info">
           {unconfirmedCount} light{unconfirmedCount === 1 ? ' sits' : 's sit'} where we guessed{' '}
           {unconfirmedCount === 1 ? 'it' : 'they'} would be when the patch sheet was imported. You
@@ -781,10 +795,15 @@ export default function IdentifyWalkthrough({
       </DialogContent>
       <DialogActions>
         <Button onClick={finish}>{phase === 'done' ? 'Close' : 'Stop'}</Button>
-        {phase === 'intro' && unconfirmedCount > 0 && (
+        {phase === 'intro' && (named || unconfirmedCount > 0) && (
           <Button onClick={() => void start()}>Go through every light</Button>
         )}
-        {phase === 'intro' && (
+        {phase === 'intro' && named && (
+          <Button variant="contained" onClick={() => void start('unconfirmed', named)}>
+            Check these {named.length}
+          </Button>
+        )}
+        {phase === 'intro' && !named && (
           <Button
             variant="contained"
             onClick={() => void start(unconfirmedCount > 0 ? 'unconfirmed' : undefined)}

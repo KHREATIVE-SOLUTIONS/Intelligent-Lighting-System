@@ -30,16 +30,49 @@ export interface ReadinessReport {
 export interface AutoGroupsResult {
   rig_id: number;
   created: { name: string; fixture_ids: number[] }[];
+  /** Groups of exactly the name Make groups writes that ungrouped fixtures joined. */
+  added?: { name: string; fixture_ids: number[] }[];
   skipped: { name: string; fixture_ids: number[] }[];
   unplaced_ids: number[];
   changed: { id: number; name: string; group_before: string | null; group_name: string }[];
   message: string;
 }
 
+export interface ReaddressMove {
+  id: number;
+  name: string;
+  reason: 'overlap' | 'past_end';
+  clashes_with: number[];
+  channel_count: number;
+  /** The fixture has no DMX mode: the footprint is a guess and so may the clash be. */
+  guessed: boolean;
+  from_universe: number;
+  from_address: number;
+  to_universe: number;
+  to_address: number;
+  /** "4.337": universe counted from 1, then the address. */
+  from_label: string;
+  to_label: string;
+}
+
+export interface ReaddressResult {
+  rig_id: number;
+  dry_run: boolean;
+  moves: ReaddressMove[];
+  /** Fixtures that clash but were not moved (address locked, or no room), each with its reason. */
+  left: { id: number; name: string; reason: string; clashes_with: number[]; message: string }[];
+  conflicts_after: number;
+  past_end_after: number;
+  message: string;
+}
+
 export const FIX_AUTO_GROUPS = 'auto-groups';
+export const FIX_READDRESS = 'readdress';
+export const FIX_LOCATE = 'locate';
 
 export const readinessPath = (rigId: number) => `/rigs/${rigId}/readiness`;
 export const autoGroupsPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/auto-groups`;
+export const readdressPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/readdress`;
 
 const RANK: Record<ReadinessStatus, number> = { fail: 0, warn: 1, ok: 2 };
 
@@ -73,4 +106,24 @@ export function fixturesText(check: ReadinessCheck): string {
 
 export const FIX_LABELS: Record<string, string> = {
   [FIX_AUTO_GROUPS]: 'Make groups',
+  [FIX_READDRESS]: 'Re-address',
+  [FIX_LOCATE]: 'Locate these',
 };
+
+/** "Locate these", or "Locate the first 50" when the backend capped the list. */
+export function locateLabel(check: ReadinessCheck): string {
+  return check.fixture_ids.length < check.fixture_count
+    ? `Locate the first ${check.fixture_ids.length}`
+    : FIX_LABELS[FIX_LOCATE];
+}
+
+/** The short line the export dialogs show: overall status and how many checks warn or fail. */
+export function exportSummaryText(report: ReadinessReport): string {
+  const { fail = 0, warn = 0 } = report.counts;
+  if (report.status === 'ok') return 'Readiness: every check passed.';
+  const parts: string[] = [];
+  if (fail) parts.push(`${fail} ${fail === 1 ? 'check fails' : 'checks fail'}`);
+  if (warn) parts.push(`${warn} ${warn === 1 ? 'check warns' : 'checks warn'}`);
+  const word = report.status === 'fail' ? 'not ready' : 'ready with warnings';
+  return `Readiness: ${word}, ${parts.join(', ')}. You can still export.`;
+}

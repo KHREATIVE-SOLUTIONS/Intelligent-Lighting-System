@@ -6,11 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import ReadinessDialog from '../components/rig/ReadinessDialog';
 import { readinessApi } from '../services/api';
-import { fixturesText, headline, sortedChecks } from '../utils/readiness';
-import type { AutoGroupsResult, ReadinessCheck, ReadinessReport } from '../utils/readiness';
+import { exportSummaryText, fixturesText, headline, sortedChecks } from '../utils/readiness';
+import type {
+  AutoGroupsResult, ReaddressMove, ReaddressResult, ReadinessCheck, ReadinessReport,
+} from '../utils/readiness';
 
 vi.mock('../services/api', () => ({
-  readinessApi: { get: vi.fn(), autoGroups: vi.fn() },
+  readinessApi: { get: vi.fn(), autoGroups: vi.fn(), readdress: vi.fn() },
 }));
 
 const api = vi.mocked(readinessApi);
@@ -49,9 +51,25 @@ const FIXED: AutoGroupsResult = {
   message: 'Made 1 group for 3 fixtures.',
 };
 
+const CLASH = { ...ADDRESSES, fix: 'readdress' };
+const GUESSES = check({
+  id: 'positions', title: 'Positions', status: 'warn',
+  message: '2 fixtures sit where we guessed.', fixture_ids: [21, 22], fixture_count: 2, fix: 'locate',
+});
+
+const MOVE: ReaddressMove = {
+  id: 12, name: 'Spot 2', reason: 'overlap', clashes_with: [11], channel_count: 16, guessed: false,
+  from_universe: 0, from_address: 5, to_universe: 0, to_address: 17, from_label: '1.005', to_label: '1.017',
+};
+const PLAN: ReaddressResult = {
+  rig_id: 7, dry_run: true, moves: [MOVE], left: [], conflicts_after: 0, past_end_after: 0,
+  message: 'Would move 1 fixture: Spot 2 1.005 to 1.017.',
+};
+
 beforeEach(() => {
   api.get.mockReset();
   api.autoGroups.mockReset();
+  api.readdress.mockReset();
 });
 afterEach(cleanup);
 
@@ -144,6 +162,94 @@ describe('ReadinessDialog', () => {
     expect(screen.getByText(/Make groups did not run: nothing was changed/)).toBeTruthy();
     expect(onChanged).not.toHaveBeenCalled();
   });
+
+  it('Re-address shows the dry-run plan, moves nothing until asked, then applies and checks again', async () => {
+    api.get
+      .mockResolvedValueOnce(report([CLASH]))
+      .mockResolvedValueOnce(report([{ ...CLASH, status: 'ok', message: 'No clashes.', fix: null, fixture_ids: [], fixture_count: 0 }]));
+    api.readdress
+      .mockResolvedValueOnce(PLAN)
+      .mockResolvedValueOnce({ ...PLAN, dry_run: false, message: 'Moved 1 fixture: Spot 2 1.005 to 1.017.' });
+    const onChanged = vi.fn();
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} onChanged={onChanged} />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Re-address' }));
+    await flush();
+
+    expect(api.readdress).toHaveBeenCalledTimes(1);
+    expect(api.readdress).toHaveBeenLastCalledWith(7, true);
+    const plan = screen.getByTestId('readiness-readdress-plan');
+    expect(within(plan).getByText('Spot 2: 1.005 to 1.017')).toBeTruthy();
+    expect(within(plan).getByText(/There is no undo for this/)).toBeTruthy();
+    expect(onChanged).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move 1' }));
+    await flush();
+
+    expect(api.readdress).toHaveBeenCalledTimes(2);
+    expect(api.readdress).toHaveBeenLastCalledWith(7, false);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Moved 1 fixture: Spot 2 1.005 to 1.017.')).toBeTruthy();
+    expect(screen.getByTestId('readiness-headline').textContent).toBe('Ready to program: every check passed.');
+  });
+
+  it('Re-address Cancel after the plan writes nothing', async () => {
+    api.get.mockResolvedValue(report([CLASH]));
+    api.readdress.mockResolvedValue(PLAN);
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Re-address' }));
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(api.readdress).toHaveBeenCalledTimes(1);
+    expect(api.readdress).toHaveBeenCalledWith(7, true);
+    expect(screen.queryByTestId('readiness-readdress-plan')).toBeNull();
+  });
+
+  it('a plan that moves nothing offers nothing to apply and names what was left', async () => {
+    api.get.mockResolvedValue(report([CLASH]));
+    api.readdress.mockResolvedValue({
+      ...PLAN, moves: [], conflicts_after: 1,
+      left: [{ id: 12, name: 'Spot 2', reason: 'locked', clashes_with: [11], message: 'Spot 2 has a locked address, so it was not moved.' }],
+      message: 'Spot 2 has a locked address, so it was not moved.',
+    });
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Re-address' }));
+    await flush();
+
+    const plan = screen.getByTestId('readiness-readdress-plan');
+    expect(within(plan).getByText(/locked address/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Move/ })).toBeNull();
+  });
+
+  it('Locate these hands exactly the named fixtures to the walkthrough and writes nothing', async () => {
+    api.get.mockResolvedValue(report([GUESSES]));
+    const onLocate = vi.fn();
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} onLocate={onLocate} />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Locate these' }));
+    expect(onLocate).toHaveBeenCalledWith([21, 22]);
+    expect(api.readdress).not.toHaveBeenCalled();
+    expect(api.autoGroups).not.toHaveBeenCalled();
+  });
+
+  it('Locate says when only the first fixtures are handed over, and is left out with no walkthrough', async () => {
+    api.get.mockResolvedValue(report([{ ...GUESSES, fixture_count: 80 }]));
+    const { unmount } = render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} onLocate={() => {}} />);
+    await flush();
+    expect(screen.getByRole('button', { name: 'Locate the first 2' })).toBeTruthy();
+    unmount();
+
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} />);
+    await flush();
+    expect(screen.queryByRole('button', { name: /^Locate/ })).toBeNull();
+  });
 });
 
 describe('readiness helpers', () => {
@@ -163,5 +269,12 @@ describe('readiness helpers', () => {
 
   it('words a rig that only warns as ready with warnings', () => {
     expect(headline(report([POSITIONS, GROUPS]))).toBe('Ready with warnings: 1 check warns.');
+  });
+
+  it('words the export summary with the status and the warn and fail counts', () => {
+    expect(exportSummaryText(report([POSITIONS]))).toBe('Readiness: every check passed.');
+    expect(exportSummaryText(report([ADDRESSES, GROUPS, GUESSES])))
+      .toBe('Readiness: not ready, 1 check fails, 2 checks warn. You can still export.');
+    expect(exportSummaryText(report([GROUPS]))).toBe('Readiness: ready with warnings, 1 check warns. You can still export.');
   });
 });
