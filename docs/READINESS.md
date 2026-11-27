@@ -87,7 +87,8 @@ kept on the rig (`rigs.readiness_undo`), so it survives a reload, but only
 one step is kept:
 
 - a fix that changes something replaces the undo; a fix that changes
-  nothing (a second press, or a Re-address dry run) keeps the one before;
+  nothing (a second press, or a Re-address or Set modes dry run) keeps the
+  one before;
 - when any fixture the fix changed has been **changed or removed since**,
   nothing is put back: the answer is 409 and the panel says which fixtures,
   in words ("Cannot undo Re-address: 1 of the fixtures it changed has been

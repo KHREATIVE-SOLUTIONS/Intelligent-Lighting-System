@@ -143,7 +143,8 @@ describe('ReadinessDialog', () => {
   it('Set modes shows what changes, what to pick by hand and the clash, then asks before setting', async () => {
     api.get
       .mockResolvedValueOnce(report([MODES]))
-      .mockResolvedValueOnce(report([{ ...MODES, status: 'warn', fixture_ids: [15], fixture_count: 1 }]));
+      .mockResolvedValueOnce(report([{ ...MODES, status: 'warn', fixture_ids: [15], fixture_count: 1 }]))
+      .mockResolvedValueOnce(report([MODES])); // after Undo
     api.setModes
       .mockResolvedValueOnce(MODES_PLAN)
       .mockResolvedValueOnce({

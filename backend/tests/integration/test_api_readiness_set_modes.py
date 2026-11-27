@@ -256,7 +256,8 @@ class TestLiv:
         assert await snapshot(db_session, rig_id) == before
 
         # Lose one matched fixture's mode: Set modes finds it again when its profile allows one answer.
-        rows = (await db_session.execute(select(RigFixture).where(RigFixture.rig_id == rig_id))).scalars().all()
+        rows = (await db_session.execute(
+            select(RigFixture).where(RigFixture.rig_id == rig_id).order_by(RigFixture.id))).scalars().all()
         victim = next(rf for rf in rows if rf.mode_id is not None)
         victim_id, original, profile_id = victim.id, victim.mode_id, victim.fixture_id
         names = {rf.id: rf.name for rf in rows}
