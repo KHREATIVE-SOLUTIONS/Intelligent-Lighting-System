@@ -776,8 +776,12 @@ The answer, for both:
     height", "read beside", "another has it"; not "no longer read" or
     "record dropped"): `kind` (the list), `old_name`, `old_trim_or_height`,
     `old_base_height` (raised areas), `edits`, `new_index`, `new_name`,
-    `reason`, and `warning` (its place in `warnings`). POST
-    `.../room-scan/carry-over` takes one as it is.
+    `reason`, `warning` (its place in `warnings`) and, since slice 37,
+    `warning_id` (the `id` of its warning, which the dialog matches by).
+    POST `.../room-scan/carry-over` takes one as it is, and
+    `.../room-scan/carry-over/all` a list. With `apply=true` the entries
+    are also kept with the stored room as `room_shell.pending_carry_over`
+    (each with its warning's `message`), in the answer's `room_shell` too.
 
 Refusals, each with a `detail` that says what to do:
 
@@ -1285,7 +1289,36 @@ room's Undo; fixtures move only by Edit Room's carry rules. The answer has
 already had all of it), `undo`, `fixtures_moved`, `items_moved` and a
 `message`. **409** where the item at `new_index` is gone or no longer
 called `new_name`; **422** for an entry that is not one; **404** with no
-room. Slice 36.
+room. Slice 36. Since slice 37 the answer also has `pending_carry_over`
+(what is still open after it), and the entry, with every other one for the
+same item, is gone from the stored list, even where nothing changed.
+
+### `POST /api/rigs/{rig_id}/room-scan/carry-over/all`
+
+"Keep all" (slice 37). The body is `{entries, carry_fixtures}`, `entries` a
+list of `carry_over` entries as they came (from the applied answer, or from
+the stored list below). Each is carried as the route above carries one, onto
+the room the entries before it left, and the whole lot is **one step of the
+room's Undo** ("2 names and trims kept from the last scan"; one entry's own
+label for one). **All or none**: the first entry refused refuses the whole
+request with its status (**409** stale, **422** not an entry or a trim the
+room does not hold) and nothing is written. **422** before any is tried for
+`entries` that is not a non-empty list of objects, and for **two entries
+pointing at the same item** (the detail names both old names and the item:
+one would silently overwrite the other). **422** also for a fixture that two
+of the entries would each move (the moves are worked out from where the
+fixtures stand and made together). The answer: `carried` (per entry, in the
+order sent: `warning_id`, `kind`, `index`, `old_name`, `new_name`, `item`,
+`changed`, `fixtures_moved`, `message`), `room_shell`, `changed`, `undo`,
+`fixtures_moved`, `items_moved`, `pending_carry_over` and a `message`.
+
+### `GET /api/rigs/{rig_id}/room-scan/carry-over`
+
+What the last scan applied lost that can still be put back (slice 37):
+`{rig_id, carry_over, count}`. Each entry is as the applied answer gave it,
+with the `message` of its warning. The same list is in the stored room as
+`room_shell.pending_carry_over` (and so in `GET /api/rigs/{id}`), left out
+when empty. Writes nothing.
 
 ### `POST /api/rigs/{rig_id}/room-scan/undo`
 
@@ -1795,6 +1828,98 @@ where they were, and a drag or a drop is held to the deck on the deck's grid.
 A drag of one fixture reports a position and no height, and no readout is
 drawn. What is new there needs more than one fixture selected: a row can be
 selected and carried on the deck too, held to the deck's edges.
+
+## What slice 37 built
+
+Keep all, and the carry-over list outlives the dialog. Slice 36 put one lost
+name and trim back at a time, from buttons that lived only in the answer to
+the apply. This slice keeps them all at once, keeps the open ones with the
+stored room, and ties each button to its warning by an id.
+
+- **Warning ids** (`keep_edits.py`, `warning_id()`). Each lost warning that
+  has a `carry_over` entry has an `id` (`"lost-0"`, `"lost-1"`, ...: its
+  place among the losses, not the item it points at, as two losses can
+  point at one item), and its entry the same as **`warning_id`**. `warning`
+  (the place in `warnings`) is kept. The dialog matches by id
+  (`handEditWarningEntries`), and by the server's place only for an entry
+  without one.
+- **The list kept with the room** (`pending_carry.py`). Applying a scan
+  stores its entries in the room as **`room_shell.pending_carry_over`**,
+  each with its warning's `message`; the key is left out when there are
+  none, so such a room is stored as before. The apply answer's
+  `room_shell` is the room as stored, list and all (a preview stores
+  nothing and has none). An entry is **dropped** when:
+  - it is carried over (with any other entry for the same item, which the
+    new name would make stale);
+  - Edit Room changes its item's `name`, `height` or `base_height` (a
+    PATCH, or a raised area carried by another); a move keeps it;
+  - its item is deleted; the entries of the items after it in that list
+    move up one place, so none points at its neighbour;
+  - the room is read again (the new apply's list replaces it, or none) or
+    taken off.
+  Every step of the room's Undo keeps the room as it was, so **Undo brings
+  an entry back** with whatever dropped it: a carry-over, a rename, a
+  delete. No new column.
+- **`GET .../room-scan/carry-over`** lists them; the same list comes with
+  the rig as read.
+- **"Keep all"** (`carry_all()` and `refuse_shared_targets()` in
+  `carry_over.py`; `POST .../room-scan/carry-over/all`). Every entry in one
+  request, as **one Undo step**, all or none; two for one item are a 422
+  that names both, and so is a fixture two of them would each move. Edit
+  Room's carry rules for each item are passed in by the route, so the pure
+  function is tested without a database.
+- **The dialog** (`RoomScanDialog.tsx`; `pendingCarryOverOf`,
+  `carryOverKey`, `keepAllButtonText`, `roomScanCarryOverAllPath`;
+  `roomScanApi.carryOverAll`). With two or more entries, **"Keep all N"**
+  (`room-scan-carry-over-all`) sends every one not yet kept, then reads
+  "Kept all", disabled; a refusal shows the server's words and leaves every
+  button as it was. Kept entries are tracked by `carryOverKey` (the warning
+  id), not by place, and another entry for an item something was kept on
+  is spent with it (disabled, and not sent with Keep all), as the server
+  drops it. **Opened again** with no scan on screen and no file
+  chosen, it shows the stored entries (`room-scan-pending-carry-over`), each
+  in a warning with its sentence and its "Keep Front truss on this one"
+  button, and "Keep all". They come in as the prop `pendingCarryOver`, which
+  RigBuilder reads from the rig it already has, so opening makes no request.
+- **Tests.** Backend, `tests/unit/test_room_scan_keep_all.py` (18): two real
+  losses (a line read at another height, a ring read beside) with their ids
+  and stored sentences; keep all of them; one stale entry (first or last)
+  refuses all; one that is not an entry; two for one item (422 naming
+  both); lists that are not one; a fixture moved twice; the list dropped on
+  a rename or re-trim and kept on a move; a delete dropping one and moving
+  a later one up; carried entries going with their twins; a new reading
+  with no list; an Undo step keeping it.
+  `tests/integration/test_api_room_scan_keep_all.py` (16), over HTTP with
+  slice 36's room: the list stored, in the GET and in the rig; carried, gone,
+  and back with Undo; renamed (then a 409), and back with Undo; re-trimmed;
+  deleted; read again; removed; Keep all as one Undo step answering per
+  entry; two entries on two lists as one step ("2 names and trims kept from
+  the last scan") that one Undo takes back whole; one stale entry writing
+  nothing; two for one item a 422; six bodies that are not a list of
+  entries (two with a `kind` or `new_index` that cannot be compared: a 422
+  in a sentence, not a 500). Frontend,
+  `RoomScanDialogKeepAll.test.tsx` (12): buttons in their warnings by id
+  (with places given crossed and a warning passed over); Keep all sending
+  both and then disabled; Keep all after one is kept sending the other; a
+  refusal leaving every button; no Keep all for one entry; the reopened
+  dialog showing the stored sentences and buttons, sending one, then the
+  rest with Keep all; nothing shown with none stored or once a file is
+  chosen; the helpers.
+- **Existing tests changed** (in 295d9da, which lists each): exact warning
+  and `carry_over` dicts gain `id` / `warning_id` (seven in the unit tests,
+  two in `test_api_room_scan_keep_named.py`), and one assertion that the
+  preview's, the answer's and the stored room were equal now says the
+  stored room and the answer have the list and the preview does not.
+- **What was run** (Nov 27). Backend, with the main checkout's venv:
+  `python -m pytest tests/ -q` **2833 passed, 10 skipped, 5 xfailed**; then,
+  after the unhashable-target fix and the two-entry test (written after
+  that run), the four carry-over and keep-all files on their own: 51
+  passed. Frontend: `npx tsc --noEmit -p .` gave the 13
+  older errors and none new. **`npx vitest run` was not run** (not allowed
+  in the session): the 12 new frontend tests are checked by the
+  type-checker only.
+- **No Art-Net, no DMX, no network call, no new dependency, no new
+  column.**
 
 ## What slice 36 built
 
@@ -4750,21 +4875,35 @@ Pixar's USD library from the same rooms (slice 24).
   ran. Before relying on it, in `frontend/`: `npx vitest run` (one new file,
   `RoomScanDialogCarryOver.test.tsx`, 5 tests) and `npx vite build`.
   **Not seen in a browser.**
+- **What slice 37 leaves** (keep all, the stored list):
+  - **The second entry of the two-entry HTTP test is made by hand** (a
+    raised area renamed): the test room loses one truss only. Two real
+    losses are tested through `carry_all()` in the unit tests.
+  - **A fixture two entries would each move refuses Keep all** rather than
+    being moved once by the sum: keep those one at a time.
+  - **An entry is dropped on any change to its item's name, height or base
+    height**, even one back to the same value later; the room's Undo is the
+    way back.
+  - **The reopened list has no "Kept ..." state** once the rig is read
+    again: a kept entry simply leaves the list.
+  - **The stored list is not shown in the 3D view** or the Edit Room
+    dialog: only in the Room Scan dialog.
 - **What slice 36 leaves** (carry-over):
-  - **A carry-over is one item at a time**: there is no "keep all".
-  - **The buttons are in the answer only**: closed, the dialog forgets
-    them, and the next scan's answer has nothing to carry (the room is
-    the scan's by then). Rename and trim in Edit Room.
+  - *Closed by slice 37:* a carry-over is one item at a time: "Keep all"
+    sends every entry in one request, as one Undo step, all or none.
+  - *Closed by slice 37:* the buttons are in the answer only. The open
+    entries are kept with the stored room (`room_shell.pending_carry_over`,
+    GET `.../room-scan/carry-over`), and the dialog opened again shows them.
   - **A raised area's footprint is not carried**, on purpose, as slice 32
     keeps none.
   - **"No longer read" has no button**: there is no item to put it on.
   - **Carrying over "another has it" replaces the winner's edits** on that
     item: Near's name goes onto the area Nearer had, and Nearer's is gone.
     The operator chose it; Undo takes it back.
-  - **The button finds its warning by place**: `warning` is a place in the
-    server's `warnings`, matched against the dialog's list of sentences. A
-    warning the dialog passes over (no message, no name) would shift them;
-    the server sends none such.
+  - *Closed by slice 37:* the button finds its warning by place. Each
+    warning with an entry has an `id`, and the entry the same as
+    `warning_id`: the dialog matches by that, so a warning it passes over
+    shifts nothing.
   - **The carry-over route is not tested with fixtures hung on the truss**
     or during a locate walkthrough: both rest on the PATCH's tests of the
     shared rules.
@@ -4788,8 +4927,8 @@ Pixar's USD library from the same rooms (slice 24).
     this one" puts the name and trim onto the truss the warning speaks of
     (POST `.../room-scan/carry-over`), marked as set by hand, as one Undo
     step.
-  - **The list is not kept** once the dialog is closed: it is in the
-    answer to the scan, and nowhere in the stored room.
+  - *Closed by slice 37:* the list is not kept once the dialog is closed.
+    What can still be put back is kept with the stored room.
 - **What slice 34 leaves** (deleted lines and rings, hanging heights):
   - *Said since slice 35:* **a truss re-trimmed by more than 1.0 m between
     two scans is another truss** (`HANG_MATCH_M`): its name and trim are
