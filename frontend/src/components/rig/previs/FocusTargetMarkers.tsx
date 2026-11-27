@@ -47,9 +47,12 @@ function markerParts(marker: FocusMarker): THREE.BufferGeometry[] {
     parts.push(paint(place(new THREE.BoxGeometry(0.13, 0.13, 0.13), at, [Math.PI / 4, Math.PI / 4, 0]), color));
   } else if (marker.style === 'none') {
     const r = 0.12;
+    // Upright for the side cameras, and flat for the Top one, where an upright cross is edge-on.
     parts.push(
       paint(strut([x - r, y - r, z], [x + r, y + r, z], 0.02, 4), color),
       paint(strut([x - r, y + r, z], [x + r, y - r, z], 0.02, 4), color),
+      paint(strut([x - r, y, z - r], [x + r, y, z + r], 0.02, 4), color),
+      paint(strut([x - r, y, z + r], [x + r, y, z - r], 0.02, 4), color),
     );
   } else {
     parts.push(paint(place(new THREE.SphereGeometry(0.06, 10, 6), at), color));
