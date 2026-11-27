@@ -35,6 +35,10 @@ import RoomItemHeightStrip from './RoomItemHeightStrip';
 import { heightGauge } from './roomItemHeight';
 import { outsideLines, outsideOf } from '../../utils/roomWallsEdit';
 import type { Rig, RigFixture, Fixture, PatchConflict, RoomShell, RoomShellEdits } from '../../types';
+import StagePlotControl from './StagePlotControl';
+import useStagePlot from './useStagePlot';
+import { refusalText } from '../../services/stagePlotApi';
+import { isGuessed } from '../../utils/stagePlot';
 
 /** Long enough that a drag is one request, short enough to feel immediate. */
 const POSITION_SAVE_DEBOUNCE_MS = 400;
@@ -103,6 +107,10 @@ export default function RigBuilder() {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const paletteDragRef = useRef<Fixture | null>(null);
   const pendingUndoRef = useRef(false);
+  // The fixtures the drag under way has moved: with a stage plot shown, those that were guesses are confirmed at its end.
+  const draggedIdsRef = useRef<Set<number>>(new Set());
+  // The stage plot underlay of the 2D plan (docs/STAGE_PLOT.md).
+  const stagePlot = useStagePlot(rig?.id, rig?.stage_width ?? 10, rig?.stage_depth ?? 8);
 
   const applyRig = useCallback((next: Rig) => {
     rigRef.current = next;
@@ -490,7 +498,10 @@ export default function RigBuilder() {
     noteUndoHeights(heightsBefore(current.fixtures, moves));
 
     applyRig({ ...current, fixtures: next.fixtures });
-    next.changed.forEach((fixtureId) => dirtyIdsRef.current.add(fixtureId));
+    next.changed.forEach((fixtureId) => {
+      dirtyIdsRef.current.add(fixtureId);
+      draggedIdsRef.current.add(fixtureId);
+    });
     schedulePositionSave();
   };
 
@@ -594,7 +605,54 @@ export default function RigBuilder() {
 
   const handleFixtureDragEnd = () => {
     pendingUndoRef.current = false;
-    void flushPositions();
+    const dragged = draggedIdsRef.current;
+    draggedIdsRef.current = new Set();
+    // Without a stage plot shown, a guess dragged on the plan stays a guess, as it always did.
+    if (!stagePlot.underlay) {
+      void flushPositions();
+      return;
+    }
+    void (async () => {
+      if (!(await flushPositions())) return;
+      await confirmDragged(dragged);
+    })();
+  };
+
+  /**
+   * With the stage plot shown, a guessed fixture dragged onto it is placed by a
+   * person: it is stored through the same route the 3D view's drag uses, which
+   * takes the guess flag off (docs/STAGE_PLOT.md). The answer is the fixture as
+   * stored, which the server may have held inside the room.
+   */
+  const confirmDragged = async (dragged: Set<number>) => {
+    const current = rigRef.current;
+    if (!current) return;
+    const guesses = current.fixtures.filter((f) => dragged.has(f.id) && isGuessed(f.tags));
+    if (guesses.length === 0) return;
+    const stored = new Map<number, RigFixture>();
+    let refused: string | null = null;
+    for (const f of guesses) {
+      try {
+        stored.set(f.id, await rigsApi.setFixturePosition(current.id, f.id, {
+          x: f.position_x, z: f.position_z, y: f.position_y,
+        }));
+      } catch (error) {
+        refused = refusalText(error, `${f.name || 'A fixture'} could not be marked as placed.`);
+      }
+    }
+    const latest = rigRef.current;
+    if (latest && stored.size > 0) {
+      applyRig({
+        ...latest,
+        fixtures: latest.fixtures.map((f) => {
+          const answer = stored.get(f.id);
+          return answer
+            ? { ...f, tags: answer.tags, position_x: answer.position_x, position_y: answer.position_y, position_z: answer.position_z }
+            : f;
+        }),
+      });
+    }
+    if (refused) setNotice({ severity: 'error', text: refused });
   };
 
   const applySnapshot = useCallback((snapshot: FixturePositionSnapshot[]) => {
@@ -908,9 +966,15 @@ export default function RigBuilder() {
           {/* The plan, and beside it, while the room's items are arranged, the height strip. The
               strip is there for the whole of the mode, selected item or not, so the plan does not
               change size under a press. */}
+          {/* The stage plot underlay: upload, calibrate, show or hide, remove (docs/STAGE_PLOT.md). */}
+          <StagePlotControl plot={stagePlot} disabled={wallsOn || itemsOn} />
           <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', flexShrink: 0 }}>
           <Box sx={{ flexGrow: 1, minWidth: 0 }}>
           <StageView2D
+            underlay={stagePlot.underlay}
+            // Calibrating: a click on the plan picks a point, and fixtures take no press.
+            onPlanPick={wallsOn || itemsOn ? undefined : stagePlot.onPlanPick}
+            pickMarks={stagePlot.pickMarks}
             width={rig.stage_width}
             depth={rig.stage_depth}
             height={rig.stage_height}

@@ -23,6 +23,29 @@ import { WALL_LIMITS, wallCorners } from '../../utils/roomWallsEdit';
 import type { ShellItemChanges, ShellItemKind } from '../../utils/roomShellEdit';
 import { dragItem, gripCursor, gripHint, isBoxGrip, itemHandles, planItems, shapeCentre } from './roomItemDrag2d';
 import type { ItemGrip, ItemShape, PlanItem } from './roomItemDrag2d';
+import { isGuessed, svgMatrix } from '../../utils/stagePlot';
+import type { Matrix } from '../../utils/stagePlot';
+
+/** A stage plot image drawn under the fixtures (docs/STAGE_PLOT.md). */
+export interface PlanUnderlay {
+  /** An object URL of the image: the route needs the operator's token, an <image href> does not send it. */
+  href: string;
+  widthPx: number;
+  heightPx: number;
+  /** Image pixels to plan metres (utils/stagePlot.ts). */
+  matrix: Matrix;
+  opacity: number;
+}
+
+/** A point marked on the plan while a stage plot is calibrated: A, B or the origin. */
+export interface PlanPickMark {
+  x: number;
+  z: number;
+  label: string;
+}
+
+// The amber of a guessed position, as the 3D view's GUESS_COLOR.
+const GUESS_RING = '#ffb74d';
 
 const FIXTURE_TYPE_COLORS: Record<string, string> = {
   moving_head: '#e91e63',
@@ -208,6 +231,15 @@ interface StageView2DProps {
    * can add it to where the item is once the request before it is answered.
    */
   onItemNudge?: (kind: ShellItemKind, index: number, dx: number, dz: number) => void;
+  /** A stage plot image drawn under the fixtures, or null for none. */
+  underlay?: PlanUnderlay | null;
+  /**
+   * Calibrating the stage plot: a click on the plan is a picked point, given
+   * in plan metres, and fixtures take no press (as in walls mode). Off unless given.
+   */
+  onPlanPick?: (x: number, z: number) => void;
+  /** The points picked so far, drawn over the plan. */
+  pickMarks?: PlanPickMark[];
 }
 
 /** A finger or pen that is down on the plan, until it is lifted. */
@@ -305,12 +337,17 @@ export default function StageView2D({
   onItemSelect,
   onItemChange,
   onItemNudge,
+  underlay = null,
+  onPlanPick,
+  pickMarks,
 }: StageView2DProps) {
+  const picking = !!onPlanPick && !readonly;
   // A press on a room item or one of its handles, and where its drag has the item.
   const itemRef = useRef<ItemSession | null>(null);
   const [itemPreview, setItemPreview] = useState<{ key: string; shape: ItemShape; readout: string } | null>(null);
-  // Fixtures take no press while the room itself is being edited on the plan.
-  const roomEdit = wallsEdit || itemsEdit;
+  // Fixtures take no press while the room itself is being edited on the plan,
+  // or a stage plot is being calibrated on it.
+  const roomEdit = wallsEdit || itemsEdit || picking;
   // A press on a corner of the walls, and where its drag has the corner.
   const cornerRef = useRef<CornerSession | null>(null);
   const [cornerPreview, setCornerPreview] = useState<{ index: number; x: number; z: number } | null>(null);
@@ -969,9 +1006,17 @@ export default function StageView2D({
     if (longPressTimer.current !== null) clearTimeout(longPressTimer.current);
   }, []);
 
-  const handleBackgroundClick = () => {
+  const handleBackgroundClick = (e?: React.MouseEvent) => {
     if (skipBackgroundClick.current) {
       skipBackgroundClick.current = false;
+      return;
+    }
+    // Calibrating a stage plot: the click is a point picked, and selects nothing.
+    if (picking) {
+      if (e) {
+        const at = pointerToStage(e.clientX, e.clientY);
+        onPlanPick?.(at.x, at.z);
+      }
       return;
     }
     // While the room's items are arranged, empty floor lets go of the item, not of a fixture.
@@ -1269,6 +1314,23 @@ export default function StageView2D({
           strokeWidth={0.05}
         />
 
+        {/* The stage plot underlay: above the floor, under the grid, the room and the
+            fixtures. It takes no press, so dragging and dropping work through it. */}
+        {underlay && (
+          <g transform={`translate(${toSvgX(0)} ${toSvgY(0)}) ${svgMatrix(underlay.matrix)}`} pointerEvents="none">
+            <image
+              data-testid="stage-plot-underlay"
+              href={underlay.href}
+              x={0}
+              y={0}
+              width={underlay.widthPx}
+              height={underlay.heightPx}
+              opacity={underlay.opacity}
+              preserveAspectRatio="none"
+            />
+          </g>
+        )}
+
         {/* Grid: the deck's, or with a scanned room drawn the room's, across
             its floor and the deck and not in a notch outside the walls. */}
         {gridLines}
@@ -1519,6 +1581,20 @@ export default function StageView2D({
                 <circle r={0.4} fill="none" stroke="#4fc3f7" strokeWidth={0.06} />
               )}
 
+              {/* A guessed position: a dashed amber ring, until a person places it. */}
+              {isGuessed(f.tags) && (
+                <circle
+                  data-testid={`plan-guess-ring-${f.id}`}
+                  r={0.33}
+                  fill="none"
+                  stroke={GUESS_RING}
+                  strokeWidth={0.04}
+                  strokeDasharray="0.1 0.07"
+                >
+                  <title>Position is a guess: drag it to where it hangs</title>
+                </circle>
+              )}
+
               {/* Fixture icon */}
               <circle r={0.25} fill={color} opacity={0.9} />
               <circle r={0.25} fill="none" stroke={isSelected ? '#4fc3f7' : '#fff'} strokeWidth={0.04} />
@@ -1550,6 +1626,20 @@ export default function StageView2D({
             </g>
           );
         })}
+
+        {/* The points picked while a stage plot is calibrated. */}
+        {pickMarks?.map((mark) => (
+          <g
+            key={mark.label}
+            data-testid={`stage-plot-mark-${mark.label}`}
+            transform={`translate(${toSvgX(mark.x)}, ${toSvgY(mark.z)})`}
+            pointerEvents="none"
+          >
+            <line x1={-0.3} y1={0} x2={0.3} y2={0} stroke="#ff4081" strokeWidth={0.05} />
+            <line x1={0} y1={-0.3} x2={0} y2={0.3} stroke="#ff4081" strokeWidth={0.05} />
+            <text x={0.2} y={-0.2} fill="#ff4081" fontSize={0.3} fontWeight="bold">{mark.label}</text>
+          </g>
+        ))}
 
         {/* Walls mode: a numbered handle on each corner of the walls, over
             the fixtures, so a corner under an icon can still be picked up. */}
