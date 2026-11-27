@@ -6,6 +6,7 @@ from app.models.fixture import Fixture, FixtureMode, FixtureChannel
 from app.models.audio import AudioAnalysis, AudioFingerprint
 from app.models.template import RigTemplate
 from app.models.rdm_device import RDMDevice
+from app.models.stage_plot import RigStagePlot
 
 __all__ = [
     "Show",
@@ -20,4 +21,5 @@ __all__ = [
     "AudioFingerprint",
     "RigTemplate",
     "RDMDevice",
+    "RigStagePlot",
 ]

@@ -12,11 +12,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.orm import selectinload
 import numpy as np
 
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
+from app.models.stage_plot import RigStagePlot
 from app.models.fixture import Fixture, FixtureMode, FixtureType
 from app.schemas.rig import (
     RigCreate, RigUpdate, RigResponse, RigListResponse,
@@ -199,6 +201,9 @@ async def delete_rig(
     if not rig:
         raise HTTPException(status_code=404, detail="Rig not found")
 
+    # Its stage plot underlay goes with it. Said here, not left to the foreign
+    # key: SQLite does not enforce ON DELETE CASCADE unless asked to.
+    await db.execute(sa_delete(RigStagePlot).where(RigStagePlot.rig_id == rig_id))
     await db.delete(rig)
 
 
