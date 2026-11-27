@@ -2,8 +2,9 @@
 Undoing the last readiness fix
 ==============================
 
-Make groups writes `group_name` and Re-address writes `universe` and
-`dmx_address`, on the fixtures each one changes. The endpoint records, for
+Make groups writes `group_name`, Re-address writes `universe` and
+`dmx_address`, and Set modes writes `mode_id` (the footprint is the mode's
+channel count, so nothing else), on the fixtures each one changes. The endpoint records, for
 each fixture a fix changed, those columns before and after, as one record on
 the rig (`rigs.readiness_undo`). The undo puts every one of them back in one
 write, or none.
@@ -25,13 +26,17 @@ from typing import Any, Dict, List, Optional, Sequence
 
 FIX_AUTO_GROUPS = "auto-groups"
 FIX_READDRESS = "readdress"
+FIX_SET_MODES = "set-modes"
 
 # The columns each fix writes, and so the only ones its undo puts back.
 FIELDS = {
     FIX_AUTO_GROUPS: ("group_name",),
     FIX_READDRESS: ("universe", "dmx_address"),
+    FIX_SET_MODES: ("mode_id",),
 }
-FIX_WORDS = {FIX_AUTO_GROUPS: "Make groups", FIX_READDRESS: "Re-address"}
+FIX_WORDS = {FIX_AUTO_GROUPS: "Make groups", FIX_READDRESS: "Re-address", FIX_SET_MODES: "Set modes"}
+# What a refused undo tells the operator to set by hand instead.
+FIX_WHAT = {FIX_AUTO_GROUPS: "group", FIX_READDRESS: "address", FIX_SET_MODES: "DMX mode"}
 
 
 def make_record(fix: str, entries: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -105,7 +110,7 @@ def stale_message(plan: Dict[str, Any]) -> str:
     stale = plan["stale"]
     words = FIX_WORDS.get(plan["fix"], "the fix")
     names = ", ".join(s["name"] for s in stale[:3]) + (f" and {len(stale) - 3} more" if len(stale) > 3 else "")
-    what = "group" if plan["fix"] == FIX_AUTO_GROUPS else "address"
+    what = FIX_WHAT.get(plan["fix"], "value")
     return (
         f"Cannot undo {words}: {len(stale)} of the fixtures it changed "
         f"{'have' if len(stale) != 1 else 'has'} been changed or removed since ({names}). "

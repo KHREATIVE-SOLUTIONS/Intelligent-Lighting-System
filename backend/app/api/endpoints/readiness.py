@@ -5,24 +5,29 @@ Venue readiness endpoints
 GET  /api/rigs/{rig_id}/readiness                  every check, worst first in `status`
 POST /api/rigs/{rig_id}/readiness/fix/auto-groups  a group for each place and kind of fixture
 POST /api/rigs/{rig_id}/readiness/fix/readdress    a free address for each fixture that clashes
-POST /api/rigs/{rig_id}/readiness/fix/undo         put back what the last of those two changed
+POST /api/rigs/{rig_id}/readiness/fix/set-modes    the DMX mode, where only one is possible
+POST /api/rigs/{rig_id}/readiness/fix/undo         put back what the last of those three changed
 
 The GET reads and writes nothing. Make groups writes `group_name` on the
 fixtures that are in no group, and nothing else. Re-address writes
-`universe` and `dmx_address` on the fixtures that clash, and nothing else;
-with ?dry_run=true it writes nothing and answers the same plan. Each fix
+`universe` and `dmx_address` on the fixtures that clash, and nothing else.
+Set modes writes `mode_id` on the fixtures the DMX modes check names where
+one mode is unambiguous, and nothing else. Re-address and Set modes take
+?dry_run=true: it writes nothing and answers the same plan. Each fix
 that changes something also keeps what it changed on the rig
 (`rigs.readiness_undo`), so Undo takes it back as one step. See
 docs/READINESS.md, services/rig/readiness.py and readiness_undo.py.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.endpoints.rig_patching import _get_rig_fixtures_with_channels
 from app.db.database import get_db
+from app.models.fixture import FixtureMode
 from app.services.rig import readiness_undo
-from app.services.rig.readiness import plan_auto_groups, plan_readdress, readiness
+from app.services.rig.readiness import plan_auto_groups, plan_readdress, plan_set_modes, readiness
 
 router = APIRouter()
 
@@ -160,6 +165,93 @@ async def fix_readdress(
     }
 
 
+async def _modes_by_profile(rows, db: AsyncSession):
+    """Each profile's modes, for the profiles of these fixtures (rf.fixture.modes is not loaded)."""
+    ids = sorted({rf.fixture_id for rf in rows if rf.fixture_id is not None})
+    if not ids:
+        return {}
+    result = await db.execute(select(FixtureMode).where(FixtureMode.fixture_id.in_(ids)))
+    modes = {}
+    for mode in result.scalars().all():
+        modes.setdefault(mode.fixture_id, []).append(mode)
+    return modes
+
+
+def _forget_modes(db: AsyncSession, fixtures) -> None:
+    """After `mode_id` is written: the loaded `mode` is the old one. The next read loads it afresh."""
+    for rf in fixtures:
+        db.expire(rf, ["mode"])
+
+
+def _set_modes_message(plan: dict, dry_run: bool) -> str:
+    proposals, by_hand, clashes = plan["proposals"], plan["by_hand"], plan["clashes"]
+    if not proposals and not by_hand:
+        return "Nothing to set: every matched fixture has a DMX mode of its own profile."
+    parts = []
+    if proposals:
+        n = len(proposals)
+        verb = "Would set" if dry_run else "Set"
+        parts.append(
+            f"{verb} the DMX mode of {n} fixture{'s' if n != 1 else ''}: "
+            + "; ".join(f"{p['name']} to {p['mode_name']} ({p['channel_count']}ch)" for p in proposals[:5])
+            + (f" and {n - 5} more" if n > 5 else "") + "."
+        )
+    if by_hand:
+        n = len(by_hand)
+        parts.append(
+            f"{n} fixture{'s' if n != 1 else ''} must be picked by hand, as more than one mode could be right "
+            f"or none is known ({', '.join(b['name'] for b in by_hand[:3])}{' and more' if n > 3 else ''})."
+        )
+    if clashes:
+        n = len(clashes)
+        parts.append(
+            f"With the new footprint{'s' if len(proposals) != 1 else ''} {n} address clash{'es' if n != 1 else ''} "
+            f"{'would' if dry_run else 'will'} show: " + " ".join(c["message"] for c in clashes[:3])
+            + (f" and {n - 3} more." if n > 3 else "")
+            + " No address was moved; run Re-address for that."
+        )
+    return " ".join(parts)
+
+
+@router.post("/rigs/{rig_id}/readiness/fix/set-modes")
+async def fix_set_modes(
+    rig_id: int,
+    dry_run: bool = Query(False, description="Answer the planned modes and change nothing."),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set the DMX mode of each fixture the DMX modes check names, where only one mode is possible.
+
+    A profile with a single mode, or exactly one mode of the fixture's present
+    footprint or address span. Every other fixture is listed under `by_hand`
+    with its candidate modes and is not changed. Writes `mode_id` only; never
+    moves an address, and lists under `clashes` any overlap or run past 512
+    the new footprints would make. One step of Undo (POST .../readiness/fix/undo).
+    """
+    rig, rows, _ = await _get_rig_fixtures_with_channels(rig_id, db)
+    plan = plan_set_modes(rows, await _modes_by_profile(rows, db))
+    if not dry_run and plan["proposals"]:
+        planned = {p["id"]: p for p in plan["proposals"]}
+        entries, changed = [], []
+        for rf in rows:
+            proposal = planned.get(rf.id)
+            if proposal is not None:
+                entries.append(readiness_undo.entry(rf, readiness_undo.FIX_SET_MODES, {"mode_id": proposal["mode_id"]}))
+                rf.mode_id = proposal["mode_id"]
+                changed.append(rf)
+        rig.readiness_undo = readiness_undo.make_record(readiness_undo.FIX_SET_MODES, entries)
+        await db.flush()
+        _forget_modes(db, changed)
+    return {
+        "rig_id": rig.id,
+        "dry_run": dry_run,
+        "proposals": plan["proposals"],
+        "by_hand": plan["by_hand"],
+        "clashes": plan["clashes"],
+        "undo": readiness_undo.summary(rig.readiness_undo),
+        "message": _set_modes_message(plan, dry_run),
+    }
+
+
 @router.post("/rigs/{rig_id}/readiness/fix/undo")
 async def undo_readiness_fix(rig_id: int, db: AsyncSession = Depends(get_db)):
     """Put back exactly what the last Make groups or Re-address changed, as one step.
@@ -188,6 +280,9 @@ async def undo_readiness_fix(rig_id: int, db: AsyncSession = Depends(get_db)):
     noun = f"{n} fixture{'s' if n != 1 else ''}"
     if plan["fix"] == readiness_undo.FIX_AUTO_GROUPS:
         message = f"Undid Make groups: {noun} back in no group."
+    elif plan["fix"] == readiness_undo.FIX_SET_MODES:
+        _forget_modes(db, [rf for rf, _ in plan["restore"]])
+        message = f"Undid Set modes: {noun} back on the DMX mode {'they' if n != 1 else 'it'} had (or none)."
     else:
         message = (
             f"Undid Re-address: {noun} back at the address {'they' if n != 1 else 'it'} had. "

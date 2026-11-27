@@ -23,9 +23,10 @@ this module never disagrees with the view a check sends the operator to:
 
 Reads only. Nothing is written, nothing is sent to a device.
 
-Two fixes plan here and the endpoints write: `plan_auto_groups` (a group for
-each position and kind of fixture, for the fixtures that have none) and
-`plan_readdress` (a free address for each fixture that clashes). The third,
+Three fixes plan here and the endpoints write: `plan_auto_groups` (a group
+for each position and kind of fixture, for the fixtures that have none),
+`plan_readdress` (a free address for each fixture that clashes) and
+`plan_set_modes` (the DMX mode, where only one is possible). The fourth,
 Locate, is the flash-and-tap walkthrough started with the fixtures the
 Positions check names; it has no planner.
 """
@@ -57,6 +58,7 @@ FIXTURE_IDS_MAX = 50
 ROOM_TOLERANCE_M = 0.25
 FIX_AUTO_GROUPS = "auto-groups"
 FIX_READDRESS = "readdress"
+FIX_SET_MODES = "set-modes"
 FIX_LOCATE = "locate"
 HANG_POSITION_PREFIX = "hang_position:"
 GROUP_NAME_MAX = 100  # RigFixture.group_name is String(100)
@@ -325,7 +327,7 @@ def check_modes(rows: Sequence[Any], data: Sequence[Dict[str, Any]]) -> Dict[str
         )
     return _check(
         "modes", "DMX modes", FAIL if foreign else WARN, " ".join(sentences),
-        (rf.id for rf in foreign + guessed),
+        (rf.id for rf in foreign + guessed), FIX_SET_MODES,
     )
 
 
@@ -704,3 +706,128 @@ def plan_readdress(rows: Sequence[Any]) -> Dict[str, Any]:
         "conflicts_after": len(still),
         "past_end_after": len(still_off),
     }
+
+
+# ---------------------------------------------------------------------------
+# The fix: set the DMX mode where only one choice is possible
+# ---------------------------------------------------------------------------
+
+def _address_spans(data: Sequence[Dict[str, Any]]) -> Dict[int, int]:
+    """Each fixture's distance to the next fixture's start address in its universe (none for the last)."""
+    by_universe: Dict[int, List[Dict[str, Any]]] = {}
+    for d in data:
+        if d["dmx_address"]:
+            by_universe.setdefault(int(d["universe"]), []).append(d)
+    spans: Dict[int, int] = {}
+    for fixtures in by_universe.values():
+        fixtures.sort(key=lambda d: (int(d["dmx_address"]), int(d["id"])))
+        for here, nxt in zip(fixtures, fixtures[1:]):
+            gap = int(nxt["dmx_address"]) - int(here["dmx_address"])
+            if gap > 0:
+                spans[here["id"]] = gap
+    return spans
+
+
+def _mode_entry(mode: Any) -> Dict[str, Any]:
+    return {"id": mode.id, "name": mode.name, "channel_count": int(mode.channel_count)}
+
+
+def plan_set_modes(rows: Sequence[Any], modes_by_profile: Dict[int, Sequence[Any]]) -> Dict[str, Any]:
+    """The mode to set on each fixture the DMX modes check names, where only one is possible.
+
+    `modes_by_profile`: profile (fixture) id -> its FixtureModes. For each
+    matched fixture whose mode is missing or not its profile's
+    (mode_problem), a mode is proposed only when it is unambiguous:
+
+    1. the profile has exactly one mode ("only_mode"); else
+    2. exactly one mode has the channel count of the fixture's present
+       footprint: the mode it is set to now, when that mode exists
+       ("footprint"). The 16-channel guess for no mode is not a footprint; else
+    3. exactly one mode has the channel count of its address span, the gap to
+       the next fixture's start in its universe ("address_span").
+
+    Anything else is `by_hand`, with the profile's modes as candidates; it is
+    never changed. `clashes` lists every overlap or run past channel 512 that
+    a proposed fixture would be part of with its new footprint. Addresses
+    never move: Re-address is the fix for those. Reads only.
+    """
+    data = fixture_rows(rows)
+    by_id = {d["id"]: d for d in data}
+    spans = _address_spans(data)
+    proposals: List[Dict[str, Any]] = []
+    by_hand: List[Dict[str, Any]] = []
+    for rf in sorted(rows, key=lambda r: r.id):
+        if is_unmatched(rf):
+            continue
+        problem = mode_problem(rf)
+        if problem is None:
+            continue
+        modes = sorted(modes_by_profile.get(rf.fixture_id, ()), key=lambda m: (int(m.channel_count), m.id))
+        current = getattr(rf, "mode", None)
+        footprint = int(current.channel_count) if current is not None else None
+        span = spans.get(rf.id)
+        base = {
+            "id": rf.id,
+            "name": _label(rf),
+            "problem": problem,
+            "mode_id_before": rf.mode_id,
+            "mode_name_before": current.name if current is not None else None,
+            "channel_count_before": int(by_id[rf.id]["channel_count"]),
+        }
+
+        chosen, reason = None, None
+        if len(modes) == 1:
+            chosen, reason = modes[0], "only_mode"
+        else:
+            for key, count in (("footprint", footprint), ("address_span", span)):
+                if count is None:
+                    continue
+                matching = [m for m in modes if int(m.channel_count) == count]
+                if len(matching) == 1:
+                    chosen, reason = matching[0], key
+                    break
+                if len(matching) > 1:
+                    break  # two modes fit as well: that is a choice, not a match
+
+        if chosen is None:
+            if not modes:
+                why = "its profile has no DMX modes"
+            elif footprint is None and span is None:
+                why = f"its profile has {len(modes)} modes and nothing on the rig says which"
+            else:
+                seen = " or ".join(f"{c}" for c in dict.fromkeys(c for c in (footprint, span) if c is not None))
+                why = f"its profile has {len(modes)} modes and not exactly one of them is {seen} channels"
+            by_hand.append({**base, "candidates": [_mode_entry(m) for m in modes], "why": why})
+            continue
+        proposals.append({
+            **base,
+            "reason": reason,
+            "mode_id": chosen.id,
+            "mode_name": chosen.name,
+            "channel_count": int(chosen.channel_count),
+        })
+
+    # With the new footprints, what the addresses check would find that involves a proposed fixture.
+    proposed = {p["id"]: p for p in proposals}
+    after = [dict(d) for d in data]
+    for d in after:
+        if d["id"] in proposed:
+            d["channel_count"] = proposed[d["id"]]["channel_count"]
+            d["has_mode"] = True
+    names = {d["id"]: d["name"] or f"Fixture {d['id']}" for d in after}
+    clashes: List[Dict[str, Any]] = []
+    for c in PatchingService.find_conflicts(after):
+        a, b = c["fixture_a_id"], c["fixture_b_id"]
+        if a in proposed or b in proposed:
+            clashes.append({
+                "kind": "overlap", "fixture_ids": [a, b], "names": [names[a], names[b]],
+                "message": f"{names[a]} and {names[b]} would overlap.",
+            })
+    for row in build_programming_audit(after)["patch_report"]:
+        i = row["fixture_id"]
+        if not row["range_ok"] and i in proposed:
+            clashes.append({
+                "kind": "past_end", "fixture_ids": [i], "names": [names[i]],
+                "message": f"{names[i]} would run past channel 512.",
+            })
+    return {"proposals": proposals, "by_hand": by_hand, "clashes": clashes}
