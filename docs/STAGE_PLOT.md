@@ -1,9 +1,10 @@
 # Stage plot underlay
 
 Status: **built. The backend is tested (pytest). The frontend tests were
-written but not run** in the session that wrote them, because the worktree had
-no `frontend/node_modules`. Run `npx vitest run`, `npx tsc --noEmit -p .` and
-`npx vite build` in `frontend/` before relying on it.
+written but not run** in the sessions that wrote them: running vitest and
+`vite build` was not permitted there. `npx tsc --noEmit -p .` was run and
+shows only the 13 errors already in the app. Run `npm test -- --run` and
+`npm run build` in `frontend/` before relying on it.
 
 ## The problem it solves
 
@@ -16,10 +17,20 @@ the operator drags the guesses onto it.
 
 ## Using it (2D plan in the rig builder)
 
-1. **Stage plot → Upload.** Choose a PNG, JPEG or WebP image of the plot. A
-   PDF is refused with a sentence asking for an image: export the page as a
-   PNG or JPEG (or take a screenshot) and upload that. Until it is calibrated,
-   the image is drawn fitted to the stage.
+1. **Stage plot → Upload.** Choose a PNG, JPEG or WebP image of the plot, or
+   a PDF. Until it is calibrated, the image is drawn fitted to the stage.
+   - **A PDF** is opened in the browser (pdf.js, bundled with the app: nothing
+     is sent anywhere but this app's own server). A one-page PDF goes straight
+     up. With more pages, a dialog asks **which page is the stage plot**: Prev
+     and Next, or type the page number, with a small picture of the page.
+   - The page is drawn as a PNG about 3000 px on its long side. If that PNG
+     would be over the server's 15 MB, it is drawn smaller (at most four
+     tries, never below 1000 px); if it still does not fit, you are asked to
+     export the page as a JPEG.
+   - The PNG is stored as `<name>.pdf, page N.png`, so the info's `filename`
+     says which PDF and page the plot came from.
+   - A password-protected, damaged, empty or page-less PDF is not uploaded;
+     a sentence says which, and what to do.
 2. **Calibrate.**
    - Click point **A** and point **B** at the two ends of a length you know: a
      truss, the stage edge, a dimension line.
@@ -60,6 +71,9 @@ Refusals:
 
 - **415:** not a PNG, JPEG or WebP, or a PDF. The type is read from the
   file's first bytes; the name and the client's content type are ignored.
+  The server has no PDF renderer, so a raw PDF sent to the route is still
+  refused; the sentence says to choose it in the app's Stage plot control,
+  which converts it, or to export the page as an image.
 - **413:** over 15 MB.
 - **400:** an empty file, a header whose size cannot be read, or a
   calibration that cannot be used. The detail is a sentence.
@@ -130,5 +144,17 @@ apart.
   - `StageView2D`'s `underlay`, `onPlanPick` and `pickMarks` props, and the
     guess ring in `StageView2D`.
 
-No new dependency was added. No PDF renderer is one, so a PDF must be
-exported as an image first.
+- PDF stage plots (browser only):
+  - `frontend/src/utils/pdfjsLoader.ts`: loads `pdfjs-dist` and its worker
+    only when a PDF is chosen (a lazy `import()`; the worker is Vite's bundled
+    copy through `?url`, typed in `src/pdfjs-worker.d.ts`). Tests mock this
+    module, so vitest never loads pdf.js.
+  - `frontend/src/utils/pdfStagePlot.ts`: which files are PDFs, the sentences
+    for each failure, the scale and the shrink-until-15-MB loop, the PNG's
+    name. Opened with `isEvalSupported: false`; no fonts or cMaps are fetched.
+  - `frontend/src/components/rig/StagePlotPdfPicker.tsx`: the page dialog.
+
+The one dependency added is `pdfjs-dist` (frontend, Apache-2.0, free, runs
+locally). The backend gained none: it still takes images only. No database
+change was needed: the source PDF and page are kept in the existing
+`filename` column.
