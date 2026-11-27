@@ -73,6 +73,8 @@ export default function ReadinessDialog({
 
   useEffect(() => {
     if (!open) return;
+    // The last report is of the rig as it was: opened again, it waits for the new one.
+    setReport(null);
     setAsking(null);
     setFixNote(null);
     void load();

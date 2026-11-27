@@ -90,8 +90,8 @@ and the panel checks again.
 Readiness is a check of the rig as stored, not of the venue. It does not:
 
 - talk to any device: it does not know whether a node, a universe or a
-  fixture is actually connected, powered or answering (use Identify Lights
-  and the ArtNet status for that);
+  fixture is actually connected, powered or answering (flash them with
+  Identify Lights for that);
 - check that a fixture's stored position is where it really hangs: only that
   someone confirmed it, and that it is inside the scanned room;
 - check the room scan itself, or truss trims and loads;
