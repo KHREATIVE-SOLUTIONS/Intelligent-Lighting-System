@@ -13,6 +13,7 @@ import {
   DEFAULT_OPACITY, calibrationProblem, calibrationTransform, fitTransform, toImage, toPlan,
 } from '../../utils/stagePlot';
 import type { ImagePoint, Matrix, StagePlotCalibration, StagePlotInfo } from '../../utils/stagePlot';
+import { announceStagePlotChange, onStagePlotChange } from '../../utils/stagePlotSync';
 import type { PlanPickMark, PlanUnderlay } from './StageView2D';
 
 export type PickStep = 'a' | 'b' | 'origin' | 'done';
@@ -119,6 +120,31 @@ export default function useStagePlot(rigId: number | null | undefined, stageWidt
 
   useEffect(() => () => { if (hrefRef.current) URL.revokeObjectURL(hrefRef.current); }, []);
 
+  // This hook's own changes are announced to the others showing the rig (the 3D view, another tab),
+  // and theirs read here, so a plot removed or replaced in one is gone or replaced in the other.
+  const self = useRef({}).current;
+  useEffect(() => {
+    if (rigId == null) return undefined;
+    let live = true;
+    const off = onStagePlotChange(rigId, self, (change) => {
+      (async () => {
+        try {
+          const next = await stagePlotApi.info(rigId);
+          if (!live) return;
+          if (change === 'image') {
+            await take(rigId, next);
+          } else {
+            setInfo(next);
+            setOpacity(next.calibration?.opacity ?? DEFAULT_OPACITY);
+          }
+        } catch {
+          // Kept as it was: the next visit reads it again.
+        }
+      })();
+    });
+    return () => { live = false; off(); };
+  }, [rigId, self, take]);
+
   const present = !!info?.present && !!href;
   const widthPx = info?.width_px ?? 1;
   const heightPx = info?.height_px ?? 1;
@@ -168,13 +194,14 @@ export default function useStagePlot(rigId: number | null | undefined, stageWidt
       setDraft(EMPTY_DRAFT);
       setVisible(true);
       await take(rigId, next);
+      announceStagePlotChange(rigId, 'image', self);
       setMessage({ severity: 'success', text: 'Stage plot added. Calibrate it so it lies at the right size.' });
     } catch (error) {
       setMessage({ severity: 'error', text: refusalText(error, 'The stage plot could not be uploaded.') });
     } finally {
       setBusy(false);
     }
-  }, [rigId, take]);
+  }, [rigId, take, self]);
 
   const remove = useCallback(async () => {
     if (rigId == null) return;
@@ -185,13 +212,14 @@ export default function useStagePlot(rigId: number | null | undefined, stageWidt
       showImage(null);
       setCalibrating(false);
       setDraft(EMPTY_DRAFT);
+      announceStagePlotChange(rigId, 'image', self);
       setMessage({ severity: 'info', text: 'Stage plot removed. Nothing else in the rig changed.' });
     } catch (error) {
       setMessage({ severity: 'error', text: refusalText(error, 'The stage plot could not be removed.') });
     } finally {
       setBusy(false);
     }
-  }, [rigId, showImage]);
+  }, [rigId, showImage, self]);
 
   const send = useCallback(async (calibration: StagePlotCalibration) => {
     if (rigId == null) return false;
@@ -199,6 +227,7 @@ export default function useStagePlot(rigId: number | null | undefined, stageWidt
     try {
       const answer = await stagePlotApi.calibrate(rigId, calibration);
       setInfo((current) => current && { ...current, calibration: answer.calibration, transform: answer.transform });
+      announceStagePlotChange(rigId, 'calibration', self);
       return true;
     } catch (error) {
       setMessage({ severity: 'error', text: refusalText(error, 'The calibration could not be saved.') });
@@ -206,7 +235,7 @@ export default function useStagePlot(rigId: number | null | undefined, stageWidt
     } finally {
       setBusy(false);
     }
-  }, [rigId]);
+  }, [rigId, self]);
 
   const saveCalibration = useCallback(async () => {
     const calibration = draftCalibration(draft, opacity);
