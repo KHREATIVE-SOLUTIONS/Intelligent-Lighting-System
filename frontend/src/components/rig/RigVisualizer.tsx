@@ -65,6 +65,10 @@ import { StagePlotFloor } from './previs/StagePlotFloor';
 import type { StagePlotFloorProps } from './previs/StagePlotFloor';
 import StagePlot3dToggle from './previs/StagePlot3dToggle';
 import useStagePlot3d from './previs/useStagePlot3d';
+import { FocusTargetMarkers } from './previs/FocusTargetMarkers';
+import FocusTargets3dToggle from './previs/FocusTargets3dToggle';
+import useFocusTargets3d from './previs/useFocusTargets3d';
+import type { FocusMarker } from '../../utils/focusPresets';
 
 type BeamDebugSnapshot = {
   fixtureId: number;
@@ -866,6 +870,9 @@ function AtmosphereLayers({ width, depth, height }: { width: number; depth: numb
 // MAIN SCENE COMPONENT
 // ============================================================================
 
+/** One empty list for "no focus targets", so the scene's default does not change on every render. */
+const NO_FOCUS_TARGETS: FocusMarker[] = [];
+
 function Scene({
   rig,
   debugBuffer,
@@ -878,10 +885,13 @@ function Scene({
   debug,
   move,
   stagePlot = null,
+  focusTargets = NO_FOCUS_TARGETS,
 }: {
   rig: Rig;
   /** The calibrated stage plot to lay on the floor, or null. */
   stagePlot?: StagePlotFloorProps | null;
+  /** The focus presets' target points to mark (docs/FOCUS_PRESETS.md); empty with the toggle off. */
+  focusTargets?: FocusMarker[];
   debugBuffer: MutableRefObject<Record<number, BeamDebugSnapshot>>;
   cameraMode: CameraMode;
   qualityMode: QualityMode;
@@ -1157,6 +1167,9 @@ function Scene({
       {/* Positions that are a guess, marked as one */}
       <GuessMarkers points={guesses} />
 
+      {/* Where the focus presets aim; never hit, so dragging goes through them. */}
+      {focusTargets.length > 0 && <FocusTargetMarkers markers={focusTargets} />}
+
       {/* Move fixtures mode: pick one up and put it down somewhere else */}
       {move && (
         <FixtureDragLayer
@@ -1359,6 +1372,8 @@ export default function RigVisualizer() {
   const isDemo = !id; // No rig ID = demo mode
   // The rig's stage plot, on the floor once it is calibrated (docs/STAGE_PLOT.md). The demo rig has none to ask for.
   const stagePlot = useStagePlot3d(isDemo ? null : Number(id), rig?.stage_width ?? 10, rig?.stage_depth ?? 8);
+  // The focus presets' targets, marked when the operator asks (docs/FOCUS_PRESETS.md). The demo rig has no room to aim in.
+  const focusTargets = useFocusTargets3d(isDemo ? null : Number(id));
   const [demoPresets, setDemoPresets] = useState<DemoPresetSummary[]>([]);
   const [demoPresetError, setDemoPresetError] = useState<string | null>(null);
 
@@ -1715,6 +1730,7 @@ export default function RigVisualizer() {
           </Tooltip>
         </ButtonGroup>
         <StagePlot3dToggle status={stagePlot.status} on={stagePlot.on} onChange={stagePlot.setOn} />
+        <FocusTargets3dToggle available={focusTargets.available} on={focusTargets.on} onChange={focusTargets.setOn} />
         {/* The rig on screen, written out for a desk or a visualiser. */}
         {isDemo ? (
           rig.venue && demoPresets.some((d) => d.name === rig.venue) && (
@@ -1805,6 +1821,7 @@ export default function RigVisualizer() {
             debug={showDebug}
             move={sceneMove}
             stagePlot={stagePlot.floor}
+            focusTargets={focusTargets.markers}
           />
         </Canvas>
       </Box>
