@@ -5,10 +5,10 @@ the rig and the points the room gives to aim at, and written into the grandMA2
 script and the handoff pack. The point is to walk into a venue with the focus
 already roughed in, then touch each preset up in the room.
 
-**Status:** backend only. The maths is checked against the 3D view's beam
-drawing and covered by tests. No preset has been loaded onto a desk, and
-nothing has been focused in a real room with these values. No frontend panel
-yet.
+**Status:** backend, a Focus presets panel and target markers in the 3D view
+(see [In the app](#in-the-app)). The maths is checked against the 3D view's
+beam drawing and covered by tests. No preset has been loaded onto a desk, and
+nothing has been focused in a real room with these values.
 
 ## Computing is read-only
 
@@ -78,6 +78,59 @@ most 50; a name is 1 to 60 characters; each coordinate is a number within
 - **Range**: the profile's `pan_range` and `tilt_range`, else 540 and 270.
 - A head with **no position** (tagged unplaced) is left out of every preset
   and listed in `left_out`.
+
+## In the app
+
+**The Focus presets panel** is in the console export, under the handoff
+pack: open a rig's Import / Export dialog, or Export in the 3D view. It is
+for a database rig only; a demo preset has no room to aim in.
+
+- It lists every target in preset order: its name, Default or Custom, where it
+  is (x, y, z in metres, the audience line's two ends, or "the floor under
+  each head"), and how many moving heads can reach it ("2 of 3 moving heads
+  can reach it"). A default target the room could not place says why
+  ("Skipped: ..."). "Show the 2 that cannot" (or "the one") opens the list of
+  heads that cannot reach it, each with its reason.
+- Moving heads with no position are named in one line, "Left out of every
+  preset". A rig with no moving heads says so, and still lists its targets.
+- **Add a target:** a name and x, y, z in metres. Each field is checked
+  before anything is sent, against the server's own limits (a name of 1 to 60
+  characters, numbers within 500 m, y not below the floor, at most 50 custom
+  targets). A comma is taken as a decimal point. Anything wrong is a sentence
+  under its field; a refusal from the server is shown in its own words.
+- **Remove** is on custom targets only, and asks first. The presets after it
+  move up one slot in the next script and pack.
+- **Download CSV** fetches `focus-presets.csv` (the one in the handoff pack)
+  through the app's client, so it carries the operator's token.
+- Nothing in the panel moves a light or sends DMX.
+
+**In the 3D view**, "Show focus targets in 3D" (next to "Show stage plot in
+3D") puts a small marker at each target. It is off until turned on, and the
+choice is kept per rig in the browser (`localStorage`,
+`focusTargets3d:{rigId}`). The table is read only while the markers are on.
+
+| Look | Means |
+| --- | --- |
+| Cyan ball in a ring | Every moving head can reach it |
+| Orange turned cube in a ring | Some heads cannot |
+| Red cross | No head can |
+| Small grey ball | The rig has no moving heads to aim |
+
+- The audience line is a thin bar between its ends, with its marker in the
+  middle. "Straight down" is a different point under every head and has no
+  marker; nor does a skipped target. A point on the floor is drawn 10 cm up.
+- The markers take no ray hits, so Move fixtures drags straight through them.
+- A target added or removed in the panel shows up on, or goes from, the 3D
+  view straight away, in this tab and in other tabs of the app
+  (`utils/focusTargetsSync.ts`, the same scheme as the stage plot's).
+
+Code: `frontend/src/utils/focusPresets.ts` (reading the table, checking a
+typed target, the sentences, the marker look),
+`components/rig/useFocusPresets.ts`, `components/rig/FocusPresetsPanel.tsx`,
+`components/rig/previs/FocusTargetMarkers.tsx`, `useFocusTargets3d.ts` and
+`FocusTargets3dToggle.tsx`. Tests: `focusPresets.test.ts`,
+`FocusPresetsPanel.test.tsx` and `FocusTargets3d.test.tsx` in
+`frontend/src/__tests__`.
 
 ## The maths, in short
 
@@ -165,6 +218,12 @@ reason and the head columns blank.
 ## What is left
 
 - Not loaded onto a grandMA2 and not focused in a real room.
-- No frontend panel to see the table, add targets or preview a preset.
+- No preview of a preset: the panel shows the table but cannot put a head on
+  a target (that would have to go through the output stage).
+- The panel shows reach, not each head's pan, tilt and DMX values; those are
+  in the CSV.
+- The 3D markers' reach look is read when they are turned on and after a
+  target is added or removed. A fixture moved in the 3D view does not read it
+  again; turn the markers off and on, or reopen the view.
 - Mount is guessed from height when not tagged; there is no column for it.
 - grandMA3 is not targeted.
