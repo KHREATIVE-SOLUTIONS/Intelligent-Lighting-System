@@ -33,7 +33,7 @@ describe('useStagePlot', () => {
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, writable: true, value: vi.fn(() => 'blob:plot') });
     Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, writable: true, value: vi.fn() });
   });
-  afterEach(() => vi.clearAllMocks());
+  afterEach(() => { vi.clearAllMocks(); });
 
   it('takes a failed read as no stage plot', async () => {
     api.info.mockRejectedValue(new Error('offline'));
