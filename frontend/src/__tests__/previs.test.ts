@@ -773,6 +773,14 @@ describe('how bright a pool of light is', () => {
     for (const level of [-0.3, Number.NaN, Number.NEGATIVE_INFINITY]) expect(poolLightIntensity(level)).toBe(0);
   });
 
+  it('is bright enough for a single pool to show after lights were aimed at their own beams', () => {
+    // The aiming fix spread the old stacked-centre pool out; each pool was
+    // about a thirtieth as bright and hard to see. Q3 raised this from 16
+    // to 48 (3x), not 30x, so stacked looks do not blow out the same way.
+    expect(POOL_LIGHT_AT_FULL).toBe(48);
+    expect(POOL_LIGHT_AT_FULL).toBeGreaterThan(16);
+  });
+
   it('ends the light a little way past where the beam lands, and not before', () => {
     for (const throwDistance of [0.93, 4.2, 9.2]) {
       const range = poolLightRange(throwDistance);
