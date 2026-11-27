@@ -6,7 +6,10 @@ the sessions that wrote them: `npm test -- --run`, `npx vitest run`,
 `npm run build` and `npx vite build` were each refused by the session's
 permissions. `npx tsc --noEmit -p .` was run and shows only the 13 errors
 already in the app. Run `npm test -- --run` and `npm run build` in
-`frontend/` before relying on it.
+`frontend/` before relying on it. The same holds for the 3D view's part
+("In the 3D view" below): its vitest files were written, and running them
+(`npx vitest run`, or vitest through `node`) was held for approval in the
+session that wrote them.
 
 ## The problem it solves
 
@@ -55,6 +58,35 @@ the operator drags the guesses onto it.
    calibration; without a calibration it only applies on screen.
    **Hide/Show** is for this screen only. **Remove** asks first, then takes
    the image and its calibration off the rig. Fixtures stay where they are.
+
+## In the 3D view
+
+Once a plot is calibrated, the 3D view (`/rigs/{id}/visualizer`) lays it flat
+on the floor, at the same place, size and turn as on the 2D plan, and at its
+saved opacity.
+
+- **Show stage plot in 3D** sits with the view's other controls. It is not
+  shown for a rig with no plot. For a plot not yet calibrated it is off and
+  greyed, with "Calibrate the stage plot in the 2D plan first": an
+  uncalibrated plot has no size in metres.
+- The choice is kept per rig in the browser (`localStorage`,
+  key `stagePlot3d:{rigId}`, `on` or `off`). Until one is made it is on.
+- The plot takes no pointer hits: clicks and fixture drags go through it as if
+  it were not there. It writes no depth, so beams and floor rings still draw
+  over it, and it is unlit, so the room's lighting does not darken it. It sits
+  2.4 cm above the floor so it does not flicker against it.
+- It follows changes without a reload. Removing, replacing or recalibrating
+  the plot in the 2D plan (same tab or another tab of the app) is announced
+  (`utils/stagePlotSync.ts`: a window event in the tab, a `localStorage`
+  write for the others), and the 3D view reads the plot again.
+- The image comes through the same authenticated blob fetch as the 2D plan.
+  The texture is disposed when the image changes, the toggle goes off or the
+  view closes, and the object URL is revoked when the image changes, is
+  removed or the view closes. The demo rig has no plot and asks for none.
+
+The placement is the plan's image-to-room matrix read as a centre, a size and
+a yaw (`utils/stagePlot3d.ts`). Plan x is world x and plan z is world z, so
+the plot lies under the fixtures exactly where the 2D plan shows it.
 
 ## API
 
@@ -145,6 +177,18 @@ apart.
   - `frontend/src/components/rig/StagePlotControl.tsx`: the control.
   - `StageView2D`'s `underlay`, `onPlanPick` and `pickMarks` props, and the
     guess ring in `StageView2D`.
+
+- 3D view:
+  - `frontend/src/utils/stagePlot3d.ts`: the plane's centre, size and yaw from
+    the matrix; the per-rig toggle in `localStorage`.
+  - `frontend/src/utils/stagePlotSync.ts`: word of a change between views.
+  - `frontend/src/components/rig/previs/useStagePlot3d.ts`: wraps
+    `useStagePlot` with the status and the toggle.
+  - `frontend/src/components/rig/previs/StagePlotFloor.tsx`: the plane.
+  - `frontend/src/components/rig/previs/StagePlot3dToggle.tsx`: the switch.
+  - Tests: `frontend/src/__tests__/stagePlot3d.test.ts` (the maths) and
+    `frontend/src/__tests__/StagePlotFloor3d.test.tsx` (rendered
+    through react-three-fiber's reconciler with a stand-in renderer).
 
 - PDF stage plots (browser only):
   - `frontend/src/utils/pdfjsLoader.ts`: loads `pdfjs-dist` and its worker
