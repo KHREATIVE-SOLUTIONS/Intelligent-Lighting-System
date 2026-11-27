@@ -382,6 +382,7 @@ class EffectsEngine:
 
         # State
         self.running = False
+        self._run_task = None
         self.time = 0.0
         # Monotonic: an NTP step when the venue network comes up moved the wall
         # clock by an hour, which made one frame's delta huge or negative.
@@ -4133,33 +4134,54 @@ class EffectsEngine:
 
     async def run(self):
         """Run the effects engine loop."""
+        self._run_task = asyncio.current_task()
         self.running = True
         interval = 1.0 / self.config.fps
         loop = asyncio.get_running_loop()
         next_frame = loop.time()
         error_logged = False
 
-        while self.running:
-            try:
-                self.update()
-                error_logged = False
-                # Only a frame that was finished counts. A loop that fails on
-                # every frame is still going round, with the buffers frozen.
-                self._beat_output_stage()
-            except Exception:
-                # Keep loop alive in live use; one bad frame should not kill output.
-                # Logged once per failure streak, not 60 times a second.
-                if not error_logged:
-                    logger.exception("EffectsEngine update error (suppressing repeats)")
-                    error_logged = True
-            # Pace against a deadline: sleeping a whole interval after update()
-            # added the frame's own cost to every frame and ran below rate.
-            next_frame += interval
-            delay = next_frame - loop.time()
-            if delay < -interval:
-                next_frame = loop.time()
-            # Always yield a little: an overloaded frame must not starve the API.
-            await asyncio.sleep(max(0.002, delay))
+        try:
+            while self.running:
+                try:
+                    self.update()
+                    error_logged = False
+                    # Only a frame that was finished counts. A loop that fails on
+                    # every frame is still going round, with the buffers frozen.
+                    self._beat_output_stage()
+                except Exception:
+                    # Keep loop alive in live use; one bad frame should not kill output.
+                    # Logged once per failure streak, not 60 times a second.
+                    if not error_logged:
+                        logger.exception("EffectsEngine update error (suppressing repeats)")
+                        error_logged = True
+                # Pace against a deadline: sleeping a whole interval after update()
+                # added the frame's own cost to every frame and ran below rate.
+                next_frame += interval
+                delay = next_frame - loop.time()
+                if delay < -interval:
+                    next_frame = loop.time()
+                # Always yield a little: an overloaded frame must not starve the API.
+                await asyncio.sleep(max(0.002, delay))
+        finally:
+            # A cancelled task used to leave running True, so /start did nothing
+            # until /stop was called first.
+            self.running = False
+            if getattr(self, "_run_task", None) is asyncio.current_task():
+                self._run_task = None
+
+    def start_loop(self) -> asyncio.Task:
+        """Start the engine loop if no live task is already running.
+
+        After a cancelled loop, ``running`` may still be True until ``run``'s
+        finally runs. A live-task check, not only the flag, decides whether
+        a new task is needed.
+        """
+        task = getattr(self, "_run_task", None)
+        if task is not None and not task.done():
+            return task
+        self._run_task = asyncio.create_task(self.run())
+        return self._run_task
 
     def stop(self):
         """Stop the effects engine."""
