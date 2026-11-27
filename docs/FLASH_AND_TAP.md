@@ -15,6 +15,10 @@ the fixture carries the tags `position_source:template` and
 Flash-and-tap is how a guess becomes a fact. The system lights one fixture, the
 operator taps where it really is on the plan, and the flag comes off.
 
+To refine the guessed layout from the venue's stage plot (a PDF exported as an
+image, or a photo), lay it under the 2D plan, calibrate it, and drag the
+guessed fixtures onto it: see [STAGE_PLOT.md](STAGE_PLOT.md).
+
 ## Where it lives
 
 It is the flash-to-identify walkthrough, not a second system beside it:
