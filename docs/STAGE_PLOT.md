@@ -1,10 +1,12 @@
 # Stage plot underlay
 
-Status: **built. The backend is tested (pytest). The frontend tests were
-written but not run** in the sessions that wrote them: running vitest and
-`vite build` was not permitted there. `npx tsc --noEmit -p .` was run and
-shows only the 13 errors already in the app. Run `npm test -- --run` and
-`npm run build` in `frontend/` before relying on it.
+Status: **built. The backend is tested (pytest, full suite passing). The
+frontend tests were written but not run**, and the frontend was not built, in
+the sessions that wrote them: `npm test -- --run`, `npx vitest run`,
+`npm run build` and `npx vite build` were each refused by the session's
+permissions. `npx tsc --noEmit -p .` was run and shows only the 13 errors
+already in the app. Run `npm test -- --run` and `npm run build` in
+`frontend/` before relying on it.
 
 ## The problem it solves
 
