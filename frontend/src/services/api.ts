@@ -36,8 +36,8 @@ import type {
   ConsoleExportTarget,
 } from '../utils/consoleExport';
 import {
-  fixturePositionPath, roomOutlineCornerPath, roomOutlineCornersPath, roomOutlinePath, roomScanParams, roomScanPath,
-  roomScanUndoPath, roomShellItemPath, roomShellListPath, roomShellPath, roomShellUndoPath,
+  fixturePositionPath, roomOutlineCornerPath, roomOutlineCornersPath, roomOutlinePath, roomScanCarryOverPath,
+  roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellListPath, roomShellPath, roomShellUndoPath,
 } from '../utils/roomScan';
 import type { OutlineAnswer, OutlineChanges, OutlineRead } from '../utils/roomWallsEdit';
 // Types only: the module itself reads the 3D view's checks, which this file has no use for.
@@ -45,7 +45,7 @@ import type {
   ShellEditUndone, ShellItemAdd, ShellItemAdded, ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
 } from '../utils/roomShellEdit';
 import type {
-  RoomScanOptions, RoomScanPreview, RoomScanUndoResult, RoomShellRemoved,
+  RoomScanCarriedOver, RoomScanCarryOver, RoomScanOptions, RoomScanPreview, RoomScanUndoResult, RoomShellRemoved,
 } from '../utils/roomScan';
 
 const API_BASE_URL = '/api';
@@ -1454,6 +1454,16 @@ export const roomScanApi = {
    */
   undoMoves: async (rigId: number): Promise<RoomScanUndoResult> => {
     const response = await api.post(roomScanUndoPath(rigId));
+    return response.data;
+  },
+
+  /**
+   * Puts a name and trim a scan applied again could not keep onto the item it read in their place:
+   * `entry` is one of the applied answer's `hand_edits.carry_over`, sent as it is. One step of the
+   * room's Undo. 409 where the room has changed since the scan was applied.
+   */
+  carryOver: async (rigId: number, entry: RoomScanCarryOver): Promise<RoomScanCarriedOver> => {
+    const response = await api.post(roomScanCarryOverPath(rigId), entry);
     return response.data;
   },
 

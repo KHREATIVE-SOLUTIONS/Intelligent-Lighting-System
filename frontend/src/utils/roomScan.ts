@@ -181,6 +181,54 @@ export interface RoomScanHandEdits {
    * it is called and what happened to it. Sent only when something was kept, left out or replaced.
    */
   items?: RoomScanHandEditItem[];
+  /**
+   * Each warning of what was lost that has an item of the new room behind it (slice 36), in the form
+   * POST /room-scan/carry-over takes as it is. `warning` is its place in `warnings`.
+   */
+  carry_over?: RoomScanCarryOver[];
+}
+
+/** One entry of `hand_edits.carry_over`: what was lost, and the new item it can be put back on. */
+export interface RoomScanCarryOver {
+  kind: 'risers' | OverheadKind;
+  old_name: string;
+  /** A line's or ring's trim, or a raised area's height, as a person set it. */
+  old_trim_or_height?: number | null;
+  /** A raised area's base height (raised areas only). */
+  old_base_height?: number | null;
+  /** Which fields would be put back: some of 'name', 'height', 'base_height'. */
+  edits: string[];
+  new_index: number;
+  new_name: string;
+  reason: string;
+  warning?: number;
+}
+
+/** The answer to POST /room-scan/carry-over. */
+export interface RoomScanCarriedOver {
+  rig_id: number;
+  kind: string;
+  index: number;
+  changed: boolean;
+  message: string;
+  fixtures_moved?: unknown[];
+  undo?: { available: number; label?: string | null };
+}
+
+/**
+ * What can be put back, after Apply only: before it nothing is stored to put it on. An entry with no
+ * old name, no new name or no place in the new room is passed over.
+ */
+export function handEditCarryOver(answer: RoomScanPreview | null | undefined): RoomScanCarryOver[] {
+  const entries = answer?.applied?.hand_edits?.carry_over;
+  if (!Array.isArray(entries)) return [];
+  return entries.filter((entry) => !!entry && typeof entry.old_name === 'string' && entry.old_name !== ''
+    && typeof entry.new_name === 'string' && typeof entry.new_index === 'number');
+}
+
+/** "Keep Front truss on this one". */
+export function carryOverButtonText(entry: RoomScanCarryOver): string {
+  return `Keep ${entry.old_name} on this one`;
 }
 
 /** One thing a scan applied again acted on. `outcome` is the server's words, the same before and after Apply. */
@@ -354,6 +402,11 @@ export function undoCount(rig: { room_scan_undo?: { moves?: unknown[] | null } |
 
 export function roomScanPath(rigId: number): string {
   return `/rigs/${rigId}/room-scan`;
+}
+
+/** POST: put a lost name and trim onto the item a scan read in its place (slice 36). */
+export function roomScanCarryOverPath(rigId: number): string {
+  return `${roomScanPath(rigId)}/carry-over`;
 }
 
 export function roomShellPath(rigId: number): string {

@@ -44,6 +44,8 @@ import {
   djBoothDroppedText,
   djBoothPreviewLine,
   HAND_EDIT_ITEMS_SHOWN,
+  carryOverButtonText,
+  handEditCarryOver,
   handEditItems,
   handEditItemText,
   handEditWarnings,
@@ -61,6 +63,7 @@ import {
   undoResultText,
 } from '../../utils/roomScan';
 import type {
+  RoomScanCarryOver,
   RoomScanOptions,
   RoomScanPreview,
   ScanRotate,
@@ -112,6 +115,9 @@ export default function RoomScanDialog({
   const [askRemove, setAskRemove] = useState(false);
   // The list of what a scan applied again did shows its first few, until asked for all of it.
   const [showAllItems, setShowAllItems] = useState(false);
+  // Which entries of the applied answer's `carry_over` have been put back (by place), and the one being sent.
+  const [carried, setCarried] = useState<number[]>([]);
+  const [carrying, setCarrying] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Only the newest preview may land: changing the units while one is in
   // flight must not show the old reading under the new setting.
@@ -131,6 +137,8 @@ export default function RoomScanDialog({
     setNotice(null);
     setAskRemove(false);
     setShowAllItems(false);
+    setCarried([]);
+    setCarrying(null);
   }, [open, rigId]);
 
   const runPreview = useCallback(async (chosen: File, using: RoomScanOptions) => {
@@ -191,12 +199,29 @@ export default function RoomScanDialog({
         return;
       }
       setApplied(result);
+      setCarried([]);
       onChanged();
     } catch (err) {
       if (requestRef.current !== request) return;
       setError(errorText(err));
     } finally {
       if (requestRef.current === request) setBusy(null);
+    }
+  };
+
+  // "Keep Front truss on this one": the old name and trim onto the item the scan read in its place (slice 36).
+  const handleCarryOver = async (entry: RoomScanCarryOver, place: number) => {
+    setError(null);
+    setCarrying(place);
+    try {
+      const result = await roomScanApi.carryOver(rigId, entry);
+      setCarried((done) => [...done, place]);
+      setNotice(result.message);
+      onChanged();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setCarrying(null);
     }
   };
 
@@ -231,6 +256,26 @@ export default function RoomScanDialog({
   // The same by name, one thing at a time, and what was lost or is to be checked (slice 35).
   const editItems = handEditItems(shown);
   const editWarnings = handEditWarnings(shown);
+  // After Apply, what was lost that can be put on an item of the new room (slice 36), each with its place.
+  const carryOver = handEditCarryOver(applied).map((entry, place) => ({ entry, place }));
+  const carryOverFor = (warning: number | undefined) => carryOver.filter(({ entry }) => (
+    warning === undefined
+      ? typeof entry.warning !== 'number' || entry.warning < 0 || entry.warning >= editWarnings.length
+      : entry.warning === warning
+  ));
+  const carryOverButton = ({ entry, place }: { entry: RoomScanCarryOver; place: number }) => (
+    <Button
+      key={place}
+      size="small"
+      variant="outlined"
+      color="inherit"
+      data-testid="room-scan-carry-over"
+      disabled={carried.includes(place) || carrying !== null || busy !== null}
+      onClick={() => { void handleCarryOver(entry, place); }}
+    >
+      {carried.includes(place) ? `Kept ${entry.old_name} on ${entry.new_name}` : carryOverButtonText(entry)}
+    </Button>
+  );
   // How many of the moves on screen turn their fixture. Once applied it is said
   // only when fixtures were moved: with the box unticked nothing was turned.
   const turnSummary = !shown
@@ -432,8 +477,15 @@ export default function RoomScanDialog({
             {editWarnings.map((warning, index) => (
               <Alert key={index} severity="warning" sx={{ mb: 1 }} data-testid="room-scan-hand-edit-warning">
                 {warning}
+                {/* Slice 36: the old name and trim can be put on the item the scan read in their place. */}
+                {carryOverFor(index).length > 0 && (
+                  <Stack direction="row" spacing={1} sx={{ mt: 1 }}>{carryOverFor(index).map(carryOverButton)}</Stack>
+                )}
               </Alert>
             ))}
+            {carryOverFor(undefined).length > 0 && (
+              <Stack direction="row" spacing={1} sx={{ mb: 1 }}>{carryOverFor(undefined).map(carryOverButton)}</Stack>
+            )}
 
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
               <Typography variant="subtitle1">Suggested room</Typography>
