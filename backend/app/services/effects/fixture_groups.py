@@ -8,6 +8,10 @@ from typing import List, Dict, Optional, Callable
 from dataclasses import dataclass, field
 import math
 
+from app.services.dmx.output_stage import (
+    ROLE_COLOUR, ROLE_COLOUR_INVERTED, ROLE_FIXED, ROLE_INTENSITY, ROLE_INTENSITY_INVERTED,
+)
+
 
 class GroupType(Enum):
     """Predefined group types for common fixture arrangements."""
@@ -295,6 +299,89 @@ def _render_fixture(fixture: Fixture, master: float = 1.0) -> Dict[str, int]:
     return values
 
 
+# Channels that are never light, whatever value they hold. A fixture's own
+# strobe lives here too: the output stage cannot rate it from a byte.
+NON_LIGHT_CHANNELS = frozenset(
+    ('pan', 'pan_fine', 'tilt', 'tilt_fine', 'dimmer_fine', 'shutter', 'strobe')
+    + LEVEL_CHANNELS + PASSIVE_CHANNELS
+)
+
+
+POSITION_CHANNELS = frozenset(('pan', 'pan_fine', 'tilt', 'tilt_fine'))
+
+
+def is_strobe_fixture(fixture: Fixture) -> bool:
+    """A dedicated strobe, as opposed to a par, mover or batten that can strobe.
+
+    It goes by what the fixture is, not by the channels it has: a batten has a
+    strobe channel and a spot has a shutter, and neither is a strobe.
+    """
+    return str(getattr(fixture, 'fixture_type', '') or '').strip().lower() == 'strobe'
+
+
+def fixture_strobe_slots(fixture: Fixture) -> List[int]:
+    """The 0-based slots the output stage holds at zero while strobes are disabled.
+
+    Empty for anything that is not a strobe fixture. For one that is, every
+    slot but position: the dimmer and colour, and also the rate, shutter and
+    macro channels, where a constant value flashes the fixture with no help
+    from a writer. Position is left alone so that switching strobes off does
+    not swing a moving strobe to its end stop.
+    """
+    if not is_strobe_fixture(fixture):
+        return []
+    base = int(getattr(fixture, 'dmx_address', 0) or 0) - 1
+    if not 0 <= base < 512:
+        return []
+    slots: List[int] = []
+    for name, offset in fixture.channels.items():
+        if canonical_channel_name(name) in POSITION_CHANNELS:
+            continue
+        try:
+            slot = base + int(offset)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= slot < 512:
+            slots.append(slot)
+    return slots
+
+
+def fixture_light_roles(fixture: Fixture) -> Dict[int, str]:
+    """What each of a fixture's slots is to the output stage, by 0-based slot.
+
+    Follows `_render_fixture`: the grand master belongs on the dimmer, or on
+    the colour values of a fixture that has none, and a subtractive flag is
+    light upside down. A channel type nothing here recognises is called
+    intensity, so that blackout and the flash limit still cover it.
+    """
+    base = int(getattr(fixture, 'dmx_address', 0) or 0) - 1
+    if not 0 <= base < 512:
+        return {}
+
+    names = [canonical_channel_name(name) for name in fixture.channels]
+    has_dimmer = 'dimmer' in names
+    subtractive = not any(name in RGB_CHANNELS for name in names)
+
+    roles: Dict[int, str] = {}
+    for (_, offset), name in zip(fixture.channels.items(), names):
+        try:
+            slot = base + int(offset)
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= slot < 512:
+            continue
+        if name in NON_LIGHT_CHANNELS:
+            role = ROLE_FIXED
+        elif name in COLOR_CHANNELS or (name in CMY_CHANNELS and not subtractive):
+            role = ROLE_COLOUR if has_dimmer else ROLE_INTENSITY
+        elif name in CMY_CHANNELS:
+            role = ROLE_COLOUR_INVERTED if has_dimmer else ROLE_INTENSITY_INVERTED
+        else:
+            role = ROLE_INTENSITY
+        roles[slot] = role
+    return roles
+
+
 class FixtureGroupManager:
     """
     Manages fixtures and groups for effect application.
@@ -483,6 +570,24 @@ class FixtureGroupManager:
             for fixture in self.fixtures.values()
             if 0 <= fixture.dmx_address - 1 < 512
         })
+
+    def light_patch(self) -> Dict[int, List[Dict[int, str]]]:
+        """The rig as the output stage needs it: per universe, each fixture's slot roles."""
+        patch: Dict[int, List[Dict[int, str]]] = {}
+        for fixture in self.fixtures.values():
+            roles = fixture_light_roles(fixture)
+            if roles:
+                patch.setdefault(int(getattr(fixture, 'universe', 0) or 0), []).append(roles)
+        return patch
+
+    def strobe_patch(self) -> Dict[int, List[int]]:
+        """Per universe, the slots of the rig's dedicated strobe fixtures."""
+        patch: Dict[int, List[int]] = {}
+        for fixture in self.fixtures.values():
+            slots = fixture_strobe_slots(fixture)
+            if slots:
+                patch.setdefault(int(getattr(fixture, 'universe', 0) or 0), []).extend(slots)
+        return patch
 
     def get_dmx_frames(self, master: float = 1.0) -> Dict[int, List[int]]:
         """
