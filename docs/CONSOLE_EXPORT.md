@@ -56,7 +56,11 @@ Query parameters:
   name of each fixture whose position nobody has confirmed.
 - `first_group=N` (script): the group number the first group is stored at.
   Default 1.
-- `include=all|patch|groups` (script): which part to write.
+- `include=all|patch|groups|focus` (script): which part to write. `focus` is
+  the moving heads' Position presets, database rigs only: see
+  [FOCUS_PRESETS.md](FOCUS_PRESETS.md).
+- `first_preset=N` (script): the first focus target is stored at
+  `Preset 2.N`. Default 1.
 - `notes=false` (script): leave out the `#` note lines, for a file that is
   commands only.
 
@@ -176,7 +180,13 @@ What the operator must still do:
    keyword pages; `Store Group N`, the bare `Fixture ...` selection line and
    `ClearSelection` are standard grandMA2 commands that were not individually
    re-checked against the manual in this session. Nothing was run on a desk.
-4. The script carries **no positions**. Those travel in the XML or the MVR.
+4. The script carries **no fixture positions**. Those travel in the XML or the MVR.
+
+For a database rig with moving heads, the script ends with one **focus
+Position preset** per target (DJ booth, dance floor, audience, stage front,
+straight down, and any custom points), with guessed positions marked in the
+notes. How they are worked out and what to check on the desk:
+[FOCUS_PRESETS.md](FOCUS_PRESETS.md).
 
 ## MVR
 
