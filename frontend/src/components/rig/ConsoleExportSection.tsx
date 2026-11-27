@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Box,
@@ -15,8 +15,11 @@ import {
 } from '@mui/material';
 import { Download as DownloadIcon, Close as CloseIcon } from '@mui/icons-material';
 import axios from 'axios';
-import { consoleExportApi } from '../../services/api';
+import { consoleExportApi, readinessApi } from '../../services/api';
 import { CONSOLE_EXPORT_OPTIONS, summaryHeadline } from '../../utils/consoleExport';
+import { exportSummaryText } from '../../utils/readiness';
+import type { ReadinessReport, ReadinessStatus } from '../../utils/readiness';
+import ReadinessDialog from './ReadinessDialog';
 import type {
   ConsoleExportKind,
   ConsoleExportSummary,
@@ -36,6 +39,60 @@ function saveBlob(blob: Blob, filename: string) {
 
 function targetKey(target: ConsoleExportTarget): string {
   return 'rigId' in target ? `rig:${target.rigId}` : `preset:${target.preset}`;
+}
+
+const READINESS_SEVERITY: Record<ReadinessStatus, 'success' | 'warning' | 'error'> = {
+  ok: 'success',
+  warn: 'warning',
+  fail: 'error',
+};
+
+/**
+ * The readiness summary at the top of the export: overall status and how many
+ * checks warn or fail, with a button that opens the Readiness panel. It never
+ * blocks the downloads; if it cannot be read it is simply left out.
+ */
+export function ExportReadinessSummary({ rigId }: { rigId: number }) {
+  const [report, setReport] = useState<ReadinessReport | null>(null);
+  const [open, setOpen] = useState(false);
+
+  const load = useCallback(() => {
+    let current = true;
+    readinessApi
+      .get(rigId)
+      .then((data) => { if (current) setReport(data); })
+      .catch(() => { if (current) setReport(null); });
+    return () => { current = false; };
+  }, [rigId]);
+
+  useEffect(() => load(), [load]);
+
+  if (!report) return null;
+  return (
+    <>
+      <Alert
+        severity={READINESS_SEVERITY[report.status]}
+        data-testid="export-readiness-summary"
+        sx={{ mb: 1.5 }}
+        action={
+          <Button color="inherit" size="small" onClick={() => setOpen(true)}>
+            Open Readiness
+          </Button>
+        }
+      >
+        {exportSummaryText(report)}
+      </Alert>
+      <ReadinessDialog
+        open={open}
+        rigId={rigId}
+        rigName={report.rig_name}
+        onClose={() => {
+          setOpen(false);
+          load();
+        }}
+      />
+    </>
+  );
 }
 
 interface ConsoleExportSectionProps {
@@ -97,6 +154,7 @@ export function ConsoleExportSection({ target }: ConsoleExportSectionProps) {
       <Typography variant="subtitle2" gutterBottom>
         Export to a console
       </Typography>
+      {'rigId' in target && <ExportReadinessSummary rigId={target.rigId} />}
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         Patch, 3D positions, rotations and groups, from the rig as it is now.
         {summary ? ` ${summaryHeadline(summary)}` : ''} Not tested on a desk: read
