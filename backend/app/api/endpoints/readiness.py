@@ -7,6 +7,7 @@ POST /api/rigs/{rig_id}/readiness/fix/auto-groups  a group for each place and ki
 POST /api/rigs/{rig_id}/readiness/fix/readdress    a free address for each fixture that clashes
 POST /api/rigs/{rig_id}/readiness/fix/set-modes    the DMX mode, where only one is possible
 POST /api/rigs/{rig_id}/readiness/fix/undo         put back what the last of those three changed
+GET  /api/rigs/{rig_id}/handoff-pack               a zip of everything needed to program it (reads only)
 
 The GET reads and writes nothing. Make groups writes `group_name` on the
 fixtures that are in no group, and nothing else. Re-address writes
@@ -20,6 +21,7 @@ docs/READINESS.md, services/rig/readiness.py and readiness_undo.py.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +29,7 @@ from app.api.endpoints.rig_patching import _get_rig_fixtures_with_channels
 from app.db.database import get_db
 from app.models.fixture import FixtureMode
 from app.services.rig import readiness_undo
+from app.services.rig.handoff_pack import build_handoff_pack
 from app.services.rig.readiness import plan_auto_groups, plan_readdress, plan_set_modes, readiness
 
 router = APIRouter()
@@ -37,6 +40,22 @@ async def read_readiness(rig_id: int, db: AsyncSession = Depends(get_db)):
     """Whether this rig is ready to program, check by check. Writes nothing."""
     rig, rows, _ = await _get_rig_fixtures_with_channels(rig_id, db)
     return readiness(rig, rows)
+
+
+@router.get("/rigs/{rig_id}/handoff-pack")
+async def download_handoff_pack(rig_id: int, db: AsyncSession = Depends(get_db)):
+    """Everything needed to program this rig, as one zip: patch.csv, groups.csv,
+    readiness.md, the grandMA2 and MVR exports and a README. Built in memory;
+    reads only. A console file whose writer fails is left out and named in
+    README.txt and readiness.md. See docs/HANDOFF_PACK.md.
+    """
+    rig, rows, _ = await _get_rig_fixtures_with_channels(rig_id, db)
+    content, filename = build_handoff_pack(rig, rows)
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/rigs/{rig_id}/readiness/fix/auto-groups")
