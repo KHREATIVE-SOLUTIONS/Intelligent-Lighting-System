@@ -1,0 +1,304 @@
+/**
+ * "Focus presets" for a rig (docs/FOCUS_PRESETS.md, "In the app"), under the
+ * console export and the handoff pack: every point the room gives to aim at,
+ * how many moving heads reach it and which cannot and why, custom points added
+ * and removed, and the table as the handoff pack's CSV.
+ *
+ * Reads only, apart from the custom targets list: nothing here moves a light
+ * or sends DMX. A database rig only; a demo preset has no room to aim in.
+ */
+import { useState } from 'react';
+import type { FormEvent } from 'react';
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Collapse,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
+  IconButton,
+  LinearProgress,
+  Stack,
+  TextField,
+  Tooltip,
+  Typography,
+} from '@mui/material';
+import { Add as AddIcon, Delete as DeleteIcon, Download as DownloadIcon } from '@mui/icons-material';
+import axios from 'axios';
+import { focusPresetsApi } from '../../services/focusPresetsApi';
+import { saveBlob } from '../../utils/download';
+import { EMPTY_DRAFT, checkDraft, reachText, whereText } from '../../utils/focusPresets';
+import type { DraftErrors, FocusTarget, TargetDraft } from '../../utils/focusPresets';
+import useFocusPresets from './useFocusPresets';
+
+type Note = { severity: 'success' | 'error' | 'info'; text: string };
+
+function TargetRow({ target, heads, onRemove, busy }: {
+  target: FocusTarget;
+  heads: number;
+  onRemove: (target: FocusTarget) => void;
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const cannot = target.unreachable.length;
+  const listId = `focus-unreachable-${target.key}`;
+  return (
+    <Box
+      data-testid={`focus-target-${target.key}`}
+      sx={{ py: 1, borderBottom: 1, borderColor: 'divider', '&:last-of-type': { borderBottom: 0 } }}
+    >
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Typography variant="body2" fontWeight="bold" sx={{ flexGrow: 1 }}>
+          {target.name}
+        </Typography>
+        <Chip size="small" variant="outlined" label={target.custom ? 'Custom' : 'Default'} />
+        {target.custom && target.customId !== null && (
+          <Tooltip title="Remove this target">
+            <span>
+              <IconButton
+                size="small"
+                aria-label={`Remove ${target.name}`}
+                disabled={busy}
+                onClick={() => onRemove(target)}
+              >
+                <DeleteIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+        )}
+      </Box>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+        {whereText(target)}
+      </Typography>
+      {target.skipped ? (
+        <Typography variant="caption" color="warning.main" sx={{ display: 'block' }} data-testid="focus-target-skipped">
+          Skipped: {target.skipped}
+        </Typography>
+      ) : (
+        <Typography variant="caption" sx={{ display: 'block' }} data-testid="focus-target-reach">
+          {reachText(target, heads)}
+        </Typography>
+      )}
+      {cannot > 0 && (
+        <>
+          <Button
+            size="small"
+            sx={{ px: 0, minWidth: 0, textTransform: 'none' }}
+            aria-expanded={open}
+            aria-controls={listId}
+            onClick={() => setOpen((o) => !o)}
+          >
+            {open ? 'Hide' : 'Show'} the {cannot === 1 ? 'one' : cannot} that cannot
+          </Button>
+          <Collapse in={open} unmountOnExit>
+            <Box component="ul" id={listId} sx={{ m: 0, pl: 2.5 }}>
+              {target.unreachable.map((item) => (
+                <Typography component="li" variant="caption" key={item.fixture_id} sx={{ display: 'list-item' }}>
+                  {item.fixture_id}. {item.name}: {item.reason}
+                </Typography>
+              ))}
+            </Box>
+          </Collapse>
+        </>
+      )}
+    </Box>
+  );
+}
+
+export default function FocusPresetsPanel({ rigId }: { rigId: number }) {
+  const focus = useFocusPresets(rigId);
+  const [draft, setDraft] = useState<TargetDraft>(EMPTY_DRAFT);
+  const [errors, setErrors] = useState<DraftErrors>({});
+  const [busy, setBusy] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [note, setNote] = useState<Note | null>(null);
+  const [confirm, setConfirm] = useState<FocusTarget | null>(null);
+  const { table, status } = focus;
+
+  const edit = (field: keyof TargetDraft) => (event: { target: { value: string } }) => {
+    const value = event.target.value;
+    setDraft((d) => ({ ...d, [field]: value }));
+    setErrors((e) => ({ ...e, [field]: undefined, form: undefined }));
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setNote(null);
+    const check = checkDraft(draft, table?.customCount ?? 0);
+    if (!check.ok) {
+      setErrors(check.errors);
+      return;
+    }
+    setErrors({});
+    setBusy(true);
+    const refused = await focus.add(check.target);
+    setBusy(false);
+    if (refused) {
+      setErrors({ form: refused });
+      return;
+    }
+    setDraft(EMPTY_DRAFT);
+    setNote({ severity: 'success', text: `${check.target.name} added.` });
+  };
+
+  const remove = async (target: FocusTarget) => {
+    setConfirm(null);
+    if (target.customId === null) return;
+    setNote(null);
+    setBusy(true);
+    const refused = await focus.remove(target.customId);
+    setBusy(false);
+    setNote(refused ? { severity: 'error', text: refused } : { severity: 'success', text: `${target.name} removed.` });
+  };
+
+  const downloadCsv = async () => {
+    setDownloading(true);
+    setNote(null);
+    try {
+      const file = await focusPresetsApi.csv(rigId);
+      saveBlob(file.blob, file.filename);
+      setNote({ severity: 'success', text: `${file.filename} downloaded.` });
+    } catch (err) {
+      const status404 = axios.isAxiosError(err) && err.response?.status === 404;
+      setNote({
+        severity: 'error',
+        text: status404 ? 'This rig is no longer there.' : 'The focus presets CSV did not download. Try again.',
+      });
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const fieldProps = (field: keyof TargetDraft) => ({
+    size: 'small' as const,
+    value: draft[field],
+    onChange: edit(field),
+    error: !!errors[field],
+    helperText: errors[field] ?? ' ',
+    disabled: busy,
+  });
+
+  return (
+    <Box data-testid="focus-presets">
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.5 }}>
+        <Typography variant="subtitle2" sx={{ flexGrow: 1 }}>
+          Focus presets
+        </Typography>
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={downloading ? <CircularProgress size={14} /> : <DownloadIcon />}
+          disabled={downloading}
+          onClick={() => { void downloadCsv(); }}
+        >
+          Download CSV
+        </Button>
+      </Box>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        Pan and tilt for each moving head, worked out from where it is in the rig. Nothing here moves a light.
+        Touch every preset up in the room.
+      </Typography>
+
+      {note && (
+        <Alert severity={note.severity} data-testid="focus-presets-note" sx={{ mb: 1 }} onClose={() => setNote(null)}>
+          {note.text}
+        </Alert>
+      )}
+
+      {status === 'loading' && (
+        <Box data-testid="focus-presets-loading" sx={{ mb: 1 }}>
+          <Typography variant="body2">Reading the focus presets...</Typography>
+          <LinearProgress sx={{ mt: 0.5 }} />
+        </Box>
+      )}
+
+      {status === 'error' && (
+        <Alert
+          severity="error"
+          data-testid="focus-presets-error"
+          sx={{ mb: 1 }}
+          action={<Button color="inherit" size="small" onClick={focus.reload}>Try again</Button>}
+        >
+          {focus.error}
+        </Alert>
+      )}
+
+      {table && (
+        <>
+          {table.heads === 0 && (
+            <Alert severity="info" data-testid="focus-presets-empty" sx={{ mb: 1 }}>
+              This rig has no moving heads with a position, so there is nothing to aim. The targets stay here for
+              when it has some.
+            </Alert>
+          )}
+          {table.leftOut.length > 0 && (
+            <Alert severity="info" data-testid="focus-presets-left-out" sx={{ mb: 1 }}>
+              Left out of every preset: {table.leftOut.map((item) => `${item.name} (${item.reason})`).join(', ')}.
+            </Alert>
+          )}
+          <Box data-testid="focus-presets-list" sx={{ mb: 1.5 }}>
+            {table.targets.map((target) => (
+              <TargetRow key={target.key} target={target} heads={table.heads} onRemove={setConfirm} busy={busy} />
+            ))}
+          </Box>
+
+          <Box component="form" noValidate onSubmit={(event: FormEvent) => { void submit(event); }} aria-label="Add a focus target">
+            <Typography variant="body2" fontWeight="bold" gutterBottom>
+              Add a target
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+              Metres on the rig's axes: x across, y up from the floor, z from upstage (minus) to the crowd (plus).
+            </Typography>
+            {errors.form && (
+              <Alert severity="error" data-testid="focus-target-form-error" sx={{ mb: 1 }}>
+                {errors.form}
+              </Alert>
+            )}
+            <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', rowGap: 1 }}>
+              <TextField label="Name" {...fieldProps('name')} sx={{ minWidth: 160, flexGrow: 1 }} />
+              <TextField label="x (m)" inputProps={{ inputMode: 'decimal' }} {...fieldProps('x')} sx={{ width: 110 }} />
+              <TextField label="y (m)" inputProps={{ inputMode: 'decimal' }} {...fieldProps('y')} sx={{ width: 110 }} />
+              <TextField label="z (m)" inputProps={{ inputMode: 'decimal' }} {...fieldProps('z')} sx={{ width: 110 }} />
+              <Box>
+                <Button
+                  type="submit"
+                  variant="outlined"
+                  startIcon={busy ? <CircularProgress size={14} /> : <AddIcon />}
+                  disabled={busy}
+                  sx={{ mt: 0.25 }}
+                >
+                  Add target
+                </Button>
+              </Box>
+            </Stack>
+          </Box>
+        </>
+      )}
+
+      <Dialog open={confirm !== null} onClose={() => setConfirm(null)}>
+        <DialogTitle>Remove {confirm?.name ?? 'this target'}?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Its preset goes from the next grandMA2 script and handoff pack, and the presets after it move up one.
+            Nothing else in the rig changes.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirm(null)}>Keep it</Button>
+          <Button
+            color="error"
+            data-testid="focus-target-remove-confirm"
+            onClick={() => { if (confirm) void remove(confirm); }}
+          >
+            Remove
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  );
+}
