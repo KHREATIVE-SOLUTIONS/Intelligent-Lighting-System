@@ -226,6 +226,15 @@ def _plural(count: int, kind: str = "risers") -> str:
     return f"{count} {KINDS[kind]}{'' if count == 1 else 's'}"
 
 
+def warning_id(lost_place: int) -> str:
+    """The id a lost warning and its carry_over entry share (slice 37): "lost-0", "lost-1", ...
+
+    From the loss's own place in the list of what was lost, not from the item it would be put on: two
+    losses can point at the same new item, and each keeps its own id.
+    """
+    return f"lost-{lost_place}"
+
+
 @dataclass(frozen=True)
 class KeptEdits:
     """What was carried from the room being replaced onto a new reading."""
@@ -346,11 +355,17 @@ class KeptEdits:
         for entry in warnings:
             said.append(f"Check {entry['name']}: it is {entry['reason']} of the room as this scan reads it.")
         lost = []
-        for entry in self.lost:
+        # Slice 37: each lost warning with a carry_over entry has an `id`, and its entry the same as
+        # `warning_id`, so a button finds its warning by name rather than by place.
+        carried = {entry["lost"] for entry in self.carry}
+        for place, entry in enumerate(self.lost):
             if "by_index" in entry:
                 # What the item of the new room is called as it will be stored.
                 entry = {**entry, "by": called(entry["by_index"], entry["kind"])}
-            lost.append({**entry, "message": _lost_words(entry, applied)})
+            said_lost = {**entry, "message": _lost_words(entry, applied)}
+            if place in carried:
+                said_lost["id"] = warning_id(place)
+            lost.append(said_lost)
         said.extend(entry["message"] for entry in lost)
 
         # One thing at a time, in the order the sentences above say them.
@@ -377,6 +392,7 @@ class KeptEdits:
                 "new_name": called(entry["new_index"], entry["kind"]),
                 # The checks are said before what was lost.
                 "warning": len(warnings) + entry["lost"],
+                "warning_id": warning_id(entry["lost"]),
             }
             for entry in self.carry
         ]

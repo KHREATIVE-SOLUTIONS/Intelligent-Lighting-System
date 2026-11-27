@@ -29,7 +29,8 @@ Pure: the shell given is not changed. Fixtures are not looked at: the route
 moves the ones hung on a truss whose trim changed, by Edit Room's own rules.
 """
 
-from typing import Any, Dict, Optional, Tuple
+from collections import Counter
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.services.room_scan.edit import (
     BASE_BY_HAND, HEIGHT_BY_HAND, KINDS, NAME_BY_HAND, RESIZED_BY_HAND, SCAN_HEIGHT_KEY, ShellEditError,
@@ -57,6 +58,88 @@ def _stale(kind: str, index: Any, name: Any) -> ShellEditError:
         f"{name if isinstance(name, str) and name else 'what the scan answer said'} any more. "
         "Nothing was changed: rename or trim it in Edit Room.",
     )
+
+
+def refuse_shared_targets(entries: Any) -> List[Dict[str, Any]]:
+    """The entries of a "Keep all" (slice 37), refused (422) where they are not a list of entries or two share an item.
+
+    Two entries for the same new item would each put their name on it, and
+    the second would quietly take the place of the first: the operator must
+    choose, one at a time. Nothing else of an entry is checked here:
+    `carry_over` does that, entry by entry.
+    """
+    if not isinstance(entries, list) or not entries or not all(isinstance(entry, dict) for entry in entries):
+        raise ShellEditError(422, "`entries` must be a list of the carry_over entries to keep, at least one.")
+    seen: Dict[Tuple[Any, Any], Dict[str, Any]] = {}
+    for entry in entries:
+        target = (entry.get("kind"), entry.get("new_index"))
+        if target in seen and isinstance(target[0], str) and target[0] in KINDS:
+            first = seen[target]
+            raise ShellEditError(
+                422,
+                f"{first.get('old_name')} and {entry.get('old_name')} would both be put on "
+                f"{entry.get('new_name') or f'{KINDS[target[0]]} {target[1]}'}: keep one of them on it, "
+                "one at a time. Nothing was changed.",
+            )
+        seen[target] = entry
+    return entries
+
+
+# What goes with one carried item (the route's Edit Room rules): (room before, kind, index, room after, item)
+# -> (room after with what it carried, fixture moves, raised areas carried).
+CarryWith = Callable[
+    [Dict[str, Any], str, int, Dict[str, Any], Dict[str, Any]],
+    Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]],
+]
+
+
+def _nothing_with(before, kind, index, shell, item):
+    return shell, [], []
+
+
+def carry_all(
+    shell: Optional[Dict[str, Any]], entries: Any, carry_with: CarryWith = _nothing_with,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+    """"Keep all" (slice 37): (the room with every entry carried, per entry what was done, moves, areas, labels).
+
+    All or none: the entries are carried one after another, each onto the
+    room the ones before it left, and the first refused (ShellEditError: 409
+    stale, 422 not an entry) refuses the lot; the shell given is never
+    changed, so nothing is written. Two entries for one item are a 422 before
+    any is tried (`refuse_shared_targets`), and so is a fixture two of them
+    would each move: the moves are worked out from where the fixtures stand
+    now and made together, so the second would quietly win. `labels` has
+    what each entry that changed something did, for the label of the one Undo
+    step. Each of the per-entry answers is {warning_id, kind, index, old_name,
+    new_name, item, changed, fixtures_moved, done}.
+    """
+    entries = refuse_shared_targets(entries)
+    carried: List[Dict[str, Any]] = []
+    moves: List[Dict[str, Any]] = []
+    areas: List[Dict[str, Any]] = []
+    labels: List[str] = []
+    for entry in entries:
+        edited, item, done = carry_over(shell, entry)
+        kind, index = entry["kind"], entry["new_index"]
+        theirs: List[Dict[str, Any]] = []
+        if done is not None:
+            edited, theirs, stacked = carry_with(shell, kind, index, edited, item)
+            shell = edited
+            moves, areas = moves + theirs, areas + stacked
+            labels.append(done)
+        carried.append({
+            "warning_id": entry.get("warning_id"), "kind": kind, "index": index,
+            "old_name": entry.get("old_name"), "new_name": entry.get("new_name"), "item": item,
+            "changed": done is not None, "fixtures_moved": len(theirs), "done": done,
+        })
+    twice = sorted(key for key, count in Counter(move.get("rig_fixture_id") for move in moves).items() if count > 1)
+    if twice:
+        raise ShellEditError(
+            422,
+            f"{len(twice)} fixture{'' if len(twice) == 1 else 's'} would be moved by more than one of these: "
+            "keep them one at a time. Nothing was changed.",
+        )
+    return shell, carried, moves, areas, labels
 
 
 def carry_over(

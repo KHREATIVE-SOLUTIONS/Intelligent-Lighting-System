@@ -140,7 +140,7 @@ class TestATrussReadAtAnotherHeight:
         assert after["warnings"] == [{**fact, "message": (
             "The scan read a truss at 5.3 m where Front truss was, against its trim of 4.2 m: "
             "more than 1 m from where the scan read it before, so its name was not kept."
-        )}]
+        ), "id": "lost-0"}]
         assert before["warnings"][0]["message"].endswith("so its name will not be kept.")
         assert after["message"] == after["warnings"][0]["message"]
         # Slice 36: the truss the scan read there can be given the name back, so the answer says which it is.
@@ -225,7 +225,7 @@ class TestATrussReadBesideWhereItWas:
         assert after["warnings"] == [{**fact, "message": (
             "The scan read a truss 0.3 m from where Front truss was, sharing 33% of the plan with it "
             "where half is needed, so its name and trim were not kept."
-        )}]
+        ), "id": "lost-0"}]
         assert got.report()["message"].endswith("so its name and trim will not be kept.")
         assert set(after) == BARE | {"warnings", "carry_over"}
 

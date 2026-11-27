@@ -83,7 +83,11 @@ no longer read at all, and of two stored items that pick one new one the one
 that loses; `carry_over` gives each warning with a new item behind it in a
 form POST /api/rigs/{rig_id}/room-scan/carry-over takes as it is, to put the
 old name and trim onto that item as one step of the room's Undo
-(services/room_scan/carry_over.py).
+(services/room_scan/carry_over.py). Slice 37: POST .../room-scan/carry-over/all
+keeps several at once, all or none, as one step; the entries still open are
+kept with the stored room (`room_shell.pending_carry_over`, GET
+.../room-scan/carry-over) until carried, made stale in Edit Room, or replaced
+with the room (services/room_scan/pending_carry.py).
 
 PATCH /api/rigs/{rig_id}/room-shell/outline redraws the room's walls (every
 corner of its floor) and sets its height; PATCH, POST and DELETE under
@@ -112,7 +116,10 @@ from app.services.room_scan.carry import (
     apply_areas, apply_moves, areas_report, carried_area_moves, carried_areas, carried_moves, carried_words,
     put_back, put_back_words, refuse_areas_outside, refuse_outside,
 )
-from app.services.room_scan.carry_over import carry_over
+from app.services.room_scan.carry_over import carry_all, carry_over
+from app.services.room_scan.pending_carry import (
+    after_delete, pending, prune, to_store, with_pending, without_targets,
+)
 from app.services.room_scan.edit import (
     KINDS, ShellEditError, add_item, delete_item, dj_booth_place, edit_item, edit_words, first_stage, item_name,
     one_dj_booth,
@@ -288,6 +295,12 @@ async def import_room_scan(
                 entry["rotation_y_after"] = rf.rotation_y
             moved.append(entry)
 
+    # Worked out before the room is stored: what was lost that can be put back is kept with it (slice 37).
+    hand = edits.report(shell, applied=True) if edits.any else None
+    # The entries still open, with the room, so the dialog opened again shows the same buttons. In the
+    # answer's `room_shell` too: the answer is the room as stored. Left out where there are none.
+    shell = with_pending(shell, to_store(hand))
+    preview["room_shell"] = shell
     # The shell already carries the kept DJ booth mark (worked out above, against the room as it is
     # stored now: one edited since the preview was read is matched as it stands at apply).
     # A new dict: the column is plain JSON, so a change made in place is never written.
@@ -316,8 +329,8 @@ async def import_room_scan(
     # Said only where an edit made by hand was kept, something added by hand kept or replaced, a
     # raised area a person deleted left out, or (slice 35) a name, a trim or a record of a deleted
     # item lost.
-    if edits.any:
-        preview["applied"]["hand_edits"] = edits.report(shell, applied=True)
+    if hand is not None:
+        preview["applied"]["hand_edits"] = hand
         logger.info(
             "Room scan: rig %s hand edits kept on %d raised areas, %d added by hand kept, %d replaced; "
             "overhead: %d kept, %d added kept, %d replaced; %d deleted areas left out; %d to check; %d lost",
@@ -692,17 +705,24 @@ def _with_what_it_carries(
 def _store_edit(
     rig: Rig, before: Dict[str, Any], shell: Dict[str, Any], kind: str,
     moves: List[Dict[str, Any]], stacked: List[Dict[str, Any]], done: str,
-) -> None:
-    """Write one edit and what it carried as one step of the room's Undo."""
+) -> Dict[str, Any]:
+    """Write one edit and what it carried as one step of the room's Undo. Answers the room as stored.
+
+    The scan's carry-over entries still open whose item this renamed,
+    re-trimmed or raised are dropped (slice 37): they would be stale. The
+    step keeps the room as it was, entries and all, so the undo brings them
+    back. `kind` None for a step of more than one list (a "Keep all").
+    """
     apply_moves(rig.fixtures, moves)
     carried = [f"{len(stacked)} raised area{'' if len(stacked) == 1 else 's'}"] if stacked else []
     if moves:
         carried.append(f"{len(moves)} fixture{'' if len(moves) == 1 else 's'}")
     label = f"{done}, with {' and '.join(carried)}" if carried else done
     # A new object throughout: the column is plain JSON, so a change made in place is never written.
-    rig.room_shell = shell
+    rig.room_shell = prune(before, shell)
     # One step for the item and what it carried: one undo takes both back.
     rig.room_shell_undo = push_step(rig.room_shell_undo, before, label, fixtures=moves, kind=kind)
+    return rig.room_shell
 
 
 @router.patch("/rigs/{rig_id}/room-shell/{kind}/{index}")
@@ -766,7 +786,7 @@ async def edit_room_shell_item(
     except ShellEditError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)
     if done is not None:
-        _store_edit(rig, before, shell, kind, moves, stacked, done)
+        shell = _store_edit(rig, before, shell, kind, moves, stacked, done)
         await db.flush()
         logger.info(
             "Room shell: rig %s '%s': %s %d: %s (%d fixtures and %d raised areas carried)",
@@ -813,6 +833,8 @@ async def delete_room_shell_item(
     except ShellEditError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)
     name = item_name(kind, removed)
+    # Its carry-over entry goes with it, and those after it in its list move up one place (slice 37).
+    shell = after_delete(shell, kind, index)
     rig.room_shell = shell
     rig.room_shell_undo = push_step(rig.room_shell_undo, before, f"{name} deleted")
     await db.flush()
@@ -973,21 +995,113 @@ async def carry_over_lost_edit(rig_id: int, body: CarryOverEntry, db: AsyncSessi
     except ShellEditError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)
     if done is not None:
-        _store_edit(rig, before, shell, kind, moves, stacked, done)
+        # The entry is spent (slice 37): with every other one for that item, which would be stale now.
+        stored = _store_edit(rig, before, without_targets(shell, [(kind, index)]), kind, moves, stacked, done)
         await db.flush()
         logger.info(
             "Room scan carry-over: rig %s '%s': %s %d: %s (%d fixtures and %d raised areas carried)",
             rig.id, rig.name, kind, index, done, len(moves), len(stacked),
         )
-    stored = shell if done is not None else before
+    else:
+        # Nothing to put back, so no step: but the entry is spent all the same, and the dialog's button with it.
+        stored = without_targets(before, [(kind, index)])
+        if stored is not before:
+            rig.room_shell = stored
+            await db.flush()
     return {
         "rig_id": rig.id, "kind": kind, "index": index, "item": item, "room_shell": stored,
         "changed": done is not None,
         "undo": undo_summary(rig.room_shell_undo),
         "fixtures_moved": moves,
         "items_moved": areas_report(stacked),
+        "pending_carry_over": pending(stored),
         "message": (
             f"{done}. {carried_words(kind, item, len(moves), carry, areas=len(stacked))}"
             if done is not None else f"{item_name(kind, item)} already has it. Nothing was changed."
+        ),
+    }
+
+
+@router.get("/rigs/{rig_id}/room-scan/carry-over")
+async def read_pending_carry_over(rig_id: int, db: AsyncSession = Depends(get_db)):
+    """What the last scan applied lost that can still be put back (slice 37). Writes nothing.
+
+    The entries of its `hand_edits.carry_over` not yet carried over, each as
+    the answer gave it with the `message` of its warning. The same list is in
+    the stored room as `room_shell.pending_carry_over` (left out when empty).
+    An entry goes when it is carried over, when its item is renamed,
+    re-trimmed, raised or deleted in Edit Room, and with the room when the room
+    is read again or taken off; the room's Undo brings it back.
+    """
+    rig = await _rig(db, rig_id)
+    entries = pending(rig.room_shell)
+    return {"rig_id": rig.id, "carry_over": entries, "count": len(entries)}
+
+
+class CarryOverAll(BaseModel):
+    """Every entry to keep at once ("Keep all"), each as the scan's answer gave it."""
+    # Not held to a type here, for the reason given on ShellItemEdit: refused in a sentence by carry_over.py.
+    entries: Optional[Any] = None
+    carry_fixtures: Optional[bool] = True
+
+
+@router.post("/rigs/{rig_id}/room-scan/carry-over/all")
+async def carry_over_all_lost_edits(rig_id: int, body: CarryOverAll, db: AsyncSession = Depends(get_db)):
+    """Put every name and trim in `entries` back at once, as ONE step of the room's Undo (slice 37).
+
+    All or none: each entry is carried as POST .../room-scan/carry-over
+    carries one, onto the room as the ones before it left it, and where any
+    one is refused (409 stale, 422 not an entry, or a trim the room does not
+    hold) the whole request is, and nothing is written. Two entries for the
+    same item are a 422 naming both: the operator chooses which, one at a
+    time. A fixture that two of them would each move is a 422 as well.
+    `carried` says per entry what was put back.
+    """
+    rig = await _rig_with_fixtures(db, rig_id)
+    _not_during_locate(rig, "edit the room")
+    original = rig.room_shell
+    carry = body.carry_fixtures is not False
+    try:
+        # Edit Room's rules for each item, from the room as the entries before it left it.
+        shell, carried, moves, stacked, labels = carry_all(
+            original, body.entries,
+            lambda was, kind, index, edited, item: _with_what_it_carries(rig, was, kind, index, edited, item, carry),
+        )
+    except ShellEditError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+
+    for entry in carried:
+        done, kind, item = entry.pop("done"), entry["kind"], entry["item"]
+        entry["message"] = (
+            f"{done}. {carried_words(kind, item, entry['fixtures_moved'], carry)}"
+            if done is not None else f"{item_name(kind, item)} already has it. Nothing was changed."
+        )
+    shell = without_targets(shell, [(entry["kind"], entry["index"]) for entry in carried])
+    changed = [entry for entry in carried if entry["changed"]]
+    if changed:
+        # The label of the one Undo step: what it was for one, how many for more.
+        done = labels[0] if len(labels) == 1 else f"{len(labels)} names and trims kept from the last scan"
+        kinds = {entry["kind"] for entry in changed}
+        shell = _store_edit(rig, original, shell, kinds.pop() if len(kinds) == 1 else None, moves, stacked, done)
+        logger.info(
+            "Room scan carry-over: rig %s '%s': kept all: %d of %d entries (%d fixtures and %d raised areas carried)",
+            rig.id, rig.name, len(changed), len(carried), len(moves), len(stacked),
+        )
+    elif shell is not original:
+        rig.room_shell = shell
+    await db.flush()
+    return {
+        "rig_id": rig.id,
+        "carried": carried,
+        "room_shell": shell,
+        "changed": bool(changed),
+        "undo": undo_summary(rig.room_shell_undo),
+        "fixtures_moved": moves,
+        "items_moved": areas_report(stacked),
+        "pending_carry_over": pending(shell),
+        "message": (
+            f"Kept {len(changed)} of {len(carried)} from the last scan, as one step of Undo: "
+            + " ".join(entry["message"] for entry in carried)
+            if changed else "Every item already has it. Nothing was changed."
         ),
     }

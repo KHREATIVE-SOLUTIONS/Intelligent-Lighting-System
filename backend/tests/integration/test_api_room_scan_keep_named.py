@@ -134,7 +134,10 @@ class TestATrussTheScanReadsSomewhereElse:
         # The room is the reading's: the truss where the scan has it now, under the scan's own name.
         assert line["height"] == pytest.approx(truss["height"] - 1.2, abs=0.05)
         assert line["name"] == truss["name"] and "set by hand" not in line["basis"]
-        assert answer["room_shell"] == preview["room_shell"] == await column(db_session, rig_id)
+        assert answer["room_shell"] == await column(db_session, rig_id)
+        # Slice 37: the room as stored keeps what can still be put back; a preview stores nothing, so has none.
+        assert {k: v for k, v in answer["room_shell"].items() if k != "pending_carry_over"} == preview["room_shell"]
+        assert len(answer["room_shell"]["pending_carry_over"]) == 1
         bands_add_up(answer["room_shell"])
         said = answer["applied"]["hand_edits"]
         # Slice 36: the truss read there can be given the name and trim back, so `carry_over` says which it is.
@@ -147,9 +150,10 @@ class TestATrussTheScanReadsSomewhereElse:
             f"The scan read a truss at {line['height']:g} m where Front truss was, against its trim of 3.5 m "
             f"(the scan read it at {truss['height']:g} m before): more than 1 m from where the scan read it before, "
         )
-        assert said["warnings"] == [{**fact, "message": sentence + "so its name and trim were not kept."}]
+        # `id` (slice 37): the warning's name, which its carry_over entry gives as `warning_id`.
+        assert said["warnings"] == [{**fact, "message": sentence + "so its name and trim were not kept.", "id": "lost-0"}]
         assert preview["hand_edits"]["warnings"] == [
-            {**fact, "message": sentence + "so its name and trim will not be kept."},
+            {**fact, "message": sentence + "so its name and trim will not be kept.", "id": "lost-0"},
         ]
         assert said["message"] == said["warnings"][0]["message"]
         assert (said["areas"], said["kept"], said["added_kept"], said["added_replaced"]) == (0, [], [], [])

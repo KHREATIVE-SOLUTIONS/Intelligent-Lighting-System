@@ -50,7 +50,7 @@ class TestARaisedAreaReadToOneSide:
         assert after["warnings"] == [{**fact, "by": "Booth or counter", "message": (
             "The scan read Booth or counter 1 m from where The bar was, sharing 33% of the plan with it "
             "where half is needed, so its name and height were not kept."
-        )}]
+        ), "id": "lost-0"}]
         assert before["warnings"][0]["message"].endswith("so its name and height will not be kept.")
         assert after["message"] == after["warnings"][0]["message"]
         assert after["items"] == before["items"] == [one("raised area", "The bar", LOST)]
@@ -65,7 +65,7 @@ class TestARaisedAreaReadToOneSide:
         assert got.report(applied=True)["carry_over"] == [{
             "kind": AREAS, "old_name": "Booth or counter", "old_trim_or_height": None, "old_base_height": 0.5,
             "edits": ["base_height"], "new_index": 1, "new_name": "Booth or counter", "reason": LOST_BESIDE,
-            "warning": 0,
+            "warning": 0, "warning_id": "lost-0",
         }]
 
     def test_all_three_are_said_in_order(self):
@@ -196,7 +196,7 @@ class TestOfTwoStoredItemsThatPickTheSameNewOne:
             assert after["warnings"] == [{**fact, "by": "Nearer", "message": (
                 "Near and Nearer both stand where the scan reads Riser: Nearer has it, "
                 "so the name of Near was not kept."
-            )}]
+            ), "id": "lost-0"}]
             assert before["warnings"][0]["message"] == (
                 "Near and Nearer both stand where the scan reads Riser: Nearer will have it, "
                 "so the name of Near will not be kept."
@@ -205,6 +205,7 @@ class TestOfTwoStoredItemsThatPickTheSameNewOne:
             assert after["carry_over"] == [{
                 "kind": AREAS, "old_name": "Near", "old_trim_or_height": None, "old_base_height": None,
                 "edits": ["name"], "new_index": 0, "new_name": "Nearer", "reason": LOST_OTHER, "warning": 0,
+                "warning_id": "lost-0",
             }]
 
     def test_two_trusses_less_than_a_metre_apart_on_one_footprint(self):
@@ -230,7 +231,7 @@ class TestOfTwoStoredItemsThatPickTheSameNewOne:
         assert said["items"] == [one("line", "Lower", KEPT), one("line", "Upper", LOST)]
         assert said["carry_over"] == [{
             "kind": LINES, "old_name": "Upper", "old_trim_or_height": 4.8, "edits": ["name", "height"],
-            "new_index": 0, "new_name": "Lower", "reason": LOST_OTHER, "warning": 0,
+            "new_index": 0, "new_name": "Lower", "reason": LOST_OTHER, "warning": 0, "warning_id": "lost-0",
         }]
 
     def test_the_one_that_has_it_may_have_nothing_set_by_hand(self):
@@ -256,6 +257,7 @@ class TestWhatCanBePutBack:
         entry = {
             "kind": LINES, "old_name": "Front truss", "old_trim_or_height": 3.0, "edits": ["name", "height"],
             "new_index": 0, "new_name": "Overhead line 1", "reason": LOST_HEIGHT, "warning": 0,
+            "warning_id": "lost-0",
         }
         # The same before Apply and after it: it is what a program acts on.
         assert got.report()["carry_over"] == got.report(applied=True)["carry_over"] == [entry]
