@@ -26,7 +26,8 @@ rather than a rig.
 When the rig is ready, **Download handoff pack** at the foot of the panel (and
 in the MA2 / MVR export) gives one zip with the patch, the groups, this report
 and the console files. A Fail shows a warning line first but never blocks it.
-See [HANDOFF_PACK.md](HANDOFF_PACK.md).
+**Open printable patch sheet**, next to it, opens the patch one universe per
+printed page in a new tab. See [HANDOFF_PACK.md](HANDOFF_PACK.md).
 
 ## The checks
 
