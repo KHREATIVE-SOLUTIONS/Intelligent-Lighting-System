@@ -3,13 +3,20 @@
  * image of the stage plot, show or hide it under the fixtures, calibrate it
  * (two points and the metres between them, the stage's origin, rotation and
  * opacity), and remove it, which asks first. Driven by useStagePlot.
+ *
+ * A PDF is drawn here as a PNG (utils/pdfStagePlot.ts), after asking which
+ * page when it has more than one, and that PNG is what is uploaded: the server
+ * takes images only. An image goes up as it is.
  */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, Slider,
   TextField, Typography,
 } from '@mui/material';
 import type { PickStep, StagePlotState } from './useStagePlot';
+import StagePlotPdfPicker from './StagePlotPdfPicker';
+import { isPdfFile, openPdf, pdfErrorText, pdfPageAsPngFile } from '../../utils/pdfStagePlot';
+import type { PdfDocumentLike } from '../../utils/pdfStagePlot';
 
 export const STAGE_PLOT_ACCEPT = 'image/png,image/jpeg,image/webp,application/pdf';
 
@@ -28,7 +35,59 @@ interface StagePlotControlProps {
 export default function StagePlotControl({ plot, disabled = false }: StagePlotControlProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const off = disabled || plot.busy;
+  // A PDF with more than one page, open while the operator picks the page.
+  const [pdf, setPdf] = useState<{ doc: PdfDocumentLike; name: string } | null>(null);
+  const [converting, setConverting] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const openDoc = useRef<PdfDocumentLike | null>(null);
+  const off = disabled || plot.busy || converting;
+
+  const closePdf = () => {
+    const doc = openDoc.current;
+    openDoc.current = null;
+    setPdf(null);
+    if (doc) void Promise.resolve(doc.destroy()).catch(() => {});
+  };
+  // Whatever is still open goes with the control.
+  useEffect(() => () => {
+    if (openDoc.current) void Promise.resolve(openDoc.current.destroy()).catch(() => {});
+  }, []);
+
+  const uploadPage = async (doc: PdfDocumentLike, pageNumber: number, name: string) => {
+    setConverting(true);
+    try {
+      const png = await pdfPageAsPngFile(doc, pageNumber, name);
+      closePdf();
+      await plot.upload(png);
+    } catch (error) {
+      // The picker closes so the sentence is seen; the PDF can be chosen again.
+      closePdf();
+      setPdfError(pdfErrorText(error));
+    } finally {
+      setConverting(false);
+    }
+  };
+
+  const takePdf = async (file: File) => {
+    closePdf();
+    setPdfError(null);
+    setConverting(true);
+    let doc: PdfDocumentLike;
+    try {
+      doc = await openPdf(file);
+    } catch (error) {
+      setPdfError(pdfErrorText(error));
+      setConverting(false);
+      return;
+    }
+    openDoc.current = doc;
+    if (doc.numPages === 1) {
+      await uploadPage(doc, 1, file.name);
+    } else {
+      setPdf({ doc, name: file.name });
+      setConverting(false);
+    }
+  };
 
   const choose = () => fileRef.current?.click();
 
@@ -43,7 +102,13 @@ export default function StagePlotControl({ plot, disabled = false }: StagePlotCo
         onChange={(e) => {
           const file = e.target.files?.[0];
           e.target.value = '';
-          if (file) void plot.upload(file);
+          if (!file) return;
+          if (isPdfFile(file)) {
+            void takePdf(file);
+          } else {
+            setPdfError(null);
+            void plot.upload(file);
+          }
         }}
       />
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
@@ -133,6 +198,28 @@ export default function StagePlotControl({ plot, disabled = false }: StagePlotCo
             </Typography>
           )}
         </Alert>
+      )}
+
+      {converting && (
+        <Typography variant="caption" data-testid="stage-plot-converting">
+          Drawing the PDF page as an image…
+        </Typography>
+      )}
+
+      {pdfError && (
+        <Alert severity="error" onClose={() => setPdfError(null)} data-testid="stage-plot-pdf-error">
+          {pdfError}
+        </Alert>
+      )}
+
+      {pdf && (
+        <StagePlotPdfPicker
+          doc={pdf.doc}
+          fileName={pdf.name}
+          busy={converting}
+          onChoose={(pageNumber) => { void uploadPage(pdf.doc, pageNumber, pdf.name); }}
+          onCancel={closePdf}
+        />
       )}
 
       {plot.message && (
