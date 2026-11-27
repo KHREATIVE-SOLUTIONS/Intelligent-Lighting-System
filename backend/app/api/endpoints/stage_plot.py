@@ -14,8 +14,10 @@ PUT    /api/rigs/{rig_id}/stage-plot/calibration  two points, the metres between
                                                   rotation and opacity; answers with the transform
 
 The type is read from the file's first bytes. A PDF is refused with a 415: no
-PDF renderer is a dependency of this product, so the operator is asked to
-export the page as an image. The image is kept in its own table, so nothing
+PDF renderer is a dependency of the server. The app's Stage plot control
+draws a chosen PDF page as a PNG in the browser (pdf.js) and uploads that,
+named "<file>.pdf, page N.png", so the source and page are kept in the
+`filename` column. The image is kept in its own table, so nothing
 in the rig changes: not its fixtures, its room, nor its `updated_at`. Nothing
 here reaches a device.
 """
@@ -42,8 +44,11 @@ router = APIRouter()
 
 DOC = "docs/STAGE_PLOT.md"
 PDF_REFUSED = (
-    "A PDF stage plot cannot be read here: no PDF renderer is installed. "
-    "Export the page as a PNG or JPEG image (or take a screenshot of it) and upload that."
+    "A PDF stage plot cannot be read by the server: it has no PDF renderer. "
+    "Choose the PDF in the app's Stage plot control instead: it is converted to an image there, "
+    "a page at a time, and uploaded. "
+    "Export the page as a PNG or JPEG image (or take a screenshot of it) and upload that, "
+    "if you would rather."
 )
 NOT_AN_IMAGE = "The file is not a PNG, JPEG or WebP image. Export the stage plot as one of those and upload that."
 NO_PLOT = "This rig has no stage plot. Upload one first."

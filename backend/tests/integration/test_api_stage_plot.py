@@ -115,6 +115,33 @@ class TestRefusals:
         assert (await client.get(path(rig_id, "/info"))).json()["present"] is False
 
     @pytest.mark.asyncio
+    async def test_the_pdf_refusal_points_to_the_stage_plot_control_which_converts_it(
+        self, client: AsyncClient, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id = await build_rig(client, sample_rig_data, sample_fixture_data)
+
+        # Named and sent as a PNG, but its bytes are a PDF's: still refused, with the same sentence.
+        refused = await upload(client, rig_id, b"%PDF-1.4\n1 0 obj", name="plot.png", kind="image/png")
+
+        assert refused.status_code == 415
+        detail = refused.json()["detail"]
+        assert "Stage plot control" in detail and "converted to an image there" in detail
+        assert "no PDF renderer" in detail
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_page_converted_in_the_app_keeps_its_source_and_page_in_the_filename(
+        self, client: AsyncClient, sample_rig_data, sample_fixture_data,
+    ):
+        rig_id = await build_rig(client, sample_rig_data, sample_fixture_data)
+
+        # What the Stage plot control sends after drawing page 2 of venue.pdf.
+        stored = await upload(client, rig_id, png(3000, 2120), name="venue.pdf, page 2.png")
+
+        assert stored.status_code == 201, stored.text
+        assert (stored.json()["filename"], stored.json()["content_type"]) == ("venue.pdf, page 2.png", "image/png")
+        assert (await client.get(path(rig_id, "/info"))).json()["width_px"] == 3000
+
+    @pytest.mark.asyncio
     async def test_a_file_over_the_limit_is_refused_and_one_at_it_is_taken(
         self, client: AsyncClient, sample_rig_data, sample_fixture_data,
     ):
