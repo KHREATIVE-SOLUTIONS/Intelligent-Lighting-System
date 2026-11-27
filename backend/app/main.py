@@ -273,6 +273,12 @@ async def lifespan(app: FastAPI):
             strobe_max_duty_cycle=0.34,
             strobe_burst_max_s=0.10,
             strobe_refractory_s=0.30,
+            # What a long silence shows instead of a black room.
+            idle_look_after_seconds=settings.IDLE_LOOK_AFTER_SECONDS,
+            idle_look_fade_seconds=settings.IDLE_LOOK_FADE_SECONDS,
+            idle_look_name=settings.IDLE_LOOK_NAME,
+            idle_look_level=settings.IDLE_LOOK_LEVEL,
+            idle_look_resume_seconds=settings.IDLE_LOOK_RESUME_SECONDS,
         ))
 
         # Connect effects engine to DMX controller
@@ -385,6 +391,10 @@ async def lifespan(app: FastAPI):
                         'movement': 'auto',
                         'dimmer': 'auto',
                     }
+                    try:
+                        lighting_data.update(ee.idle_look_status())
+                    except Exception:
+                        pass
                     if pro_state:
                         lighting_data['genre'] = pro_state.get('genre')
                         lighting_data['section'] = pro_state.get('section')
