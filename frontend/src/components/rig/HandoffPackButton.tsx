@@ -5,6 +5,7 @@ import axios from 'axios';
 import { readinessApi } from '../../services/api';
 import { saveBlob } from '../../utils/download';
 import { handoffWarning } from '../../utils/readiness';
+import PatchSheetButton from './PatchSheetButton';
 
 interface HandoffPackButtonProps {
   rigId: number;
@@ -47,7 +48,7 @@ export default function HandoffPackButton({ rigId, failCount }: HandoffPackButto
           {warning}
         </Alert>
       )}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
         <Button
           variant="outlined"
           size="small"
@@ -57,8 +58,9 @@ export default function HandoffPackButton({ rigId, failCount }: HandoffPackButto
         >
           Download handoff pack
         </Button>
+        <PatchSheetButton rigId={rigId} />
         <Typography variant="caption" color="text.secondary">
-          Patch, groups, this report, grandMA2 and MVR files, in one zip.
+          Patch, groups, this report, a printable patch sheet, grandMA2 and MVR files, in one zip.
         </Typography>
       </Box>
       {note && (

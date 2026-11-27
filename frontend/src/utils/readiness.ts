@@ -139,6 +139,12 @@ export const readdressPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/re
 export const setModesPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/set-modes`;
 export const undoFixPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/undo`;
 export const handoffPackPath = (rigId: number) => `/rigs/${rigId}/handoff-pack`;
+/**
+ * The printable patch sheet, as a full URL a new tab opens (the /api prefix included:
+ * a link does not go through the axios client). docs/HANDOFF_PACK.md.
+ */
+export const patchSheetUrl = (rigId: number, universe?: number) =>
+  `/api/rigs/${rigId}/patch-sheet${universe ? `?universe=${universe}` : ''}`;
 
 /**
  * The line shown before the handoff pack download when any check fails. Null when
