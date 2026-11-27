@@ -179,7 +179,11 @@ What the operator must still do:
 3. **Read it first.** `Assign ... At DMX` and `Label` are taken from MA's
    keyword pages; `Store Group N`, the bare `Fixture ...` selection line and
    `ClearSelection` are standard grandMA2 commands that were not individually
-   re-checked against the manual in this session. Nothing was run on a desk.
+   re-checked against the manual in this session. The focus preset lines
+   (`ClearAll`, `Attribute "Pan" At <degrees>`, `Store Preset 2.N`,
+   `Label Preset`) were not checked either: see the list in
+   [FOCUS_PRESETS.md](FOCUS_PRESETS.md#in-the-grandma2-script). Nothing was
+   run on a desk.
 4. The script carries **no fixture positions**. Those travel in the XML or the MVR.
 
 For a database rig with moving heads, the script ends with one **focus

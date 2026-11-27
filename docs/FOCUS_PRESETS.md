@@ -125,9 +125,16 @@ What the operator must still do:
 1. **Check the degrees on the desk.** Whether grandMA2 reads `Attribute
    "Pan" At <degrees>` as these degrees depends on its fixture type's pan
    and tilt range. Not checked on a desk.
-2. **Pick an empty preset range** with `first_preset`: storing onto an
+   Also unchecked: whether a negative value right after `At` (`At -12.5`) is
+   taken as an absolute value or as a relative change; and whether
+   `Store Preset 2.N`, run with only the last fixture selected, stores every
+   fixture with values in the programmer (it depends on the desk's store
+   settings). Try one preset on a test show first.
+2. **`ClearAll` empties the programmer.** The script uses it before and after
+   each preset: do not paste it in the middle of programming.
+3. **Pick an empty preset range** with `first_preset`: storing onto an
    existing preset asks or replaces, depending on the desk's settings.
-3. **Touch up every preset in the room.** These are computed from the rig's
+4. **Touch up every preset in the room.** These are computed from the rig's
    positions; a few centimetres of error at the truss is tens of centimetres
    on the floor.
 
