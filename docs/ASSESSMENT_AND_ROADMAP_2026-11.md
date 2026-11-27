@@ -98,7 +98,9 @@ G0 in section 7 lists what is done and what is still open.
   the venue path. Silence handling and latency may differ there.
 - **One rig**, with no channels typed `other`, no strobe-typed channel and one universe.
   "Control channels are never written" was therefore not exercised on the wire.
-- **The soak was 9 minutes**, a smoke test.
+- **The soak was 9 minutes**, a smoke test. The soak command now runs for one hour by
+  default and eight at most (`scripts/venue_sim/README.md`); no run longer than a few
+  minutes has been completed yet.
 
 ---
 
@@ -111,7 +113,7 @@ G0 in section 7 lists what is done and what is still open.
 | First-run setup | Console setup code, then password, then token: works. [wire] |
 | Template to live rig | 10 seeded templates; apply plus activate puts the rig on stage with no restart. [wire] |
 | Art-Net validity | Correct header, version 14, 512-slot frames, sequence 1–255; 0 malformed in ~8,000 packets. [wire] |
-| Frame rate | 40.0 fps. Gaps alternate ~16 and ~31 ms (the Windows timer tick); one 112 ms gap in the first four-minute pass. [wire] |
+| Frame rate | 40.0 fps. Gaps alternate ~16 and ~31 ms (the Windows timer tick); one 112 ms gap in the first four-minute pass. [wire] Re-measured 2026-11-20 with packets stamped in a separate process: longest gap 34 ms. The 112 ms was probably the harness pausing, not the backend. [inferred] |
 | Universe ownership | Only the patched universe is sent; 0 non-zero channels outside the patch. [wire] |
 | Blackout | Dark on the next frame, 100% dark for 6 s under loud music, heads keep tracking, frames keep flowing, light back 16–46 ms after restore. [wire] |
 | Grand master | 0.3 scales output to 0.29×; movement unaffected. [wire] |
@@ -621,8 +623,12 @@ Not recommended for a venue. This is the shortest honest path on `da3569a`.
 python scripts/venue_sim/venue_sim.py <backend_dir> <output_dir>
 ```
 
-It uses HTTP port 8031 and Art-Net port 16454 on loopback, so nothing reaches the
-network. Run it with the backend's Python environment.
+It uses free loopback ports for HTTP and Art-Net (8031 and 16454 at the time of the
+audit), so nothing reaches the network. Run it with the backend's Python environment.
+
+Since 2026-11-20 the harness lives in `backend/tests/wire/` and the rows of section 4
+are standing tests: `pytest tests/wire --wire` from `backend`. See
+`scripts/venue_sim/README.md`.
 
 | Script | What it measures |
 |---|---|
@@ -632,4 +638,4 @@ network. Run it with the backend's Python environment.
 | `venue_sim4.py` | The token-only safety holes of section 5b |
 | `venue_sim5.py`, `venue_sim6.py` | Drop after a profile call, in manual mode, and the control |
 | `venue_sim7.py` | Drop in manual mode where autopilot is shown to catch it |
-| `venue_soak.py` | Memory, pacing and log growth under continuous music |
+| `venue_soak.py` | Memory, pacing, channel jumps, flash rate, blackout and grand master under continuous music, with a verdict and a written report (one hour by default, `--hours 8` for G1) |

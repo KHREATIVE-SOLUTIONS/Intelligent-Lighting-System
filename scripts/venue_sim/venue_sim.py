@@ -1,12 +1,18 @@
 """
-Wire-level venue simulation.
+Wire-level venue simulation: the November 2026 audit run.
 
 Boots the REAL backend as a subprocess against a throwaway database, walks the
 first-run flow an installer would, patches a rig from a seeded template, plays
 synthetic music into the audio WebSocket at real-time pace, and records every
-Art-Net packet the box puts on the wire (loopback, non-default port so nothing
-reaches the LAN). The capture is then decoded against the patch read straight
-from the database - independently of the engine's own channel maps.
+Art-Net packet the box puts on the wire (loopback, so nothing reaches the LAN).
+The capture is then decoded against the patch read straight from the database -
+independently of the engine's own channel maps.
+
+The capture, decoder and server control now live in the test suite, in
+``backend/tests/wire/harness.py``; the standing checks are ``backend/tests/wire``.
+This module binds that library to the two command-line arguments so the audit
+scripts beside it (``venue_sim2.py`` onwards, which ``import venue_sim as V``) keep
+working unchanged.
 
 Usage: python venue_sim.py <backend_dir> <out_dir>
 """
@@ -14,18 +20,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import secrets
-import signal
-import socket
-import sqlite3
-import struct
-import subprocess
 import sys
-import threading
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 import httpx
@@ -34,22 +33,22 @@ import websockets
 
 BACKEND = Path(sys.argv[1]).resolve()
 OUT = Path(sys.argv[2]).resolve()
-OUT.mkdir(parents=True, exist_ok=True)
-DATA = OUT / "data"
-DATA.mkdir(exist_ok=True)
-
-HTTP_PORT = 8031
-ART_PORT = 16454
-BASE = f"http://127.0.0.1:{HTTP_PORT}"
-WS = f"ws://127.0.0.1:{HTTP_PORT}"
-DB_PATH = DATA / "lighting.db"
 
 sys.path.insert(0, str(BACKEND))
-from tests.musical import synthetic_audio as sa  # noqa: E402
+from tests.wire import harness as H  # noqa: E402
 
+CFG = H.WireConfig.create(OUT, backend=BACKEND)
+DATA = OUT / "data"
+HTTP_PORT, ART_PORT = CFG.http_port, CFG.art_port
+BASE, WS, DB_PATH = CFG.base, CFG.ws, CFG.db_path
+
+sa = H.synthetic_audio(BACKEND)
 SR = sa.SAMPLE_RATE
 CHUNK = sa.CHUNK_SIZE
 REPORT: dict = {"phases": {}, "checks": {}, "notes": []}
+
+fixture_series = H.fixture_series
+summarise_analysis = H.summarise_analysis
 
 
 def note(msg: str) -> None:
@@ -57,475 +56,35 @@ def note(msg: str) -> None:
     REPORT["notes"].append(msg)
 
 
-# --------------------------------------------------------------------------
-# Art-Net capture
-# --------------------------------------------------------------------------
-class Capture:
-    def __init__(self) -> None:
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
-        self.sock.bind(("127.0.0.1", ART_PORT))
-        self.sock.settimeout(0.2)
-        self.packets: list = []   # (t, universe, seq, length, payload)
-        self.bad = Counter()
-        self.stop = False
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-
-    def _run(self) -> None:
-        while not self.stop:
-            try:
-                data, _ = self.sock.recvfrom(4096)
-            except socket.timeout:
-                continue
-            except OSError:
-                # Windows raises WSAECONNRESET on a UDP socket after an ICMP
-                # port-unreachable; nothing to do with us.
-                continue
-            t = time.perf_counter()
-            if data[:8] != b"Art-Net\x00":
-                self.bad["not_artnet"] += 1
-                continue
-            opcode = struct.unpack("<H", data[8:10])[0]
-            if opcode != 0x5000:
-                self.bad[f"op_{opcode:#06x}"] += 1
-                continue
-            protver = struct.unpack(">H", data[10:12])[0]
-            if protver != 14:
-                self.bad[f"protver_{protver}"] += 1
-            seq, phys, subuni, net = data[12], data[13], data[14], data[15]
-            length = struct.unpack(">H", data[16:18])[0]
-            if length != len(data) - 18:
-                self.bad["length_mismatch"] += 1
-            if length % 2 or not (2 <= length <= 512):
-                self.bad["length_illegal"] += 1
-            self.packets.append((t, (net << 8) | subuni, seq, length, data[18:18 + length]))
-
-    def window(self, t0: float, t1: float) -> dict:
-        """{universe: (times[N], frames[N,512] uint8, seqs[N])} for packets in [t0,t1)."""
-        per = defaultdict(list)
-        for p in self.packets:
-            if t0 <= p[0] < t1:
-                per[p[1]].append(p)
-        out = {}
-        for uni, pk in per.items():
-            times = np.array([p[0] for p in pk])
-            frames = np.zeros((len(pk), 512), dtype=np.uint8)
-            for i, p in enumerate(pk):
-                frames[i, :len(p[4])] = np.frombuffer(p[4], dtype=np.uint8)
-            out[uni] = (times, frames, np.array([p[2] for p in pk]))
-        return out
+def Capture() -> H.Capture:
+    return H.Capture(ART_PORT)
 
 
-# --------------------------------------------------------------------------
-# Backend process
-# --------------------------------------------------------------------------
 SERVERS: list = []
 
 
-class Server:
+class Server(H.Server):
     def __init__(self, tag: str) -> None:
+        super().__init__(CFG, tag)
         SERVERS.append(self)
-        self.log_path = OUT / f"server_{tag}.log"
-        self.log = open(self.log_path, "w", encoding="utf-8", errors="replace")
-        env = dict(os.environ)
-        env.update({
-            "DATABASE_URL": f"sqlite:///{DB_PATH.as_posix()}",
-            "ARTNET_IP": "127.0.0.1",
-            "ARTNET_PORT": str(ART_PORT),
-            "AUDIO_CAPTURE_AUTO_START": "false",
-            "DEBUG": "false",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONUNBUFFERED": "1",
-        })
-        env.pop("ILS_OPERATOR_PASSWORD", None)
-        self.t_spawn = time.perf_counter()
-        self.proc = subprocess.Popen(
-            [sys.executable, "-u", "-m", "uvicorn", "app.main:app",
-             "--host", "127.0.0.1", "--port", str(HTTP_PORT)],
-            cwd=str(BACKEND), env=env, stdout=self.log, stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
-
-    def wait_http(self, timeout: float = 180.0) -> float:
-        deadline = time.perf_counter() + timeout
-        while time.perf_counter() < deadline:
-            if self.proc.poll() is not None:
-                raise RuntimeError(f"backend exited early, code {self.proc.returncode}")
-            try:
-                r = httpx.get(f"{BASE}/health", timeout=1.0)
-                if r.status_code in (200, 503):
-                    return time.perf_counter() - self.t_spawn
-            except Exception:
-                pass
-            time.sleep(0.2)
-        raise RuntimeError("backend never answered /health")
-
-    def read_log(self) -> str:
-        self.log.flush()
-        return self.log_path.read_text(encoding="utf-8", errors="replace")
-
-    def graceful_stop(self, timeout: float = 30.0) -> float:
-        t = time.perf_counter()
-        self.proc.send_signal(signal.CTRL_BREAK_EVENT)
-        try:
-            self.proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            note("  !! graceful stop timed out; killing")
-            self.proc.kill()
-            self.proc.wait(10)
-        return time.perf_counter() - t
-
-    def hard_kill(self) -> None:
-        self.proc.kill()
-        self.proc.wait(10)
 
 
-# --------------------------------------------------------------------------
-# Patch, read from the database independently of the engine
-# --------------------------------------------------------------------------
 def read_patch(rig_id: int) -> list:
-    con = sqlite3.connect(str(DB_PATH))
-    con.row_factory = sqlite3.Row
-    fixtures = []
-    rows = con.execute(
-        "SELECT rf.*, f.model AS profile_name, f.manufacturer AS manufacturer, "
-        "f.fixture_type AS fixture_type, f.pan_range AS pan_range, f.tilt_range AS tilt_range, "
-        "m.name AS mode_name, m.channel_count AS channel_count "
-        "FROM rig_fixtures rf JOIN fixtures f ON f.id = rf.fixture_id "
-        "LEFT JOIN fixture_modes m ON m.id = rf.mode_id WHERE rf.rig_id = ? ORDER BY rf.id",
-        (rig_id,),
-    ).fetchall()
-    for r in rows:
-        chans = con.execute(
-            "SELECT * FROM fixture_channels WHERE mode_id = ? ORDER BY channel_number", (r["mode_id"],)
-        ).fetchall()
-        fixtures.append({
-            "id": r["id"], "name": r["name"], "universe": r["universe"], "address": r["dmx_address"],
-            "group": r["group_name"], "zone": r["zone"],
-            "profile": f"{r['manufacturer']} {r['profile_name']}", "ftype": str(r["fixture_type"]).lower(),
-            "mode": r["mode_name"], "channel_count": r["channel_count"],
-            "pan_range": r["pan_range"], "tilt_range": r["tilt_range"],
-            "channels": [{
-                "offset": c["channel_number"] - 1,
-                "type": str(c["channel_type"]).lower(),
-                "name": c["name"],
-                "default": c["default_value"] or 0,
-                "is_fine": bool(c["is_fine"]),
-            } for c in chans],
-        })
-    con.close()
-    return fixtures
+    return H.read_patch(DB_PATH, rig_id)
 
 
-COLOUR_ADD = {"red", "green", "blue", "white", "amber", "lime", "uv", "warm_white", "cool_white", "indigo"}
-COLOUR_SUB = {"cyan", "magenta", "yellow"}
-
-
-def fixture_series(fx: dict, frames: np.ndarray) -> dict:
-    """Decode one fixture's channels out of a universe's frames."""
-    base = fx["address"] - 1
-    by_type = defaultdict(list)
-    for c in fx["channels"]:
-        idx = base + c["offset"]
-        if 0 <= idx < 512:
-            by_type[c["type"]].append((c, frames[:, idx].astype(np.float32)))
-    n = frames.shape[0]
-
-    def first(t):
-        for c, v in by_type.get(t, []):
-            if not c["is_fine"]:
-                return v
-        return None
-
-    dim = first("dimmer")
-    if dim is None:
-        dim = first("intensity")
-    add = [v for t in COLOUR_ADD for c, v in by_type.get(t, []) if not c["is_fine"]]
-    sub = [v for t in COLOUR_SUB for c, v in by_type.get(t, []) if not c["is_fine"]]
-    if add:
-        colour = np.max(np.stack(add), axis=0) / 255.0
-    elif sub:
-        colour = 1.0 - np.min(np.stack(sub), axis=0) / 255.0
-    else:
-        colour = np.ones(n, dtype=np.float32)
-    level = (dim / 255.0 if dim is not None else np.ones(n, dtype=np.float32)) * colour
-
-    def sixteen(t, fine_t):
-        coarse = first(t)
-        if coarse is None:
-            return None
-        fine = None
-        for c, v in by_type.get(fine_t, []) + by_type.get(t, []):
-            if c["is_fine"] or c["type"] == fine_t:
-                fine = v
-                break
-        return coarse * 256.0 + (fine if fine is not None else 0.0), fine is not None
-
-    return {
-        "level": level, "dimmer": dim, "has_dimmer": dim is not None,
-        "pan": sixteen("pan", "pan_fine"), "tilt": sixteen("tilt", "tilt_fine"),
-        "strobe": [v for t in ("strobe", "shutter") for c, v in by_type.get(t, [])],
-        "other": [(c, v) for c, v in by_type.get("other", [])],
-        "by_type": by_type,
-    }
-
-
-def analyse(cap: Capture, patch: list, name: str, t0: float, t1: float,
+def analyse(cap, patch: list, name: str, t0: float, t1: float,
             beats: np.ndarray | None = None, extra: dict | None = None) -> dict:
-    win = cap.window(t0, t1)
-    dur = t1 - t0
-    res: dict = {"duration_s": round(dur, 2), "universes_on_wire": sorted(int(u) for u in win)}
-    rig_unis = sorted({fx["universe"] for fx in patch})
-    res["universes_patched"] = rig_unis
-
-    # transport
-    tx = {}
-    for uni, (times, frames, seqs) in win.items():
-        gaps = np.diff(times) * 1000.0 if len(times) > 1 else np.array([0.0])
-        dseq = np.diff(seqs.astype(int)) % 256 if len(seqs) > 1 else np.array([1])
-        tx[int(uni)] = {
-            "packets": int(len(times)), "fps": round(len(times) / dur, 1),
-            "gap_ms_p50": round(float(np.percentile(gaps, 50)), 1),
-            "gap_ms_p99": round(float(np.percentile(gaps, 99)), 1),
-            "gap_ms_max": round(float(gaps.max()), 1),
-            "seq_values_distinct": int(len(set(seqs.tolist()))),
-            "seq_skips": int(np.sum((dseq != 1) & (seqs[1:] != 0))) if len(seqs) > 1 else 0,
-        }
-    res["transport"] = tx
-
-    # footprint check + decode
-    levels, movers, strobes, others = [], [], [], []
-    out_of_footprint = 0
-    for uni, (times, frames, _) in win.items():
-        mask = np.zeros(512, dtype=bool)
-        for fx in patch:
-            if fx["universe"] != uni:
-                continue
-            a = fx["address"] - 1
-            mask[a:a + (fx["channel_count"] or len(fx["channels"]))] = True
-        stray = np.where((frames[:, ~mask] != 0).any(axis=0))[0]
-        out_of_footprint += int(len(stray))
-        for fx in patch:
-            if fx["universe"] != uni:
-                continue
-            s = fixture_series(fx, frames)
-            levels.append((fx, times, s["level"]))
-            if s["pan"] is not None or s["tilt"] is not None:
-                movers.append((fx, times, s))
-            for v in s["strobe"]:
-                strobes.append((fx, v))
-            for c, v in s["other"]:
-                others.append((fx, c, v))
-    res["nonzero_channels_outside_patch"] = out_of_footprint
-    res["unpatched_universes_transmitted"] = sorted(set(res["universes_on_wire"]) - set(rig_unis))
-
-    if not levels:
-        return res
-
-    # resample every fixture level onto a common 40 Hz grid
-    grid = np.arange(t0, t1, 1 / 40.0)
-    mat = np.stack([np.interp(grid, t, lv) for _, t, lv in levels])   # [fixtures, T]
-    rig = mat.mean(axis=0)
-    res["level"] = {
-        "rig_mean": round(float(rig.mean()), 3), "rig_min": round(float(rig.min()), 3),
-        "rig_max": round(float(rig.max()), 3),
-        "fixture_peak_max": round(float(mat.max()), 3),
-        "fixtures_ever_lit": int((mat.max(axis=1) > 0.02).sum()), "fixtures_total": int(mat.shape[0]),
-        "pct_time_rig_dark": round(float((rig < 0.01).mean() * 100), 1),
-    }
-    dims = [fixture_series(fx, win[fx["universe"]][1])["dimmer"] for fx in patch if fx["universe"] in win]
-    dims = [d for d in dims if d is not None]
-    if dims:
-        res["dimmer_channel_max"] = int(max(d.max() for d in dims))
-
-    # flash rate: rises of >= 25% of full scale inside 75 ms
-    def flashes(series: np.ndarray, rise: float = 0.25) -> tuple:
-        d3 = series[3:] - series[:-3]
-        edges = np.where((d3[1:] >= rise) & (d3[:-1] < rise))[0]
-        if len(edges) == 0:
-            return 0, 0.0
-        tt = grid[edges]
-        worst = max(int(np.sum((tt >= x) & (tt < x + 1.0))) for x in tt)
-        return int(len(edges)), float(worst)
-
-    n_rig, worst_rig = flashes(rig)
-    per_fx = [flashes(mat[i]) for i in range(mat.shape[0])]
-    res["flash"] = {
-        "rig_flash_edges": n_rig, "rig_worst_flashes_in_1s": worst_rig,
-        "fixture_worst_flashes_in_1s": float(max(p[1] for p in per_fx)),
-        "fixtures_flashing_over_3_per_s": int(sum(1 for p in per_fx if p[1] > 3)),
-    }
-    # spectral share of rig-level energy in the 3-20 Hz photosensitive band
-    if len(rig) > 80:
-        spec = np.abs(np.fft.rfft(rig - rig.mean())) ** 2
-        freqs = np.fft.rfftfreq(len(rig), 1 / 40.0)
-        band = spec[(freqs >= 3) & (freqs <= 20)].sum()
-        res["flash"]["rig_energy_share_3_20hz"] = round(float(band / max(spec.sum(), 1e-12)), 3)
-
-    # strobe / shutter channel usage
-    if strobes:
-        vals = Counter()
-        for _, v in strobes:
-            vals.update(v.astype(int).tolist())
-        res["strobe_shutter_values_top"] = vals.most_common(6)
-        res["strobe_shutter_distinct"] = len(vals)
-
-    # what each channel type did on the wire
-    type_vals = defaultdict(set)
-    type_count = Counter()
-    for uni, (times, frames, _) in win.items():
-        for fx in patch:
-            if fx["universe"] != uni:
-                continue
-            for c in fx["channels"]:
-                idx = fx["address"] - 1 + c["offset"]
-                if 0 <= idx < 512:
-                    type_vals[c["type"]].update(np.unique(frames[:, idx]).tolist())
-                    type_count[c["type"]] += 1
-    res["channel_types_on_wire"] = {
-        t: {"channels": type_count[t], "distinct_values": len(v), "min": int(min(v)), "max": int(max(v))}
-        for t, v in sorted(type_vals.items())
-    }
-
-    # channels typed "other" must sit at their default
-    moved = []
-    for fx, c, v in others:
-        distinct = sorted(set(v.astype(int).tolist()))
-        if distinct != [c["default"]]:
-            moved.append(f"{fx['name']} ch{c['offset'] + 1} '{c['name']}' default={c['default']} saw={distinct[:6]}")
-    res["other_channels_total"] = len(others)
-    res["other_channels_off_default"] = moved[:8]
-
-    # movement
-    if movers:
-        pan_use, tilt_use, pan_speed, sixteen_bit = [], [], [], 0
-        for fx, times, s in movers:
-            for key, use in (("pan", pan_use), ("tilt", tilt_use)):
-                if s[key] is None:
-                    continue
-                v, is16 = s[key]
-                use.append(float(v.max() - v.min()) / 65535.0)
-                if key == "pan":
-                    sixteen_bit += int(is16)
-                    if len(v) > 2:
-                        dt = np.diff(times)
-                        sp = np.abs(np.diff(v)) / 65535.0 / np.maximum(dt, 1e-3)
-                        pan_speed.append(float(np.percentile(sp, 99)))
-        res["movement"] = {
-            "movers": len(movers), "movers_with_16bit_pan": sixteen_bit,
-            "pan_range_used_pct_median": round(100 * float(np.median(pan_use)), 1) if pan_use else None,
-            "pan_range_used_pct_max": round(100 * float(np.max(pan_use)), 1) if pan_use else None,
-            "tilt_range_used_pct_median": round(100 * float(np.median(tilt_use)), 1) if tilt_use else None,
-            "pan_speed_p99_pct_range_per_s": round(100 * float(np.max(pan_speed)), 1) if pan_speed else None,
-        }
-
-    # beat alignment: where does the light's attack land relative to the kick?
-    if beats is not None and len(beats) > 8:
-        attack = np.maximum(0.0, np.diff(rig, prepend=rig[0]))
-        offs = []
-        for b in beats:
-            m = (grid >= b - 0.20) & (grid <= b + 0.20)
-            if m.sum() < 4:
-                continue
-            seg = attack[m]
-            if seg.max() >= 0.02:
-                offs.append(float(grid[m][int(seg.argmax())] - b))
-        lags = np.arange(-12, 13)
-        train = np.zeros_like(rig)
-        for b in beats:
-            i = int(round((b - t0) * 40))
-            if 0 <= i < len(train):
-                train[i] = 1.0
-        xc = [float(np.sum(np.roll(train, int(l)) * attack)) for l in lags]
-        z = (np.max(xc) - np.mean(xc)) / (np.std(xc) + 1e-9)
-        res["beat_alignment"] = {
-            "beats": int(len(beats)), "beats_with_visible_attack": len(offs),
-            "attack_offset_ms_median": round(1000 * float(np.median(offs)), 0) if offs else None,
-            "attack_offset_ms_iqr": round(1000 * float(np.percentile(offs, 75) - np.percentile(offs, 25)), 0) if offs else None,
-            "xcorr_peak_lag_ms": int(lags[int(np.argmax(xc))] * 25),
-            "xcorr_peak_z": round(float(z), 2),
-        }
-    if extra:
-        res.update(extra)
-    np.savez_compressed(OUT / f"cap_{name}.npz", grid=grid, rig=rig, mat=mat)
-    return res
+    """As H.analyse, and keeps the level traces in <out_dir>/cap_<name>.npz."""
+    # Only a window that has just closed needs a moment for the capture process to
+    # hand over its last packets; an older one is already complete.
+    time.sleep(min(0.25, max(0.0, t1 + 0.25 - time.perf_counter())))
+    return H.analyse(cap, patch, t0, t1, beats=beats, extra=extra, save_to=OUT / f"cap_{name}.npz")
 
 
-# --------------------------------------------------------------------------
-# Audio streaming
-# --------------------------------------------------------------------------
-class AudioFeed:
+class AudioFeed(H.AudioFeed):
     def __init__(self, token: str) -> None:
-        self.token = token
-        self.ws = None
-        self.seen: list = []
-        self._reader = None
-
-    async def __aenter__(self):
-        self.ws = await websockets.connect(f"{WS}/ws/audio?token={self.token}", max_size=None)
-        self._reader = asyncio.create_task(self._drain())
-        return self
-
-    async def _drain(self):
-        try:
-            async for msg in self.ws:
-                if isinstance(msg, str):
-                    try:
-                        d = json.loads(msg)
-                    except Exception:
-                        continue
-                    if d.get("type") == "analysis":
-                        self.seen.append((time.perf_counter(), d))
-        except Exception:
-            pass
-
-    async def __aexit__(self, *exc):
-        self._reader.cancel()
-        await self.ws.close()
-
-    async def play(self, samples: np.ndarray) -> float:
-        """Send at real-time pace. Returns the capture-clock time of sample 0."""
-        pcm = np.clip(samples * 32767.0, -32768, 32767).astype("<i2")
-        n = (len(pcm) // CHUNK) * CHUNK
-        t_start = time.perf_counter()
-        for i, start in enumerate(range(0, n, CHUNK)):
-            # A capture device hands over a chunk once its last sample exists.
-            due = t_start + (start + CHUNK) / SR
-            delay = due - time.perf_counter()
-            if delay > 0:
-                await asyncio.sleep(delay)
-            await self.ws.send(pcm[start:start + CHUNK].tobytes())
-        return t_start
-
-
-def summarise_analysis(seen: list, t0: float, t1: float) -> dict:
-    msgs = [d for t, d in seen if t0 <= t < t1]
-    if not msgs:
-        return {"analysis_messages": 0}
-    out = {"analysis_messages": len(msgs), "top_level_keys": sorted(msgs[-1].keys())[:40]}
-
-    def dig(d, *path):
-        for p in path:
-            if not isinstance(d, dict) or p not in d:
-                return None
-            d = d[p]
-        return d
-
-    bpms = [v for v in (dig(m, "beat", "bpm") or m.get("bpm") for m in msgs) if isinstance(v, (int, float))]
-    if bpms:
-        tail = bpms[len(bpms) // 2:]
-        out["bpm_median_second_half"] = round(float(np.median(tail)), 1)
-        out["bpm_first_reported"] = round(float(bpms[0]), 1)
-    lighting = [m.get("lighting") for m in msgs if isinstance(m.get("lighting"), dict)]
-    if lighting:
-        out["lighting_keys"] = sorted(lighting[-1].keys())[:40]
-        for key in ("state", "section", "lighting_state", "genre", "palette", "look", "movement"):
-            vals = [str(l.get(key)) for l in lighting if l.get(key) is not None]
-            if vals:
-                seq = [vals[0]] + [b for a, b in zip(vals, vals[1:]) if a != b]
-                out[f"lighting.{key}_sequence"] = seq[:25]
-    return out
+        super().__init__(CFG, token, SR, CHUNK)
 
 
 # --------------------------------------------------------------------------
