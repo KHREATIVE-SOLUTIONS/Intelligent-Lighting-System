@@ -112,6 +112,52 @@ demo rig drives the visualizer but nothing is sent to the network.
 `ILS_RIG_ID` pins start.py, the visualizer or the capture script to one rig;
 otherwise they follow the active rig.
 
+### Choosing the audio input
+
+The backend captures audio itself, from the device picked in the **Audio
+Device** chooser on the Dashboard. It lists two groups:
+
+- **Inputs (line-in, USB interface, mixer, mic)**: music that arrives on a
+  cable, such as the desk or DJ mixer into a USB interface, a mixer's USB
+  return, or the sound card's line-in.
+- **This computer's audio (loopback)**: whatever this computer is playing.
+  Use it when the music is played on the box itself.
+
+Nothing is captured until **Start Capture** is pressed. On Windows, loopback
+is still the default: until a device has been picked once, the chooser opens
+on the loopback device, and a line-in is used only when you pick it.
+(`AUDIO_CAPTURE_AUTO_START=true` starts without a pick, and on Windows that
+also tries loopback first.)
+
+To use a line-in or USB interface on Windows:
+
+1. Plug the interface in and feed it from the desk. In Windows *Settings >
+   System > Sound > Input*, check that it is listed, enabled and its meter
+   moves. A line-in with nothing plugged in is often hidden until it is.
+2. In the Dashboard, tap the refresh button next to **Audio Device**, pick the
+   interface under **Inputs**, and press **Start Capture**.
+3. The chip next to the button shows the signal level. "No input signal" means
+   the box hears silence: check the cable, the interface's gain and the
+   Windows input level.
+
+Each input is listed once. Windows exposes the same input through several
+drivers; the chooser shows the WASAPI one, and the box refuses kernel-streaming
+(WDM-KS) and ASIO entries, because those take the device away from other
+programs. Inputs are opened in shared mode, so DJ software and other programs
+keep using the interface. If the input will not open at the analysis rate, the
+box follows the rate Windows runs the device at (usually 48 kHz).
+
+The choice is remembered on the box, in `audio_capture.json` next to the
+database, by device name and driver rather than by number, so it survives a
+replug or a reboot. The chooser reopens on it from any browser. If capture was
+running when the box went down, it restarts on the same device at boot and
+keeps retrying until the interface appears; if it was stopped, it stays
+stopped.
+
+`python start.py` has its own capture path with its own `--device` list, which
+on Windows offers loopback devices only. For a line-in, pick it in the
+Dashboard chooser as above.
+
 ## Development
 
 ```bash

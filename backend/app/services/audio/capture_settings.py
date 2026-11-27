@@ -43,19 +43,33 @@ def load(data_dir: Optional[Path] = None) -> dict:
         logger.warning("Ignoring unreadable audio capture settings at %s: %s", path, e)
         return {"device_name": None, "running": False}
     name = raw.get("device_name") if isinstance(raw, dict) else None
-    return {
+    choice = {
         "device_name": name if isinstance(name, str) and name.strip() else None,
         "running": bool(raw.get("running")) if isinstance(raw, dict) else False,
     }
+    # Present only when one was remembered: Windows lists the same input once
+    # per host API, and this says which of those entries was picked.
+    hostapi = raw.get("hostapi") if isinstance(raw, dict) else None
+    if choice["device_name"] and isinstance(hostapi, str) and hostapi.strip():
+        choice["hostapi"] = hostapi
+    return choice
 
 
-def save(device_name: Optional[str], running: bool, data_dir: Optional[Path] = None) -> None:
+def save(
+    device_name: Optional[str],
+    running: bool,
+    data_dir: Optional[Path] = None,
+    hostapi: Optional[str] = None,
+) -> None:
     """Remember the choice. Best effort: a read-only disk must not stop the show."""
     path = settings_path(data_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"device_name": device_name, "running": bool(running)}))
+        record = {"device_name": device_name, "running": bool(running)}
+        if device_name and hostapi:
+            record["hostapi"] = hostapi
+        tmp.write_text(json.dumps(record))
         os.replace(tmp, path)
     except Exception as e:
         logger.warning("Could not save audio capture settings to %s: %s", path, e)
@@ -63,4 +77,5 @@ def save(device_name: Optional[str], running: bool, data_dir: Optional[Path] = N
 
 def set_running(running: bool, data_dir: Optional[Path] = None) -> None:
     """Keep the remembered device, change only whether capture should run."""
-    save(load(data_dir)["device_name"], running, data_dir)
+    remembered = load(data_dir)
+    save(remembered["device_name"], running, data_dir, hostapi=remembered.get("hostapi"))

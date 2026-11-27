@@ -19,6 +19,7 @@ from app.schemas.audio import (
 from app.services.lighting.section_manager import SongSection
 from app.services.lighting.pro_effects import ACCENT_OFF_POLICIES
 from app.services.audio import capture_settings
+from app.services.audio.system_audio_capture import capture_refusal
 
 router = APIRouter()
 
@@ -310,11 +311,19 @@ async def list_capture_devices(request: Request):
 @router.get("/capture/status")
 async def get_capture_status(request: Request):
     """Get current system audio capture status."""
+    # The device the operator last picked, kept on the box rather than in one
+    # browser, so every screen opens the chooser on the same input.
+    remembered = capture_settings.load()
+    memory = {
+        "remembered_device": remembered["device_name"],
+        "remembered_hostapi": remembered.get("hostapi"),
+    }
     if not hasattr(request.app.state, 'audio_capture') or request.app.state.audio_capture is None:
-        return {"running": False, "available": False, "device_name": None}
+        return {"running": False, "available": False, "device_name": None, **memory}
 
     status = request.app.state.audio_capture.get_status()
     status["available"] = True
+    status.update(memory)
     engine = getattr(request.app.state, "effects_engine", None)
     if engine is not None:
         status["effects_engine_id"] = id(engine)
@@ -352,11 +361,12 @@ async def start_capture(
     request: Request,
     device_index: int = Query(..., description="Explicit audio capture device index"),
 ):
-    """Start system audio capture.
+    """Start audio capture from the chosen device.
 
-    On Windows uses WASAPI loopback. On macOS uses CoreAudio (virtual audio
-    devices like BlackHole provide system audio capture). On Linux uses
-    PulseAudio/ALSA monitor devices.
+    Either this computer's own output (WASAPI loopback on Windows, a virtual
+    device like BlackHole on macOS, a PulseAudio/ALSA monitor on Linux) or a
+    real input: a line-in, a USB interface or a mixer's USB return. Inputs are
+    opened in shared mode, so other programs keep the device.
 
     Args:
         device_index: Specific device index to use.
@@ -373,16 +383,11 @@ async def start_capture(
         selected = next((d for d in devices if d.get("index") == device_index), None)
         if not selected:
             raise HTTPException(404, f"Audio device index {device_index} not found")
-        # On Windows, require loopback device. On macOS/Linux, allow any input
-        # device (loopback is provided by virtual audio drivers like BlackHole).
-        import sys
-        if sys.platform == "win32" and not selected.get("is_loopback", False):
-            raise HTTPException(400, "Selected device is not a loopback output-capture device")
-        # The device list reports input channels, not an is_input flag; without
-        # this a USB interface fed from the desk could never be picked.
-        has_inputs = selected.get("is_input", False) or (selected.get("max_input_channels") or 0) > 0
-        if not selected.get("is_loopback", False) and not has_inputs:
-            raise HTTPException(400, "Selected device has no input channels")
+        # Loopback or any real input, on every platform. Windows used to take
+        # loopback only, so a DJ feed into a USB interface could not be picked.
+        refusal = capture_refusal(selected)
+        if refusal:
+            raise HTTPException(400, refusal)
     except HTTPException:
         raise
     except Exception:
@@ -400,7 +405,11 @@ async def start_capture(
 
     # Remember the device by name, so a reboot or power cut brings capture
     # back on the same input without anyone at the dashboard.
-    capture_settings.save(selected.get("name") or capture.device_name, running=True)
+    capture_settings.save(
+        selected.get("name") or capture.device_name,
+        running=True,
+        hostapi=selected.get("hostapi"),
+    )
 
     arm_show_for_live_audio(getattr(request.app.state, 'effects_engine', None))
 
