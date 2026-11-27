@@ -1,19 +1,20 @@
 // Venue handoff pack (docs/HANDOFF_PACK.md): one press downloads the zip; any failing readiness
 // check shows a warning line first but never disables or blocks the download. The Readiness
 // dialog shows the button even before (or without) its report. Next to it, "Open printable patch
-// sheet" is a plain link to /api/rigs/{id}/patch-sheet in a new tab.
+// sheet" fetches /api/rigs/{id}/patch-sheet with the operator token and shows it in a new tab.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import HandoffPackButton from '../components/rig/HandoffPackButton';
 import ReadinessDialog from '../components/rig/ReadinessDialog';
 import { readinessApi } from '../services/api';
 import { saveBlob } from '../utils/download';
-import { handoffPackPath, handoffWarning, patchSheetUrl } from '../utils/readiness';
+import { handoffPackPath, handoffWarning, patchSheetPath } from '../utils/readiness';
 import type { ReadinessReport } from '../utils/readiness';
 
 vi.mock('../services/api', () => ({
   readinessApi: {
     get: vi.fn(), autoGroups: vi.fn(), readdress: vi.fn(), setModes: vi.fn(), undoFix: vi.fn(), handoffPack: vi.fn(),
+    patchSheet: vi.fn(),
   },
 }));
 vi.mock('../utils/download', () => ({ saveBlob: vi.fn() }));
@@ -90,21 +91,53 @@ describe('HandoffPackButton', () => {
 });
 
 describe('Open printable patch sheet', () => {
-  it('builds the sheet URL with the /api prefix and an optional universe', () => {
-    expect(patchSheetUrl(7)).toBe('/api/rigs/7/patch-sheet');
-    expect(patchSheetUrl(7, 3)).toBe('/api/rigs/7/patch-sheet?universe=3');
+  // jsdom has no createObjectURL and no real window.open: a fake tab stands in.
+  const tab = { location: { href: '' }, close: vi.fn() };
+  const openSpy = vi.fn(() => tab as unknown as Window);
+  const realOpen = window.open;
+  const sheet = new Blob(['<!DOCTYPE html>'], { type: 'text/html' });
+
+  beforeEach(() => {
+    tab.location.href = '';
+    window.open = openSpy as unknown as typeof window.open;
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, writable: true, value: vi.fn(() => 'blob:sheet') });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, writable: true, value: vi.fn() });
+    api.patchSheet.mockResolvedValue(sheet);
+  });
+  afterEach(() => { window.open = realOpen; });
+
+  it('builds the sheet path with an optional universe', () => {
+    expect(patchSheetPath(7)).toBe('/rigs/7/patch-sheet');
+    expect(patchSheetPath(7, 3)).toBe('/rigs/7/patch-sheet?universe=3');
   });
 
-  it('is a link that opens the sheet in a new tab, next to the pack button, and starts no download', () => {
+  it('sits next to the pack button, opens a tab in the click and shows the fetched sheet in it', async () => {
     render(<HandoffPackButton rigId={7} failCount={2} />);
 
-    const link = screen.getByRole('link', { name: /open printable patch sheet/i });
-    expect(link.getAttribute('href')).toBe('/api/rigs/7/patch-sheet');
-    expect(link.getAttribute('target')).toBe('_blank');
-    expect(link.getAttribute('rel')).toContain('noopener');
-    expect(screen.getByTestId('handoff-pack').contains(link)).toBe(true);
+    const button = screen.getByRole('button', { name: /open printable patch sheet/i });
+    expect(screen.getByTestId('handoff-pack').contains(button)).toBe(true);
+    fireEvent.click(button);
+    // The tab opens before the fetch resolves, so a popup blocker allows it.
+    expect(openSpy).toHaveBeenCalledWith('', '_blank');
+    await flush();
+
+    expect(api.patchSheet).toHaveBeenCalledWith(7);
+    expect(URL.createObjectURL).toHaveBeenCalledWith(sheet);
+    expect(tab.location.href).toBe('blob:sheet');
     expect(api.handoffPack).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('patch-sheet-error')).toBeNull();
+  });
+
+  it('closes the empty tab and says so when the sheet does not come', async () => {
+    api.patchSheet.mockRejectedValueOnce(new Error('network'));
+    render(<HandoffPackButton rigId={7} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /open printable patch sheet/i }));
+    await flush();
+
+    expect(tab.close).toHaveBeenCalled();
+    expect(screen.getByTestId('patch-sheet-error').textContent).toContain('did not open');
   });
 
   it('is in the Readiness dialog even when the checks cannot be read', async () => {
@@ -112,8 +145,9 @@ describe('Open printable patch sheet', () => {
     render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} />);
     await flush();
 
-    const link = screen.getByRole('link', { name: /open printable patch sheet/i });
-    expect(link.getAttribute('href')).toBe('/api/rigs/7/patch-sheet');
+    fireEvent.click(screen.getByRole('button', { name: /open printable patch sheet/i }));
+    await flush();
+    expect(api.patchSheet).toHaveBeenCalledWith(7);
   });
 });
 

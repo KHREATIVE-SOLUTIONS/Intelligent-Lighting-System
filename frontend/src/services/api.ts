@@ -41,7 +41,7 @@ import {
 } from '../utils/roomScan';
 import type { OutlineAnswer, OutlineChanges, OutlineRead } from '../utils/roomWallsEdit';
 import {
-  autoGroupsPath, handoffPackPath, readdressPath, readinessPath, setModesPath, undoFixPath,
+  autoGroupsPath, handoffPackPath, patchSheetPath, readdressPath, readinessPath, setModesPath, undoFixPath,
 } from '../utils/readiness';
 import type {
   AutoGroupsResult, ReaddressResult, ReadinessReport, SetModesResult, UndoFixResult,
@@ -1671,6 +1671,15 @@ export const readinessApi = {
       blob: response.data as Blob,
       filename: filenameFromDisposition(response.headers?.['content-disposition'], `rig_${rigId}_handoff_pack.zip`),
     };
+  },
+
+  /**
+   * The printable patch sheet as an HTML blob (docs/HANDOFF_PACK.md). Fetched through
+   * this client so it carries the operator token; a bare link in a new tab would not.
+   */
+  patchSheet: async (rigId: number, universe?: number): Promise<Blob> => {
+    const response = await api.get(patchSheetPath(rigId, universe), { responseType: 'text' });
+    return new Blob([response.data as string], { type: 'text/html;charset=utf-8' });
   },
 };
 
