@@ -141,6 +141,11 @@ class Settings(BaseSettings):
     # "never black the room as a side effect". True sends zeros to every
     # universe so nothing - a running strobe included - stays latched on.
     DMX_BLACKOUT_ON_STOP: bool = False
+    # If the show engine hangs or dies while output is still being sent, the
+    # rig is black within this many seconds of the engine's last frame instead
+    # of frozen on it. Light holds for the first half, then fades. A look that
+    # merely sits still is not a hang. Zero or nonsense means the default, 2.0.
+    DMX_WATCHDOG_SECONDS: float = 2.0
     # Whether the built-in demo rig (used when nothing is patched yet) is sent
     # to the network. Off: on a fresh install the venue's own fixtures, hazers
     # and effects included, would receive a show written for a different patch.
