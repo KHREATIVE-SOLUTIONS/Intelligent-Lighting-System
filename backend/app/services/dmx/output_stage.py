@@ -547,6 +547,20 @@ class OutputStage:
         with self._lock:
             self._patch = built
 
+    def strobe_held_off(self, universe: int, slots: Iterable[int]) -> bool:
+        """Whether any of these 0-based slots is a strobe fixture being held off.
+
+        For a fixture test to say why its light stays dark instead of leaving
+        the operator to conclude the fixture is dead.
+        """
+        with self._lock:
+            if self._strobe_allowed:
+                return False
+            entry = self._patch.get(universe)
+            if entry is None:
+                return False
+            return any(0 <= slot < SLOTS and bool(entry.strobe[slot]) for slot in slots)
+
     # ------------------------------------------------------------------
     # The stage itself
     # ------------------------------------------------------------------

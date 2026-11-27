@@ -28,7 +28,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -55,6 +55,10 @@ from app.services.venue_import.apply import (
     position_source,
     with_position_confirmed,
     with_position_source,
+)
+from app.services.fixture_test.setup_check import (
+    ShowSuspension,
+    setup_hold,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,13 +210,8 @@ class _Session:
     # The fixtures a running row check owns; hold_step is None while it runs.
     hold_row: List[_Step] = field(default_factory=list)
     watchdog_task: Optional[asyncio.Task] = None
-    engine: Any = None
-    dmx: Any = None
-    # universe -> the levels the show was holding, or None when the walkthrough
-    # created the universe itself and there was nothing to put back.
-    parked_universes: Dict[int, Optional[List[int]]] = field(default_factory=dict)
-    previous_dmx_callback: Optional[Callable] = None
-    output_suspended: bool = False
+    # The running show, parked for as long as the walkthrough owns the wire.
+    suspension: ShowSuspension = field(default_factory=ShowSuspension)
     # Guards a step against being answered twice. Two taps that race each other
     # would otherwise both advance and skip the fixture in between.
     action_lock: Any = None
@@ -328,56 +327,18 @@ def _suspend_show_output(session: _Session, request: Request) -> None:
     look up - the control would appear to work and nothing would light. Detaching
     the engine's DMX callback and zeroing the universes leaves the room dark with
     one fixture lit, which is also the only state in which "which one is that?"
-    has an answer.
+    has an answer. The mechanism is ShowSuspension, shared with the per-fixture
+    setup checks so there is one way of parking a show and putting it back.
     """
-    engine = getattr(request.app.state, "effects_engine", None)
-    if engine is not None and hasattr(engine, "set_dmx_callback"):
-        session.engine = engine
-        session.previous_dmx_callback = getattr(engine, "_dmx_callback", None)
-        engine.set_dmx_callback(None)
-        session.output_suspended = True
-
-    dmx = getattr(request.app.state, "dmx_controller", None)
-    if dmx is None:
-        return
-    session.dmx = dmx
-    session.output_suspended = True
-
-    # Not everything on the wire is repainted by the effects engine: house and
-    # work lights, a hazer, a static look parked through /api/dmx. Those levels
-    # are the operator's and are put back verbatim when the walkthrough ends.
-    for universe in list(getattr(dmx, "universes", {}).keys()):
-        session.parked_universes[universe] = list(dmx.universes[universe].data)
-        dmx.universes[universe].data = [0] * 512
-    for universe in {step.universe for step in session.steps if step.can_flash}:
-        if universe not in session.parked_universes:
-            session.parked_universes[universe] = None
-        dmx.get_universe(universe).data = [0] * 512
+    session.suspension.suspend(
+        request.app.state,
+        {step.universe for step in session.steps if step.can_flash},
+    )
 
 
 def _resume_show_output(session: _Session) -> None:
     """Hand the universes back to the show, at the levels it left them."""
-    if not session.output_suspended:
-        return
-    session.output_suspended = False
-    engine = session.engine
-    if engine is not None and hasattr(engine, "set_dmx_callback"):
-        engine.set_dmx_callback(session.previous_dmx_callback)
-
-    dmx = session.dmx
-    if dmx is not None:
-        for universe, data in session.parked_universes.items():
-            if data is None:
-                # Created for the walkthrough; it had no levels to lose.
-                continue
-            existing = getattr(dmx, "universes", {}).get(universe)
-            if existing is not None:
-                existing.data = list(data)
-
-    session.parked_universes = {}
-    session.dmx = None
-    session.engine = None
-    session.previous_dmx_callback = None
+    session.suspension.resume()
 
 
 # ---------------------------------------------------------------------------
@@ -1121,9 +1082,12 @@ async def start_walkthrough(
     else:
         steps = [make_step(rf) for rf in rig_fixtures]
 
-    # One walkthrough at a time: it owns the universes while it runs.
+    # One walkthrough at a time: it owns the universes while it runs. A fixture
+    # held for a setup check owns them too and has to let go first, or each
+    # would park the other's dark room as "the show" and restore that.
     for existing in list(_sessions.values()):
         await _end_session(existing, service)
+    await setup_hold.release(service)
 
     session = _Session(
         session_id=uuid.uuid4().hex,

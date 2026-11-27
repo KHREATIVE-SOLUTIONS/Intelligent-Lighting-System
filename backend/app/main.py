@@ -21,6 +21,7 @@ from app.api.endpoints import (
     rig_import_export, discovery, qr_scanning, demo, auth, rig_identify, genre_check,
     venue_import, patch_sheet, room_scan, fixture_position, readiness, stage_plot,
     focus_presets,
+    fixture_setup,
 )
 from app.core.config import settings
 from app.core.logging_config import configure_logging
@@ -789,6 +790,7 @@ app.include_router(fixture_library.router, prefix="/api/fixtures/library", tags=
 app.include_router(rig_patching.router, prefix="/api/rigs", tags=["Rig Patching"])
 app.include_router(fixture_test.router, prefix="/api", tags=["Fixture Test"])
 app.include_router(rig_identify.router, prefix="/api", tags=["Flash to Identify"])
+app.include_router(fixture_setup.router, prefix="/api", tags=["Fixture Setup Checks"])
 app.include_router(wizard.router, prefix="/api/wizard", tags=["Setup Wizard"])
 app.include_router(templates.router, prefix="/api/templates", tags=["Templates"])
 app.include_router(rig_import_export.router, prefix="/api", tags=["Import/Export"])
