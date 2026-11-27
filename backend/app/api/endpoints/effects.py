@@ -72,12 +72,22 @@ class EffectsStatus(BaseModel):
     strobe_enabled: bool
     color_enabled: bool
 
-    # The rig the engine is actually driving. It is read once at boot, so it
-    # can differ from the rig marked active until the box restarts.
+    # The rig the engine is actually driving. It can differ from the rig
+    # marked active when that rig has nothing drivable in it.
     live_rig_id: Optional[int] = None
     live_rig_name: Optional[str] = None
     live_rig_demo: bool = False
     live_rig_fixtures: int = 0
+    # Changes every time the engine is given a rig, including the same rig
+    # again after an edit. Compare for equality only.
+    live_rig_version: int = 0
+
+    # The idle look a long silence brings up; see EffectsEngine.idle_look_status.
+    idle_look_active: bool = False
+    idle_look_mix: float = 0.0
+    idle_look: Optional[str] = None
+    idle_look_after_seconds: float = 0.0
+    silence_seconds: float = 0.0
 
 
 class MovementRequest(BaseModel):
@@ -200,6 +210,8 @@ async def get_status(request: Request):
         live_rig_name=live_rig.get("name"),
         live_rig_demo=bool(live_rig.get("demo", False)),
         live_rig_fixtures=int(live_rig.get("fixtures") or 0),
+        live_rig_version=int(getattr(request.app.state, "live_rig_version", 0) or 0),
+        **engine.idle_look_status(),
     )
 
 
@@ -214,9 +226,7 @@ async def get_look_spec(request: Request):
 async def start_effects():
     """Start the effects engine."""
     engine = get_effects_engine()
-    if not engine.running:
-        import asyncio
-        asyncio.create_task(engine.run())
+    engine.start_loop()
     return {"status": "started"}
 
 

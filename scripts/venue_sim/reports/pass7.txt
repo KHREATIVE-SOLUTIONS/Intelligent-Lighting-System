@@ -1,0 +1,10 @@
+1_auto_cold: sections=[(0.0, 'verse'), (0.1, 'breakdown'), (2.3, 'drop'), (7.4, 'chorus'), (20.8, 'buildup'), (30.6, 'drop'), (37.2, 'chorus')]
+1_auto_cold: 8s before drop mean=0.138 | 12s after: mean=0.286 max=1.00 peaks>=20%=19 worst_in_1s=5
+autopilot off -> 200 {"auto_mode":false}
+2_manual: sections=[(0.0, 'chorus'), (0.7, 'verse'), (25.0, 'buildup'), (30.7, 'drop'), (35.4, 'chorus')]
+2_manual: 8s before drop mean=0.107 | 12s after: mean=0.110 max=0.27 peaks>=20%=1 worst_in_1s=1
+3_manual_again: sections=[(0.0, 'chorus'), (0.4, 'verse'), (5.1, 'breakdown'), (19.3, 'verse'), (25.7, 'buildup'), (36.0, 'chorus')]
+3_manual_again: 8s before drop mean=0.107 | 12s after: mean=0.110 max=0.28 peaks>=20%=1 worst_in_1s=1
+4_auto_again: sections=[(0.0, 'chorus'), (0.4, 'verse'), (4.5, 'breakdown'), (19.6, 'verse'), (27.1, 'buildup'), (30.5, 'drop'), (40.5, 'chorus')]
+4_auto_again: 8s before drop mean=0.127 | 12s after: mean=0.351 max=1.00 peaks>=20%=30 worst_in_1s=6
+exit=0

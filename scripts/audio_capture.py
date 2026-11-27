@@ -48,6 +48,9 @@ except ImportError:
 # Configuration
 BACKEND_URL = "http://localhost:8000"
 WS_URL = "ws://localhost:8000/ws/audio"
+# What gets printed. WS_URL carries the operator token once one is set, and a
+# token on the console ends up in scrollback, redirected logs and screenshots.
+WS_URL_DISPLAY = WS_URL
 # With operator login on (the default), the backend refuses an untokened
 # socket. Pass a token from POST /api/auth/login, or use start.py, which
 # issues its own.
@@ -177,7 +180,7 @@ class AudioCapture:
                 ping_timeout=10,   # Wait 10 seconds for pong
                 close_timeout=5
             )
-            print(f"Connected to {WS_URL}")
+            print(f"Connected to {WS_URL_DISPLAY}")
 
             # Enable reactive lighting mode
             await self.ws.send(json.dumps({
@@ -347,7 +350,7 @@ async def test_backend():
     try:
         ws = await asyncio.wait_for(websockets.connect(WS_URL), timeout=3.0)
         await ws.close()
-        print(f"Backend connected: {WS_URL}")
+        print(f"Backend connected: {WS_URL_DISPLAY}")
         return True
     except Exception as e:
         print(f"Backend not reachable: {e}")

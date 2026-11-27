@@ -11,6 +11,7 @@ import logging
 from typing import Dict, List, Optional, Any, Tuple
 
 from app.models.fixture import ChannelType
+from app.services.dmx.channel_ranges import channel_type_name, resolve_channel_ranges
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,51 @@ class FixtureTestService:
             coarse.setdefault(ct, offset)
         return coarse
 
+    def _build_open_values(self, mode_channels: List[Any]) -> Dict[str, int]:
+        """channel_type -> the DMX value that lets light through without strobing.
+
+        Only for shutter and strobe channels whose profile carries value ranges,
+        and only for the channel `_build_channel_map` points that type at. A
+        type missing from here is driven on the fixed numbers the tests always
+        used: 255 on a shutter, and a strobe channel left alone.
+        """
+        chosen: Dict[str, Tuple[int, Any]] = {}
+        for ch in mode_channels:
+            if hasattr(ch, "channel_type"):
+                ct = channel_type_name(ch.channel_type)
+                offset = ch.channel_number - 1
+                is_fine = bool(getattr(ch, "is_fine", False))
+                ranges = getattr(ch, "value_ranges", None)
+            else:
+                ct = channel_type_name(ch.get("channel_type", "other"))
+                offset = ch.get("channel_number", 1) - 1
+                is_fine = bool(ch.get("is_fine", False))
+                ranges = ch.get("value_ranges")
+            if is_fine or ct not in ("shutter", "strobe"):
+                continue
+            if ct not in chosen or offset < chosen[ct][0]:
+                chosen[ct] = (offset, ranges)
+
+        open_values: Dict[str, int] = {}
+        for ct, (_offset, ranges) in chosen.items():
+            resolved = resolve_channel_ranges(ct, ranges)
+            if resolved is not None:
+                open_values[ct] = resolved.open_byte()
+        return open_values
+
+    @staticmethod
+    def _open_light(
+        values: Dict[int, int], ch_map: Dict[str, int], open_values: Optional[Dict[str, int]]
+    ) -> None:
+        """Put the shutter and strobe channels where the fixture shows light."""
+        known = open_values or {}
+        if "shutter" in ch_map:
+            values[ch_map["shutter"]] = known.get("shutter", 255)  # Open shutter
+        # A strobe channel is only touched when the profile names its resting
+        # value: on some pars 0 is "closed", and a test on one shows nothing.
+        if "strobe" in ch_map and "strobe" in known:
+            values[ch_map["strobe"]] = known["strobe"]
+
     async def _set_fixture_channel(
         self, universe: int, base_address: int, offset: int, value: int
     ):
@@ -82,6 +128,7 @@ class FixtureTestService:
         base_address: int,
         ch_map: Dict[str, int],
         channel_count: int,
+        open_values: Optional[Dict[str, int]] = None,
     ):
         """Identify test: full white at full brightness for 3 seconds."""
         values = {}
@@ -95,8 +142,7 @@ class FixtureTestService:
             values[ch_map["blue"]] = 255
         if "white" in ch_map:
             values[ch_map["white"]] = 255
-        if "shutter" in ch_map:
-            values[ch_map["shutter"]] = 255  # Open shutter
+        self._open_light(values, ch_map, open_values)
 
         await self._set_fixture_channels(universe, base_address, values)
         await asyncio.sleep(3.0)
@@ -108,6 +154,7 @@ class FixtureTestService:
         base_address: int,
         ch_map: Dict[str, int],
         channel_count: int,
+        open_values: Optional[Dict[str, int]] = None,
     ):
         """Cycle through colors: R, G, B, Yellow, Magenta, Cyan, White."""
         colors = [
@@ -124,8 +171,7 @@ class FixtureTestService:
         base_values = {}
         if "dimmer" in ch_map:
             base_values[ch_map["dimmer"]] = 255
-        if "shutter" in ch_map:
-            base_values[ch_map["shutter"]] = 255
+        self._open_light(base_values, ch_map, open_values)
 
         for r, g, b in colors:
             values = dict(base_values)
@@ -146,6 +192,7 @@ class FixtureTestService:
         base_address: int,
         ch_map: Dict[str, int],
         channel_count: int,
+        open_values: Optional[Dict[str, int]] = None,
     ):
         """Movement test: sweep pan 0-255, tilt 0-255, then center."""
         # Turn on light first
@@ -160,8 +207,7 @@ class FixtureTestService:
                 base_values[ch_map["green"]] = 200
             if "blue" in ch_map:
                 base_values[ch_map["blue"]] = 200
-        if "shutter" in ch_map:
-            base_values[ch_map["shutter"]] = 255
+        self._open_light(base_values, ch_map, open_values)
 
         await self._set_fixture_channels(universe, base_address, base_values)
         await asyncio.sleep(0.5)
@@ -200,13 +246,14 @@ class FixtureTestService:
         base_address: int,
         ch_map: Dict[str, int],
         channel_count: int,
+        open_values: Optional[Dict[str, int]] = None,
     ):
         """Run all tests sequentially."""
-        await self.identify(universe, base_address, ch_map, channel_count)
+        await self.identify(universe, base_address, ch_map, channel_count, open_values)
         await asyncio.sleep(0.5)
-        await self.color_cycle(universe, base_address, ch_map, channel_count)
+        await self.color_cycle(universe, base_address, ch_map, channel_count, open_values)
         await asyncio.sleep(0.5)
-        await self.movement_test(universe, base_address, ch_map, channel_count)
+        await self.movement_test(universe, base_address, ch_map, channel_count, open_values)
 
     async def run_test(
         self,
@@ -216,8 +263,13 @@ class FixtureTestService:
         ch_map: Dict[str, int],
         channel_count: int,
         test_type: str = "identify",
+        open_values: Optional[Dict[str, int]] = None,
     ):
-        """Run a test, managing the active test task."""
+        """Run a test, managing the active test task.
+
+        `open_values` is `_build_open_values` for the fixture's mode: the bytes
+        its profile says open the shutter and rest the strobe channel.
+        """
         # Stop any existing test for this fixture
         await self.stop_test(rig_fixture_id)
 
@@ -234,7 +286,7 @@ class FixtureTestService:
 
         async def _run():
             try:
-                await func(universe, base_address, ch_map, channel_count)
+                await func(universe, base_address, ch_map, channel_count, open_values)
             except asyncio.CancelledError:
                 # Clean up - zero the fixture on cancellation
                 await self._zero_fixture(universe, base_address, channel_count)

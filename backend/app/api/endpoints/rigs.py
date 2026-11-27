@@ -12,17 +12,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.orm import selectinload
 import numpy as np
 
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
+from app.models.stage_plot import RigStagePlot
 from app.models.fixture import Fixture, FixtureMode, FixtureType
 from app.schemas.rig import (
     RigCreate, RigUpdate, RigResponse, RigListResponse,
     RigFixtureCreate, RigFixtureUpdate, RigFixtureResponse,
 )
 from app.services.lighting.key_lighting import ZONE_VALUES, parse_zone
+from app.services.rig.live_rig import new_rig_is_active
 from app.services.rig.rig_detector import RigDetector, DemoRigGenerator, PatternGenerator
 
 
@@ -136,7 +139,7 @@ async def create_rig(
     if 'universes' in rig_dict:
         rig_dict['universes'] = [u.model_dump() if hasattr(u, 'model_dump') else u for u in rig_dict['universes']]
 
-    rig = Rig(**rig_dict)
+    rig = Rig(**rig_dict, is_active=await new_rig_is_active(db))
     db.add(rig)
     await db.flush()
     return await _load_rig(db, rig.id)
@@ -199,62 +202,85 @@ async def delete_rig(
     if not rig:
         raise HTTPException(status_code=404, detail="Rig not found")
 
+    # Its stage plot underlay goes with it. Said here, not left to the foreign
+    # key: SQLite does not enforce ON DELETE CASCADE unless asked to.
+    await db.execute(sa_delete(RigStagePlot).where(RigStagePlot.rig_id == rig_id))
     await db.delete(rig)
 
 
-async def _put_active_rig_on_stage(app, db: AsyncSession) -> bool:
-    """Point the running show at the rig now marked active.
-
-    The show only loaded a rig at boot, so activating a newly patched rig
-    changed the database and nothing on stage until the box restarted.
-    Returns False (and leaves the show on its current rig) when the active
-    rig has nothing drivable.
-    """
-    from app.main import _install_fixture_manager
-    from app.services.rig.rig_loader import load_active_rig
-
-    try:
-        manager, rig = await load_active_rig(db)
-    except Exception as e:
-        logger.error("Could not load the newly active rig: %s", e, exc_info=True)
-        return False
-    if manager is None or not manager.fixtures:
-        return False
-    _install_fixture_manager(app, manager)
-    app.state.live_rig = {
-        "id": getattr(rig, "id", None), "name": getattr(rig, "name", None) or "active rig",
-        "demo": False, "fixtures": len(manager.fixtures),
-    }
-    return True
+MAX_PROBLEMS_IN_MESSAGE = 5
 
 
-@router.post("/{rig_id}/activate", response_model=RigResponse)
+class RigActivateResponse(RigResponse):
+    """The activated rig, and whether the running show is now driving it."""
+
+    # False when the rig has nothing drivable yet: it is marked active (so
+    # fixtures patched into it go straight to the show) but the show stays on
+    # the rig it was running.
+    live: bool = True
+    live_rig_version: int = 0
+
+
+@router.post("/{rig_id}/activate", response_model=RigActivateResponse)
 async def activate_rig(
     rig_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Set a rig as the active rig (deactivates others)."""
-    # Deactivate all rigs
-    all_rigs_query = select(Rig)
-    all_rigs_result = await db.execute(all_rigs_query)
-    for rig in all_rigs_result.scalars():
-        rig.is_active = False
+    """Make a rig the active rig and put it on the running show, with no restart.
 
-    # Activate the selected rig
-    query = select(Rig).where(Rig.id == rig_id)
-    result = await db.execute(query)
-    rig = result.scalar_one_or_none()
+    Activating the rig that is already active applies its latest edits.
 
+    The rig is built and checked before anything changes. A rig with a fixture
+    the show could not drive correctly (no profile, an address outside the
+    universe, channels shared with another fixture) is refused with a 422 that
+    names each problem, and both the database and the stage stay on the rig
+    they had.
+    """
+    from app.services.rig.live_rig import install_patched_rig, live_rig_version, rig_problems
+    from app.services.rig.rig_loader import build_manager_from_rig, load_rig_for_engine
+
+    rig = await load_rig_for_engine(db, rig_id)
     if not rig:
         raise HTTPException(status_code=404, detail="Rig not found")
 
+    manager = build_manager_from_rig(rig)
+    problems = rig_problems(manager)
+    if problems:
+        shown = "; ".join(problems[:MAX_PROBLEMS_IN_MESSAGE])
+        more = len(problems) - MAX_PROBLEMS_IN_MESSAGE
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Rig '{rig.name}' was not activated and the show is unchanged. "
+                f"Fix {'this' if len(problems) == 1 else 'these'} first: {shown}"
+                + (f"; and {more} more" if more > 0 else "")
+            ),
+        )
+
+    rig_name = rig.name
+    all_rigs_result = await db.execute(select(Rig).where(Rig.id != rig_id, Rig.is_active == True))
+    for other in all_rigs_result.scalars():
+        other.is_active = False
     rig.is_active = True
     # Committed before going live, so the stage never runs a rig the database
-    # then rolls back.
+    # then rolls back. A restart loads the active rig, so this is also what
+    # makes the switch outlast one.
     await db.commit()
-    await _put_active_rig_on_stage(request.app, db)
-    return await _load_rig(db, rig_id)
+
+    live = bool(manager.fixtures)
+    if live:
+        # No await between here and the return of the swap: the engine's frame
+        # loop runs on this event loop, so the rig changes between two frames.
+        install_patched_rig(request.app, manager, rig_id=rig_id, name=rig_name)
+        logger.info("Rig '%s' (id=%s) is live: %d fixtures", rig_name, rig_id, len(manager.fixtures))
+    else:
+        logger.info("Rig '%s' (id=%s) marked active; nothing drivable in it yet", rig_name, rig_id)
+
+    response = RigActivateResponse.model_validate(await _load_rig(db, rig_id))
+    response.live = live
+    response.live_rig_version = live_rig_version(request.app)
+    return response
 
 
 # Rig Fixture CRUD
@@ -521,7 +547,7 @@ async def create_demo_rig(
         stage_depth=demo_config['stage_depth'],
         stage_height=demo_config['stage_height'],
         universes=demo_config['universes'],
-        is_active=True,
+        is_active=await new_rig_is_active(db),
     )
     db.add(rig)
     await db.flush()
@@ -737,7 +763,7 @@ async def create_rig_from_layout(
         stage_depth=stage_dims.get('depth', 8.0),
         stage_height=stage_dims.get('height', 6.0),
         universes=[{'universe': 0, 'protocol': 'artnet', 'port': 6454}],
-        is_active=True,
+        is_active=await new_rig_is_active(db),
     )
     db.add(rig)
     await db.flush()

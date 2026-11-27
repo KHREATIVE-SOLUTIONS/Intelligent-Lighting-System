@@ -35,8 +35,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ILS Visualizer", lifespan=lifespan)
 
-# ILS Backend URL
-ILS_BACKEND_URL = os.getenv("ILS_BACKEND_URL", "http://127.0.0.1:8014")
+# ILS Backend URL. 8000 is where start.py, the README and the frontend's dev
+# proxy all put the backend; the old 8014 default pointed at a port nothing binds.
+ILS_BACKEND_URL = os.getenv("ILS_BACKEND_URL", "http://127.0.0.1:8000")
 # Operator token for a backend with login on. Without it every poll got 401 and
 # the audio WebSocket was closed, so the visualizer showed nothing.
 ILS_TOKEN = os.getenv("ILS_TOKEN", "").strip()

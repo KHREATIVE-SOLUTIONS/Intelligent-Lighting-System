@@ -42,6 +42,46 @@ from app.core.config import settings  # noqa: E402
 # runs, or first-run setup has nowhere to write the password.
 from app.models import auth as _operator_credential_model  # noqa: E402,F401
 
+# ---------------------------------------------------------------------------
+# The wire tier (tests/wire)
+# ---------------------------------------------------------------------------
+#
+# Wire tests boot the real backend as a subprocess and run in real time: minutes,
+# not milliseconds, and their frame-pacing figures mean little on a loaded shared
+# runner. They are therefore opt-in. The options live here, not in
+# tests/wire/conftest.py, because pytest only reads options from the conftest
+# files of the paths it was started with.
+
+def pytest_addoption(parser):
+    group = parser.getgroup("wire tier")
+    group.addoption(
+        "--wire", action="store_true", default=False,
+        help="run the wire tier: real backend subprocess, Art-Net captured on loopback",
+    )
+    group.addoption(
+        "--soak-minutes", type=int, default=None,
+        help="length of the wire soak. Giving it applies the full G1 pass line "
+             "(480 is the eight-hour run); without it the soak is a 3-minute smoke.",
+    )
+    group.addoption(
+        "--wire-out", default=None,
+        help="directory to keep wire-tier logs, captures and reports in",
+    )
+
+
+def wire_tier_enabled(config) -> bool:
+    return bool(config.getoption("--wire")) or os.environ.get("ILS_WIRE") == "1"
+
+
+def pytest_collection_modifyitems(config, items):
+    if wire_tier_enabled(config):
+        return
+    skip = pytest.mark.skip(reason="wire tier is opt-in: pass --wire or set ILS_WIRE=1")
+    for item in items:
+        if "wire" in item.keywords:
+            item.add_marker(skip)
+
+
 # Test database URL (use SQLite for testing)
 TEST_DATABASE_URL = f"sqlite+aiosqlite:///{_TEST_DB_PATH.as_posix()}"
 
@@ -140,6 +180,23 @@ async def provision_operator(
     token = token_from_response(logged_in.json())
     assert token, f"login returned no token: {logged_in.text[:200]}"
     return token
+
+
+@pytest.fixture(autouse=True)
+def _repeatable_looks(monkeypatch):
+    """An engine built without a look seed chooses its looks at random, which
+    is right for a venue and wrong for a test: a failure has to happen again
+    when it is run again. Unseeded engines get seed 1 here. A test that passes
+    its own seed keeps it, and the tests that must hold for any night run
+    several."""
+    from app.services.effects import live_library
+
+    real_init = live_library.LibraryChooser.__init__
+
+    def seeded_init(self, seed=None):
+        real_init(self, seed=1 if seed is None else seed)
+
+    monkeypatch.setattr(live_library.LibraryChooser, "__init__", seeded_init)
 
 
 @pytest.fixture(scope="session")

@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { memo, useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import type { MutableRefObject } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Box, IconButton, Typography, Card, CardContent, ButtonGroup, Button,
+  Alert, Box, IconButton, Typography, Card, CardContent, ButtonGroup, Button, MenuItem, TextField, Tooltip,
 } from '@mui/material';
 import {
   ArrowBack as BackIcon,
@@ -10,11 +10,74 @@ import {
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, PerspectiveCamera, Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { demoApi, rigsApi } from '../../services/api';
-import type { Rig, RigFixture } from '../../types';
+import { demoApi, effectsApi, rigsApi } from '../../services/api';
+import type { DemoPresetSummary } from '../../services/api';
+import type { Rig, RigFixture, RoomShellBox } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
+import { useHealthStore } from '../../stores/healthStore';
 import { audioWebSocket } from '../../services/websocket';
+import {
+  createDemoRigFollower,
+  fetchEngineRig,
+  livePatchedRigId,
+  onEngineOnAnotherRig,
+  onLinkRestored,
+  onPatchedRigActivated,
+  settleRig,
+} from '../../utils/demoRigSync';
+import type { EngineRigApis } from '../../utils/demoRigSync';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
+import { ConsoleExportButton } from './ConsoleExportSection';
+import { createBeatClock, ingestAnalysis } from './previs/beatClock';
+import type { BeatClock } from './previs/beatClock';
+import { beamMouth, beamTube, createBeamMaterial, shapeBeam } from './previs/beamShape';
+import { buildBeamProfile, buildChannelMap, createBeamState, isPositionUnconfirmed, readBeamState } from './previs/beamState';
+import { beamDirection, beamLanding, hangBeam } from './previs/beamThrow';
+import type { BeamRoom, BeamSurface, BeamVector } from './previs/beamThrow';
+import { ClubRoom } from './previs/ClubRoom';
+import { BeatClockTicker, Crowd, PlacedCrowd } from './previs/Crowd';
+import { DJBooth } from './previs/DJBooth';
+import { FixtureHead, FixtureSupport, FixtureYoke } from './previs/FixtureBody';
+import { FIXTURE_SPECS, resolveModelKind } from './previs/fixtureSpecs';
+import { GuessMarkers } from './previs/GuessMarkers';
+import type { GuessPoint } from './previs/GuessMarkers';
+import { createOutputFeed, ingestOutput, summariseFeed } from './previs/outputFeed';
+import type { FeedSummary, OutputFeed } from './previs/outputFeed';
+import { roomOutline, scanHangers, scanRisers, scannedRoom, usableDisc, usableDome } from './previs/roomShell';
+import type { OutlinePoint } from './previs/roomShell';
+import { boxHeading } from './previs/raisedArea';
+import { boxFloor, placeScanBooth, placeScanCrowd } from './previs/scanFloor';
+import { boothCameraPreset, boothFloorStand } from './previs/boothCamera';
+import { isDjBooth } from './previs/boothPick';
+import type { FloorCamera } from './previs/scanFloor';
+import { RoomShellView } from './previs/RoomShellView';
+import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
+import {
+  POOL_LIGHT_DECAY,
+  POOL_LIGHT_PENUMBRA,
+  poolConeDeg,
+  poolLightIntensity,
+  poolLightRange,
+  poolRadius,
+} from './previs/poolLight';
+import type { CameraMode, FixtureMount } from './previs/layout';
+import { RigTruss } from './previs/Truss';
+import { FixtureDragLayer } from './previs/FixtureDragLayer';
+import type { DragHandle } from './previs/FixtureDragLayer';
+import {
+  nudgePosition, positionLimits, positionText, snapLines, withFixturePosition, withSavedFixture,
+} from './previs/fixtureDrag';
+import type { Point3 } from './previs/fixtureDrag';
+import RoomScanUndoButton from './RoomScanUndoButton';
+import { undoCount, undoResultText } from '../../utils/roomScan';
+import { StagePlotFloor } from './previs/StagePlotFloor';
+import type { StagePlotFloorProps } from './previs/StagePlotFloor';
+import StagePlot3dToggle from './previs/StagePlot3dToggle';
+import useStagePlot3d from './previs/useStagePlot3d';
+import { FocusTargetMarkers } from './previs/FocusTargetMarkers';
+import FocusTargets3dToggle from './previs/FocusTargets3dToggle';
+import useFocusTargets3d from './previs/useFocusTargets3d';
+import type { FocusMarker } from '../../utils/focusPresets';
 
 type BeamDebugSnapshot = {
   fixtureId: number;
@@ -30,7 +93,8 @@ type BeamDebugSnapshot = {
   strobeLogical: number;
   strobeChannelValue: number;
   strobeChannelIndex?: number;
-  strobeSource: 'strobe' | 'shutter' | 'fallback';
+  strobeSource: 'strobe' | 'shutter' | 'none';
+  shutter: 'open' | 'closed' | 'strobe';
   zoomLogical: number;
   zoomChannelValue: number;
   zoomChannelIndex?: number;
@@ -39,50 +103,17 @@ type BeamDebugSnapshot = {
   finalSpotAngleDeg: number;
   capabilityWarnings: string[];
   motionSource: string;
-  sourceStaleMs?: number;
 };
 
-type LiveFixtureState = {
-  id: string;
-  dmx_address?: number;
-  universe?: number;
-  pan?: number;
-  tilt?: number;
-  dimmer?: number;
-  r?: number;
-  g?: number;
-  b?: number;
-  _updatedAt?: number;
-};
-
-const BLANK_UNIVERSE: number[] = new Array(512).fill(0);
-
-type CameraMode = 'iso' | 'top' | 'front' | 'audience';
 type QualityMode = 'performance' | 'balanced' | 'ultra';
+
+// A fixture not in the venue layout (a position that is not a number) still
+// has to draw: treat it as hung, with no pipe.
+const DEFAULT_MOUNT: FixtureMount = { type: 'truss', drop: 0 };
 
 // ============================================================================
 // CONSTANTS
 // ============================================================================
-
-// Beam cone material - shared across all fixtures for performance
-const BEAM_VERTEX_SHADER = `
-  varying float vIntensity;
-  void main() {
-    vIntensity = position.y;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  }
-`;
-
-const BEAM_FRAGMENT_SHADER = `
-  uniform vec3 beamColor;
-  uniform float beamIntensity;
-  varying float vIntensity;
-  void main() {
-    float falloff = smoothstep(0.0, 1.0, 1.0 - vIntensity);
-    float alpha = falloff * beamIntensity * 0.42;
-    gl_FragColor = vec4(beamColor, alpha);
-  }
-`;
 
 // 9-zone stage grid positions (normalized -0.33 to 0.33 for both axes)
 const ZONE_POSITIONS: Record<string, { x: number; z: number }> = {
@@ -97,14 +128,6 @@ const ZONE_POSITIONS: Record<string, { x: number; z: number }> = {
   DSR: { x: 0.33, z: 0.33 },
 };
 
-type FixtureModelSpec = {
-  base: [number, number, number];
-  yoke: [number, number, number];
-  head: [number, number, number];
-  lens: [number, number, number];
-  lensPosY: number;
-};
-
 type MotionInertiaProfile = {
   panMaxVelDegPerSec: number;
   tiltMaxVelDegPerSec: number;
@@ -113,17 +136,8 @@ type MotionInertiaProfile = {
   damping: number;
 };
 
-const FIXTURE_MODEL_LIBRARY: Record<string, FixtureModelSpec> = {
-  moving_head: { base: [0.28, 0.12, 0.26], yoke: [0.06, 0.18, 0.28], head: [0.24, 0.30, 0.26], lens: [0.08, 0.10, 0.04], lensPosY: -0.17 },
-  mover: { base: [0.28, 0.12, 0.26], yoke: [0.06, 0.18, 0.28], head: [0.24, 0.30, 0.26], lens: [0.08, 0.10, 0.04], lensPosY: -0.17 },
-  beam: { base: [0.30, 0.12, 0.28], yoke: [0.06, 0.20, 0.30], head: [0.22, 0.28, 0.24], lens: [0.09, 0.11, 0.05], lensPosY: -0.16 },
-  spot: { base: [0.30, 0.12, 0.30], yoke: [0.06, 0.18, 0.30], head: [0.25, 0.34, 0.28], lens: [0.08, 0.10, 0.04], lensPosY: -0.18 },
-  wash: { base: [0.24, 0.10, 0.24], yoke: [0.05, 0.14, 0.24], head: [0.20, 0.24, 0.20], lens: [0.09, 0.10, 0.03], lensPosY: -0.13 },
-  led_par: { base: [0.22, 0.12, 0.22], yoke: [0.04, 0.10, 0.22], head: [0.20, 0.18, 0.20], lens: [0.09, 0.10, 0.03], lensPosY: -0.11 },
-  led_bar: { base: [0.80, 0.10, 0.15], yoke: [0.03, 0.08, 0.15], head: [0.80, 0.10, 0.15], lens: [0.07, 0.08, 0.02], lensPosY: -0.06 },
-  strobe: { base: [0.32, 0.10, 0.16], yoke: [0.03, 0.07, 0.16], head: [0.32, 0.10, 0.16], lens: [0.09, 0.10, 0.02], lensPosY: -0.06 },
-  other: { base: [0.20, 0.20, 0.20], yoke: [0.04, 0.10, 0.20], head: [0.20, 0.20, 0.20], lens: [0.07, 0.08, 0.03], lensPosY: -0.10 },
-};
+// Fixture types that pan and tilt whether or not the profile lists the channels.
+const MOVING_HEAD_TYPES = new Set(['moving_head', 'mover', 'spot', 'beam', 'wash', 'profile', 'hybrid']);
 
 const FIXTURE_MOTION_PROFILES: Record<string, MotionInertiaProfile> = {
   moving_head: { panMaxVelDegPerSec: 220, tiltMaxVelDegPerSec: 180, panMaxAccelDegPerSec2: 540, tiltMaxAccelDegPerSec2: 420, damping: 0.88 },
@@ -140,122 +154,95 @@ const FIXTURE_MOTION_PROFILES: Record<string, MotionInertiaProfile> = {
 // UTILITY FUNCTIONS
 // ============================================================================
 
-// Build a channel type -> DMX offset map from the fixture's active mode
-function buildChannelMap(fixture: RigFixture): Record<string, number> {
-  const map: Record<string, number> = {};
-  if (!fixture.fixture?.modes?.length) return map;
-
-  const mode = fixture.mode_id
-    ? fixture.fixture.modes.find((m) => m.id === fixture.mode_id)
-    : fixture.fixture.modes[0];
-
-  if (!mode?.channels) return map;
-
-  const canonicalMap = (raw: string): string => {
-    const key = raw.toLowerCase().replace(/[\s-]+/g, '_');
-    if (key === 'pan' || key === 'pan_coarse' || key === 'pan_16bit' || key === 'pan_course') return 'pan';
-    if (key === 'pan_fine' || key === 'pan_fine_16bit' || key === 'fine_pan') return 'pan_fine';
-    if (key === 'tilt' || key === 'tilt_coarse' || key === 'tilt_16bit' || key === 'tilt_course') return 'tilt';
-    if (key === 'tilt_fine' || key === 'tilt_fine_16bit' || key === 'fine_tilt') return 'tilt_fine';
-    if (key === 'dimmer' || key === 'intensity' || key === 'master_dimmer') return 'dimmer';
-    if (key === 'strobe' || key === 'shutter' || key === 'shutter_strobe') return key.includes('strobe') ? 'strobe' : 'shutter';
-    if (key === 'red' || key === 'green' || key === 'blue' || key === 'white' || key === 'zoom') return key;
-    return key;
+// What kind of fixture this is. Worked out in one place because three things
+// have to agree on it: the control loop, the model that is drawn, and the venue
+// layout that decides how the fixture is mounted.
+function describeFixture(fixture: RigFixture, channelMap: Record<string, number> = buildChannelMap(fixture)) {
+  const fixtureType: string = fixture.fixture?.fixture_type || 'other';
+  const hasPanTiltChannels = channelMap.pan !== undefined && channelMap.tilt !== undefined;
+  const isMovingHead = hasPanTiltChannels || MOVING_HEAD_TYPES.has(fixtureType);
+  return {
+    fixtureType,
+    hasPanTiltChannels,
+    isMovingHead,
+    modelKind: resolveModelKind(fixtureType, isMovingHead),
   };
-
-  for (const ch of mode.channels) {
-    const offset = ch.channel_number - 1;
-    const primary = canonicalMap(String(ch.channel_type || ''));
-    if (!(primary in map)) map[primary] = offset;
-    const byName = canonicalMap(String(ch.name || ''));
-    if (!(byName in map)) map[byName] = offset;
-  }
-  return map;
 }
 
-// ============================================================================
-// VOLUMETRIC BEAM COMPONENT
-// ============================================================================
+// Where the spot light's target sits in the head group: straight down the beam
+// from the head, further out than any lens. One array for every fixture, so
+// the prop is the same object on every render.
+const SPOT_TARGET_POSITION: [number, number, number] = [0, -10, 0];
 
-function BeamCone({
-  color,
-  intensity,
-  beamAngle,
-  beamLength,
-  segments,
-}: {
-  color: THREE.Color;
-  intensity: number;
-  beamAngle: number;
-  beamLength: number;
-  segments: number;
-}) {
-  const materialRef = useRef<THREE.ShaderMaterial>(null);
+// The two ways a fixture can face. Everything that points (housing, beam, spot
+// light) is built pointing down its own -Y; half a turn about X points it up.
+const FACING_DOWN: [number, number, number] = [0, 0, 0];
+const FACING_UP: [number, number, number] = [Math.PI, 0, 0];
 
-  const uniforms = useMemo(
-    () => ({
-      beamColor: { value: new THREE.Color(1, 1, 1) },
-      beamIntensity: { value: 0 },
-    }),
-    []
-  );
-
-  useFrame(() => {
-    if (materialRef.current) {
-      materialRef.current.uniforms.beamColor.value.copy(color);
-      materialRef.current.uniforms.beamIntensity.value = intensity;
-    }
-  });
-
-  const topRadius = Math.tan((beamAngle * Math.PI) / 360) * beamLength;
-
-  if (intensity < 0.015) return null;
-
-  return (
-    <mesh position={[0, -beamLength / 2, 0]}>
-      <coneGeometry args={[topRadius, beamLength, segments, 1, true]} />
-      <shaderMaterial
-        ref={materialRef}
-        vertexShader={BEAM_VERTEX_SHADER}
-        fragmentShader={BEAM_FRAGMENT_SHADER}
-        uniforms={uniforms}
-        transparent
-        side={THREE.DoubleSide}
-        depthWrite={false}
-        blending={THREE.AdditiveBlending}
-      />
-    </mesh>
-  );
-}
+/** Below this a beam is not drawn at all. */
+const BEAM_VISIBLE_FROM = 0.015;
 
 // ============================================================================
 // FIXTURE 3D COMPONENT
 // ============================================================================
 
-function Fixture3D({
+// Memoised, and given nothing that changes from frame to frame: everything
+// that moves is written straight to three.js objects in the frame loop. With
+// a hundred and thirty fixtures, one React render of each per frame was most
+// of a frame's time.
+const Fixture3D = memo(function Fixture3D({
   fixture,
-  dmxData,
-  liveBinding,
+  feed,
   fixtureIndex,
   spotCap,
   beamSegments,
-  onDebugUpdate,
+  mount,
+  room,
+  longestThrow,
+  showLabel,
+  debugBuffer,
+  debug,
 }: {
   fixture: RigFixture;
-  dmxData: number[];
-  liveBinding?: { state?: LiveFixtureState; source: string; staleMs?: number };
+  /** The frames the engine outputs, read in the frame loop. Never written. */
+  feed: MutableRefObject<OutputFeed>;
   fixtureIndex: number;
   spotCap: number;
   beamSegments: number;
-  onDebugUpdate?: (snapshot: BeamDebugSnapshot) => void;
+  mount: FixtureMount;
+  /** What a beam can land on: the floor, the ceiling and, when drawn, the walls. */
+  room: BeamRoom;
+  /** The furthest any beam can travel in this room. */
+  longestThrow: number;
+  showLabel: boolean;
+  /** Rows for the beam debug table, written only while it is open. */
+  debugBuffer: MutableRefObject<Record<number, BeamDebugSnapshot>>;
+  debug: boolean;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const headRef = useRef<THREE.Group>(null);
+  const yokeRef = useRef<THREE.Group>(null);
   const lensRef = useRef<THREE.Mesh>(null);
   const spotRef = useRef<THREE.SpotLight>(null);
+  const beamRef = useRef<THREE.Mesh>(null);
 
-  const channelMapRef = useRef(buildChannelMap(fixture));
-  const fallbackWarningRef = useRef<Set<string>>(new Set());
+  // What the spot light aims at. A light points at its target's place in the
+  // world, and three.js only works that out for an object that is in the
+  // scene. The light's own target never was, so it stayed at the world's
+  // origin and every fixture lit one pool at stage centre, up to 88 degrees
+  // off its own beam. This one is mounted in the head group, down the beam
+  // from the head, so it takes pan, tilt and the body's yaw exactly as the
+  // beam cone does. Held in state, not wired up in an effect: the light is
+  // remounted when the quality changes and must get the same target again.
+  const [spotTarget] = useState(() => new THREE.Object3D());
+
+  // What this fixture does with the values it is sent: its channels, travel,
+  // invert and beam angle, worked out once. The frame loop reads a frame
+  // through it into `beam`, and draws that.
+  const profile = useMemo(() => buildBeamProfile(fixture), [fixture]);
+  const channelMap = profile.channels;
+  const [beam] = useState(() => createBeamState());
+  const universe = Number(fixture.universe) || 0;
 
   // Smoothed values to avoid jitter
   const smoothed = useRef({ intensity: 0, r: 1, g: 1, b: 1 });
@@ -280,41 +267,57 @@ function Fixture3D({
     holdDurationSec: 0,
   });
 
-  const fixtureType = fixture.fixture?.fixture_type || 'other';
-  const hasPanTiltChannels =
-    channelMapRef.current.pan !== undefined && channelMapRef.current.tilt !== undefined;
-  const isMovingHead = hasPanTiltChannels || (
-    fixtureType === 'moving_head' ||
-    fixtureType === 'mover' ||
-    fixtureType === 'spot' ||
-    fixtureType === 'beam' ||
-    fixtureType === 'wash' ||
-    fixtureType === 'profile' ||
-    fixtureType === 'hybrid'
+  const { fixtureType, isMovingHead, modelKind } = useMemo(
+    () => describeFixture(fixture, channelMap),
+    [fixture, channelMap]
   );
   const isBeamLike = fixtureType === 'beam' || fixtureType === 'moving_head' || fixtureType === 'mover';
   const isSpotLike = fixtureType === 'spot';
-  const defaultBeamAngleDeg = isSpotLike ? 18.0 : 5.0;
-  const fixtureModel = FIXTURE_MODEL_LIBRARY[fixtureType] || FIXTURE_MODEL_LIBRARY.other;
+  const modelSpec = FIXTURE_SPECS[modelKind];
+  // How far down the beam from the fixture's own position its spot light sits.
+  const lightDepth = modelSpec.lensOffset + 0.02;
   const motionProfile = FIXTURE_MOTION_PROFILES[fixtureType] || FIXTURE_MOTION_PROFILES.default;
 
-  // Beam length scales with fixture height (fixtures on truss beam to floor)
-  const beamLength = fixture.position_y > 0 ? fixture.position_y : 3;
+  // How the rig says the fixture is hung, beyond its yaw: rotation_x and
+  // rotation_z, for one on its side or leaning. Applied to the yoke, the head
+  // and the beam together, inside the yaw.
+  const hangRx = THREE.MathUtils.degToRad(Number(fixture.rotation_x) || 0);
+  const hangRz = THREE.MathUtils.degToRad(Number(fixture.rotation_z) || 0);
+  const leaning = hangRx !== 0 || hangRz !== 0;
+  const hangRotation = useMemo<[number, number, number]>(() => [hangRx, 0, hangRz], [hangRx, hangRz]);
+
+  // A fixed-body fixture standing on the floor faces the ceiling: the model,
+  // its beam and its spot light are turned over together, below. That is a
+  // guess from where it stands, so a rotation the rig gives outright wins.
+  const lensUp = mount.type === 'stand' && mount.lensUp && !leaning;
+  // A fixture patched lower than its own feet is raised to stand on the floor.
+  const standLift = mount.type === 'stand' ? mount.lift : 0;
+  // Height of the point the light comes from.
+  const sourceY = fixture.position_y + standLift;
+
+  // Where the beam lands is worked out every frame, below: it is where the
+  // drawn beam ends and what the spot light's range is measured from.
+  const beamPointing = useRef<BeamVector>({ x: 0, y: -1, z: 0 });
+  const beamSurface = useRef<BeamSurface>({ x: 0, y: 0, z: 0, d: 0 });
+  const mouth = useMemo(() => beamMouth(modelKind), [modelKind]);
+  // One beam material for the life of the fixture, shaped in the frame loop.
+  const beamMaterial = useMemo(() => createBeamMaterial(), []);
+  useEffect(() => () => beamMaterial.dispose(), [beamMaterial]);
+
+  // The yaw the rig says this fixture is hung at. Object3D.rotation.y takes the
+  // wizard's convention directly: 0 aims down local +Z (downstage, toward the
+  // audience), +90 deg aims toward +X. Ignoring it rendered every fixture facing
+  // the same way, so "each fixture points at the performance area" had no
+  // observable effect in the previs.
+  const bodyYawRad = useMemo(
+    () => THREE.MathUtils.degToRad(fixture.rotation_y || 0),
+    [fixture.rotation_y]
+  );
 
   const [beamColor] = useState(() => new THREE.Color(1, 1, 1));
-  const [beamIntensity, setBeamIntensity] = useState(0);
-
-  const emitFallbackWarning = (key: string, message: string) => {
-    if (fallbackWarningRef.current.has(key)) return;
-    fallbackWarningRef.current.add(key);
-    // Explicit signal that we are using fallback behavior instead of silently no-oping.
-    console.warn(message);
-  };
+  const beamPosition = useMemo<[number, number, number]>(() => [0, -mouth.offset, 0], [mouth]);
 
   useFrame((_, rawDelta) => {
-    const liveState = liveBinding?.state;
-    const baseAddr = fixture.dmx_address - 1;
-    const chMap = channelMapRef.current;
     const delta = Math.min(rawDelta, MAX_STABLE_DELTA);
 
     // Smooth and clamp noisy frame spikes before they enter the control loop.
@@ -322,125 +325,28 @@ function Fixture3D({
     const spikeLimit = Math.max(FIXED_CONTROL_DT * 1.5, stableDeltaEstimate.current * DELTA_SPIKE_FACTOR);
     const stableDelta = Math.min(delta, spikeLimit);
 
-    // Read DMX values
-    const rawDimmer = liveState?.dimmer ?? (
-      chMap.dimmer !== undefined
-        ? (dmxData[baseAddr + chMap.dimmer] || 0) / 255
-        : 1
-    );
-    const rawR = liveState?.r ?? (
-      chMap.red !== undefined
-        ? (dmxData[baseAddr + chMap.red] || 0) / 255
-        : 1
-    );
-    const rawG = liveState?.g ?? (
-      chMap.green !== undefined
-        ? (dmxData[baseAddr + chMap.green] || 0) / 255
-        : 1
-    );
-    const rawB = liveState?.b ?? (
-      chMap.blue !== undefined
-        ? (dmxData[baseAddr + chMap.blue] || 0) / 255
-        : 1
-    );
-    const coarsePan = chMap.pan !== undefined ? dmxData[baseAddr + chMap.pan] || 128 : 128;
-    const finePan = chMap.pan_fine !== undefined ? dmxData[baseAddr + chMap.pan_fine] || 0 : 0;
-    const coarseTilt = chMap.tilt !== undefined ? dmxData[baseAddr + chMap.tilt] || 128 : 128;
-    const fineTilt = chMap.tilt_fine !== undefined ? dmxData[baseAddr + chMap.tilt_fine] || 0 : 0;
-    let strobe = 0;
-    let strobeSource: BeamDebugSnapshot['strobeSource'] = 'fallback';
-    let strobeChannelValue = 0;
-    let strobeChannelIndex: number | undefined;
-    if (chMap.strobe !== undefined) {
-      strobeChannelValue = dmxData[baseAddr + chMap.strobe] || 0;
-      // Many fixtures use low/high values as open/no-strobe and middle bands for strobe rates.
-      // Treat extremes as non-strobe so we do not simulate constant flicker from open shutter values.
-      if (strobeChannelValue <= 8 || strobeChannelValue >= 240) {
-        strobe = 0;
-      } else {
-        strobe = THREE.MathUtils.clamp((strobeChannelValue - 16) / 208, 0, 1);
-      }
-      strobeSource = 'strobe';
-      strobeChannelIndex = chMap.strobe + 1;
-    } else if (chMap.shutter !== undefined) {
-      strobeChannelValue = dmxData[baseAddr + chMap.shutter] || 0;
-      // Typical shutter map:
-      // 0-31 closed, 32-63 open, 64-223 strobe (slow->fast), 224-255 open.
-      if (strobeChannelValue >= 64 && strobeChannelValue <= 223) {
-        strobe = THREE.MathUtils.clamp((strobeChannelValue - 64) / (223 - 64), 0, 1);
-      } else {
-        strobe = 0;
-      }
-      strobeSource = 'shutter';
-      strobeChannelIndex = chMap.shutter + 1;
-      emitFallbackWarning(
-        `strobe-${fixture.id}`,
-        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no strobe channel; deriving strobe from shutter range 64-223.`
-      );
-    } else {
-      strobeSource = 'fallback';
-      emitFallbackWarning(
-        `strobe-${fixture.id}`,
-        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has neither strobe nor shutter channel; forcing strobe to 0.`
-      );
-    }
-
-    let zoom = isSpotLike ? 0.45 : 0.12;
-    let zoomSource: BeamDebugSnapshot['zoomSource'] = 'fallback';
-    let zoomChannelValue = 128;
-    let zoomChannelIndex: number | undefined;
-    if (chMap.zoom !== undefined) {
-      zoomChannelValue = dmxData[baseAddr + chMap.zoom] || 0;
-      zoom = zoomChannelValue / 255;
-      zoomSource = 'zoom';
-      zoomChannelIndex = chMap.zoom + 1;
-    } else if (typeof fixture.fixture?.beam_angle === 'number') {
-      const normalizedBeamAngle = THREE.MathUtils.clamp((fixture.fixture.beam_angle - 5) / 40, 0, 1);
-      zoom = normalizedBeamAngle;
-      zoomChannelValue = Math.round(normalizedBeamAngle * 255);
-      zoomSource = 'beam_angle';
-      emitFallbackWarning(
-        `zoom-${fixture.id}`,
-        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no zoom channel; deriving beam width from fixture beam_angle (${fixture.fixture.beam_angle}°).`
-      );
-    } else {
-      zoomSource = 'fallback';
-      emitFallbackWarning(
-        `zoom-${fixture.id}`,
-        `[RigVisualizer] ${fixture.name || `Fixture ${fixture.id}`} has no zoom or beam_angle definition; defaulting to narrow beam zoom.`
-      );
-    }
-
-    const hasLivePan = Number.isFinite(Number(liveState?.pan));
-    const hasLiveTilt = Number.isFinite(Number(liveState?.tilt));
-    const panNormalizedFromState = hasLivePan
-      ? THREE.MathUtils.clamp((Number(liveState?.pan) + 270) / 540, 0, 1)
-      : undefined;
-    const tiltNormalizedFromState = hasLiveTilt
-      ? THREE.MathUtils.clamp((Number(liveState?.tilt) + 135) / 270, 0, 1)
-      : undefined;
-    const panNormalized = panNormalizedFromState ?? (
-      chMap.pan_fine !== undefined
-        ? ((coarsePan << 8) | finePan) / 65535
-        : coarsePan / 255
-    );
-    const tiltNormalized = tiltNormalizedFromState ?? (
-      chMap.tilt_fine !== undefined
-        ? ((coarseTilt << 8) | fineTilt) / 65535
-        : coarseTilt / 255
-    );
+    // What this fixture is being sent: its own channels out of the frame the
+    // engine outputs for its universe, read through its profile. Nothing else
+    // feeds the picture, so a blackout, the grand master and a closed shutter
+    // show here exactly as they would in the room. With no frame yet the
+    // fixture is dark and its head at centre.
+    readBeamState(profile, feed.current.frames.get(universe), fixture.dmx_address, beam);
+    // A closed shutter, a zero dimmer and a colour mixed to black are all dark.
+    const rawDimmer = beam.lit ? beam.intensity : 0;
+    const strobe = beam.shutter === 'strobe' ? beam.strobeRate : 0;
+    const zoom = beam.zoom;
 
     // Smooth interpolation
     const s = smoothed.current;
     const lerp = Math.min(1, stableDelta * 15);
     s.intensity += (rawDimmer - s.intensity) * lerp;
-    s.r += (rawR - s.r) * lerp;
-    s.g += (rawG - s.g) * lerp;
-    s.b += (rawB - s.b) * lerp;
+    s.r += (beam.r - s.r) * lerp;
+    s.g += (beam.g - s.g) * lerp;
+    s.b += (beam.b - s.b) * lerp;
 
     // Apply strobe effect (rapid intensity modulation)
     let effectiveIntensity = s.intensity;
-    if (strobe > 0.1) {
+    if (strobe > 0) {
       const strobeFreq = 2 + strobe * 20; // 2-22 Hz
       const strobePhase = (performance.now() / 1000 * strobeFreq) % 1;
       effectiveIntensity = strobePhase < 0.5 ? s.intensity : 0;
@@ -463,26 +369,28 @@ function Fixture3D({
     } else {
       beamColor.setRGB(s.r, s.g, s.b);
     }
-    setBeamIntensity(volumetricIntensity);
+    // Written straight to the beam, not through React state: a state change
+    // here re-rendered every fixture on every frame.
+    beamMaterial.uniforms.beamColor.value.copy(beamColor);
+    beamMaterial.uniforms.beamIntensity.value = volumetricIntensity;
+    if (beamRef.current) beamRef.current.visible = volumetricIntensity >= BEAM_VISIBLE_FROM;
 
     // Update lens glow emissive
     if (lensRef.current) {
       const lensMat = lensRef.current.material as THREE.MeshStandardMaterial;
       lensMat.emissive.setRGB(s.r, s.g, s.b);
       lensMat.emissiveIntensity = volumetricIntensity * 3;
-      lensMat.color.setRGB(s.r * 0.5, s.g * 0.5, s.b * 0.5);
+      // Dark glass when the fixture is off, taking its colour as it comes up.
+      const lensTint = 0.5 * Math.min(1, s.intensity * 4);
+      lensMat.color.setRGB(0.045 + s.r * lensTint, 0.05 + s.g * lensTint, 0.06 + s.b * lensTint);
     }
 
     // Update spotlight for floor projection
-    const finalSpotAngleDeg = isSpotLike
-      ? (10.0 + zoom * 40.0)
-      : (2.5 + zoom * 9.0);
-    const finalBeamAngleDeg = isSpotLike
-      ? THREE.MathUtils.clamp(finalSpotAngleDeg, 10.0, 50.0)
-      : THREE.MathUtils.clamp(finalSpotAngleDeg, 2.5, 11.5);
+    // How wide the light is. The pool and the drawn beam both come from this.
+    const finalSpotAngleDeg = poolConeDeg(isSpotLike, zoom);
     if (spotRef.current) {
       spotRef.current.color.setRGB(s.r, s.g, s.b);
-      spotRef.current.intensity = effectiveIntensity * 8;
+      spotRef.current.intensity = poolLightIntensity(effectiveIntensity);
       spotRef.current.angle = THREE.MathUtils.degToRad(finalSpotAngleDeg); // Narrower to wider with zoom
     }
 
@@ -497,12 +405,11 @@ function Fixture3D({
 
     // Pan/tilt for moving heads
     if (isMovingHead) {
-      const panRange = fixture.fixture?.pan_range || (hasPanTiltChannels ? 540 : 0);
-      const tiltRange = fixture.fixture?.tilt_range || (hasPanTiltChannels ? 270 : 0);
-      const panRangeRad = THREE.MathUtils.degToRad(panRange);
-      const tiltRangeRad = THREE.MathUtils.degToRad(tiltRange);
-      const targetPan = panNormalized * panRangeRad - (panRangeRad / 2);
-      const targetTilt = tiltNormalized * tiltRangeRad - (tiltRangeRad / 2);
+      const panRangeRad = THREE.MathUtils.degToRad(profile.panRangeDeg);
+      const tiltRangeRad = THREE.MathUtils.degToRad(profile.tiltRangeDeg);
+      // Degrees from centre, the fixture's pan and tilt invert already applied.
+      const targetPan = THREE.MathUtils.degToRad(beam.panDeg);
+      const targetTilt = THREE.MathUtils.degToRad(beam.tiltDeg);
 
       controlAccumulator.current += stableDelta;
       let stepCount = 0;
@@ -574,8 +481,17 @@ function Fixture3D({
 
       if (headRef.current) {
         const alpha = Math.min(1, controlAccumulator.current / FIXED_CONTROL_DT);
+        // A moving head pans its yoke about the vertical and tilts the head
+        // inside the yoke, so tilt has to be applied first and pan second:
+        // 'YXZ'. With three's default 'XYZ' the pan turned the head about its
+        // own beam, and no amount of pan moved a beam in this view.
+        headRef.current.rotation.order = 'YXZ';
         headRef.current.rotation.y = THREE.MathUtils.lerp(o.previousPanRad, o.currentPanRad, alpha);
         headRef.current.rotation.x = THREE.MathUtils.lerp(o.previousTiltRad, o.currentTiltRad, alpha);
+        // The yoke arms take the same pan and nothing else. They are a separate
+        // group beside the head, so the beam's direction is still set by the
+        // two lines above and by nothing in the model.
+        if (yokeRef.current) yokeRef.current.rotation.y = headRef.current.rotation.y;
       }
 
       const panErrorNorm = Math.min(1, Math.abs(o.targetPanRad - o.currentPanRad) / Math.max(0.0001, panRangeRad));
@@ -591,9 +507,59 @@ function Fixture3D({
       tiltVelocityDegPerSec = THREE.MathUtils.radToDeg(o.tiltVelocityRadPerSec);
       signalConfidence = confidence;
       hold = o.holdDurationSec > 0.35;
+    } else if (headRef.current) {
+      // Nothing turns the head of a fixture that cannot pan or tilt, so it has
+      // to be put straight here. Fixtures are keyed by id and every demo rig
+      // numbers its fixtures from 1, so when the rig is swapped under an open
+      // view this component is reused for whatever has the same id in the new
+      // rig. A par drawn where a moving head was kept that head's last pan and
+      // tilt: its housing was drawn turned and its beam leaned with it.
+      const turn = headRef.current.rotation;
+      if (turn.x !== 0 || turn.y !== 0 || turn.z !== 0) turn.set(0, 0, 0);
     }
 
-    onDebugUpdate?.({
+    // Where the beam lands: the first of the floor, the ceiling and the walls
+    // along it. The drawn beam ends there and the spot light's range is
+    // measured from it, so the beam, its pool and the room agree. Worked out
+    // for every fixture, with or without a spot light, from the head group
+    // itself: this frame's pan and tilt, the ones the beam is drawn with. A
+    // fixture that cannot move stays at 0.
+    const head = headRef.current;
+    const reach = beamLanding(
+      fixture.position_x,
+      sourceY,
+      fixture.position_z,
+      // In the fixture's own frame first, then turned by how it is hung: the
+      // same nest of turns the groups below are drawn with.
+      hangBeam(
+        beamDirection(head ? head.rotation.x : 0, head ? head.rotation.y : 0, lensUp, beamPointing.current),
+        hangRx,
+        hangRz,
+        bodyYawRad
+      ),
+      room,
+      longestThrow,
+      beamSurface.current
+    );
+    // Shaped here and not in the beam's own frame callback: that one runs
+    // before this, so it would draw the beam with last frame's length on this
+    // frame's head, and its end would trail its pool as the head moves.
+    // It ends as wide as its pool, measured from where the spot light sits, and
+    // on the surface the pool is on. A fixture past the cap on spot lights has
+    // no pool; its beam is the width its pool would be, so a beam does not
+    // change with the quality setting.
+    shapeBeam(
+      beamMaterial,
+      mouth,
+      reach,
+      poolRadius(reach - lightDepth, THREE.MathUtils.degToRad(finalSpotAngleDeg)),
+      beamSurface.current
+    );
+    if (spotRef.current) spotRef.current.distance = poolLightRange(reach);
+
+    if (!debug) return;
+    const strobeChannel = beam.strobeSource === 'none' ? undefined : channelMap[beam.strobeSource];
+    debugBuffer.current[fixture.id] = {
       fixtureId: fixture.id,
       fixtureLabel: fixture.name || fixture.fixture?.model || `Fixture ${fixture.id}`,
       targetPanDeg,
@@ -605,157 +571,134 @@ function Fixture3D({
       signalConfidence,
       hold,
       strobeLogical: strobe,
-      strobeChannelValue,
-      strobeChannelIndex,
-      strobeSource,
+      strobeChannelValue: beam.strobeValue,
+      strobeChannelIndex: strobeChannel === undefined ? undefined : strobeChannel + 1,
+      strobeSource: beam.strobeSource,
+      shutter: beam.shutter,
       zoomLogical: zoom,
-      zoomChannelValue,
-      zoomChannelIndex,
-      zoomSource,
+      zoomChannelValue: beam.zoomValue,
+      zoomChannelIndex: beam.zoomSource === 'zoom' ? channelMap.zoom + 1 : undefined,
+      zoomSource: beam.zoomSource,
       finalIntensity: effectiveIntensity,
       finalSpotAngleDeg,
       capabilityWarnings: [
-        strobeSource === 'fallback' ? 'missing strobe/shutter capability' : '',
-        zoomSource === 'fallback' ? 'missing zoom/beam_angle capability' : '',
+        beam.strobeSource === 'none' ? 'no strobe or shutter channel' : '',
+        beam.zoomSource === 'fallback' ? 'no zoom channel or beam angle' : '',
+        profile.invert.pan ? 'pan inverted' : '',
+        profile.invert.tilt ? 'tilt inverted' : '',
       ].filter(Boolean),
-      motionSource: liveBinding?.source || 'dmx',
-      sourceStaleMs: liveBinding?.staleMs,
-    });
+      motionSource: beam.hasSignal ? 'output frame' : 'no frame',
+    };
   });
-
-  // The yaw the rig says this fixture is hung at. Object3D.rotation.y takes the
-  // wizard's convention directly: 0 aims down local +Z (downstage, toward the
-  // audience), +90 deg aims toward +X. Ignoring it rendered every fixture facing
-  // the same way, so "each fixture points at the performance area" had no
-  // observable effect in the previs.
-  const bodyYawRad = useMemo(
-    () => THREE.MathUtils.degToRad(fixture.rotation_y || 0),
-    [fixture.rotation_y]
-  );
-
-  // SpotLight target. World space - light.target is not a child of the light -
-  // so it is the one thing in here the body yaw must not be applied to twice.
-  const targetPos = useMemo(
-    () => new THREE.Vector3(fixture.position_x, 0, fixture.position_z),
-    [fixture.position_x, fixture.position_z]
-  );
 
   return (
     <group
       ref={groupRef}
-      position={[fixture.position_x, fixture.position_y, fixture.position_z]}
+      position={[fixture.position_x, fixture.position_y + standLift, fixture.position_z]}
       rotation={[0, bodyYawRad, 0]}
     >
-      {/* Base */}
-      <mesh castShadow position={[0, 0, 0]}>
-        <boxGeometry args={fixtureModel.base} />
-        <meshStandardMaterial color="#252525" metalness={0.9} roughness={0.16} />
-      </mesh>
+      {/* What holds it up: base or bracket, and the reach to truss, wall or floor */}
+      <FixtureSupport kind={modelKind} mount={mount} bodyYaw={bodyYawRad} />
 
-      {/* Yokes */}
+      {/* How the rig says it is hung, beyond its yaw: on its side, leaning.
+          The support above stays upright; the yoke, head and beam take it. */}
+      <group rotation={hangRotation}>
+      {/* Yoke arms: turn with pan, beside the head rather than around it */}
       {isMovingHead && (
-        <>
-          <mesh castShadow position={[-fixtureModel.head[0] * 0.52, fixtureModel.yoke[1] * 0.55, 0]}>
-            <boxGeometry args={fixtureModel.yoke} />
-            <meshStandardMaterial color="#2f2f2f" metalness={0.82} roughness={0.22} />
-          </mesh>
-          <mesh castShadow position={[fixtureModel.head[0] * 0.52, fixtureModel.yoke[1] * 0.55, 0]}>
-            <boxGeometry args={fixtureModel.yoke} />
-            <meshStandardMaterial color="#2f2f2f" metalness={0.82} roughness={0.22} />
-          </mesh>
-        </>
+        <FixtureYoke ref={yokeRef} kind={modelKind} standing={mount.type === 'stand'} />
       )}
 
-      {/* Head group (rotates for moving heads) */}
-      <group ref={headRef} position={[0, Math.max(0.12, fixtureModel.yoke[1] * 0.75), 0]}>
-        {/* Fixture head */}
-        <mesh castShadow>
-          <boxGeometry args={fixtureModel.head} />
-          <meshStandardMaterial color="#2a2a2a" metalness={0.9} roughness={0.15} />
-        </mesh>
+      {/* Head group (rotates for moving heads). It sits on the fixture's own
+          position, so the beam starts where the rig says the fixture is. */}
+      <group ref={headRef}>
+        {/* Which way the fixture faces: down, or up for a fixed-body fixture
+            standing on the floor. One turn for the housing, the beam and the
+            spot light, so the three cannot point apart. The housing used to be
+            turned on its own and the light went on shining into the floor. */}
+        <group rotation={lensUp ? FACING_UP : FACING_DOWN}>
+          {/* Housing and the lit lens; the lens material is driven in useFrame */}
+          <FixtureHead kind={modelKind} lensRef={lensRef} />
 
-        {/* Lens */}
-        <mesh ref={lensRef} position={[0, fixtureModel.lensPosY, 0]}>
-          <cylinderGeometry args={[fixtureModel.lens[0], fixtureModel.lens[1], fixtureModel.lens[2], 18]} />
-          <meshStandardMaterial
-            color="#111"
-            emissive={beamColor}
-            emissiveIntensity={beamIntensity * 3}
-            toneMapped={false}
+          {/* The beam, from the lit face to where it lands. Always mounted
+              and shown or hidden in the frame loop. Not culled by three: the
+              tube is shaped in the shader, so its own bounds (a unit
+              cylinder) say nothing about where the beam is on screen. */}
+          <mesh
+            ref={beamRef}
+            geometry={beamTube(beamSegments)}
+            material={beamMaterial}
+            position={beamPosition}
+            visible={false}
+            frustumCulled={false}
+            dispose={null}
           />
-        </mesh>
 
-        {/* Volumetric beam cone */}
-        <BeamCone
-          color={beamColor}
-          intensity={beamIntensity}
-          beamAngle={defaultBeamAngleDeg}
-          beamLength={beamLength}
-          segments={beamSegments}
-        />
-
-        {/* SpotLight for floor color projection (cap count for performance) */}
-        {fixtureIndex < spotCap && beamIntensity > 0.08 && (
-          <>
-            <spotLight
-              ref={spotRef}
-              position={[0, fixtureModel.lensPosY - 0.02, 0]}
-              angle={0.3}
-              penumbra={0.6}
-              intensity={beamIntensity * 8}
-              color={beamColor}
-              castShadow={fixtureIndex < 4}
-              shadow-mapSize-width={256}
-              shadow-mapSize-height={256}
-              distance={beamLength * 1.5}
-              decay={1.5}
-              target-position={targetPos}
-            />
-          </>
-        )}
+          {/* SpotLight for floor color projection (cap count for performance).
+              It stays mounted and is switched with its intensity. Mounting it
+              only while the fixture was lit changed the number of lights in the
+              scene every time a fixture faded or strobed, and three.js builds a
+              new shader for every lit material at each new count: 168 shaders
+              in 100 seconds of music, each a freeze of a second or more the
+              first time a machine meets it.
+              Its range is not set here: the frame loop sets it from where the
+              beam is pointing, before the first frame it is drawn in. */}
+          {fixtureIndex < spotCap && (
+            <>
+              <spotLight
+                ref={spotRef}
+                position={[0, -lightDepth, 0]}
+                angle={0.3}
+                penumbra={POOL_LIGHT_PENUMBRA}
+                intensity={0}
+                color={beamColor}
+                castShadow={fixtureIndex < 4}
+                shadow-mapSize-width={256}
+                shadow-mapSize-height={256}
+                decay={POOL_LIGHT_DECAY}
+                target={spotTarget}
+              />
+              <primitive object={spotTarget} position={SPOT_TARGET_POSITION} />
+            </>
+          )}
+        </group>
+      </group>
       </group>
 
       {/* Fixture ID label for quick patch/debug identification */}
-      <Html
-        position={[0, 0.55, 0]}
-        center
-        occlude={false}
-        distanceFactor={12}
-        style={{ pointerEvents: 'none' }}
-      >
-        <div
-          style={{
-            padding: '2px 6px',
-            borderRadius: 4,
-            background: 'rgba(0,0,0,0.65)',
-            color: '#f0f4ff',
-            fontSize: '10px',
-            fontFamily: 'Consolas, monospace',
-            lineHeight: 1.1,
-            whiteSpace: 'nowrap',
-            border: '1px solid rgba(255,255,255,0.2)',
-          }}
+      {showLabel && (
+        <Html
+          position={[0, 0.55, 0]}
+          center
+          occlude={false}
+          distanceFactor={12}
+          style={{ pointerEvents: 'none' }}
         >
-          {fixture.id}
-        </div>
-      </Html>
+          <div
+            style={{
+              padding: '2px 6px',
+              borderRadius: 4,
+              background: 'rgba(0,0,0,0.65)',
+              color: '#f0f4ff',
+              fontSize: '10px',
+              fontFamily: 'Consolas, monospace',
+              lineHeight: 1.1,
+              whiteSpace: 'nowrap',
+              border: '1px solid rgba(255,255,255,0.2)',
+            }}
+          >
+            {fixture.id}
+          </div>
+        </Html>
+      )}
     </group>
   );
-}
+});
 
 // ============================================================================
-// STAGE FLOOR WITH KEY LIGHTING ZONES
+// BARE STAGE FLOOR (shown when the venue is hidden)
 // ============================================================================
 
-function Stage({
-  width,
-  depth,
-  keyZones,
-}: {
-  width: number;
-  depth: number;
-  keyZones: Array<{ zone: string; active: boolean; intensity: number; color: { r: number; g: number; b: number } }>;
-}) {
+function Stage({ width, depth }: { width: number; depth: number }) {
   return (
     <group>
       {/* Stage floor with slight reflectivity */}
@@ -793,8 +736,25 @@ function Stage({
         <boxGeometry args={[2, 0.2, 1.5]} />
         <meshStandardMaterial color="#222" metalness={0.3} roughness={0.7} />
       </mesh>
+    </group>
+  );
+}
 
-      {/* Key lighting zone highlights on stage floor */}
+// ============================================================================
+// KEY LIGHTING ZONES (drawn on the floor, with or without the venue)
+// ============================================================================
+
+function KeyZoneHighlights({
+  width,
+  depth,
+  keyZones,
+}: {
+  width: number;
+  depth: number;
+  keyZones: Array<{ zone: string; active: boolean; intensity: number; color: { r: number; g: number; b: number } }>;
+}) {
+  return (
+    <group>
       {keyZones
         .filter((z: any) => z && z.active && z.zone && ZONE_POSITIONS[z.zone])
         .map((zone) => {
@@ -825,109 +785,6 @@ function Stage({
             </mesh>
           );
         })}
-    </group>
-  );
-}
-
-// ============================================================================
-// TRUSS COMPONENT (CYLINDRICAL TRUSS ELEMENTS)
-// ============================================================================
-
-function Truss({ width, height, depth }: { width: number; height: number; depth: number }) {
-  // Truss chord parameters
-  const chordRadius = 0.025;
-  const segments = 8;
-  const trussGap = Math.max(1.4, Math.min(2.2, depth * 0.25));
-
-  return (
-    <group position={[0, height, 0]}>
-      {/* Two close parallel overhead trusses */}
-      <mesh position={[0, 0, -trussGap / 2]}>
-        <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
-        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
-      </mesh>
-      <mesh position={[0, -0.12, -trussGap / 2]}>
-        <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
-        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
-      </mesh>
-      <mesh position={[0, 0, trussGap / 2]}>
-        <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
-        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
-      </mesh>
-      <mesh position={[0, -0.12, trussGap / 2]}>
-        <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
-        <meshStandardMaterial color="#666" metalness={0.9} roughness={0.15} />
-      </mesh>
-    </group>
-  );
-}
-
-function TrussNetwork({
-  rig,
-}: {
-  rig: Rig;
-}) {
-  const rows = useMemo(() => {
-    const fixtures = (rig.fixtures || []).filter((f) => Number.isFinite(f.position_z));
-    if (!fixtures.length) return [];
-
-    const sorted = [...fixtures].sort((a, b) => a.position_z - b.position_z);
-    const threshold = Math.max(0.8, rig.stage_depth * 0.06);
-    const clusters: Array<{ z: number; y: number; xMin: number; xMax: number; count: number }> = [];
-
-    for (const fx of sorted) {
-      const last = clusters[clusters.length - 1];
-      if (!last || Math.abs(fx.position_z - last.z) > threshold) {
-        clusters.push({
-          z: fx.position_z,
-          y: fx.position_y,
-          xMin: fx.position_x,
-          xMax: fx.position_x,
-          count: 1,
-        });
-      } else {
-        const n = last.count + 1;
-        last.z = (last.z * last.count + fx.position_z) / n;
-        last.y = (last.y * last.count + fx.position_y) / n;
-        last.xMin = Math.min(last.xMin, fx.position_x);
-        last.xMax = Math.max(last.xMax, fx.position_x);
-        last.count = n;
-      }
-    }
-    return clusters;
-  }, [rig]);
-
-  const chordRadius = 0.022;
-  const segments = 10;
-
-  return (
-    <group>
-      {rows.map((row, idx) => {
-        const width = Math.max(2.0, (row.xMax - row.xMin) + 1.0);
-        const xCenter = (row.xMax + row.xMin) / 2;
-        const y = row.y + 0.08;
-        const z = row.z;
-        return (
-          <group key={`truss-row-${idx}`} position={[xCenter, y, z]}>
-            <mesh position={[0, 0.0, -0.10]}>
-              <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
-              <meshStandardMaterial color="#7a7a7a" metalness={0.92} roughness={0.14} />
-            </mesh>
-            <mesh position={[0, -0.12, -0.10]}>
-              <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
-              <meshStandardMaterial color="#7a7a7a" metalness={0.92} roughness={0.14} />
-            </mesh>
-            <mesh position={[0, 0.0, 0.10]}>
-              <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
-              <meshStandardMaterial color="#7a7a7a" metalness={0.92} roughness={0.14} />
-            </mesh>
-            <mesh position={[0, -0.12, 0.10]}>
-              <cylinderGeometry args={[chordRadius, chordRadius, width, segments]} />
-              <meshStandardMaterial color="#7a7a7a" metalness={0.92} roughness={0.14} />
-            </mesh>
-          </group>
-        );
-      })}
     </group>
   );
 }
@@ -1022,114 +879,221 @@ function AtmosphereLayers({ width, depth, height }: { width: number; depth: numb
 // MAIN SCENE COMPONENT
 // ============================================================================
 
+/** One empty list for "no focus targets", so the scene's default does not change on every render. */
+const NO_FOCUS_TARGETS: FocusMarker[] = [];
+
 function Scene({
   rig,
   debugBuffer,
   cameraMode,
   qualityMode,
+  showVenue,
+  showLabels,
+  beatClock,
+  feed,
+  debug,
+  move,
+  stagePlot = null,
+  focusTargets = NO_FOCUS_TARGETS,
 }: {
   rig: Rig;
+  /** The calibrated stage plot to lay on the floor, or null. */
+  stagePlot?: StagePlotFloorProps | null;
+  /** The focus presets' target points to mark (docs/FOCUS_PRESETS.md); empty with the toggle off. */
+  focusTargets?: FocusMarker[];
   debugBuffer: MutableRefObject<Record<number, BeamDebugSnapshot>>;
   cameraMode: CameraMode;
   qualityMode: QualityMode;
+  showVenue: boolean;
+  showLabels: boolean;
+  beatClock: MutableRefObject<BeatClock>;
+  /** The frames the engine outputs. The fixtures read it; nothing writes DMX. */
+  feed: MutableRefObject<OutputFeed>;
+  /** Whether the beam debug table is open. */
+  debug: boolean;
+  /** Move fixtures mode: which fixture is selected and what a drag does. Null with the mode off. */
+  move: {
+    selectedId: number | null;
+    snap: boolean;
+    onSelect: (id: number) => void;
+    onMove: (id: number, to: Point3) => void;
+  } | null;
 }) {
-  const universes = useDMXStore((state) => state.universes);
   const keyLightingZones = useDMXStore((state) => state.proLighting.keyLightingZones);
-  const fixtureStates = useDMXStore((state) => state.fixtureStates);
-  const liveBindings = useMemo(() => {
-    const now = Date.now();
-    // A DMX address only identifies a fixture within its own universe: a rig with
-    // fixtures at address 1 in universes 0 and 1 has two fixtures sharing an address.
-    const patchKey = (universe: unknown, address: unknown) =>
-      `${Number(universe) || 0}:${Number(address)}`;
-    const byAddress = new Map<string, LiveFixtureState>();
-    const byId = new Map<string, LiveFixtureState>();
-    const allStates: LiveFixtureState[] = [];
 
-    fixtureStates.forEach((value) => {
-      const state = value as LiveFixtureState;
-      allStates.push(state);
-      byId.set(String(state.id), state);
-      const addr = Number(state?.dmx_address);
-      if (Number.isFinite(addr) && addr > 0) byAddress.set(patchKey(state?.universe, addr), state);
-    });
-
-    const rigSorted = [...(rig.fixtures || [])].sort((a, b) => a.dmx_address - b.dmx_address);
-    const stateSorted = [...allStates]
-      .filter((s) => Number.isFinite(Number(s.dmx_address)))
-      .sort((a, b) => Number(a.dmx_address) - Number(b.dmx_address));
-    const ordinalFallback = new Map<number, LiveFixtureState>();
-    const n = Math.min(rigSorted.length, stateSorted.length);
-    for (let i = 0; i < n; i += 1) {
-      ordinalFallback.set(rigSorted[i].id, stateSorted[i]);
-    }
-
-    const bindings = new Map<number, { state?: LiveFixtureState; source: string; staleMs?: number }>();
-    for (const fx of rig.fixtures || []) {
-      let state: LiveFixtureState | undefined;
-      let source = 'dmx';
-
-      if (byAddress.has(patchKey(fx.universe, fx.dmx_address))) {
-        state = byAddress.get(patchKey(fx.universe, fx.dmx_address));
-        source = 'state:dmx_address';
-      } else if (byId.has(String(fx.id))) {
-        state = byId.get(String(fx.id));
-        source = 'state:fixture_id';
-      } else if (fx.name && byId.has(String(fx.name))) {
-        state = byId.get(String(fx.name));
-        source = 'state:name';
-      } else if (ordinalFallback.has(fx.id)) {
-        state = ordinalFallback.get(fx.id);
-        source = 'state:ordinal_fallback';
-      }
-
-      const staleMs = state?._updatedAt ? Math.max(0, now - Number(state._updatedAt)) : undefined;
-      bindings.set(fx.id, { state, source, staleMs });
-    }
-
-    return bindings;
-  }, [fixtureStates, rig]);
-
+  // Crowd size rides on the same switch as haze and spot lights; the floor's
+  // own capacity caps it for a small room.
   const quality = useMemo(() => {
-    if (qualityMode === 'performance') return { hazeCount: 120, beamSegments: 10, spotCap: 12 };
-    if (qualityMode === 'ultra') return { hazeCount: 360, beamSegments: 24, spotCap: 40 };
-    return { hazeCount: 220, beamSegments: 16, spotCap: 24 };
+    if (qualityMode === 'performance') return { hazeCount: 120, beamSegments: 10, spotCap: 12, crowdCount: 80 };
+    if (qualityMode === 'ultra') return { hazeCount: 360, beamSegments: 24, spotCap: 40, crowdCount: 320 };
+    return { hazeCount: 220, beamSegments: 16, spotCap: 24, crowdCount: 180 };
   }, [qualityMode]);
 
+  // The room, the truss and how each fixture is mounted all come from one
+  // layout, so they agree with each other and with the cameras.
+  const venue = useMemo(
+    () => buildVenue(
+      { width: rig.stage_width, depth: rig.stage_depth, height: rig.stage_height },
+      (rig.fixtures || []).map((fixture) => {
+        const described = describeFixture(fixture);
+        return {
+          id: fixture.id,
+          x: fixture.position_x,
+          y: fixture.position_y,
+          z: fixture.position_z,
+          kind: described.modelKind,
+          hasPanTilt: described.isMovingHead,
+          // A wall the scan measured does not move out for a position nobody has confirmed.
+          guess: isPositionUnconfirmed(fixture),
+        };
+      }),
+      // A scanned room has walls and a ceiling of its own.
+      scannedRoom(rig.room_shell),
+      // And may have truss the view's own cannot stand in for: at an angle, or a ring.
+      scanHangers(rig.room_shell),
+      // And may not be a box: then its walls are the outline of its floor.
+      roomOutline(rig.room_shell),
+    ),
+    [rig]
+  );
+
+  // The room the rig describes, where it describes one. It takes the place of
+  // the flat ceiling and the square dance floor the view would otherwise build.
+  const shell = rig.room_shell ?? null;
+  const shellDome = usableDome(shell?.dome);
+  const shellDisc = usableDisc(shell?.dance_floor);
+  // A room read from a scan is drawn as the scan found it. The booth against
+  // the upstage wall, the speaker stacks and the square dance floor are the
+  // view's own invention for a room it knows nothing about, and would stand
+  // through the stage and risers the scan did find, so they are left out of
+  // that room. Its booth and its crowd are fitted to it instead (below).
+  const scanned = scannedRoom(shell) !== null;
+  // One that is not a box has its floor, walls and ceiling drawn along its
+  // outline (RoomShellView), in place of the club room's box. The outline is
+  // the venue's: the one the mounts, the beams and the cameras go by too.
+  const outlined = venue.outline !== null;
+
+  // The booth and the crowd of a scanned room (scanFloor.ts): the booth on
+  // the raised area that is one, the crowd on the floor left open round the
+  // stage, the risers and the booth. Both are worked out from the floor and
+  // the raised areas alone, written out as text first: an edit to the room
+  // changes the text and places them again, and a fixture moved, which makes
+  // a new rig and a new venue but the same text, leaves everybody standing.
+  const scanFloorKey = useMemo(() => {
+    if (!scanned) return null;
+    const { layout } = venue;
+    const stand = cameraPreset('floor', layout, venue.outline).position;
+    return JSON.stringify({
+      outline: venue.outline ?? boxFloor(-layout.wallX, layout.wallX, layout.backZ, layout.houseZ),
+      risers: scanRisers(shell).map((riser) => ({
+        kind: riser.kind,
+        center_x: riser.center_x,
+        center_z: riser.center_z,
+        width: riser.width,
+        depth: riser.depth,
+        height: riser.height,
+        base_height: riser.base_height ?? 0,
+        // One at a heading stands turned (slice 21); one that is not says nothing, as before.
+        ...(boxHeading(riser) !== 0 ? { heading_deg: boxHeading(riser) } : {}),
+        // The one somebody marked as the DJ's booth (slice 28) says so; no other does, so a room
+        // nobody marked one in is the same text, and the same booth and crowd, as before.
+        ...(isDjBooth(riser) ? { is_dj_booth: true } : {}),
+      })),
+      camera: { x: stand[0], z: stand[2], clearRadius: layout.floorCamera.clearRadius },
+    });
+  }, [scanned, shell, venue]);
+  const scanFloor = useMemo(() => {
+    if (!scanFloorKey) return null;
+    const floor = JSON.parse(scanFloorKey) as { outline: OutlinePoint[]; risers: RoomShellBox[]; camera: FloorCamera };
+    const booth = placeScanBooth(floor.outline, floor.risers);
+    // The Floor camera stands in front of the booth that is drawn (boothCamera.ts), and the crowd
+    // leaves it room there. With no booth, or nowhere in front of it, it stands where it did.
+    const stand = booth ? boothFloorStand(booth, floor.outline, floor.risers) : null;
+    return { ...floor, camera: stand ? { ...floor.camera, ...stand } : floor.camera, booth };
+  }, [scanFloorKey]);
+  const scanBooth = scanFloor?.booth ?? null;
+  const scanPeople = useMemo(
+    () => (scanFloor
+      ? placeScanCrowd(scanFloor.outline, scanFloor.risers, scanFloor.booth, quality.crowdCount, scanFloor.camera)
+      : []),
+    [scanFloor, quality.crowdCount],
+  );
+  // The work light that is over the booth goes with it.
+  const scanBoothLight = useMemo<[number, number, number] | null>(
+    () => (scanBooth
+      ? [scanBooth.x + scanBooth.faceX * 0.55, scanBooth.deskTopY + 1.5, scanBooth.z + scanBooth.faceZ * 0.55]
+      : null),
+    [scanBooth],
+  );
+
+  // Fixtures whose position nobody has confirmed: drawn where the guess puts
+  // them, and marked so that is plain.
+  const guesses = useMemo<GuessPoint[]>(
+    () => (rig.fixtures || []).filter(isPositionUnconfirmed).map((fixture) => {
+      const mount = venue.mounts.get(fixture.id);
+      return {
+        x: fixture.position_x,
+        y: fixture.position_y + (mount?.type === 'stand' ? mount.lift : 0),
+        z: fixture.position_z,
+      };
+    }),
+    [rig, venue]
+  );
+
+  // Move fixtures mode: something to grab on every fixture, drawn where the
+  // fixture is drawn (one on a stand is lifted, like its guess marker).
+  const moving = move !== null;
+  const handles = useMemo<DragHandle[]>(
+    () => (moving ? (rig.fixtures || []).map((fixture) => {
+      const mount = venue.mounts.get(fixture.id);
+      return {
+        id: fixture.id,
+        x: fixture.position_x,
+        y: fixture.position_y,
+        z: fixture.position_z,
+        lift: mount?.type === 'stand' ? mount.lift : 0,
+        unconfirmed: isPositionUnconfirmed(fixture),
+      };
+    }) : []),
+    [rig, venue, moving]
+  );
+  const dragLimits = useMemo(() => positionLimits(rig), [rig]);
+  const dragSnapLines = useMemo(() => snapLines(rig.room_shell), [rig.room_shell]);
+
+  // In a room that is not a box the cameras stand, and look, inside its outline. In a scanned room
+  // the DJ and Floor cameras go by the booth that is drawn there (marked, the room's own or a
+  // guess), at its heading; every other camera, and every camera of a room with no scan or no
+  // booth, is the preset as it always was.
   const camera = useMemo(() => {
-    const baseTarget: [number, number, number] = [0, rig.stage_height * 0.45, 0];
-    if (cameraMode === 'top') {
-      return {
-        position: [0, rig.stage_height + 7, 0.01] as [number, number, number],
-        target: [0, 0, 0] as [number, number, number],
-        maxPolar: Math.PI,
-      };
-    }
-    if (cameraMode === 'front') {
-      return {
-        position: [0, rig.stage_height * 0.55, rig.stage_depth * 1.65] as [number, number, number],
-        target: baseTarget,
-        maxPolar: Math.PI / 1.95,
-      };
-    }
-    if (cameraMode === 'audience') {
-      return {
-        position: [0, 2.5, rig.stage_depth * 1.95] as [number, number, number],
-        target: [0, 2.8, 0] as [number, number, number],
-        maxPolar: Math.PI / 2.05,
-      };
-    }
-    return {
-      position: [0, rig.stage_height * 0.8, rig.stage_depth * 1.15] as [number, number, number],
-      target: baseTarget,
-      maxPolar: Math.PI / 2,
-    };
-  }, [cameraMode, rig.stage_depth, rig.stage_height]);
+    const preset = cameraPreset(cameraMode, venue.layout, venue.outline);
+    return scanFloor
+      ? boothCameraPreset(cameraMode, preset, scanFloor.booth, scanFloor.outline, scanFloor.risers)
+      : preset;
+  }, [cameraMode, venue, scanFloor]);
+  const longestThrow = useMemo(() => roomSpan(venue.layout), [venue.layout]);
+  // With the venue hidden no walls are drawn, so none stops a beam. In a room
+  // that is not a box a beam ends on the outline's walls, not on the box.
+  const room = useMemo(() => beamRoom(venue.layout, showVenue, venue.outlineWalls), [venue, showVenue]);
+
+  // Empty the beam debug buffer when the rig changes. It is keyed by fixture
+  // id and nothing ever removed an entry, so after the Demo rig chooser went
+  // from a 52-fixture rig to a 34-fixture one the table still listed 52.
+  // A layout effect in the scene itself, not in the page: by the time it runs
+  // the old rig's fixtures that have no counterpart in the new one have
+  // unmounted in this same commit, so none of them can write a row back
+  // afterwards. A fixture whose id is in both rigs is the same component
+  // reused, and the next row it writes is the new rig's.
+  useLayoutEffect(() => {
+    debugBuffer.current = {};
+  }, [rig, debugBuffer]);
 
   return (
     <>
-      <PerspectiveCamera key={`cam-${cameraMode}`} makeDefault position={camera.position} fov={50} />
+      <PerspectiveCamera key={`cam-${cameraMode}`} makeDefault position={camera.position} fov={camera.fov} />
+      {/* makeDefault: a fixture drag switches the camera off through the
+          scene's default controls, and without it there are none to find. */}
       <OrbitControls
+        makeDefault
         enablePan
         enableZoom
         enableRotate
@@ -1142,42 +1106,130 @@ function Scene({
       <hemisphereLight args={['#6f8cff', '#1b1b1b', 0.28]} />
       <directionalLight position={[6, 10, 4]} intensity={0.35} color="#9db4ff" />
 
-      {/* Stage environment */}
-      <Stage
+      {/* The venue: club room, DJ booth and crowd. Hidden, the rig stands on
+          the bare stage floor it always had. */}
+      <BeatClockTicker clock={beatClock} />
+      {showVenue ? (
+        <>
+          <ClubRoom
+            layout={venue.layout}
+            ceiling={!shellDome}
+            danceFloor={!shellDisc && !scanned}
+            dressing={!scanned}
+            shell={!outlined}
+            boothLight={scanBoothLight}
+          />
+          {shell && (
+            <RoomShellView shell={shell} layout={venue.layout} trussRows={venue.trussRows} outline={venue.outline} />
+          )}
+          {!scanned && <DJBooth layout={venue.layout} clock={beatClock} />}
+          {!scanned && <Crowd layout={venue.layout} count={quality.crowdCount} clock={beatClock} />}
+          {/* A scanned room: the booth on the raised area marked as the DJ's, or
+              where the room has one (or, with the amber mark of a guess, on its
+              first stage), and the crowd on its open floor. */}
+          {scanned && scanBooth && <DJBooth layout={venue.layout} clock={beatClock} placed={scanBooth} />}
+          {scanned && <PlacedCrowd people={scanPeople} clock={beatClock} />}
+        </>
+      ) : (
+        <Stage width={rig.stage_width} depth={rig.stage_depth} />
+      )}
+      {/* The calibrated stage plot, flat on the floor; never hit, so dragging goes through it. */}
+      {stagePlot && <StagePlotFloor {...stagePlot} />}
+      <KeyZoneHighlights
         width={rig.stage_width}
         depth={rig.stage_depth}
         keyZones={keyLightingZones}
       />
-      <Truss
-        width={rig.stage_width - 1}
-        height={rig.stage_height - 1}
-        depth={rig.stage_depth - 1}
-      />
-      <TrussNetwork rig={rig} />
+      {/* Truss is part of the rig, so it stays when the venue is hidden; only
+          the hoists up to the ceiling go, because the ceiling has. */}
+      <RigTruss rows={venue.trussRows} hangTo={showVenue ? venue.layout.ceilingY : undefined} />
 
       {/* Haze particles for atmospheric effect */}
       <AtmosphereLayers width={rig.stage_width} depth={rig.stage_depth} height={rig.stage_height} />
-      <HazeParticles count={quality.hazeCount} spread={[rig.stage_width, rig.stage_height, rig.stage_depth]} />
+      {/* Keyed on the count: three cannot resize a buffer attribute in place, so
+          switching quality with the same geometry threw on every frame and froze
+          the view until the original quality was selected again. */}
+      <HazeParticles
+        key={`haze-${quality.hazeCount}`}
+        count={quality.hazeCount}
+        spread={[rig.stage_width, rig.stage_height, rig.stage_depth]}
+      />
 
       {/* Fixtures */}
       {rig.fixtures?.map((fixture, index) => (
         <Fixture3D
           key={fixture.id}
           fixture={fixture}
-          dmxData={universes.get(Number(fixture.universe) || 0) || BLANK_UNIVERSE}
-          liveBinding={liveBindings.get(fixture.id)}
+          feed={feed}
           fixtureIndex={index}
           spotCap={quality.spotCap}
           beamSegments={quality.beamSegments}
-          onDebugUpdate={(snapshot) => {
-            debugBuffer.current[snapshot.fixtureId] = snapshot;
-          }}
+          mount={venue.mounts.get(fixture.id) ?? DEFAULT_MOUNT}
+          room={room}
+          longestThrow={longestThrow}
+          showLabel={showLabels}
+          debugBuffer={debugBuffer}
+          debug={debug}
         />
       ))}
+
+      {/* Positions that are a guess, marked as one */}
+      <GuessMarkers points={guesses} />
+
+      {/* Where the focus presets aim; never hit, so dragging goes through them. */}
+      {focusTargets.length > 0 && <FocusTargetMarkers markers={focusTargets} />}
+
+      {/* Move fixtures mode: pick one up and put it down somewhere else */}
+      {move && (
+        <FixtureDragLayer
+          handles={handles}
+          selectedId={move.selectedId}
+          limits={dragLimits}
+          snapLines={move.snap && dragSnapLines.length > 0 ? dragSnapLines : null}
+          onSelect={move.onSelect}
+          onMove={move.onMove}
+        />
+      )}
 
       {/* Exponential fog for haze effect */}
       <fogExp2 attach="fog" args={['#05070a', 0.006]} />
     </>
+  );
+}
+
+// What the picture is drawn from, in a line: on the wire, preview only,
+// blackout, or nothing arriving. Polls the feed twice a second and re-renders
+// only when the line changes.
+function FeedReadout({ feed, guessCount }: { feed: MutableRefObject<OutputFeed>; guessCount: number }) {
+  const [summary, setSummary] = useState<FeedSummary>(() => summariseFeed(feed.current, performance.now()));
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const next = summariseFeed(feed.current, performance.now());
+      setSummary((shown) => (shown.kind === next.kind && shown.label === next.label ? shown : next));
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [feed]);
+  const color = summary.kind === 'live'
+    ? 'success.main'
+    : summary.kind === 'stale' || summary.kind === 'blackout'
+      ? 'error.main'
+      : summary.kind === 'none' ? 'text.secondary' : 'warning.main';
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      <Tooltip describeChild title={`${summary.detail} This view only reads the output; it never sends DMX.`}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }} data-testid="previs-feed-status">
+          <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: color }} />
+          <Typography variant="body2">{summary.label}</Typography>
+        </Box>
+      </Tooltip>
+      {guessCount > 0 && (
+        <Tooltip describeChild title="Marked in amber. These were laid out on a template and nobody has confirmed where they really are, so their beams may be drawn in the wrong place.">
+          <Typography variant="body2" sx={{ color: '#ffb74d' }}>
+            {guessCount} position{guessCount === 1 ? '' : 's'} unconfirmed
+          </Typography>
+        </Tooltip>
+      )}
+    </Box>
   );
 }
 
@@ -1187,12 +1239,129 @@ function fmt(value: unknown, digits = 1): string {
 }
 
 // ============================================================================
-// MAIN EXPORT COMPONENT
+// LIVE READOUTS
+//
+// Each reads only the store fields it shows. The page around them does not
+// subscribe to the store at all, so a message re-renders these few lines of
+// text and nothing else.
 // ============================================================================
+
+function SectionReadout() {
+  const genre = useDMXStore((state) => state.proLighting.genre);
+  const section = useDMXStore((state) => state.proLighting.section);
+  const dotColor = useDMXStore((state) => (
+    state.proLighting.sectionIntensity > 0.7
+      ? 'error.main'
+      : state.proLighting.sectionIntensity > 0.4
+        ? 'warning.main'
+        : 'success.main'
+  ));
+  if (!genre) return null;
+  return (
+    <Box
+      sx={{
+        ml: 'auto',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1,
+        px: 2,
+        py: 0.5,
+        bgcolor: 'grey.800',
+        borderRadius: 2,
+      }}
+    >
+      <Typography variant="body2" color="text.secondary">
+        {genre}
+      </Typography>
+      <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+        {section}
+      </Typography>
+      <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: dotColor }} />
+    </Box>
+  );
+}
+
+function EffectsReadout() {
+  const strobeMode = useDMXStore((state) => state.proLighting.activeEffects.strobeMode);
+  const movementType = useDMXStore((state) => state.proLighting.activeEffects.movementType);
+  const chaseType = useDMXStore((state) => state.proLighting.activeEffects.chaseType);
+  return (
+    <Box sx={{ display: 'flex', gap: 2 }}>
+      {strobeMode !== 'off' && (
+        <Typography variant="body2" color="warning.main">
+          Strobe: {strobeMode}
+        </Typography>
+      )}
+      {movementType !== 'none' && (
+        <Typography variant="body2" color="info.main">
+          Movement: {movementType.replace(/_/g, ' ')}
+        </Typography>
+      )}
+      {chaseType !== 'off' && (
+        <Typography variant="body2" color="success.main">
+          Chase: {chaseType.replace(/_/g, ' ')}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
+// Holds its own rows and timer, so the eight refreshes a second redraw this
+// table and not the page it sits in.
+function BeamDebugOverlay({ buffer }: { buffer: MutableRefObject<Record<number, BeamDebugSnapshot>> }) {
+  const [rows, setRows] = useState<BeamDebugSnapshot[]>([]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setRows(Object.values(buffer.current).sort((a, b) => a.fixtureId - b.fixtureId));
+    }, 120);
+
+    return () => window.clearInterval(timer);
+  }, [buffer]);
+
+  return (
+    <Card sx={{ mt: 2, maxHeight: 220, overflow: 'auto' }}>
+      <CardContent sx={{ py: 1.25 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Beam Debug Overlay (movement + logical strobe/zoom mapping)
+        </Typography>
+        {rows.length === 0 ? (
+          <Typography variant="caption" color="text.secondary">
+            Waiting for moving-head fixture updates...
+          </Typography>
+        ) : (
+          <Box sx={{ display: 'grid', gap: 0.3, fontFamily: 'monospace' }}>
+            {rows.map((row) => (
+              <Typography key={row.fixtureId} variant="caption" component="div">
+                {String(row.fixtureLabel ?? `Fixture ${row.fixtureId}`).padEnd(18, ' ')} | tgt P/T {fmt(row.targetPanDeg)}°/{fmt(row.targetTiltDeg)}°
+                {' '}| cur P/T {fmt(row.currentPanDeg)}°/{fmt(row.currentTiltDeg)}°
+                {' '}| vel P/T {fmt(row.panVelocityDegPerSec)}/{fmt(row.tiltVelocityDegPerSec)} °/s
+                {' '}| conf {fmt((row.signalConfidence ?? 0) * 100, 0)}%
+                {' '}| strobe {fmt(row.strobeLogical, 2)} ({row.strobeSource} {row.strobeChannelIndex ? `ch${row.strobeChannelIndex}=${row.strobeChannelValue}` : 'no-channel'})
+                {' '}| zoom {fmt(row.zoomLogical, 2)} ({row.zoomSource} {row.zoomChannelIndex ? `ch${row.zoomChannelIndex}=${row.zoomChannelValue}` : `dmx=${row.zoomChannelValue}`})
+                {' '}| out I {fmt(row.finalIntensity, 2)} angle {fmt(row.finalSpotAngleDeg)}°
+                {' '}| shutter {row.shutter} | src {row.motionSource}
+                {' '}| {row.hold ? 'HOLD' : 'TRACK'}
+                {row.capabilityWarnings.length > 0 ? ` | WARN: ${row.capabilityWarnings.join(', ')}` : ''}
+              </Typography>
+            ))}
+          </Box>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 // ============================================================================
 // MAIN EXPORT COMPONENT
 // ============================================================================
+
+// How the live view finds the rig the engine is running.
+const engineRigApis: EngineRigApis<Rig> = {
+  getStatus: effectsApi.getStatus,
+  getPatchedRig: rigsApi.get,
+  getDemoRig: demoApi.getRig,
+};
 
 export default function RigVisualizer() {
   const { id } = useParams<{ id: string }>();
@@ -1200,31 +1369,54 @@ export default function RigVisualizer() {
   const [rig, setRig] = useState<Rig | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const proLighting = useDMXStore((state) => state.proLighting);
   const beamDebugBuffer = useRef<Record<number, BeamDebugSnapshot>>({});
-  const [beamDebugRows, setBeamDebugRows] = useState<BeamDebugSnapshot[]>([]);
   const [cameraMode, setCameraMode] = useState<CameraMode>('iso');
   const [qualityMode, setQualityMode] = useState<QualityMode>('balanced');
+  // The room, DJ and crowd. Off leaves the bare rig for inspection.
+  const [showVenue, setShowVenue] = useState(true);
+  // Fixture ID labels. Until the operator chooses, they follow the venue: off
+  // in the club view, on for the bare rig, where they are what you came for.
+  const [labelChoice, setLabelChoice] = useState<boolean | null>(null);
+  const showLabels = labelChoice ?? !showVenue;
+  // Beat and section for the crowd. A ref, so a message re-renders nothing.
+  const beatClock = useRef<BeatClock>(createBeatClock());
+  // The frames the engine outputs, as they arrive. A ref for the same reason;
+  // the fixtures read it in the frame loop. Read-only: nothing here sends DMX.
+  const outputFeed = useRef<OutputFeed>(createOutputFeed());
+  // The beam debug table. Off, no fixture writes a row for it.
+  const [showDebug, setShowDebug] = useState(false);
   const isDemo = !id; // No rig ID = demo mode
-
-  const {
-    setUniverse,
-    setFixtureStates,
-    setEffectsInfo,
-    setGenre,
-    setSection,
-    setActiveEffects,
-    setKeyLightingZones,
-    setEmotionVector,
-    setBeatPhrase,
-  } = useDMXStore();
+  // The rig's stage plot, on the floor once it is calibrated (docs/STAGE_PLOT.md). The demo rig has none to ask for.
+  const stagePlot = useStagePlot3d(isDemo ? null : Number(id), rig?.stage_width ?? 10, rig?.stage_depth ?? 8);
+  // The focus presets' targets, marked when the operator asks (docs/FOCUS_PRESETS.md). The demo rig has no room to aim in.
+  const focusTargets = useFocusTargets3d(isDemo ? null : Number(id));
+  const [demoPresets, setDemoPresets] = useState<DemoPresetSummary[]>([]);
+  const [demoPresetError, setDemoPresetError] = useState<string | null>(null);
 
   // Connect to WebSocket for real-time DMX data
   useEffect(() => {
+    // The store's actions, read once. Calling useDMXStore() here to get them
+    // subscribed this whole page to every store change, so each of the 45
+    // messages a second re-rendered the header, the dropdowns and the debug
+    // table, and the 3D view was left a few frames a second.
+    const {
+      setUniverse,
+      setFixtureStates,
+      setEffectsInfo,
+      setGenre,
+      setSection,
+      setActiveEffects,
+      setKeyLightingZones,
+      setEmotionVector,
+      setBeatPhrase,
+    } = useDMXStore.getState();
+
     const handleAnalysis = (data: any) => {
       const msg = data as any;
+      ingestAnalysis(beatClock.current, msg, performance.now());
       if (msg.lighting) {
         const l = msg.lighting;
+        ingestOutput(outputFeed.current, l, performance.now());
         if (l.dmx_frames) {
           Object.entries(l.dmx_frames).forEach(([universe, frame]) => {
             setUniverse(Number(universe) || 0, frame as number[]);
@@ -1251,7 +1443,7 @@ export default function RigVisualizer() {
     return () => {
       audioWebSocket.off('analysis', handleAnalysis);
     };
-  }, [setUniverse, setFixtureStates, setEffectsInfo, setGenre, setSection, setActiveEffects, setKeyLightingZones, setEmotionVector, setBeatPhrase]);
+  }, []);
 
   useEffect(() => {
     if (id) {
@@ -1260,16 +1452,6 @@ export default function RigVisualizer() {
       fetchDemoRig();
     }
   }, [id]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      const rows = Object.values(beamDebugBuffer.current)
-        .sort((a, b) => a.fixtureId - b.fixtureId);
-      setBeamDebugRows(rows);
-    }, 120);
-
-    return () => window.clearInterval(timer);
-  }, []);
 
   const fetchRig = async (rigId: number) => {
     setLoading(true);
@@ -1291,14 +1473,226 @@ export default function RigVisualizer() {
     try {
       // Through the shared axios instance, which is what attaches the operator
       // token; a bare fetch() here 401s on a box that has a password set.
-      setRig(await demoApi.getRig('pro_beam_room'));
+      // This view is sent state for the rig the engine runs, so that is the
+      // rig it draws: the patched rig once one has been activated, and the
+      // engine's demo rig until then.
+      setRig(await fetchEngineRig(engineRigApis));
     } catch (error) {
       console.error('Failed to fetch demo rig:', error);
       setLoadError(`Failed to load demo rig: ${(error as any)?.message || 'unknown error'}`);
     } finally {
       setLoading(false);
     }
+    demoApi.listPresets().then(setDemoPresets).catch(() => setDemoPresets([]));
   };
+
+  // The demo rig drawn here follows the engine: this view is sent state for
+  // whatever rig the engine runs, and that rig can change without this view
+  // asking. A restarted backend boots on its default demo rig, whatever was
+  // picked before; another tab or a script can put a different one on. So
+  // when the link comes back after dropping, and whenever the status poll
+  // names a demo rig other than the one drawn, the view asks which rig is
+  // running and draws that. It never puts its old pick back on the engine;
+  // changing what the engine drives is the operator's call.
+  // `loading` stays out of it: that flag swaps the whole page for a line of
+  // text, which would throw the canvas away on every blip in the link.
+  // This one component serves the patched-rig route as well, so an answer
+  // still on its way when the operator opens a patched rig is not drawn.
+  const showingDemo = useRef(isDemo);
+  showingDemo.current = isDemo;
+  // Refs, not state: the listeners below outlive any one render.
+  const drawnVenue = useRef<string | null>(null);
+  drawnVenue.current = rig?.venue ?? null;
+  const demoRigFollower = useMemo(
+    () =>
+      createDemoRigFollower<Rig>({
+        source: {
+          // Asked which rig the engine runs, the answer may be a patched rig.
+          getRig: (preset) => (preset ? demoApi.getRig(preset) : fetchEngineRig(engineRigApis)),
+          applyPreset: demoApi.applyPreset,
+        },
+        draw: (next) => {
+          if (!showingDemo.current) return;
+          setRig((drawn) => settleRig(drawn, next));
+          setLoadError(null);
+        },
+      }),
+    []
+  );
+
+  useEffect(() => {
+    if (!isDemo) return;
+    const stopLink = onLinkRestored(audioWebSocket, () => {
+      void demoRigFollower.follow();
+      // A page opened while the box was down has no list for the chooser.
+      demoApi.listPresets().then(setDemoPresets).catch(() => {});
+    });
+    // Read straight from the store, not through a hook: it changes with every
+    // analysis message and this page must not re-render for that.
+    const stopPoll = onEngineOnAnotherRig(
+      useHealthStore,
+      () => drawnVenue.current,
+      () => void demoRigFollower.follow()
+    );
+    return () => {
+      stopLink();
+      stopPoll();
+    };
+  }, [isDemo, demoRigFollower]);
+
+  // Activate puts a rig on the running engine with no restart, from the rig
+  // pages or another tab. The status poll's next reading carries a new rig
+  // version, and the view draws again: on the live view, whichever rig the
+  // engine now runs; on a patched rig's own page, that rig as it was just
+  // applied, so an edit shows without a reload. Quietly, like the demo
+  // follower: the canvas stays up and an unchanged rig is not rebuilt.
+  const shownRigId = useRef<number | null>(null);
+  shownRigId.current = id ? Number(id) : null;
+  useEffect(() => {
+    return onPatchedRigActivated(useHealthStore, (report) => {
+      const pageRigId = shownRigId.current;
+      if (pageRigId === null) {
+        void demoRigFollower.follow();
+        return;
+      }
+      if (livePatchedRigId(report) !== pageRigId) return;
+      rigsApi
+        .get(pageRigId)
+        .then((next) => {
+          if (shownRigId.current === pageRigId) setRig((drawn) => settleRig(drawn, next));
+        })
+        .catch(() => {
+          // Keep what is drawn; the next activation asks again.
+        });
+    });
+  }, [demoRigFollower]);
+
+  // Put a different demo rig on the engine, then draw it.
+  const changeDemoPreset = async (name: string) => {
+    setDemoPresetError(null);
+    try {
+      await demoRigFollower.pick(name);
+    } catch (error) {
+      const detail = (error as any)?.response?.data?.detail;
+      setDemoPresetError(typeof detail === 'string' ? detail : 'Could not switch the demo rig.');
+    }
+  };
+
+  // --- Move fixtures mode (a rig stored in the database only) ---------------
+  // Drag a fixture in the view, or nudge the selected one with the keys; each
+  // move is saved through the position route, which confirms the position, so
+  // the fixture stops being drawn as a guess. Stored positions only: no DMX.
+  const [moveMode, setMoveMode] = useState(false);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [snapOn, setSnapOn] = useState(true);
+  const [moveNotice, setMoveNotice] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const rigRef = useRef<Rig | null>(null);
+  rigRef.current = rig;
+  // The newest save of each fixture. An older answer that lands late is dropped.
+  const saveSeq = useRef<Record<number, number>>({});
+  const saveChain = useRef<Record<number, Promise<unknown>>>({});
+
+  useEffect(() => {
+    setMoveMode(false);
+    setSelectedId(null);
+    setMoveNotice(null);
+  }, [id]);
+
+  // Read the rig again without the loading flag, which would swap the page
+  // for a line of text and throw the canvas away.
+  const refreshRig = useCallback(async () => {
+    if (!id) return;
+    try {
+      const data = await rigsApi.get(Number(id));
+      if (rigRef.current && rigRef.current.id !== data.id) return;
+      setRig(data);
+    } catch {
+      setMoveNotice({ severity: 'error', text: 'The rig could not be read again. Reload the page to see it as stored.' });
+    }
+  }, [id]);
+
+  const moveFixture = useCallback(async (fixtureId: number, to: Point3) => {
+    const current = rigRef.current;
+    const fixture = current?.fixtures?.find((item) => item.id === fixtureId);
+    if (!id || !current || !fixture) return;
+    const rigId = current.id;
+    const label = fixture.name || `Fixture ${fixtureId}`;
+    const before: Point3 = { x: fixture.position_x, y: fixture.position_y, z: fixture.position_z };
+    const seq = (saveSeq.current[fixtureId] ?? 0) + 1;
+    saveSeq.current[fixtureId] = seq;
+    const newest = () => saveSeq.current[fixtureId] === seq && rigRef.current?.id === rigId;
+    // Drawn where it was put straight away; the server's answer follows.
+    setRig((drawn) => (drawn ? withFixturePosition(drawn, fixtureId, to) : drawn));
+    try {
+      // One fixture's saves go to the server one after another, in the order
+      // they were made: a held nudge key must not leave an earlier position
+      // stored after a later one.
+      const earlier = saveChain.current[fixtureId] ?? Promise.resolve();
+      const request = earlier.catch(() => undefined).then(() => rigsApi.setFixturePosition(rigId, fixtureId, to));
+      saveChain.current[fixtureId] = request;
+      const saved = await request;
+      if (!newest()) return;
+      setRig((drawn) => (drawn ? withSavedFixture(drawn, saved) : drawn));
+      setMoveNotice({
+        severity: 'success',
+        text: `${label} moved to ${positionText({
+          x: saved.position_x, y: saved.position_y, z: saved.position_z,
+        })}. Its position is confirmed.`,
+      });
+    } catch (error) {
+      if (!newest()) return;
+      setRig((drawn) => (drawn ? withFixturePosition(drawn, fixtureId, before) : drawn));
+      const detail = (error as any)?.response?.data?.detail;
+      setMoveNotice({
+        severity: 'error',
+        text: typeof detail === 'string' && detail.trim()
+          ? detail
+          : `${label} could not be saved and was put back where it was.`,
+      });
+    }
+  }, [id]);
+
+  // Arrow keys move the selected fixture on the plan, Page Up and Page Down
+  // change its height; Shift takes a metre at a time.
+  useEffect(() => {
+    if (!moveMode || selectedId === null) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      // Keys meant for a field, a dropdown, a menu or a dialog are theirs:
+      // arrowing through the audio device list must not move a fixture.
+      if (target?.closest?.(
+        'input,textarea,select,[contenteditable="true"],[role="combobox"],[role="listbox"],[role="menu"],[role="dialog"]',
+      )) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const current = rigRef.current;
+      const fixture = current?.fixtures?.find((item) => item.id === selectedId);
+      if (!current || !fixture) return;
+      const next = nudgePosition(
+        { x: fixture.position_x, y: fixture.position_y, z: fixture.position_z },
+        event.key,
+        event.shiftKey,
+        positionLimits(current),
+      );
+      if (!next) return;
+      event.preventDefault();
+      void moveFixture(selectedId, next);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [moveMode, selectedId, moveFixture]);
+
+  const sceneMove = useMemo(
+    () => (moveMode && !isDemo
+      ? {
+          selectedId,
+          snap: snapOn,
+          onSelect: setSelectedId,
+          onMove: (fixtureId: number, to: Point3) => { void moveFixture(fixtureId, to); },
+        }
+      : null),
+    [moveMode, isDemo, selectedId, snapOn, moveFixture]
+  );
+  const canSnap = useMemo(() => snapLines(rig?.room_shell).length > 0, [rig?.room_shell]);
 
   if (loading) {
     return <Typography>Loading visualizer...</Typography>;
@@ -1322,55 +1716,135 @@ export default function RigVisualizer() {
           <BackIcon />
         </IconButton>
         <Typography variant="h5">{rig.name}</Typography>
+        {/* Hidden once a patched rig is drawn: a demo rig cannot go over it. */}
+        {isDemo && rig.id === 0 && demoPresets.length > 0 && (
+          <TextField
+            select
+            size="small"
+            label="Demo rig"
+            value={demoPresets.some((d) => d.name === rig.venue) ? rig.venue : ''}
+            onChange={(event) => changeDemoPreset(event.target.value)}
+            sx={{ minWidth: 190 }}
+          >
+            {demoPresets.map((preset) => (
+              <MenuItem key={preset.name} value={preset.name}>
+                {preset.display_name} ({preset.total_fixtures})
+              </MenuItem>
+            ))}
+          </TextField>
+        )}
+        {demoPresetError && (
+          <Typography variant="body2" color="error.main">{demoPresetError}</Typography>
+        )}
         <ButtonGroup size="small" variant="outlined" sx={{ ml: 1 }}>
           <Button variant={cameraMode === 'iso' ? 'contained' : 'outlined'} onClick={() => setCameraMode('iso')}>Iso</Button>
           <Button variant={cameraMode === 'top' ? 'contained' : 'outlined'} onClick={() => setCameraMode('top')}>Top</Button>
           <Button variant={cameraMode === 'front' ? 'contained' : 'outlined'} onClick={() => setCameraMode('front')}>Front</Button>
           <Button variant={cameraMode === 'audience' ? 'contained' : 'outlined'} onClick={() => setCameraMode('audience')}>Audience</Button>
+          <Button variant={cameraMode === 'dj' ? 'contained' : 'outlined'} onClick={() => setCameraMode('dj')}>DJ</Button>
+          <Button variant={cameraMode === 'floor' ? 'contained' : 'outlined'} onClick={() => setCameraMode('floor')}>Floor</Button>
         </ButtonGroup>
         <ButtonGroup size="small" variant="outlined">
           <Button variant={qualityMode === 'performance' ? 'contained' : 'outlined'} onClick={() => setQualityMode('performance')}>Perf</Button>
           <Button variant={qualityMode === 'balanced' ? 'contained' : 'outlined'} onClick={() => setQualityMode('balanced')}>Balanced</Button>
           <Button variant={qualityMode === 'ultra' ? 'contained' : 'outlined'} onClick={() => setQualityMode('ultra')}>Ultra</Button>
         </ButtonGroup>
+        <ButtonGroup size="small" variant="outlined">
+          <Tooltip describeChild title="Show the club room, DJ and crowd. Off leaves the bare rig.">
+            <Button
+              variant={showVenue ? 'contained' : 'outlined'}
+              aria-pressed={showVenue}
+              onClick={() => setShowVenue((on) => !on)}
+            >
+              Venue
+            </Button>
+          </Tooltip>
+          <Tooltip describeChild title="Show each fixture's ID">
+            <Button
+              variant={showLabels ? 'contained' : 'outlined'}
+              aria-pressed={showLabels}
+              onClick={() => setLabelChoice(!showLabels)}
+            >
+              IDs
+            </Button>
+          </Tooltip>
+          <Tooltip describeChild title="Show the beam debug table: what each fixture is sent and how it is drawn">
+            <Button
+              variant={showDebug ? 'contained' : 'outlined'}
+              aria-pressed={showDebug}
+              onClick={() => setShowDebug((on) => !on)}
+            >
+              Debug
+            </Button>
+          </Tooltip>
+        </ButtonGroup>
+        <StagePlot3dToggle status={stagePlot.status} on={stagePlot.on} onChange={stagePlot.setOn} />
+        <FocusTargets3dToggle available={focusTargets.available} on={focusTargets.on} onChange={focusTargets.setOn} />
+        {/* The rig on screen, written out for a desk or a visualiser. */}
+        {isDemo ? (
+          rig.venue && demoPresets.some((d) => d.name === rig.venue) && (
+            <ConsoleExportButton target={{ preset: rig.venue }} />
+          )
+        ) : (
+          <ConsoleExportButton target={{ rigId: rig.id }} />
+        )}
+        {!isDemo && (
+          <ButtonGroup size="small" variant="outlined">
+            <Tooltip
+              describeChild
+              title="Drag a fixture to where it really is. Shift-drag changes its height. Saving confirms the position."
+            >
+              <Button
+                variant={moveMode ? 'contained' : 'outlined'}
+                aria-pressed={moveMode}
+                onClick={() => setMoveMode((on) => !on)}
+              >
+                Move fixtures
+              </Button>
+            </Tooltip>
+            {moveMode && canSnap && (
+              <Tooltip
+                describeChild
+                title="Snap a dragged fixture to the nearest scanned truss line or stage edge. Hold Alt to let go of it for one drag."
+              >
+                <Button
+                  variant={snapOn ? 'contained' : 'outlined'}
+                  aria-pressed={snapOn}
+                  onClick={() => setSnapOn((on) => !on)}
+                >
+                  Snap
+                </Button>
+              </Tooltip>
+            )}
+          </ButtonGroup>
+        )}
+        {!isDemo && (
+          <RoomScanUndoButton
+            rigId={rig.id}
+            moves={undoCount(rig)}
+            size="small"
+            onDone={(result) => {
+              setMoveNotice({ severity: result.skipped > 0 ? 'info' : 'success', text: undoResultText(result) });
+              void refreshRig();
+            }}
+          />
+        )}
       </Box>
+
+      {moveNotice && (
+        <Alert severity={moveNotice.severity} onClose={() => setMoveNotice(null)} sx={{ mb: 1, py: 0 }}>
+          {moveNotice.text}
+        </Alert>
+      )}
 
       {/* Audio Device Chooser */}
       <Box sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
         <AudioDeviceChooser />
-        {proLighting.genre && (
-          <Box
-            sx={{
-              ml: 'auto',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1,
-              px: 2,
-              py: 0.5,
-              bgcolor: 'grey.800',
-              borderRadius: 2,
-            }}
-          >
-            <Typography variant="body2" color="text.secondary">
-              {proLighting.genre}
-            </Typography>
-            <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
-              {proLighting.section}
-            </Typography>
-            <Box
-              sx={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                bgcolor: proLighting.sectionIntensity > 0.7
-                  ? 'error.main'
-                  : proLighting.sectionIntensity > 0.4
-                    ? 'warning.main'
-                    : 'success.main',
-              }}
-            />
-          </Box>
-        )}
+        <FeedReadout
+          feed={outputFeed}
+          guessCount={(rig.fixtures || []).filter(isPositionUnconfirmed).length}
+        />
+        <SectionReadout />
       </Box>
 
       {/* 3D Canvas */}
@@ -1384,40 +1858,25 @@ export default function RigVisualizer() {
           }}
           dpr={qualityMode === 'ultra' ? [1.2, 2] : qualityMode === 'performance' ? [1, 1.2] : [1, 1.5]}
         >
-          <Scene rig={rig} debugBuffer={beamDebugBuffer} cameraMode={cameraMode} qualityMode={qualityMode} />
+          <Scene
+            rig={rig}
+            debugBuffer={beamDebugBuffer}
+            cameraMode={cameraMode}
+            qualityMode={qualityMode}
+            showVenue={showVenue}
+            showLabels={showLabels}
+            beatClock={beatClock}
+            feed={outputFeed}
+            debug={showDebug}
+            move={sceneMove}
+            stagePlot={stagePlot.floor}
+            focusTargets={focusTargets.markers}
+          />
         </Canvas>
       </Box>
 
       {/* Beam debug overlay to separate control jitter from render jitter */}
-      <Card sx={{ mt: 2, maxHeight: 220, overflow: 'auto' }}>
-        <CardContent sx={{ py: 1.25 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>
-            Beam Debug Overlay (movement + logical strobe/zoom mapping)
-          </Typography>
-          {beamDebugRows.length === 0 ? (
-            <Typography variant="caption" color="text.secondary">
-              Waiting for moving-head fixture updates...
-            </Typography>
-          ) : (
-            <Box sx={{ display: 'grid', gap: 0.3, fontFamily: 'monospace' }}>
-              {beamDebugRows.map((row) => (
-                <Typography key={row.fixtureId} variant="caption" component="div">
-                  {String(row.fixtureLabel ?? `Fixture ${row.fixtureId}`).padEnd(18, ' ')} | tgt P/T {fmt(row.targetPanDeg)}°/{fmt(row.targetTiltDeg)}°
-                  {' '}| cur P/T {fmt(row.currentPanDeg)}°/{fmt(row.currentTiltDeg)}°
-                  {' '}| vel P/T {fmt(row.panVelocityDegPerSec)}/{fmt(row.tiltVelocityDegPerSec)} °/s
-                  {' '}| conf {fmt((row.signalConfidence ?? 0) * 100, 0)}%
-                  {' '}| strobe {fmt(row.strobeLogical, 2)} ({row.strobeSource} {row.strobeChannelIndex ? `ch${row.strobeChannelIndex}=${row.strobeChannelValue}` : 'no-channel'})
-                  {' '}| zoom {fmt(row.zoomLogical, 2)} ({row.zoomSource} {row.zoomChannelIndex ? `ch${row.zoomChannelIndex}=${row.zoomChannelValue}` : `dmx=${row.zoomChannelValue}`})
-                  {' '}| out I {fmt(row.finalIntensity, 2)} angle {fmt(row.finalSpotAngleDeg)}°
-                  {' '}| src {row.motionSource}{row.sourceStaleMs !== undefined ? ` (${Math.round(row.sourceStaleMs)}ms)` : ''}
-                  {' '}| {row.hold ? 'HOLD' : 'TRACK'}
-                  {row.capabilityWarnings.length > 0 ? ` | WARN: ${row.capabilityWarnings.join(', ')}` : ''}
-                </Typography>
-              ))}
-            </Box>
-          )}
-        </CardContent>
-      </Card>
+      {showDebug && <BeamDebugOverlay buffer={beamDebugBuffer} />}
 
       {/* Info Panel */}
       <Card sx={{ mt: 2 }}>
@@ -1426,25 +1885,12 @@ export default function RigVisualizer() {
             <Typography variant="body2">
               Stage: {rig.stage_width}m x {rig.stage_depth}m x {rig.stage_height}m |
               Fixtures: {rig.fixtures?.length || 0} |
-              Use mouse to rotate, scroll to zoom, right-click to pan
+              {moveMode
+                ? 'Drag a fixture to move it along the floor plan, Shift-drag for height, Alt to skip the snap, Esc to cancel. '
+                  + 'Arrow keys and Page Up/Down nudge the selected fixture (Shift: 1 m).'
+                : 'Use mouse to rotate, scroll to zoom, right-click to pan'}
             </Typography>
-            <Box sx={{ display: 'flex', gap: 2 }}>
-              {proLighting.activeEffects.strobeMode !== 'off' && (
-                <Typography variant="body2" color="warning.main">
-                  Strobe: {proLighting.activeEffects.strobeMode}
-                </Typography>
-              )}
-              {proLighting.activeEffects.movementType !== 'none' && (
-                <Typography variant="body2" color="info.main">
-                  Movement: {proLighting.activeEffects.movementType.replace(/_/g, ' ')}
-                </Typography>
-              )}
-              {proLighting.activeEffects.chaseType !== 'off' && (
-                <Typography variant="body2" color="success.main">
-                  Chase: {proLighting.activeEffects.chaseType.replace(/_/g, ' ')}
-                </Typography>
-              )}
-            </Box>
+            <EffectsReadout />
           </Box>
         </CardContent>
       </Card>

@@ -11,8 +11,8 @@ import os
 import sys
 from dataclasses import dataclass
 from typing import List
-from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,8 +32,14 @@ class CheckResult:
     detail: str
 
 
-def _fetch_json(url: str, timeout: float = 1.5) -> dict:
-    with urlopen(url, timeout=timeout) as resp:  # nosec B310 (trusted local URLs only)
+# The backend gates every /api route behind an operator token. Headless clients
+# take it from ILS_TOKEN, as the visualizer and the capture script do.
+AUTH_HINT = "set ILS_TOKEN to an operator token (POST /api/auth/login returns one)"
+
+
+def _fetch_json(url: str, timeout: float = 1.5, token: str = "") -> dict:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    with urlopen(Request(url, headers=headers), timeout=timeout) as resp:  # nosec B310 (trusted local URLs only)
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -99,16 +105,23 @@ def check_backend_mib() -> CheckResult:
 def check_live_endpoints(backend_url: str, visualizer_url: str) -> List[CheckResult]:
     results: List[CheckResult] = []
 
+    token = os.environ.get("ILS_TOKEN", "").strip()
     try:
-        payload = _fetch_json(f"{backend_url}/api/effects/look-spec")
+        payload = _fetch_json(f"{backend_url}/api/effects/look-spec", token=token)
         required = ("section", "genre", "energy", "bpm", "beam", "spot", "color", "transition", "fixture_capabilities")
         for key in required:
             if key not in payload:
                 return [CheckResult("live_backend_look_spec", False, f"missing key {key}")]
         results.append(CheckResult("live_backend_look_spec", True, "backend look-spec endpoint OK"))
+    # HTTPError is a URLError, so it is caught first: otherwise a refused token
+    # reads as "unreachable" and points at the network instead of the login.
+    except HTTPError as exc:
+        detail = f"backend refused the request (HTTP 401): {AUTH_HINT}" if exc.code == 401 else f"HTTP {exc.code}"
+        results.append(CheckResult("live_backend_look_spec", False, detail))
     except URLError as exc:
         results.append(CheckResult("live_backend_look_spec", False, f"unreachable: {exc}"))
 
+    # The visualizer's own /api routes are not gated, so no token goes there.
     try:
         payload = _fetch_json(f"{visualizer_url}/api/audio")
         data = payload.get("data") if isinstance(payload, dict) else None
@@ -125,6 +138,8 @@ def check_live_endpoints(backend_url: str, visualizer_url: str) -> List[CheckRes
                     f"look_spec={has_look_spec}, visualizer_settings={has_settings}",
                 )
             )
+    except HTTPError as exc:
+        results.append(CheckResult("live_visualizer_audio", False, f"HTTP {exc.code}"))
     except URLError as exc:
         results.append(CheckResult("live_visualizer_audio", False, f"unreachable: {exc}"))
 
@@ -133,7 +148,9 @@ def check_live_endpoints(backend_url: str, visualizer_url: str) -> List[CheckRes
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate ILS section + beam/spot + MIB integration.")
-    parser.add_argument("--backend-url", default="http://127.0.0.1:8014")
+    # 8000 is where start.py, the README and the frontend's dev proxy put the
+    # backend; 8014 was one developer's debugging port and nothing binds it.
+    parser.add_argument("--backend-url", default=os.environ.get("ILS_BACKEND_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--visualizer-url", default="http://127.0.0.1:8080")
     parser.add_argument("--skip-live", action="store_true", help="Skip live HTTP endpoint checks.")
     args = parser.parse_args()

@@ -170,7 +170,7 @@ def test_boot_drives_the_rig_patched_in_the_database():
     )
     assert (PATCH_UNIVERSE, SECOND_ADDRESS) in patch
 
-    # The demo rig is 18 fixtures and the demo venue preset is 52. Either leaking in here
+    # The demo rig is 18 fixtures and the demo venue preset is 131. Either leaking in here
     # means the fallback ran instead of the database load.
     assert result["count"] == 2, "expected only the 2 patched fixtures, got %d" % result["count"]
     assert result["universes"] == [PATCH_UNIVERSE]

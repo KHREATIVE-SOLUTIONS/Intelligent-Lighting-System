@@ -82,17 +82,43 @@ For local development (login off, hot reload, database on 127.0.0.1:5432):
 cp docker-compose.override.example.yml docker-compose.override.yml
 ```
 
+## Start everything
+
+One command starts the backend and the operator UI, waits until both answer,
+and prints the operator URL. Ctrl+C stops both. It needs no internet.
+
+```bash
+python start.py          # or start.bat on Windows, sh start.sh on macOS/Linux
+```
+
+| Option | What it does |
+|--------|--------------|
+| `--check` | Preflight only: Python and packages, UI packages, free ports, writable data folder. Lists every problem with the command that fixes it; exits non-zero if there is one. |
+| `--dry-run` | Prints the exact commands a start would run, then exits. |
+| `--backend-port N` / `--ui-port N` | Ports (default 8000 and 5173). The UI is pointed at the backend port you give. |
+| `--no-ui` | Backend only. |
+| `--ui-mode dev\|preview` | By default the built app in `frontend/dist` is served if it exists, otherwise the Vite dev server. |
+| `--host 0.0.0.0` | Listen on the network so a tablet can open the UI (default is this machine only). |
+| `--audio` | Also feed this machine's audio to the backend (`--device "Main Out"`, `--rig-id N`). Otherwise pick the audio device in the UI. |
+| `--open` | Open the operator screen in a browser. |
+
+The first time, install the packages (this is the one step that needs
+internet): see Development below, or run `scripts\run_dev.bat` on Windows.
+The launcher never installs anything and never sets the output target:
+`ARTNET_IP` comes from `backend/.env` or the environment, and `--check` shows
+which address is in effect. If the UI stops, the backend keeps running.
+
 ## Installing at a Venue
 
 Pick one of three ways, by machine:
 
-- **Windows or macOS (recommended): run natively.** Install the backend
-  (see Development below), then `python start.py`. It starts the backend and
-  visualizer, captures audio from the box, signs its own audio feed in, and
-  drives the active rig. Without a `.env` it keeps its database in
-  `backend/data/lighting.db`. For an unattended start, pass the audio device:
-  `python start.py --device "Main Out" --no-browser` (or set
-  `ILS_AUDIO_DEVICE`). A failed start stops everything it started.
+- **Windows or macOS (recommended): run natively.** Install the backend and
+  UI packages (see Development below), then `python start.py` (see Start
+  everything above). Without a `.env` it keeps its database in
+  `backend/data/lighting.db`. To capture audio from the box and sign the feed
+  in without anyone at the keyboard, add the audio feed and name the device:
+  `python start.py --audio --device "Main Out"` (or set `ILS_AUDIO_DEVICE`).
+  A failed start stops everything it started.
 - **Linux: Docker with the venue file.** It puts the backend on the host
   network, so Art-Net broadcast reaches the lights, and gives it the box's
   sound card:
@@ -109,22 +135,73 @@ Pick one of three ways, by machine:
 
 Patch the venue's rig in the app and activate it. Until then, the built-in
 demo rig drives the visualizer but nothing is sent to the network.
-`ILS_RIG_ID` pins start.py, the visualizer or the capture script to one rig;
+`ILS_RIG_ID` pins the audio feed (`start.py --audio`), the visualizer or the capture script to one rig;
 otherwise they follow the active rig.
 
+### Choosing the audio input
+
+The backend captures audio itself, from the device picked in the **Audio
+Device** chooser on the Dashboard. It lists two groups:
+
+- **Inputs (line-in, USB interface, mixer, mic)**: music that arrives on a
+  cable, such as the desk or DJ mixer into a USB interface, a mixer's USB
+  return, or the sound card's line-in.
+- **This computer's audio (loopback)**: whatever this computer is playing.
+  Use it when the music is played on the box itself.
+
+Nothing is captured until **Start Capture** is pressed. On Windows, loopback
+is still the default: until a device has been picked once, the chooser opens
+on the loopback device, and a line-in is used only when you pick it.
+(`AUDIO_CAPTURE_AUTO_START=true` starts without a pick, and on Windows that
+also tries loopback first.)
+
+To use a line-in or USB interface on Windows:
+
+1. Plug the interface in and feed it from the desk. In Windows *Settings >
+   System > Sound > Input*, check that it is listed, enabled and its meter
+   moves. A line-in with nothing plugged in is often hidden until it is.
+2. In the Dashboard, tap the refresh button next to **Audio Device**, pick the
+   interface under **Inputs**, and press **Start Capture**.
+3. The chip next to the button shows the signal level. "No input signal" means
+   the box hears silence: check the cable, the interface's gain and the
+   Windows input level.
+
+Each input is listed once. Windows exposes the same input through several
+drivers; the chooser shows the WASAPI one, and the box refuses kernel-streaming
+(WDM-KS) and ASIO entries, because those take the device away from other
+programs. Inputs are opened in shared mode, so DJ software and other programs
+keep using the interface. If the input will not open at the analysis rate, the
+box follows the rate Windows runs the device at (usually 48 kHz).
+
+The choice is remembered on the box, in `audio_capture.json` next to the
+database, by device name and driver rather than by number, so it survives a
+replug or a reboot. The chooser reopens on it from any browser. If capture was
+running when the box went down, it restarts on the same device at boot and
+keeps retrying until the interface appears; if it was stopped, it stays
+stopped.
+
+`python start.py` has its own capture path with its own `--device` list, which
+on Windows offers loopback devices only. For a line-in, pick it in the
+Dashboard chooser as above.
+
 ## Development
+
+Install once:
 
 ```bash
 # Backend
 cd backend
-python -m venv venv && source venv/bin/activate
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
 
 # Frontend
 cd frontend
-npm install && npm run dev
+npm install
 ```
+
+Then `python start.py` from the project root. To run the two halves by hand
+(hot reload on the backend): `uvicorn app.main:app --reload` in `backend`,
+`npm run dev` in `frontend`.
 
 ## Versioning
 

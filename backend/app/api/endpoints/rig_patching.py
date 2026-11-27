@@ -30,6 +30,7 @@ from app.services.rig.patching_service import (
     MAX_UNIVERSES,
     PatchingService,
     PatchPlanError,
+    fixture_rows,
     plan_addresses,
 )
 from app.services.rig.rig_loader import build_manager_for_rig_id
@@ -61,34 +62,7 @@ async def _get_rig_fixtures_with_channels(rig_id: int, db: AsyncSession):
         )
     )
     rig_fixtures = result.scalars().all()
-
-    fixtures_data = []
-    for rf in rig_fixtures:
-        channel_count = 16  # Default fallback
-        if rf.mode:
-            channel_count = rf.mode.channel_count
-
-        fixtures_data.append({
-            "id": rf.id,
-            "universe": rf.universe or 0,
-            "dmx_address": rf.dmx_address,
-            "channel_count": channel_count,
-            "is_address_locked": rf.is_address_locked,
-            "name": rf.name,
-            "fixture_type": (
-                rf.fixture.fixture_type.value
-                if rf.fixture and getattr(rf.fixture, "fixture_type", None)
-                else "other"
-            ),
-            "has_mode": rf.mode is not None,
-            "mode_name": rf.mode.name if rf.mode else None,
-            "channel_types": [
-                str(ch.channel_type.value if getattr(ch, "channel_type", None) else "other")
-                for ch in (rf.mode.channels if rf.mode else [])
-            ],
-        })
-
-    return rig, rig_fixtures, fixtures_data
+    return rig, rig_fixtures, fixture_rows(rig_fixtures)
 
 
 @router.post("/{rig_id}/auto-patch")
@@ -264,16 +238,16 @@ async def _resolve_profile(db: AsyncSession, request: LibraryPatchRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def _install_live(app, manager) -> None:
-    """Point the running show at the rebuilt rig, as boot does."""
-    engine = getattr(app.state, "effects_engine", None)
-    if engine is not None:
-        setter = getattr(engine, "set_fixture_manager", None)
-        if callable(setter):
-            setter(manager)
-        else:
-            engine.fixtures = manager
-    app.state.fixture_manager = manager
+def _install_live(app, manager, rig) -> None:
+    """Point the running show at the rebuilt rig, as Activate does.
+
+    Through the same installer, so status names this rig and the demo's output
+    hold is released: an active rig that was empty until now (and so never
+    went on stage) is live from its first patch.
+    """
+    from app.services.rig.live_rig import install_patched_rig
+
+    install_patched_rig(app, manager, rig_id=rig.id, name=rig.name)
 
 
 @router.post("/{rig_id}/patch-from-library", status_code=201)
@@ -358,9 +332,19 @@ async def patch_from_library(
     notes = []
     if rig.is_active and body.apply_live:
         db.expire(rig, ["fixtures"])
+        from app.services.rig.live_rig import rig_problems
+
         manager = await build_manager_for_rig_id(db, rig.id)
-        if manager is not None and manager.fixtures:
-            _install_live(request.app, manager)
+        problems = rig_problems(manager) if manager is not None else []
+        if problems:
+            # The same check Activate makes: a rig with a fault elsewhere in
+            # it must not reach the stage through a new patch either.
+            notes.append(
+                "patched, but not sent to the running show; fix the rig and press Activate: "
+                + "; ".join(problems[:3])
+            )
+        elif manager is not None and manager.fixtures:
+            _install_live(request.app, manager, rig)
             applied_live = True
         else:
             notes.append("the rig could not be rebuilt for the running show; it will load on restart")

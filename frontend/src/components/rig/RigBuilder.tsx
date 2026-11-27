@@ -1,31 +1,54 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Box, Typography, Paper, Snackbar, Alert } from '@mui/material';
-import { rigsApi, fixturesApi } from '../../services/api';
+import { Box, Button, Checkbox, FormControlLabel, Typography, Paper, Snackbar, Alert } from '@mui/material';
+import axios from 'axios';
+import { rigsApi, fixturesApi, roomScanApi, setupChecksApi } from '../../services/api';
+import FixtureSetupChecks from './FixtureSetupChecks';
+import type { SetupCheckFixture, SetupCheckListing } from '../../utils/fixtureSetupChecks';
 import { useRigEditorStore, computeTrussLines } from '../../stores/rigEditorStore';
 import type { FixturePositionSnapshot } from '../../stores/rigEditorStore';
 import RigEditorToolbar from './RigEditorToolbar';
 import type { PositionSaveState } from './RigEditorToolbar';
 import FixturePalette from './FixturePalette';
 import StageView2D from './StageView2D';
+import { paletteClickSpot, planTrussTargets, roomPlan } from './roomPlan2d';
+import {
+  heightIdsOf, heightsBefore, nearestTruss, rowOf, snapshotPositions, withMoves, withSnapshot,
+} from './rowMove2d';
+import type { PlanMove } from './rowMove2d';
+import {
+  DEFAULT_LAY_CHOICE, evenMoves, evenNoticeText, layRowSpaced, mirrorMoves, mirrorNoticeText, spacedLayNoticeText,
+} from './rowSpace2d';
+import type { LayChoice } from './rowSpace2d';
 import PatchTable from './PatchTable';
 import FixtureProperties from './FixtureProperties';
 import IdentifyWalkthrough from './IdentifyWalkthrough';
-import type { Rig, RigFixture, Fixture, PatchConflict } from '../../types';
+import RoomScanDialog from './RoomScanDialog';
+import ReadinessDialog from './ReadinessDialog';
+import { pendingCarryOverOf, undoCount } from '../../utils/roomScan';
+import RoomShellEditDialog from './RoomShellEditDialog';
+import {
+  carriedCount, carryBoxName, carryLabel, editResultText, shellEditErrorText, shellItemKey, shellItemTitle, shellItems,
+  shellUndoCount, undoButtonText, withCarry,
+} from '../../utils/roomShellEdit';
+import type { ShellItemChanges, ShellItemKind } from '../../utils/roomShellEdit';
+import { nudgeItem, planItems } from './roomItemDrag2d';
+import RoomItemHeightStrip from './RoomItemHeightStrip';
+import { heightGauge } from './roomItemHeight';
+import { outsideLines, outsideOf } from '../../utils/roomWallsEdit';
+import type { Rig, RigFixture, Fixture, PatchConflict, RoomShell, RoomShellEdits } from '../../types';
+import StagePlotControl from './StagePlotControl';
+import useStagePlot from './useStagePlot';
+import { refusalText } from '../../services/stagePlotApi';
+import { isGuessed } from '../../utils/stagePlot';
 
 /** Long enough that a drag is one request, short enough to feel immediate. */
 const POSITION_SAVE_DEBOUNCE_MS = 400;
-
-const snapshotPositions = (fixtures: RigFixture[]): FixturePositionSnapshot[] =>
-  fixtures.map((f) => ({ id: f.id, position_x: f.position_x, position_z: f.position_z }));
 
 const roundToMm = (value: number) => Math.round(value * 1000) / 1000;
 
 /** Two icons closer than this on the plan read as one light. */
 const ICON_CLEARANCE_M = 0.6;
-
-const clampSpan = (value: number, span: number) =>
-  Math.min(Math.max(value, -span / 2), span / 2);
 
 export default function RigBuilder() {
   const { id } = useParams<{ id: string }>();
@@ -37,11 +60,48 @@ export default function RigBuilder() {
   const [saveState, setSaveState] = useState<PositionSaveState>('idle');
   const [notice, setNotice] = useState<{ severity: 'error' | 'success'; text: string } | null>(null);
   const [identifyOpen, setIdentifyOpen] = useState(false);
+  const [roomScanOpen, setRoomScanOpen] = useState(false);
+  const [roomEditOpen, setRoomEditOpen] = useState(false);
+  const [readinessOpen, setReadinessOpen] = useState(false);
+  // The fixtures Readiness's Locate these named: flash-and-tap walks just those.
+  const [locateIds, setLocateIds] = useState<number[] | undefined>(undefined);
+  // Edit Room's walls mode: the dialog is put away and the corners of the
+  // room's walls are dragged on the plan, where fixtures then take no press.
+  const [wallsMode, setWallsMode] = useState(false);
+  // What the last drag of a corner did, or why it was refused, with what the
+  // walls now leave outside them, one line each.
+  const [wallsNote, setWallsNote] = useState<
+    { severity: 'success' | 'warning' | 'error'; text: string; outside: string[] } | null
+  >(null);
+  // A change to the walls is out: one at a time, each built on the last one stored.
+  const [wallsBusy, setWallsBusy] = useState(false);
+  // Edit Room's "Arrange room items on the plan": the dialog is put away and
+  // the room's raised areas, truss lines and rings are dragged on the plan,
+  // where fixtures then take no press. Never on with walls mode.
+  const [itemsMode, setItemsMode] = useState(false);
+  // What the last drag or nudge of an item did, or why it was refused.
+  const [itemsNote, setItemsNote] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
+  // The item that is selected on the plan in that mode, by its key (`truss_lines:0`).
+  const [selectedItemKey, setSelectedItemKey] = useState<string | null>(null);
+  // The items whose fixtures stay behind, by key: the dialog's unticked
+  // boxes as they were when it handed over, and the strip's box since. Kept
+  // in a ref as well, for a request that is waiting its turn to read.
+  const [itemsLeftAlone, setItemsLeftAlone] = useState<Record<string, boolean>>({});
+  const itemsLeftAloneRef = useRef<Record<string, boolean>>({});
+  // The changes to the room made from the plan, one after another: each is
+  // sent only once the one before it has been answered and, where that one
+  // moved fixtures, the rig has been read again.
+  const roomQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  // How far apart Lay on truss lays a row. The editor's own, not the
+  // store's: it starts at Fill truss each time the editor is opened.
+  const [layChoice, setLayChoice] = useState<LayChoice>(DEFAULT_LAY_CHOICE);
+  const [setupChecks, setSetupChecks] = useState<SetupCheckListing | null>(null);
+  const [checkFixtureId, setCheckFixtureId] = useState<number | null>(null);
 
   const {
     viewMode, snapMode, gridSize, selectedFixtureIds,
-    setViewMode, setSnapMode, selectFixture, deselectAll,
-    undoStack, redoStack, pushUndo, undo, redo, clearHistory,
+    setViewMode, setSnapMode, selectFixture, selectFixtures, deselectAll,
+    undoStack, redoStack, pushUndo, noteUndoHeights, undo, redo, clearHistory,
   } = useRigEditorStore();
 
   // Drags fire faster than React commits, so the pending-write bookkeeping is
@@ -51,11 +111,30 @@ export default function RigBuilder() {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const paletteDragRef = useRef<Fixture | null>(null);
   const pendingUndoRef = useRef(false);
+  // The fixtures the drag under way has moved: with a stage plot shown, those that were guesses are confirmed at its end.
+  const draggedIdsRef = useRef<Set<number>>(new Set());
+  // The stage plot underlay of the 2D plan (docs/STAGE_PLOT.md).
+  const stagePlot = useStagePlot(rig?.id, rig?.stage_width ?? 10, rig?.stage_depth ?? 8);
 
   const applyRig = useCallback((next: Rig) => {
     rigRef.current = next;
     setRig(next);
   }, []);
+
+  // What each fixture can be checked for, and what was recorded. The patch is
+  // still usable without it (no light output on this box, say), so a failure
+  // here hides the check column's detail rather than the rig.
+  const fetchSetupChecks = useCallback(async () => {
+    if (!id) return null;
+    try {
+      const listing = await setupChecksApi.list(Number(id));
+      setSetupChecks(listing);
+      return listing;
+    } catch {
+      setSetupChecks(null);
+      return null;
+    }
+  }, [id]);
 
   const fetchRig = useCallback(async () => {
     if (!id) return;
@@ -70,7 +149,8 @@ export default function RigBuilder() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+    await fetchSetupChecks();
+  }, [id, fetchSetupChecks]);
 
   useEffect(() => { fetchRig(); }, [fetchRig]);
 
@@ -173,6 +253,239 @@ export default function RigBuilder() {
     setIdentifyOpen(true);
   };
 
+  const handleRoomScan = async () => {
+    // Applying a scan moves unconfirmed fixtures on the server. A drag still
+    // waiting to be written would land after it and put one of them back.
+    await flushPositions();
+    setRoomScanOpen(true);
+  };
+
+  const handleReadiness = async () => {
+    // The checks read positions from the server: a drag still waiting to be
+    // written would be judged where it was, not where it is on screen.
+    await flushPositions();
+    setReadinessOpen(true);
+  };
+
+  const handleEditRoom = async () => {
+    // A truss edited in the room dialog takes its fixtures along on the
+    // server, and the dialog takes the keys and the plan away: a drag still
+    // waiting to be written is written first, or it would land on top.
+    await flushPositions();
+    setRoomEditOpen(true);
+  };
+
+  /**
+   * The stored room after one of its items was changed, added or deleted, or
+   * after such an edit was undone, as the server answered it. Only the room
+   * and the count of its edits that can be undone are replaced here. Where
+   * the edit also moved fixtures the dialog says so next
+   * (`handleRoomFixturesMoved`); where it did not, the positions on screen
+   * and the undo steps that hold them are still true, and the rig is not
+   * read again. The editor's own Undo does not take a room edit back; the
+   * room has an Undo of its own in the dialog, kept on the server.
+   */
+  const handleRoomEdited = (shell: RoomShell, edits?: RoomShellEdits) => {
+    const current = rigRef.current;
+    if (current) applyRig({ ...current, room_shell: shell, room_shell_edits: edits ?? current.room_shell_edits });
+  };
+
+  /**
+   * A room edit moved fixtures on the server: a truss or ring took the ones
+   * hung on it along, or an undo put them back. The positions on screen are
+   * stale, and so is any step of the editor's own undo that would write the
+   * old ones back, as after a scan is applied: the steps are dropped and the
+   * rig is read again, which is what the 2D plan and the 3D view draw from.
+   * Nothing is waiting to be written: Edit Room writes any pending drag
+   * before it opens, and walls mode carries no fixture.
+   */
+  const handleRoomFixturesMoved = () => {
+    clearHistory();
+    void fetchRig();
+  };
+
+  /**
+   * Edit Room's "Drag corners on the plan": the dialog is in front of the
+   * plan, so it is closed, and the plan puts a handle on each corner. The
+   * selection is let go: nothing is selected or carried in walls mode.
+   */
+  const handleDragWalls = () => {
+    setRoomEditOpen(false);
+    deselectAll();
+    setWallsNote(null);
+    setItemsMode(false);
+    setWallsMode(true);
+  };
+
+  const leaveItemsAlone = (next: Record<string, boolean>) => {
+    itemsLeftAloneRef.current = next;
+    setItemsLeftAlone(next);
+  };
+
+  /**
+   * Edit Room's "Arrange room items on the plan": the dialog is in front of
+   * the plan, so it is closed, and the plan lets the room's raised areas,
+   * truss lines and rings be picked up. `leftAlone` is the dialog's unticked
+   * "Move the fixtures ..." boxes, so a drag carries what a save there would.
+   */
+  const handleArrangeItems = (leftAlone: Record<string, boolean>) => {
+    setRoomEditOpen(false);
+    deselectAll();
+    setItemsNote(null);
+    setSelectedItemKey(null);
+    leaveItemsAlone({ ...leftAlone });
+    setWallsMode(false);
+    setItemsMode(true);
+  };
+
+  /** Puts a change to the room behind the ones already out, so each builds on the last one stored. */
+  const queueRoomChange = (task: () => Promise<void>): Promise<void> => {
+    const run = roomQueueRef.current.then(task, task);
+    roomQueueRef.current = run.catch(() => undefined);
+    return run;
+  };
+
+  const itemsError = (err: unknown) => setItemsNote({
+    severity: 'error',
+    text: axios.isAxiosError(err)
+      ? shellEditErrorText(err.response?.status, err.response?.data?.detail)
+      : shellEditErrorText(undefined, undefined),
+  });
+
+  /**
+   * One change to one item of the room, made on the plan: a drag that was
+   * let go, or an arrow key. One PATCH and one step of the room's own undo.
+   * `changesFor` is asked what to send once this change's turn has come,
+   * with the room as the change before it left it, so two quick nudges are
+   * two steps and not the same step twice. The fixtures hung or standing on
+   * the item go with it unless its box is unticked; when any did, the rig is
+   * read again before the next change, and the editor's own undo steps,
+   * which hold the old positions, are dropped. A change the server refuses
+   * (422, or 409 during a locate walkthrough) stores nothing: the plan goes
+   * back to the room as it is, and the strip shows the server's words.
+   */
+  const changeRoomItem = (
+    kind: ShellItemKind, index: number,
+    changesFor: (shell: RoomShell | null | undefined) => ShellItemChanges | null,
+  ) => queueRoomChange(async () => {
+    const current = rigRef.current;
+    if (!current) return;
+    const item = shellItems(current.room_shell).find((entry) => entry.kind === kind && entry.index === index);
+    const changes = changesFor(current.room_shell);
+    if (!item || !changes) return;
+    const carry = !itemsLeftAloneRef.current[shellItemKey(item)];
+    try {
+      const result = await roomScanApi.editShellItem(current.id, kind, index, withCarry(item, changes, carry));
+      handleRoomEdited(result.room_shell, result.undo);
+      const moved = carriedCount(result.fixtures_moved);
+      if (moved > 0) {
+        clearHistory();
+        await fetchRig();
+      }
+      setItemsNote({
+        severity: 'success',
+        // Held where it already was (against the 2 m round the room): nothing was stored.
+        text: result.changed === false
+          ? `${shellItemTitle(item)} is where it was: nothing was changed.`
+          : editResultText(item, changes, result.room_shell, {
+            moved, asked: carry, areas: carriedCount(result.items_moved),
+          }),
+      });
+    } catch (err) {
+      itemsError(err);
+    }
+  });
+
+  /** An item, or a handle of one, dragged and let go on the plan. */
+  const handleItemChange = (kind: ShellItemKind, index: number, changes: ShellItemChanges) =>
+    changeRoomItem(kind, index, () => changes);
+
+  /** An arrow key: the item's middle, wherever the change before this one left it, shifted by a step. */
+  const handleItemNudge = (kind: ShellItemKind, index: number, dx: number, dz: number) => {
+    void changeRoomItem(kind, index, (shell) => {
+      const item = planItems(shell).find((entry) => entry.kind === kind && entry.index === index);
+      return item ? nudgeItem(item, dx, dz) : null;
+    });
+  };
+
+  /**
+   * The room's own Undo, from the strip over the plan while items are
+   * arranged: the latest change to the room, whatever it was. It may bring
+   * back a deleted item, which moves the ones after it down a place: the
+   * selection and the unticked boxes go by place, so both are let go.
+   */
+  const handleItemsUndo = () => queueRoomChange(async () => {
+    const current = rigRef.current;
+    if (!current) return;
+    try {
+      const result = await roomScanApi.undoShellEdit(current.id);
+      handleRoomEdited(result.room_shell, result.undo);
+      setSelectedItemKey(null);
+      leaveItemsAlone({});
+      if (carriedCount(result.fixtures_restored) > 0) {
+        clearHistory();
+        await fetchRig();
+      }
+      setItemsNote({ severity: 'success', text: result.message });
+    } catch (err) {
+      itemsError(err);
+    }
+  });
+
+  const wallsError = (err: unknown) => setWallsNote({
+    severity: 'error',
+    text: axios.isAxiosError(err)
+      ? shellEditErrorText(err.response?.status, err.response?.data?.detail)
+      : shellEditErrorText(undefined, undefined),
+    outside: [],
+  });
+
+  /**
+   * A corner of the walls dropped somewhere new on the plan: one request and
+   * one step of the room's own undo for the whole drag. The server decides
+   * whether the walls still make a room; a move it refuses is not kept, and
+   * its words are shown. No fixture is moved: what the walls now leave
+   * outside is listed in the strip over the plan.
+   */
+  const handleWallCornerMove = async (index: number, x: number, z: number) => {
+    const current = rigRef.current;
+    if (!current || wallsBusy) return;
+    setWallsBusy(true);
+    try {
+      const result = await roomScanApi.moveOutlineCorner(current.id, index, { x, z });
+      handleRoomEdited(result.room_shell, result.undo);
+      const outside = outsideOf(result.outside);
+      setWallsNote({
+        severity: outside.count > 0 ? 'warning' : 'success', text: result.message, outside: outsideLines(outside),
+      });
+    } catch (err) {
+      wallsError(err);
+    } finally {
+      setWallsBusy(false);
+    }
+  };
+
+  /** The room's own Undo, from the strip over the plan: the latest change to the room, walls or not. */
+  const handleWallsUndo = async () => {
+    const current = rigRef.current;
+    if (!current || wallsBusy) return;
+    setWallsBusy(true);
+    try {
+      const result = await roomScanApi.undoShellEdit(current.id);
+      handleRoomEdited(result.room_shell, result.undo);
+      // The latest change may be a truss that took its fixtures along: they went back with it.
+      if (carriedCount(result.fixtures_restored) > 0) handleRoomFixturesMoved();
+      const outside = outsideOf(result.outside);
+      setWallsNote({
+        severity: outside.count > 0 ? 'warning' : 'success', text: result.message, outside: outsideLines(outside),
+      });
+    } catch (err) {
+      wallsError(err);
+    } finally {
+      setWallsBusy(false);
+    }
+  };
+
   const handleFixtureClick = (fixtureId: number, multi: boolean) => {
     if (fixtureId === -1) {
       deselectAll();
@@ -185,63 +498,209 @@ export default function RigBuilder() {
   // selection click never leaves an undo step that does nothing.
   const handleFixtureDragStart = () => { pendingUndoRef.current = true; };
 
-  const handleFixtureDrag = (fixtureId: number, x: number, z: number) => {
+  /**
+   * One fixture, or a selected row carried together. Either way it is one
+   * undo step for the whole drag and one batch-update for everything that
+   * moved, and no tag is touched: a guess that is moved is still a guess.
+   */
+  const handleFixturesDrag = (moves: PlanMove[]) => {
     const current = rigRef.current;
     if (!current) return;
-    const moved = current.fixtures.find((f) => f.id === fixtureId);
-    if (!moved || (moved.position_x === x && moved.position_z === z)) return;
+    const next = withMoves(current.fixtures, moves);
+    if (next.changed.length === 0) return;
 
     if (pendingUndoRef.current) {
       pushUndo(snapshotPositions(current.fixtures));
       pendingUndoRef.current = false;
     }
+    // A snap onto scanned truss is the one thing here that changes a height:
+    // the undo step for this drag then has to know what it was.
+    noteUndoHeights(heightsBefore(current.fixtures, moves));
 
-    applyRig({
-      ...current,
-      fixtures: current.fixtures.map((f) =>
-        f.id === fixtureId ? { ...f, position_x: x, position_z: z } : f
-      ),
+    applyRig({ ...current, fixtures: next.fixtures });
+    next.changed.forEach((fixtureId) => {
+      dirtyIdsRef.current.add(fixtureId);
+      draggedIdsRef.current.add(fixtureId);
     });
-    dirtyIdsRef.current.add(fixtureId);
     schedulePositionSave();
+  };
+
+  // `y` comes with a drag that snapped onto scanned truss: its hang height.
+  const handleFixtureDrag = (fixtureId: number, x: number, z: number, y?: number) => {
+    handleFixturesDrag([y === undefined ? { id: fixtureId, x, z } : { id: fixtureId, x, z, y }]);
+  };
+
+  /** Selects the whole row a fixture is in: its group, its scanned truss, or its height and depth. */
+  const handleSelectRow = (fixtureId: number) => {
+    const current = rigRef.current;
+    if (!current) return;
+    const row = rowOf(current.fixtures, fixtureId, current.room_shell);
+    if (row.length > 0) selectFixtures(row);
+  };
+
+  /**
+   * Makes a set of moves that a button asked for, all at once: one undo
+   * step, one batch-update sent straight away, the heights the moves change
+   * kept in the step, and no tag touched. Returns how many fixtures moved;
+   * with none, nothing is saved and no step is left.
+   */
+  const commitMoves = (moves: PlanMove[]): number => {
+    const current = rigRef.current;
+    if (!current) return 0;
+    const next = withMoves(current.fixtures, moves);
+    if (next.changed.length === 0) return 0;
+
+    pushUndo(snapshotPositions(current.fixtures));
+    noteUndoHeights(heightsBefore(current.fixtures, moves));
+    applyRig({ ...current, fixtures: next.fixtures });
+    next.changed.forEach((fixtureId) => dirtyIdsRef.current.add(fixtureId));
+    void flushPositions();
+    return next.changed.length;
+  };
+
+  /**
+   * Lays the selected fixtures evenly along the scanned truss nearest them
+   * (`layRowOnTruss`, docs/ROOM_SCAN.md). Saved as a row move is: one undo
+   * step, one batch-update, heights kept in the step where they change, and
+   * no tag touched.
+   */
+  const handleLayRow = () => {
+    const current = rigRef.current;
+    if (!current) return;
+    // Filled, at the row's own spacing or at a typed one: the choice next
+    // to the button. Filled is `layRowOnTruss` itself.
+    const lay = layRowSpaced(
+      current.fixtures, selectedFixtureIds, current.room_shell,
+      // The walls the plan draws and holds a drag to.
+      roomPlan(current.room_shell)?.walls ?? null, current.stage_width, current.stage_depth,
+      layChoice,
+    );
+    if (!lay.ok) {
+      setNotice({ severity: 'error', text: spacedLayNoticeText(lay) });
+      return;
+    }
+    setNotice({ severity: 'success', text: spacedLayNoticeText(lay, commitMoves(lay.moves)) });
+  };
+
+  /**
+   * Mirrors the selected fixtures left to right about the centre line: the
+   * stage's, or the scanned room's when one is drawn (`mirrorMoves`). One
+   * undo step and one batch-update; heights and tags are not touched.
+   * Nothing on a fixture says which way its pan runs but a tag and an older
+   * flag that names no axis, neither of which a batch-update writes or an
+   * undo step keeps, so those are left as they are.
+   */
+  const handleMirror = () => {
+    const current = rigRef.current;
+    if (!current) return;
+    const walls = roomPlan(current.room_shell)?.walls ?? null;
+    const mirrored = mirrorMoves(
+      current.fixtures, selectedFixtureIds, walls, current.stage_width, current.stage_depth,
+    );
+    const changed = commitMoves(mirrored.moves);
+    setNotice({
+      severity: mirrored.moves.length > 0 ? 'success' : 'error',
+      text: mirrorNoticeText(mirrored, changed, !!walls),
+    });
+  };
+
+  /**
+   * Spaces the selected fixtures evenly between the first and the last of
+   * them by DMX address, which stay where they are (`evenMoves`). One undo
+   * step and one batch-update; heights and tags are not touched.
+   */
+  const handleSpaceEvenly = () => {
+    const current = rigRef.current;
+    if (!current) return;
+    const even = evenMoves(
+      current.fixtures, selectedFixtureIds,
+      roomPlan(current.room_shell)?.walls ?? null, current.stage_width, current.stage_depth,
+    );
+    if (!even.ok) {
+      setNotice({ severity: 'error', text: evenNoticeText(even) });
+      return;
+    }
+    setNotice({ severity: 'success', text: evenNoticeText(even, commitMoves(even.moves)) });
   };
 
   const handleFixtureDragEnd = () => {
     pendingUndoRef.current = false;
-    void flushPositions();
+    const dragged = draggedIdsRef.current;
+    draggedIdsRef.current = new Set();
+    // Without a stage plot shown, a guess dragged on the plan stays a guess, as it always did.
+    if (!stagePlot.underlay) {
+      void flushPositions();
+      return;
+    }
+    void (async () => {
+      if (!(await flushPositions())) return;
+      await confirmDragged(dragged);
+    })();
+  };
+
+  /**
+   * With the stage plot shown, a guessed fixture dragged onto it is placed by a
+   * person: it is stored through the same route the 3D view's drag uses, which
+   * takes the guess flag off (docs/STAGE_PLOT.md). The answer is the fixture as
+   * stored, which the server may have held inside the room.
+   */
+  const confirmDragged = async (dragged: Set<number>) => {
+    const current = rigRef.current;
+    if (!current) return;
+    const guesses = current.fixtures.filter((f) => dragged.has(f.id) && isGuessed(f.tags));
+    if (guesses.length === 0) return;
+    const stored = new Map<number, RigFixture>();
+    let refused: string | null = null;
+    for (const f of guesses) {
+      try {
+        stored.set(f.id, await rigsApi.setFixturePosition(current.id, f.id, {
+          x: f.position_x, z: f.position_z, y: f.position_y,
+        }));
+      } catch (error) {
+        refused = refusalText(error, `${f.name || 'A fixture'} could not be marked as placed.`);
+      }
+    }
+    const latest = rigRef.current;
+    if (latest && stored.size > 0) {
+      applyRig({
+        ...latest,
+        fixtures: latest.fixtures.map((f) => {
+          const answer = stored.get(f.id);
+          return answer
+            ? { ...f, tags: answer.tags, position_x: answer.position_x, position_y: answer.position_y, position_z: answer.position_z }
+            : f;
+        }),
+      });
+    }
+    if (refused) setNotice({ severity: 'error', text: refused });
   };
 
   const applySnapshot = useCallback((snapshot: FixturePositionSnapshot[]) => {
     const current = rigRef.current;
     if (!current) return;
-    const byId = new Map(snapshot.map((s) => [s.id, s]));
-    let changed = false;
-
-    const fixtures = current.fixtures.map((f) => {
-      const target = byId.get(f.id);
-      if (!target) return f;
-      if (target.position_x === f.position_x && target.position_z === f.position_z) return f;
-      changed = true;
-      dirtyIdsRef.current.add(f.id);
-      return { ...f, position_x: target.position_x, position_z: target.position_z };
-    });
-
-    if (!changed) return;
-    applyRig({ ...current, fixtures });
+    // Heights too: a drag that snapped onto scanned truss changed them.
+    const next = withSnapshot(current.fixtures, snapshot);
+    if (next.changed.length === 0) return;
+    next.changed.forEach((fixtureId) => dirtyIdsRef.current.add(fixtureId));
+    applyRig({ ...current, fixtures: next.fixtures });
     void flushPositions();
   }, [applyRig, flushPositions]);
 
   const handleUndo = () => {
     const current = rigRef.current;
     if (!current) return;
-    const previous = undo(snapshotPositions(current.fixtures));
+    // What redo goes back to keeps heights for the same fixtures the step
+    // being undone does: those whose height that drag changed, and no other.
+    const stack = useRigEditorStore.getState().undoStack;
+    const previous = undo(snapshotPositions(current.fixtures, heightIdsOf(stack[stack.length - 1])));
     if (previous) applySnapshot(previous);
   };
 
   const handleRedo = () => {
     const current = rigRef.current;
     if (!current) return;
-    const next = redo(snapshotPositions(current.fixtures));
+    const stack = useRigEditorStore.getState().redoStack;
+    const next = redo(snapshotPositions(current.fixtures, heightIdsOf(stack[stack.length - 1])));
     if (next) applySnapshot(next);
   };
 
@@ -256,28 +715,27 @@ export default function RigBuilder() {
   }, []);
 
   /**
-   * Nudge a position the app chose (rather than one the owner pointed at) off any
-   * fixture already there, so clicking the palette twice does not stack two icons.
+   * Where a fixture clicked in the palette goes: a position the app chooses
+   * (rather than one the owner pointed at), nudged off any fixture already
+   * there so clicking the palette twice does not stack two icons. Centre stage,
+   * inside the deck; in a rig with a scanned room, inside the room's walls
+   * (`paletteClickSpot`, docs/ROOM_SCAN.md).
    */
-  const clearSpotNear = (x: number, z: number): { x: number; z: number } => {
+  const paletteSpot = (): { x: number; z: number } => {
     const current = rigRef.current;
-    if (!current) return { x, z };
-    const taken = (px: number, pz: number) =>
-      current.fixtures.some((f) => Math.hypot(f.position_x - px, f.position_z - pz) < ICON_CLEARANCE_M);
-    if (!taken(x, z)) return { x, z };
-
-    for (let ring = 1; ring <= 6; ring += 1) {
-      const step = ring * ICON_CLEARANCE_M;
-      for (const [dx, dz] of [[step, 0], [-step, 0], [0, step], [0, -step], [step, step], [-step, -step]]) {
-        const cx = clampSpan(x + dx, rig?.stage_width ?? 0);
-        const cz = clampSpan(z + dz, rig?.stage_depth ?? 0);
-        if (!taken(cx, cz)) return { x: cx, z: cz };
-      }
-    }
-    return { x, z };
+    if (!current) return { x: 0, z: 0 };
+    return paletteClickSpot(
+      rig?.stage_width ?? 0,
+      rig?.stage_depth ?? 0,
+      // The walls the plan draws, so a click lands where a drop there would be let.
+      roomPlan(current.room_shell)?.walls ?? null,
+      current.fixtures.map((f) => ({ x: f.position_x, z: f.position_z })),
+      ICON_CLEARANCE_M,
+    );
   };
 
-  const addFixtureAt = useCallback(async (fixtureId: number, x: number, z: number) => {
+  // `y` comes with a drop onto scanned truss: the height the truss hangs at.
+  const addFixtureAt = useCallback(async (fixtureId: number, x: number, z: number, y?: number) => {
     const current = rigRef.current;
     if (!current) return;
     await flushPositions();
@@ -305,7 +763,7 @@ export default function RigBuilder() {
         dmx_address: next.address,
         mode_id: mode?.id,
         position_x: roundToMm(x),
-        position_y: hangHeightNear(z),
+        position_y: y === undefined ? hangHeightNear(z) : roundToMm(y),
         position_z: roundToMm(z),
       });
       await fetchRig();
@@ -332,9 +790,38 @@ export default function RigBuilder() {
 
     try {
       await rigsApi.updateFixture(current.id, fixtureId, updates);
+      // A new mode or address changes what can be checked and where.
+      if ('mode_id' in updates || 'dmx_address' in updates || 'universe' in updates || 'name' in updates) {
+        void fetchSetupChecks();
+      }
     } catch {
       await fetchRig(); // Revert on error
     }
+  };
+
+  const handleCheckFixture = async (fixtureId: number) => {
+    // Read again first: the box decides what this fixture can be checked for
+    // from its mode and address as they are now, not as they were on load.
+    const listing = await fetchSetupChecks();
+    if (!listing?.fixtures.some((f) => f.fixture_id === fixtureId)) {
+      setNotice({
+        severity: 'error',
+        text: 'Could not reach the light output to check this fixture. Is the box running?',
+      });
+      return;
+    }
+    setCheckFixtureId(fixtureId);
+  };
+
+  const handleCheckRecorded = (updated: SetupCheckFixture) => {
+    setSetupChecks((current) =>
+      current
+        ? {
+            ...current,
+            fixtures: current.fixtures.map((f) => (f.fixture_id === updated.fixture_id ? updated : f)),
+          }
+        : current
+    );
   };
 
   const trussLineCount = useMemo(
@@ -358,7 +845,25 @@ export default function RigBuilder() {
   if (loading) return <Typography>Loading...</Typography>;
   if (!rig) return <Typography>Rig not found</Typography>;
 
-  const selectedFixture = rig.fixtures.find((f) => selectedFixtureIds.has(f.id));
+  const selectedFixtures = rig.fixtures.filter((f) => selectedFixtureIds.has(f.id));
+  // The properties panel edits one fixture; with several selected there is
+  // no one fixture for it to edit.
+  const selectedFixture = selectedFixtures.length === 1 ? selectedFixtures[0] : undefined;
+  // "Lay on truss" is offered only where a scan found truss, and names the
+  // truss it would use: the one nearest the middle of what is selected.
+  const scannedTruss = planTrussTargets(rig.room_shell);
+  // Walls mode is only ever on over a scanned room: a room taken off, or
+  // another dialog in front of the plan, is not something to drag walls under.
+  const wallsOn = wallsMode && rig.room_shell?.source === 'scan' && !identifyOpen && !roomScanOpen && !roomEditOpen;
+  // Arranging the room's items, on the same terms.
+  const itemsOn = itemsMode && !wallsOn && rig.room_shell?.source === 'scan'
+    && !identifyOpen && !roomScanOpen && !roomEditOpen;
+  const selectedItem = itemsOn
+    ? shellItems(rig.room_shell).find((item) => shellItemKey(item) === selectedItemKey) ?? null
+    : null;
+  const layTarget = nearestTruss(
+    scannedTruss, selectedFixtures.map((f) => ({ x: f.position_x, z: f.position_z })),
+  );
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 88px)', mx: -3, mt: -3 }}>
@@ -375,6 +880,18 @@ export default function RigBuilder() {
         onAutoPatch={handleAutoPatch}
         onTestAll={handleTestAll}
         onIdentify={() => { void handleIdentify(); }}
+        onRoomScan={() => { void handleRoomScan(); }}
+        hasRoom={rig.room_shell?.source === 'scan'}
+        onEditRoom={() => { void handleEditRoom(); }}
+        onReadiness={() => { void handleReadiness(); }}
+        selectedCount={selectedFixtures.length}
+        onSelectRow={() => { if (selectedFixtures.length > 0) handleSelectRow(selectedFixtures[0].id); }}
+        onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
+        layTargetName={layTarget?.name ?? null}
+        layChoice={layChoice}
+        onLayChoiceChange={setLayChoice}
+        onMirror={handleMirror}
+        onSpaceEvenly={handleSpaceEvenly}
         onUndo={handleUndo}
         onRedo={handleRedo}
         canUndo={undoStack.length > 0}
@@ -388,7 +905,7 @@ export default function RigBuilder() {
             onDragStart={(fixture) => { paletteDragRef.current = fixture; }}
             onFixtureClick={(fixture) => {
               paletteDragRef.current = fixture;
-              const spot = clearSpotNear(0, 0);
+              const spot = paletteSpot();
               void addFixtureAt(fixture.id, spot.x, spot.z);
             }}
           />
@@ -396,22 +913,183 @@ export default function RigBuilder() {
 
         {/* Center: Stage View */}
         <Box sx={{ flexGrow: 1, p: 2, display: 'flex', flexDirection: 'column' }}>
+          {/* Walls mode: what it is, what the last drag did, and the ways out of it. */}
+          {wallsOn && (
+            <Alert
+              severity={wallsNote?.severity ?? 'info'}
+              data-testid="walls-mode"
+              sx={{ mb: 1, flexShrink: 0 }}
+              action={
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                  <Button
+                    color="inherit"
+                    size="small"
+                    disabled={wallsBusy || shellUndoCount(rig.room_shell_edits) === 0}
+                    onClick={() => { void handleWallsUndo(); }}
+                    data-testid="walls-mode-undo"
+                  >
+                    {undoButtonText(rig.room_shell_edits)}
+                  </Button>
+                  <Button
+                    color="inherit"
+                    size="small"
+                    disabled={wallsBusy}
+                    onClick={() => { setWallsMode(false); void handleEditRoom(); }}
+                  >
+                    Back to Edit Room
+                  </Button>
+                  <Button color="inherit" size="small" disabled={wallsBusy} onClick={() => setWallsMode(false)}>
+                    Done with walls
+                  </Button>
+                </Box>
+              }
+            >
+              {wallsNote?.text
+                ?? 'Dragging the walls: drag a numbered corner to move it. It goes to the grid unless the snap is off or Alt is held. No fixture is moved, and fixtures cannot be picked up until you are done.'}
+              {wallsNote && wallsNote.outside.length > 0 && (
+                <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }} data-testid="walls-mode-outside">
+                  {wallsNote.outside.map((line) => <li key={line}>{line}</li>)}
+                </Box>
+              )}
+            </Alert>
+          )}
+          {/* Arranging the room's items: what it is, the selected item's box, what the last change did, and the ways out. */}
+          {itemsOn && (
+            <Alert
+              severity={itemsNote?.severity ?? 'info'}
+              data-testid="items-mode"
+              sx={{ mb: 1, flexShrink: 0 }}
+              action={
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                  <Button
+                    color="inherit"
+                    size="small"
+                    disabled={shellUndoCount(rig.room_shell_edits) === 0}
+                    onClick={() => { void handleItemsUndo(); }}
+                    data-testid="items-mode-undo"
+                  >
+                    {undoButtonText(rig.room_shell_edits)}
+                  </Button>
+                  <Button
+                    color="inherit"
+                    size="small"
+                    onClick={() => { setItemsMode(false); void handleEditRoom(); }}
+                  >
+                    Back to Edit Room
+                  </Button>
+                  <Button color="inherit" size="small" onClick={() => setItemsMode(false)}>
+                    Done arranging
+                  </Button>
+                </Box>
+              }
+            >
+              {itemsNote?.text
+                ?? 'Arranging the room: drag a raised area, a truss line or a ring to move it, or press it and use the arrow keys (Shift for ten steps). A selected truss line has a square handle on one end for its length and a round one past the other for its heading; a ring has a square handle for its radius. Everything goes to the grid unless the snap is off or Alt is held. Fixtures cannot be picked up until you are done. The strip beside the plan sets the selected item\'s height: drag its handle up or down.'}
+              {selectedItem && (
+                <Box sx={{ mt: 0.5 }} data-testid="items-mode-selected">
+                  <FormControlLabel
+                    sx={{ mr: 0 }}
+                    control={
+                      <Checkbox
+                        size="small"
+                        sx={{ py: 0 }}
+                        checked={!itemsLeftAlone[shellItemKey(selectedItem)]}
+                        onChange={(e) => {
+                          leaveItemsAlone({ ...itemsLeftAlone, [shellItemKey(selectedItem)]: !e.target.checked });
+                          // The arrow keys are the plan's again, not the box's.
+                          e.target.blur();
+                        }}
+                        inputProps={{ 'aria-label': carryBoxName(selectedItem.kind, shellItemTitle(selectedItem)) }}
+                      />
+                    }
+                    label={
+                      <Typography variant="caption">
+                        {`${shellItemTitle(selectedItem)} is selected. ${carryLabel(selectedItem.kind)}`}
+                      </Typography>
+                    }
+                  />
+                </Box>
+              )}
+            </Alert>
+          )}
+          {/* The plan, and beside it, while the room's items are arranged, the height strip. The
+              strip is there for the whole of the mode, selected item or not, so the plan does not
+              change size under a press. */}
+          {/* The stage plot underlay: upload, calibrate, show or hide, remove (docs/STAGE_PLOT.md). */}
+          <StagePlotControl plot={stagePlot} disabled={wallsOn || itemsOn} />
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', flexShrink: 0 }}>
+          <Box sx={{ flexGrow: 1, minWidth: 0 }}>
           <StageView2D
+            underlay={stagePlot.underlay}
+            // Calibrating: a click on the plan picks a point, and fixtures take no press.
+            onPlanPick={wallsOn || itemsOn ? undefined : stagePlot.onPlanPick}
+            pickMarks={stagePlot.pickMarks}
             width={rig.stage_width}
             depth={rig.stage_depth}
             height={rig.stage_height}
             fixtures={rig.fixtures}
+            roomShell={rig.room_shell}
             selectedIds={selectedFixtureIds}
             gridSize={gridSize}
             snapMode={snapMode}
             onFixtureClick={handleFixtureClick}
             onFixtureDragStart={handleFixtureDragStart}
             onFixtureDrag={handleFixtureDrag}
+            onFixturesDrag={handleFixturesDrag}
             onFixtureDragEnd={handleFixtureDragEnd}
+            onFixtureSelectRow={handleSelectRow}
+            onSelectFixtures={selectFixtures}
+            // R, the arrow keys and Escape act on the plan only while it is
+            // what is shown, and never under a dialog that is in front of it.
+            // Nor in walls mode, where nothing is selected or nudged.
+            // Nor while the room's items are arranged, which has keys of its own.
+            // Nor while a stage plot is calibrated, when a nudge would move (and confirm) a fixture.
+            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn && !itemsOn && !stagePlot.calibrating}
+            // The same keys as buttons over the plan, for a phone or a
+            // tablet: shown while something is selected, on the same terms.
+            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn && !itemsOn && !stagePlot.calibrating}
+            // Edit Room's "Arrange room items on the plan": a raised area, a
+            // truss line or a ring is dragged, or nudged with the arrow keys,
+            // each change one request and one step of the room's own undo.
+            itemsEdit={itemsOn}
+            selectedItemKey={selectedItemKey}
+            onItemSelect={setSelectedItemKey}
+            onItemChange={handleItemChange}
+            onItemNudge={handleItemNudge}
+            // Edit Room's walls mode: the corners of the walls are dragged,
+            // each drag one request and one step of the room's own undo.
+            wallsEdit={wallsOn}
+            onWallCornerMove={handleWallCornerMove}
+            onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
+            layChoice={layChoice}
+            onLayChoiceChange={setLayChoice}
+            // M, and the pad's Mirror and Even buttons: the plan only asks.
+            onMirror={handleMirror}
+            onSpaceEvenly={handleSpaceEvenly}
             onDropFromPalette={addFixtureAt}
           />
+          </Box>
+          {/* Heights by dragging (slice 22): the selected item's top and base, or its trim height.
+              A handle let go is one change to the room, through what the plan's handles go through:
+              the fixtures as the item's box says, a refusal in the strip above, and the room's undo. */}
+          {itemsOn && (
+            <RoomItemHeightStrip
+              gauge={heightGauge(selectedItem, rig.room_shell)}
+              onChange={handleItemChange}
+            />
+          )}
+          </Box>
 
           {/* Bottom: Properties Panel */}
+          {selectedFixtures.length > 1 && (
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, flexShrink: 0 }}>
+              {`${selectedFixtures.length} fixtures selected. Drag any one of them, or press an arrow key, to move them together${
+                scannedTruss.length > 0 ? ', or use Lay on truss to space them along the nearest scanned truss' : ''
+              }. M mirrors them left to right${
+                selectedFixtures.length > 2 ? ', and Space evenly spaces them between the first and the last by address' : ''
+              }. Escape clears the selection. On a touch screen, use the arrows on the plan, and press and hold a fixture to add it or take it out.`}
+            </Typography>
+          )}
           {selectedFixture && (
             <Paper sx={{ mt: 1, flexShrink: 0 }}>
               <FixtureProperties
@@ -430,23 +1108,111 @@ export default function RigBuilder() {
             conflicts={conflicts}
             selectedUniverse={patchUniverse}
             onUniverseChange={setPatchUniverse}
+            setupChecks={setupChecks?.fixtures}
+            onCheckFixture={(fixtureId) => { void handleCheckFixture(fixtureId); }}
           />
         </Paper>
       </Box>
+
+      <FixtureSetupChecks
+        rigId={rig.id}
+        fixture={
+          checkFixtureId === null
+            ? null
+            : setupChecks?.fixtures.find((f) => f.fixture_id === checkFixtureId) ?? null
+        }
+        rigBlockedReason={setupChecks?.output_blocked_reason}
+        onClose={() => {
+          setCheckFixtureId(null);
+          // Picks up a blackout or master change made while the dialog was open.
+          void fetchSetupChecks();
+        }}
+        onRecorded={handleCheckRecorded}
+      />
 
       <IdentifyWalkthrough
         rigId={rig.id}
         open={identifyOpen}
         stageWidth={rig.stage_width}
         stageDepth={rig.stage_depth}
-        onClose={() => setIdentifyOpen(false)}
+        unconfirmedCount={
+          rig.fixtures.filter(
+            (f) => f.is_active !== false && (f.tags ?? []).includes('position_unconfirmed')
+          ).length
+        }
+        fixtureIds={locateIds}
+        onClose={() => {
+          setIdentifyOpen(false);
+          setLocateIds(undefined);
+          // A walk stopped partway has still moved and confirmed lights.
+          void fetchRig();
+        }}
         onFinished={() => { void fetchRig(); }}
+      />
+
+      {/* Readiness reads only; Make groups and Re-address write, so the rig is read again.
+          Neither touches positions, so the editor's undo (positions only) stays true. */}
+      <ReadinessDialog
+        open={readinessOpen}
+        rigId={rig.id}
+        rigName={rig.name}
+        onClose={() => setReadinessOpen(false)}
+        onSelectFixtures={(ids) => {
+          selectFixtures(ids);
+          setReadinessOpen(false);
+        }}
+        onLocate={(ids) => {
+          setReadinessOpen(false);
+          setLocateIds(ids);
+          setIdentifyOpen(true);
+        }}
+        onChanged={() => { void fetchRig(); }}
+      />
+
+      {/* A scan that is applied moves fixtures and stores a room on the server:
+          the positions on screen are stale, and so is any undo step that would
+          write the old ones back. */}
+      <RoomScanDialog
+        open={roomScanOpen}
+        rigId={rig.id}
+        rigName={rig.name}
+        hasRoom={rig.room_shell?.source === 'scan'}
+        undoMoves={undoCount(rig)}
+        pendingCarryOver={pendingCarryOverOf(rig.room_shell)}
+        onClose={() => setRoomScanOpen(false)}
+        onChanged={() => {
+          clearHistory();
+          void fetchRig();
+        }}
+        onView3D={() => {
+          setRoomScanOpen(false);
+          navigate(`/rigs/${rig.id}/visualizer`);
+        }}
+      />
+
+      {/* What the scan found, corrected by hand. Each stored change, and each
+          one undone, comes back as the whole room, which the plan then draws
+          and snaps to. A truss that took its fixtures along, or brought them
+          back, has the rig read again as well. */}
+      <RoomShellEditDialog
+        open={roomEditOpen}
+        rigId={rig.id}
+        rigName={rig.name}
+        shell={rig.room_shell}
+        undo={rig.room_shell_edits}
+        onClose={() => setRoomEditOpen(false)}
+        onChanged={handleRoomEdited}
+        onFixturesMoved={handleRoomFixturesMoved}
+        onDragWalls={handleDragWalls}
+        onArrangeItems={handleArrangeItems}
       />
 
       <Snackbar
         open={!!notice}
         autoHideDuration={5000}
-        onClose={() => setNotice(null)}
+        // Not on a click elsewhere: the click that asks for the next notice is
+        // one, and would take that notice down in the same breath it went up.
+        onClose={(_event, reason) => { if (reason !== 'clickaway') setNotice(null); }}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
         <Alert severity={notice?.severity ?? 'success'} onClose={() => setNotice(null)} variant="filled">

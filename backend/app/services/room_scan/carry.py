@@ -1,0 +1,834 @@
+"""
+Fixtures that follow their truss
+================================
+
+A truss line or ring of a stored room that is moved, raised, lowered, turned or
+resized by hand (edit.py) takes the fixtures hung on it along: a rigger who
+says the truss is half a metre further upstage means the lights on it too
+(docs/ROOM_SCAN.md).
+
+Which fixtures hang on it is the rule the views already go by (`hangsOn` in
+frontend/src/components/rig/rowMove2d.ts, `hangsFrom` in previs/layout.ts): a
+fixture within 0.3 m of the line or of the ring's circle on the plan, and
+within 0.6 m of its underside in height. A fixture that hangs within reach of
+two of the room's trusses belongs to the nearer, and to the one listed first
+when they are as near.
+
+What a carried fixture keeps is its place on the truss:
+
+- a **move** shifts it by what the truss's middle shifted;
+- a **height** raises or lowers it by the same amount, so one hung 0.2 m under
+  the truss still is;
+- a **turn** of a line swings it about the line's middle, by the smaller of
+  the two turns that give the new heading (a line has no front), and turns its
+  own heading (`rotation_y`) with it, so a light square to the truss stays
+  square to it;
+- a **length** spreads or closes its place along the line about the middle,
+  and keeps how far it is off to the side;
+- a **radius** keeps its angle round the ring and how far it is inside or
+  outside the truss.
+
+A raised area (a stage, a riser, a booth, a floating platform) takes the
+fixtures **standing on it** along in the same way (slice 18). A fixture stands
+on one when it is over its footprint on the plan, or within 0.15 m of its edge,
+and at its top surface: from 0.05 m under it to 0.6 m above. A fixture that
+hangs on a truss or ring by the rule above is not standing on anything. One
+that stands on two raised areas (a riser on a stage) belongs to the one whose
+top it is nearer, and to the one listed first when they are as near.
+
+- a **move** shifts it by what the area's middle shifted;
+- a **height** or a **base height** raises or lowers it by what the top moved;
+- a **resize** keeps where it stands as a share of the footprint: half way
+  across a stage made wider, it is still half way across;
+- a **quarter turn** (the width and the depth changed places, which is all a
+  quarter turn is to the server) swings it a quarter turn clockwise seen from
+  above about the area's middle, and turns its heading with it;
+- a **heading** (slice 21: a raised area can stand at any heading, its width
+  along it and its depth square to it) swings it about the area's middle by
+  what the area was turned, and turns its heading with it.
+
+"Over its footprint" and "a share of the footprint" are along the area's own
+width and depth, which are the room's only for one that stands square to it.
+
+Nothing else about a fixture is touched: not its patch, its mode, its tags or
+its group. A guess that is carried is still a guess.
+
+Pure apart from `apply_moves` and `put_back`, which set attributes on the
+fixtures they are given. Nothing here touches the database session, the engine
+or a device.
+"""
+
+import copy
+import math
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from .edit import (
+    BASE_MAX_M, KINDS, MOVED_BY_HAND, OUTSIDE_MARGIN_M, RESIZED_BY_HAND, ShellEditError,
+    _mark, _metres, _mm, _number, _room, area_heading, base_of, clean_heading, item_name,
+)
+
+# How far off a truss's line on the plan, and off its underside in height, a
+# fixture still hangs from it (previs/layout.ts HANGER_REACH, HANGER_HEIGHT_WINDOW).
+HANG_REACH_M = 0.3
+HANG_HEIGHT_WINDOW_M = 0.6
+
+# The lists of a room that fixtures hang from, in the order the views read them.
+HANGING_KINDS: Tuple[str, ...] = ("truss_lines", "truss_rings")
+
+# The list of a room that fixtures stand on.
+STANDING_KIND = "risers"
+# How far past a raised area's edge on the plan a fixture still stands on it: a base that overhangs the lip.
+STAND_MARGIN_M = 0.15
+# How far above a raised area's top a fixture still stands on it (a light on a stand, a head on its base),
+# and how far under it (one drawn a little into the deck).
+STAND_WINDOW_M = 0.6
+STAND_UNDER_M = 0.05
+# How far a raised area's base may be from another's top and still stand on it (a riser on a stage).
+STACK_BASE_WINDOW_M = 0.1
+
+# A line or ring shorter or smaller than this is not drawn and nothing hangs from it (previs/roomShell.ts).
+USABLE_OVER_M = 0.2
+
+# A turn under this is rounding, not a turn (edit.py takes a heading to a tenth of a degree).
+TURN_OVER_DEG = 0.05
+# A length or radius that differs by less is the same one (edit.py stores to the millimetre).
+SIZE_OVER_M = 0.0005
+# A fixture that would shift by less than this is left exactly where it is.
+SHIFT_OVER_M = 0.0005
+
+# Two positions closer than this are the same position (undo.SAME_PLACE_M).
+SAME_PLACE_M = 0.005
+
+# How many of the fixtures a refusal names before it says "and N more".
+NAMED_MAX = 3
+
+# The keys of an item that say where it is and how big: a change to none of them carries nothing.
+GEOMETRY_KEYS: Tuple[str, ...] = ("x1", "z1", "x2", "z2", "center_x", "center_z", "radius", "height")
+
+
+def _usable(kind: str, item: Any) -> bool:
+    """Whether an item is one fixtures can hang from: every number there, and big enough to be drawn."""
+    if not isinstance(item, dict) or not _number(item.get("height")):
+        return False
+    if kind == "truss_lines":
+        ends = [item.get(key) for key in ("x1", "z1", "x2", "z2")]
+        return all(_number(end) for end in ends) and math.hypot(ends[2] - ends[0], ends[3] - ends[1]) > USABLE_OVER_M
+    values = [item.get(key) for key in ("center_x", "center_z", "radius")]
+    return all(_number(value) for value in values) and values[2] > USABLE_OVER_M
+
+
+def plan_distance(kind: str, item: Dict[str, Any], x: float, z: float) -> float:
+    """How far a point on the plan is from a line (between its ends) or from a ring's circle."""
+    if kind == "truss_lines":
+        ax, az, bx, bz = (float(item[key]) for key in ("x1", "z1", "x2", "z2"))
+        run_x, run_z = bx - ax, bz - az
+        along = max(0.0, min(1.0, ((x - ax) * run_x + (z - az) * run_z) / (run_x * run_x + run_z * run_z)))
+        return math.hypot(x - (ax + along * run_x), z - (az + along * run_z))
+    return abs(math.hypot(x - float(item["center_x"]), z - float(item["center_z"])) - float(item["radius"]))
+
+
+def _place(fixture: Any) -> Optional[Tuple[float, float, float]]:
+    """Where a fixture is, or None when it has no position that is three numbers."""
+    place = tuple(getattr(fixture, key, None) for key in ("position_x", "position_y", "position_z"))
+    return (float(place[0]), float(place[1]), float(place[2])) if all(_number(value) for value in place) else None
+
+
+def _reach(kind: str, item: Any, place: Tuple[float, float, float]) -> Optional[float]:
+    """How far a fixture is from an item on the plan when it hangs from it, else None."""
+    # The slack is for arithmetic only: 0.3 m to the side must not fail for being 0.30000000000000004.
+    if not _usable(kind, item) or abs(place[1] - float(item["height"])) > HANG_HEIGHT_WINDOW_M + 1e-9:
+        return None
+    off = plan_distance(kind, item, place[0], place[2])
+    return off if off <= HANG_REACH_M + 1e-9 else None
+
+
+def hangs_on(kind: str, item: Any, fixture: Any) -> bool:
+    """Whether a fixture hangs from this line or ring: within reach of it on the plan and of its height."""
+    place = _place(fixture)
+    return place is not None and _reach(kind, item, place) is not None
+
+
+def hung_fixtures(shell: Optional[Dict[str, Any]], kind: str, index: int, fixtures: Sequence[Any]) -> List[Any]:
+    """The fixtures hung on one line or ring of a room, in the order they were given.
+
+    A fixture within reach of more than one of the room's lines and rings
+    hangs on the nearest, and on the one listed first when two are as near:
+    where two trusses cross, each keeps its own lights.
+    """
+    if kind not in HANGING_KINDS or not isinstance(shell, dict):
+        return []
+    hangers: List[Tuple[str, int, Any]] = [
+        (list_name, place, item)
+        for list_name in HANGING_KINDS
+        for place, item in enumerate(shell.get(list_name) if isinstance(shell.get(list_name), list) else [])
+    ]
+    hung: List[Any] = []
+    for fixture in fixtures:
+        place = _place(fixture)
+        if place is None:
+            continue
+        best: Optional[Tuple[float, str, int]] = None
+        for list_name, at, item in hangers:
+            off = _reach(list_name, item, place)
+            if off is not None and (best is None or off < best[0] - 1e-9):
+                best = (off, list_name, at)
+        if best is not None and (best[1], best[2]) == (kind, index):
+            hung.append(fixture)
+    return hung
+
+
+def _stands(item: Any) -> bool:
+    """Whether a raised area is one fixtures can stand on: every number there, and a size."""
+    if not isinstance(item, dict):
+        return False
+    values = [item.get(key) for key in ("center_x", "center_z", "width", "depth", "height")]
+    return all(_number(value) for value in values) and values[2] > 0 and values[3] > 0 and values[4] > 0
+
+
+def _top(item: Dict[str, Any]) -> float:
+    """A raised area's top surface above the floor."""
+    return base_of(item) + float(item["height"])
+
+
+def _across_and_back(item: Dict[str, Any], x: float, z: float) -> Tuple[float, float]:
+    """How far a point on the plan is from a raised area's middle along its width and along its depth.
+
+    Its own two ways, which are the room's for one that stands square to it
+    and are turned with it for one that stands at a heading.
+    """
+    off_x, off_z = x - float(item["center_x"]), z - float(item["center_z"])
+    heading = area_heading(item)
+    if heading == 0.0:
+        return off_x, off_z
+    cos, sin = math.cos(math.radians(heading)), math.sin(math.radians(heading))
+    return off_x * cos + off_z * sin, -off_x * sin + off_z * cos
+
+
+def _stand_gap(item: Any, place: Tuple[float, float, float]) -> Optional[float]:
+    """How far a fixture is from a raised area's top when it stands on it, else None."""
+    if not _stands(item):
+        return None
+    across, back = _across_and_back(item, place[0], place[2])
+    if abs(across) > float(item["width"]) / 2.0 + STAND_MARGIN_M + 1e-9:
+        return None
+    if abs(back) > float(item["depth"]) / 2.0 + STAND_MARGIN_M + 1e-9:
+        return None
+    above = place[1] - _top(item)
+    if above < -STAND_UNDER_M - 1e-9 or above > STAND_WINDOW_M + 1e-9:
+        return None
+    return abs(above)
+
+
+def _hangs_anywhere(shell: Dict[str, Any], place: Tuple[float, float, float]) -> bool:
+    """Whether a fixture hangs on any line or ring of the room: one that does stands on nothing."""
+    return any(
+        _reach(list_name, item, place) is not None
+        for list_name in HANGING_KINDS
+        for item in (shell.get(list_name) if isinstance(shell.get(list_name), list) else [])
+    )
+
+
+def stands_on(item: Any, fixture: Any) -> bool:
+    """Whether a fixture is over this raised area on the plan and at its top surface. Trusses are not looked at."""
+    place = _place(fixture)
+    return place is not None and _stand_gap(item, place) is not None
+
+
+def standing_fixtures(shell: Optional[Dict[str, Any]], index: int, fixtures: Sequence[Any]) -> List[Any]:
+    """The fixtures standing on one raised area of a room, in the order they were given.
+
+    Floor-standing ones only: a fixture that hangs on a line or ring of the
+    room (`hangs_on`) is the truss's, however low the truss. A fixture over
+    more than one raised area stands on the one whose top it is nearest, and
+    on the one listed first when two are as near: a light on a riser that is
+    on a stage is the riser's.
+    """
+    if not isinstance(shell, dict):
+        return []
+    areas = shell.get(STANDING_KIND) if isinstance(shell.get(STANDING_KIND), list) else []
+    standing: List[Any] = []
+    for fixture in fixtures:
+        place = _place(fixture)
+        if place is None or _hangs_anywhere(shell, place):
+            continue
+        best: Optional[Tuple[float, int]] = None
+        for at, item in enumerate(areas):
+            gap = _stand_gap(item, place)
+            if gap is not None and (best is None or gap < best[0] - 1e-9):
+                best = (gap, at)
+        if best is not None and best[1] == index:
+            standing.append(fixture)
+    return standing
+
+
+def quarter_turned(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
+    """Whether a raised area was given a quarter turn: its width and its depth changed places, and differ."""
+    was_w, was_d, now_w, now_d = (float(v) for v in (before["width"], before["depth"], after["width"], after["depth"]))
+    return abs(was_w - was_d) >= SIZE_OVER_M and abs(now_w - was_d) < SIZE_OVER_M and abs(now_d - was_w) < SIZE_OVER_M
+
+
+def area_turn(before: Dict[str, Any], after: Dict[str, Any]) -> float:
+    """How far a raised area was turned, in degrees clockwise seen from above; 0 for none.
+
+    Two things turn one, and both are added: its sides changed places (a
+    quarter turn clockwise, 90) and its heading changed. A heading is kept
+    over -90 and up to 90, since a rectangle looks the same after half a
+    turn, so a change of heading is taken as the smaller of the two turns
+    that give it: from 80 to -80 is 20 degrees clockwise, not 160 back. A
+    quarter turn is as far one way as the other, and goes the way the heading
+    went: from 0 to 90 is clockwise, as the quarter turn told by the sides
+    is, and from 90 back to 0 takes it back. What stands on the area does
+    have a front, and is swung by this.
+    """
+    turn = 90.0 if quarter_turned(before, after) else 0.0
+    swing = area_heading(after) - area_heading(before)
+    if swing > 90.0:
+        swing -= 180.0
+    elif swing < -90.0:
+        swing += 180.0
+    if abs(swing) >= TURN_OVER_DEG:
+        turn += swing
+    return turn
+
+
+def _swung(off_x: float, off_z: float, degrees: float) -> Tuple[float, float]:
+    """An offset on the plan turned clockwise seen from above (+X towards +Z). A quarter turn is exact."""
+    if degrees == 0.0:
+        return off_x, off_z
+    if degrees == 90.0:
+        # What was stage left of the middle is downstage of it.
+        return -off_z, off_x
+    cos, sin = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+    return off_x * cos - off_z * sin, off_x * sin + off_z * cos
+
+
+def _move_of(fixture: Any, to: Tuple[float, float, float], turn: float) -> Optional[Dict[str, Any]]:
+    """One carried move, {rig_fixture_id, name, from, to}, or None when the fixture would not shift or turn."""
+    x, y, z = _place(fixture)
+    stored_heading = getattr(fixture, "rotation_y", None)
+    heading = float(stored_heading) if _number(stored_heading) else 0.0
+    # rotation_y turns +Z towards +X; a heading seen from above turns +X towards +Z: the other way round.
+    to_heading = _wrap_heading(heading - turn) if turn else stored_heading
+    shifted = max(abs(to[0] - x), abs(to[1] - y), abs(to[2] - z)) >= SHIFT_OVER_M
+    if not shifted and to_heading == stored_heading:
+        return None
+    fixture_id = getattr(fixture, "id", None)
+    return {
+        "rig_fixture_id": fixture_id,
+        "name": getattr(fixture, "name", None) or f"Fixture {fixture_id}",
+        "from": {
+            "x": getattr(fixture, "position_x"), "y": getattr(fixture, "position_y"),
+            "z": getattr(fixture, "position_z"), "rotation_y": stored_heading,
+        },
+        "to": _point((_mm(to[0]), _mm(to[1]), _mm(to[2])) if shifted else (x, y, z), to_heading),
+    }
+
+
+def _stood_moves(
+    shell: Dict[str, Any], index: int, after: Dict[str, Any], fixtures: Sequence[Any],
+    turn: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Where the fixtures standing on a raised area go when it becomes `after`. Nothing is written.
+
+    `turn` is how far it was turned, in degrees clockwise seen from above,
+    where the caller knows (a platform carried by the one under it turns with
+    that one, and a square one's sizes cannot say so); left out, it is read
+    from the sizes and the heading (`area_turn`).
+
+    A fixture keeps its place on the area along the area's own width and
+    depth, which are not the room's once it stands at a heading: its share of
+    each side through a resize, and the same place on the deck through a turn.
+    """
+    items = shell.get(STANDING_KIND)
+    if not isinstance(items, list) or index < 0 or index >= len(items):
+        return []
+    before = items[index]
+    if not _stands(before) or not _stands(after):
+        return []
+    was_x, was_z, now_x, now_z = (float(v) for v in (
+        before["center_x"], before["center_z"], after["center_x"], after["center_z"],
+    ))
+    rise = _top(after) - _top(before)
+    if turn is None:
+        turn = area_turn(before, after)
+    wider = float(after["width"]) / float(before["width"])
+    deeper = float(after["depth"]) / float(before["depth"])
+    if abs(float(after["width"]) - float(before["width"])) < SIZE_OVER_M:
+        wider = 1.0
+    if abs(float(after["depth"]) - float(before["depth"])) < SIZE_OVER_M:
+        deeper = 1.0
+    if quarter_turned(before, after):
+        # Its sides changed places: the deck is the one it was, turned, and nothing on it is spread or closed up.
+        wider = deeper = 1.0
+    if not turn and wider == 1.0 and deeper == 1.0 and abs(rise) < SHIFT_OVER_M and max(
+        abs(now_x - was_x), abs(now_z - was_z),
+    ) < SHIFT_OVER_M:
+        return []
+
+    stood_at = area_heading(before)
+    moves: List[Dict[str, Any]] = []
+    for fixture in standing_fixtures(shell, index, fixtures):
+        x, y, z = _place(fixture)
+        if stood_at == 0.0:
+            across, back = x - was_x, z - was_z
+        else:
+            # Along its width and its depth as it stood, which were not the room's.
+            across, back = _swung(x - was_x, z - was_z, -stood_at)
+        # The same place on the deck, by share of each side, and the deck where and as it now stands.
+        off_x, off_z = _swung(across * wider, back * deeper, stood_at)
+        off_x, off_z = _swung(off_x, off_z, turn)
+        move = _move_of(fixture, (now_x + off_x, y + rise, now_z + off_z), turn)
+        if move is not None:
+            moves.append(move)
+    return moves
+
+
+# ---------------------------------------------------------------------------
+# Raised areas standing on a raised area (slice 20)
+# ---------------------------------------------------------------------------
+
+def _stands_on_area(child: Any, parent: Any) -> bool:
+    """Whether one raised area stands on another: its middle over the other's footprint, its base at the other's top."""
+    if not _stands(child) or not _stands(parent):
+        return False
+    # Over the other's footprint as it stands, at whatever heading that is.
+    across, back = _across_and_back(parent, float(child["center_x"]), float(child["center_z"]))
+    if abs(across) > float(parent["width"]) / 2.0 + 1e-9:
+        return False
+    if abs(back) > float(parent["depth"]) / 2.0 + 1e-9:
+        return False
+    return abs(base_of(child) - _top(parent)) <= STACK_BASE_WINDOW_M + 1e-9
+
+
+def stood_areas(shell: Optional[Dict[str, Any]], index: int) -> List[int]:
+    """The places of the other raised areas standing on one, in the order they are listed.
+
+    A raised area stands on another when the middle of its footprint is inside
+    the other's footprint and its base is within 0.1 m of the other's top. One
+    standing on one of those is taken too (a drum riser on a riser on a
+    stage): the whole stack above goes with what is under it. The area itself
+    is never one of them.
+    """
+    areas = shell.get(STANDING_KIND) if isinstance(shell, dict) else None
+    if not isinstance(areas, list) or index < 0 or index >= len(areas):
+        return []
+    found: List[int] = []
+    under = [index]
+    while under:
+        parent = areas[under.pop()]
+        for at, item in enumerate(areas):
+            if at != index and at not in found and _stands_on_area(item, parent):
+                found.append(at)
+                under.append(at)
+    return sorted(found)
+
+
+def carried_areas(shell: Optional[Dict[str, Any]], index: int, after: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Where the raised areas standing on one go when it becomes `after`. Nothing is written.
+
+    Each is {kind, index, name, turned, turn, item, from, to}: `item` is the
+    area as it is to be stored, `turn` how far it was swung in degrees
+    clockwise seen from above, and `from` and `to` are its middle, sizes and
+    base before and after (and its heading, where it has one either side).
+    The stack is carried as one piece:
+
+    - a **move** shifts each by what the middle of the one under it shifted
+      (a middle brought in by a resize included);
+    - a **height** or **base height** raises or lowers each one's base by what
+      the top moved;
+    - a **quarter turn** swings each a quarter turn clockwise seen from above
+      about the middle of the one that was turned, and swaps its sides;
+    - a **heading** swings each about that middle by what the one under it
+      was turned, and turns its own heading by as much.
+
+    A resize alone moves none of them: they keep their place and their size.
+    One that would not change is left out.
+    """
+    areas = shell.get(STANDING_KIND) if isinstance(shell, dict) else None
+    if not isinstance(areas, list) or index < 0 or index >= len(areas):
+        return []
+    before = areas[index]
+    if not _stands(before) or not _stands(after):
+        return []
+    was_x, was_z, now_x, now_z = (float(v) for v in (
+        before["center_x"], before["center_z"], after["center_x"], after["center_z"],
+    ))
+    rise = _top(after) - _top(before)
+    swapped = quarter_turned(before, after)
+    turn = area_turn(before, after)
+    turned = turn != 0.0
+    # What the heading alone turned it by: a quarter turn is told by the sides, and is in the sides of each.
+    swing = turn - 90.0 if swapped else turn
+    shifted = max(abs(now_x - was_x), abs(now_z - was_z)) >= SHIFT_OVER_M
+    raised = abs(rise) >= SHIFT_OVER_M
+    if not turned and not shifted and not raised:
+        return []
+
+    carried: List[Dict[str, Any]] = []
+    for at in stood_areas(shell, index):
+        child = areas[at]
+        item = copy.deepcopy(child)
+        off_x, off_z = float(child["center_x"]) - was_x, float(child["center_z"]) - was_z
+        if turned:
+            to_x, to_z = _swung(off_x, off_z, turn)
+            item["center_x"], item["center_z"] = _mm(now_x + to_x), _mm(now_z + to_z)
+            if swapped:
+                item["width"], item["depth"] = child["depth"], child["width"]
+            if swing:
+                # It stays square to what it stands on, or as far off square as it was.
+                item["heading_deg"] = clean_heading(area_heading(child) + swing)
+        elif shifted:
+            item["center_x"], item["center_z"] = _mm(now_x + off_x), _mm(now_z + off_z)
+        if raised:
+            # Never under the floor: one that stood a little under the top it stood on comes down to it.
+            item["base_height"] = _mm(max(0.0, base_of(child) + rise))
+        if turned or shifted:
+            _mark(item, MOVED_BY_HAND)
+        if raised:
+            _mark(item, RESIZED_BY_HAND)
+        headed = area_heading(child) != 0.0 or area_heading(item) != 0.0
+        carried.append({
+            "kind": STANDING_KIND, "index": at, "name": item_name(STANDING_KIND, child),
+            "turned": turned, "turn": turn,
+            "item": item, "from": _footprint(child, headed), "to": _footprint(item, headed),
+        })
+    return carried
+
+
+def _footprint(item: Dict[str, Any], headed: bool = False) -> Dict[str, Any]:
+    """Where a raised area is and how big, for an answer: its middle, its sides and its base.
+
+    With `headed`, its heading too: said only for one that stands at a
+    heading before or after, so one square to the room reads as it always did.
+    """
+    footprint = {
+        "center_x": item["center_x"], "center_z": item["center_z"],
+        "width": item["width"], "depth": item["depth"], "base_height": _mm(base_of(item)),
+    }
+    if headed:
+        footprint["heading_deg"] = area_heading(item)
+    return footprint
+
+
+def carried_area_moves(
+    shell: Dict[str, Any], carried: Sequence[Dict[str, Any]], fixtures: Sequence[Any],
+) -> List[List[Dict[str, Any]]]:
+    """Where the fixtures standing on each carried raised area go: one list of moves for each, in their order.
+
+    `shell` is the room before the edit: which fixture stands on which area is
+    read from where everything was. A fixture stands on one area only
+    (`standing_fixtures`), so none is moved twice.
+    """
+    return [
+        _stood_moves(shell, entry["index"], entry["item"], fixtures, turn=entry["turn"])
+        for entry in carried
+    ]
+
+
+def refuse_areas_outside(shell: Dict[str, Any], item: Dict[str, Any], carried: Sequence[Dict[str, Any]]) -> None:
+    """Refuse an edit that would carry a raised area out of the room's box and the margin round it.
+
+    The whole edit is refused, like one that would carry a fixture out. A
+    carried area's middle is held to what a plain move holds one to (the box
+    and 2 m round it), and its top to the ceiling and its base to the most a
+    base can be, which its own row could not otherwise be saved past.
+    """
+    width, depth, ceiling = _room(shell)
+
+    def out(area: Dict[str, Any]) -> bool:
+        return (
+            (width is not None and abs(area["center_x"]) > width / 2.0 + OUTSIDE_MARGIN_M + 1e-9)
+            or (depth is not None and abs(area["center_z"]) > depth / 2.0 + OUTSIDE_MARGIN_M + 1e-9)
+            or (ceiling is not None and _top(area) > ceiling + 1e-9)
+            or base_of(area) > BASE_MAX_M + 1e-9
+        )
+
+    outside = [entry for entry in carried if out(entry["item"])]
+    if not outside:
+        return
+    named = ", ".join(
+        f"{entry['name']} to {_metres(entry['item']['center_x'])}, {_metres(entry['item']['center_z'])} "
+        f"with its top {_metres(_top(entry['item']))} m up"
+        for entry in outside[:NAMED_MAX]
+    )
+    more = len(outside) - NAMED_MAX
+    raise ShellEditError(
+        422,
+        f"That would carry {_areas(len(outside))} standing on {item_name(STANDING_KIND, item)} "
+        f"out of the room and the {_metres(OUTSIDE_MARGIN_M)} m round it, or above the ceiling "
+        f"({named}{f', and {more} more' if more > 0 else ''}; across, depth in metres). "
+        "Nothing was changed. Change the raised area by less, "
+        "or leave what stands on it where it is (carry_fixtures false) and move it afterwards.",
+    )
+
+
+def apply_areas(shell: Dict[str, Any], carried: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """The room with each carried raised area where its entry says. The shell given is not changed."""
+    if not carried:
+        return shell
+    edited = copy.deepcopy(shell)
+    for entry in carried:
+        edited[STANDING_KIND][entry["index"]] = copy.deepcopy(entry["item"])
+    return edited
+
+
+def areas_report(carried: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The carried raised areas as an answer lists them: {kind, index, name, from, to}."""
+    return [{key: entry[key] for key in ("kind", "index", "name", "from", "to")} for entry in carried]
+
+
+def _fold_turn(degrees: float) -> float:
+    """A turn of a line as the smaller of the two that give it: over -90 and up to 90 degrees."""
+    turn = math.fmod(degrees, 180.0)
+    if turn > 90.0:
+        turn -= 180.0
+    elif turn <= -90.0:
+        turn += 180.0
+    return turn
+
+
+def _wrap_heading(degrees: float) -> float:
+    """A fixture's heading over -180 and up to 180 degrees, to a thousandth, with no negative zero."""
+    heading = math.fmod(degrees, 360.0)
+    if heading > 180.0:
+        heading -= 360.0
+    elif heading <= -180.0:
+        heading += 360.0
+    return round(heading, 3) + 0.0
+
+
+def line_turn(before: Dict[str, Any], after: Dict[str, Any]) -> float:
+    """How far a line was turned, in degrees clockwise seen from above; 0 for less than rounding.
+
+    Read from its ends, which are written from stage right to stage left
+    whichever way it was turned: the same line can be stored with its ends
+    swapped, and that is not half a turn.
+    """
+    was = math.degrees(math.atan2(before["z2"] - before["z1"], before["x2"] - before["x1"]))
+    now = math.degrees(math.atan2(after["z2"] - after["z1"], after["x2"] - after["x1"]))
+    turn = _fold_turn(now - was)
+    return turn if abs(turn) >= TURN_OVER_DEG else 0.0
+
+
+def _point(place: Tuple[float, float, float], heading: float) -> Dict[str, float]:
+    return {"x": place[0], "y": place[1], "z": place[2], "rotation_y": heading}
+
+
+def carried_moves(
+    shell: Optional[Dict[str, Any]], kind: str, index: int, after: Dict[str, Any], fixtures: Sequence[Any],
+) -> List[Dict[str, Any]]:
+    """Where the fixtures hung on an item go when it becomes `after`. Nothing is written.
+
+    `shell` is the room before the edit and `after` the item as the edit
+    stored it, so a middle the edit held to the room, or brought in to fit, is
+    the one the fixtures follow. Each move is {rig_fixture_id, name, from, to},
+    `from` and `to` each {x, y, z, rotation_y}; `from` is the fixture's values
+    exactly as stored. A fixture that would not shift is left out.
+
+    For a raised area (`risers`) they are the fixtures standing on it.
+    """
+    if not isinstance(shell, dict):
+        return []
+    if kind == STANDING_KIND:
+        return _stood_moves(shell, index, after, fixtures)
+    if kind not in HANGING_KINDS:
+        return []
+    items = shell.get(kind)
+    if not isinstance(items, list) or index < 0 or index >= len(items):
+        return []
+    before = items[index]
+    if not _usable(kind, before) or not _usable(kind, after):
+        return []
+    if all(before.get(key) == after.get(key) for key in GEOMETRY_KEYS):
+        return []
+
+    rise = float(after["height"]) - float(before["height"])
+    if kind == "truss_lines":
+        was_x, was_z = (before["x1"] + before["x2"]) / 2.0, (before["z1"] + before["z2"]) / 2.0
+        now_x, now_z = (after["x1"] + after["x2"]) / 2.0, (after["z1"] + after["z2"]) / 2.0
+        run_x, run_z = before["x2"] - before["x1"], before["z2"] - before["z1"]
+        was_long = math.hypot(run_x, run_z)
+        now_long = math.hypot(after["x2"] - after["x1"], after["z2"] - after["z1"])
+        stretch = now_long / was_long if abs(now_long - was_long) >= SIZE_OVER_M else 1.0
+        turn = line_turn(before, after)
+        # Along the line as it was, and square to it; then the same two as the line now runs.
+        along_x, along_z = run_x / was_long, run_z / was_long
+        cos, sin = math.cos(math.radians(turn)), math.sin(math.radians(turn))
+        to_along_x, to_along_z = along_x * cos - along_z * sin, along_x * sin + along_z * cos
+    else:
+        was_x, was_z, now_x, now_z = before["center_x"], before["center_z"], after["center_x"], after["center_z"]
+        grow = after["radius"] - before["radius"] if abs(after["radius"] - before["radius"]) >= SIZE_OVER_M else 0.0
+        turn = 0.0
+
+    moves: List[Dict[str, Any]] = []
+    for fixture in hung_fixtures(shell, kind, index, fixtures):
+        x, y, z = _place(fixture)
+        off_x, off_z = x - was_x, z - was_z
+        if kind == "truss_lines":
+            along = (off_x * along_x + off_z * along_z) * stretch
+            aside = -off_x * along_z + off_z * along_x
+            to_x = now_x + along * to_along_x - aside * to_along_z
+            to_z = now_z + along * to_along_z + aside * to_along_x
+        else:
+            out = math.hypot(off_x, off_z)
+            # At the very middle of a ring there is no angle to keep.
+            share = max(0.0, out + grow) / out if out > 1e-9 else 0.0
+            to_x, to_z = now_x + off_x * share, now_z + off_z * share
+        to_y = y + rise
+
+        stored_heading = getattr(fixture, "rotation_y", None)
+        heading = float(stored_heading) if _number(stored_heading) else 0.0
+        # rotation_y turns +Z towards +X; a line's heading turns +X towards +Z: the other way round.
+        to_heading = _wrap_heading(heading - turn) if turn else stored_heading
+
+        shifted = max(abs(to_x - x), abs(to_y - y), abs(to_z - z)) >= SHIFT_OVER_M
+        if not shifted and to_heading == stored_heading:
+            continue
+        fixture_id = getattr(fixture, "id", None)
+        moves.append({
+            "rig_fixture_id": fixture_id,
+            "name": getattr(fixture, "name", None) or f"Fixture {fixture_id}",
+            "from": {
+                "x": getattr(fixture, "position_x"), "y": getattr(fixture, "position_y"),
+                "z": getattr(fixture, "position_z"), "rotation_y": stored_heading,
+            },
+            "to": _point((_mm(to_x), _mm(to_y), _mm(to_z)) if shifted else (x, y, z), to_heading),
+        })
+    return moves
+
+
+def _how(kind: str) -> str:
+    """How a fixture belongs to an item of this list: it stands on a raised area and is hung on a truss."""
+    return "standing on" if kind == STANDING_KIND else "hung on"
+
+
+def refuse_outside(shell: Dict[str, Any], kind: str, item: Dict[str, Any], moves: Sequence[Dict[str, Any]]) -> None:
+    """Refuse an edit that would carry a fixture out of the room's box and the margin round it, or through the floor.
+
+    The whole edit is refused, the truss's included: half a row carried and
+    half left behind is worse than neither. A room with no size along an axis
+    holds nothing along it.
+    """
+    width, depth, ceiling = _room(shell)
+
+    def out(to: Dict[str, float]) -> bool:
+        return (
+            (width is not None and abs(to["x"]) > width / 2.0 + OUTSIDE_MARGIN_M + 1e-9)
+            or (depth is not None and abs(to["z"]) > depth / 2.0 + OUTSIDE_MARGIN_M + 1e-9)
+            or to["y"] < -1e-9
+            or (ceiling is not None and to["y"] > ceiling + OUTSIDE_MARGIN_M + 1e-9)
+        )
+
+    outside = [move for move in moves if out(move["to"])]
+    if not outside:
+        return
+    named = ", ".join(
+        f"{move['name']} to {_metres(move['to']['x'])}, {_metres(move['to']['y'])}, {_metres(move['to']['z'])}"
+        for move in outside[:NAMED_MAX]
+    )
+    more = len(outside) - NAMED_MAX
+    count = len(outside)
+    raise ShellEditError(
+        422,
+        f"That would carry {count} fixture{'' if count == 1 else 's'} {_how(kind)} {item_name(kind, item)} "
+        f"out of the room and the {_metres(OUTSIDE_MARGIN_M)} m round it, or through the floor "
+        f"({named}{f', and {more} more' if more > 0 else ''}; across, height, depth in metres). "
+        f"Nothing was changed. Change the {KINDS[kind]} by less, "
+        "or leave its fixtures where they are (carry_fixtures false) and move them afterwards.",
+    )
+
+
+def apply_moves(fixtures: Sequence[Any], moves: Sequence[Dict[str, Any]]) -> None:
+    """Put each carried fixture where its move says. Its position and heading only: no tag, no patch."""
+    by_id = {getattr(fixture, "id", None): fixture for fixture in fixtures}
+    for move in moves:
+        fixture, to = by_id[move["rig_fixture_id"]], move["to"]
+        fixture.position_x, fixture.position_y, fixture.position_z = to["x"], to["y"], to["z"]
+        if to["rotation_y"] != move["from"]["rotation_y"]:
+            fixture.rotation_y = to["rotation_y"]
+
+
+def put_back(fixtures: Sequence[Any], moves: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Take back the moves an undone edit carried: (the fixtures put back, the ones left alone and why).
+
+    A fixture goes back to exactly what it had (`from`), but only while it
+    still stands where the edit left it. One a person has moved since, or
+    taken out of the rig, is left alone and reported, as the scan's own undo
+    does (undo.py): an undo takes back the edit, not what was done after it.
+    """
+    by_id = {getattr(fixture, "id", None): fixture for fixture in fixtures}
+    restored: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    for move in moves if isinstance(moves, list) else []:
+        if not isinstance(move, dict):
+            continue
+        fixture_id = move.get("rig_fixture_id")
+        fixture = by_id.get(fixture_id)
+        name = getattr(fixture, "name", None) or move.get("name") or f"Fixture {fixture_id}"
+
+        def skip(reason: str) -> None:
+            skipped.append({"rig_fixture_id": fixture_id, "name": name, "reason": reason})
+
+        if fixture is None:
+            skip("it is no longer in the rig")
+            continue
+        came_from, went_to = move.get("from"), move.get("to")
+        if not isinstance(came_from, dict) or not isinstance(went_to, dict) or not all(
+            _number(point.get(key)) for point in (came_from, went_to) for key in ("x", "y", "z")
+        ):
+            skip("the record of its move cannot be read")
+            continue
+        here = _place(fixture)
+        if here is None or any(abs(here[n] - went_to[key]) > SAME_PLACE_M for n, key in enumerate(("x", "y", "z"))):
+            skip("it was moved since")
+            continue
+        fixture.position_x, fixture.position_y, fixture.position_z = came_from["x"], came_from["y"], came_from["z"]
+        if came_from.get("rotation_y") != went_to.get("rotation_y"):
+            fixture.rotation_y = came_from.get("rotation_y")
+        restored.append({"rig_fixture_id": fixture_id, "name": name, "from": went_to, "to": came_from})
+    return restored, skipped
+
+
+def _lights(count: int) -> str:
+    return f"{count} fixture{'' if count == 1 else 's'}"
+
+
+def _areas(count: int) -> str:
+    return f"{count} raised area{'' if count == 1 else 's'}"
+
+
+def carried_words(kind: str, item: Dict[str, Any], count: int, asked: bool, areas: int = 0) -> str:
+    """One sentence on what an edit did to the fixtures, for its answer.
+
+    `areas` is how many raised areas standing on a raised area went with it;
+    `count` then takes in the fixtures standing on those.
+    """
+    if kind not in HANGING_KINDS and kind != STANDING_KIND:
+        return "No fixture was moved."
+    if not asked:
+        return f"The fixtures {_how(kind)} {item_name(kind, item)} were left where they are, as asked."
+    if areas:
+        name = item_name(kind, item)
+        if count == 0:
+            return f"{_areas(areas)} standing on {name} moved with it. No fixture had to move."
+        return (
+            f"{_lights(count)} standing on {name}, or on what stands on it, moved with it. "
+            f"{_areas(areas)} standing on it moved with it too."
+        )
+    if count == 0:
+        return f"No fixture was moved: none that {'stands' if kind == STANDING_KIND else 'hangs'} on it had to move."
+    return f"{_lights(count)} {_how(kind)} {item_name(kind, item)} moved with it."
+
+
+def put_back_words(restored: int, skipped: int, kind: Optional[str] = None) -> str:
+    """One sentence on what an undo did to the fixtures an edit carried. `kind` is the list the edited item was in."""
+    if restored == 0 and skipped == 0:
+        return "No fixture was moved."
+    was = "stood" if kind == STANDING_KIND else "hung"
+    parts = [
+        f"{_lights(restored)} put back where {'it' if restored == 1 else 'they'} {was} before it."
+        if restored else "No fixture was put back."
+    ]
+    if skipped:
+        parts.append(f"{_lights(skipped)} left alone, because {'it has' if skipped == 1 else 'they have'} been moved since.")
+    return " ".join(parts)

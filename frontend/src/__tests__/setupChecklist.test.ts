@@ -40,7 +40,7 @@ describe('buildSetupSteps', () => {
     expect(isReadyForShow(steps)).toBe(false);
   });
 
-  it('says a restart is needed when the active rig is not the one the engine runs', () => {
+  it('points at the Rigs page when the active rig is not the one the engine runs', () => {
     const steps = buildSetupSteps({
       effects: effects(),
       activeRig: { id: 9, name: 'Patio' },
@@ -49,7 +49,9 @@ describe('buildSetupSteps', () => {
     });
     const rig = stepFor('rig', steps);
     expect(rig.state).toBe('warn');
-    expect(rig.detail).toContain('Restart the box');
+    expect(rig.detail).toContain('Apply to show');
+    expect(rig.detail).not.toContain('Restart');
+    expect(rig.link?.to).toBe('/rigs');
   });
 
   it('points at the audio input when no feed is captured', () => {

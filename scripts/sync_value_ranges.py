@@ -800,6 +800,19 @@ def run(dry_run: bool, offline: bool, cache_dir: Path) -> Dict[str, Any]:
     return report
 
 
+ASSUMED_MARK = "(assumed)"
+
+
+def is_assumed(ranges: Any) -> bool:
+    """Whether every range on a channel is a marked, hand-entered assumption."""
+    if not isinstance(ranges, list) or not ranges:
+        return False
+    return all(
+        isinstance(row, dict) and ASSUMED_MARK in str(row.get("name", "")).lower()
+        for row in ranges
+    )
+
+
 def summarise(report: Dict[str, Any]) -> Dict[str, Any]:
     total_channels = 0
     populated = 0
@@ -813,7 +826,9 @@ def summarise(report: Dict[str, Any]) -> Dict[str, Any]:
                 kind = channel.get("channel_type", "other")
                 bucket = by_type.setdefault(kind, [0, 0])
                 bucket[0] += 1
-                if channel.get("value_ranges"):
+                # Hand-entered assumptions (VALUE_RANGES_ASSUMED.md) are not
+                # sourced data and must not be counted as if they were.
+                if channel.get("value_ranges") and not is_assumed(channel["value_ranges"]):
                     populated += 1
                     bucket[1] += 1
     matched = sum(1 for e in report["profiles"].values() if e["ofl_key"])
@@ -859,6 +874,9 @@ def write_provenance(report: Dict[str, Any]) -> None:
     add("from a similar fixture, or filled in with a plausible default. Where a channel")
     add("could not be sourced it carries no `value_ranges` at all - an empty gap is a")
     add("known unknown, a guessed slot is a defect that reaches a venue.")
+    add("")
+    add("Ranges marked `(assumed)` are a separate, hand-entered set that this file")
+    add("neither counts nor describes; see `VALUE_RANGES_ASSUMED.md`.")
     add("")
     add("## Coverage")
     add("")

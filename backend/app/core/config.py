@@ -141,11 +141,31 @@ class Settings(BaseSettings):
     # "never black the room as a side effect". True sends zeros to every
     # universe so nothing - a running strobe included - stays latched on.
     DMX_BLACKOUT_ON_STOP: bool = False
+    # If the show engine hangs or dies while output is still being sent, the
+    # rig is black within this many seconds of the engine's last frame instead
+    # of frozen on it. Light holds for the first half, then fades. A look that
+    # merely sits still is not a hang. Zero or nonsense means the default, 2.0.
+    DMX_WATCHDOG_SECONDS: float = 2.0
     # Whether the built-in demo rig (used when nothing is patched yet) is sent
     # to the network. Off: on a fresh install the venue's own fixtures, hazers
     # and effects included, would receive a show written for a different patch.
     # Turn on to watch the demo in previs software.
     DEMO_RIG_DMX_OUTPUT: bool = False
+
+    # Idle look. Short silences in a set stay black; once the audio has been
+    # below the silence threshold for this many seconds the rig fades to a
+    # gentle static look, and back to the show when music returns. Zero or a
+    # negative number switches it off and silence stays black for good.
+    IDLE_LOOK_AFTER_SECONDS: float = 60.0
+    IDLE_LOOK_FADE_SECONDS: float = 3.0
+    # warm_amber, warm_white, cool_blue or song_colour (the current song's
+    # colour, drifting slowly). An unknown name falls back to warm_amber.
+    IDLE_LOOK_NAME: str = "warm_amber"
+    # The dimmer the look sits at, 0-1. The grand master still scales it.
+    IDLE_LOOK_LEVEL: float = 0.35
+    # How much sound it takes to count as music coming back. A click or a
+    # cough shorter than this leaves the idle look up.
+    IDLE_LOOK_RESUME_SECONDS: float = 0.5
 
     # WebSocket
     WS_HEARTBEAT_INTERVAL: int = 30

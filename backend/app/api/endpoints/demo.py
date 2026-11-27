@@ -3,16 +3,54 @@ Demo Simulation and Venue Preset API Endpoints
 Controls the demo mode for showcasing the lighting system without live audio.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
 
+from . import console_export
 from ...schemas.audio import engine_energy, programme_level
 from ...services.demo.demo_simulation import DemoSimulation, DemoConfig
 from ...services.demo.venue_presets import VENUE_PRESETS, VenuePreset, create_venue_rig
+from ...services.lighting.pro_effects import ACCENT_OFF_POLICIES, ACCENT_OFF_VENUES
 from ...services.effects.fixture_groups import canonical_channel_name
 
 router = APIRouter()
+
+DEFAULT_DEMO_PRESET = "liv_miami_approx"
+
+
+def _live_rig(http_request: Optional[Request]) -> Optional[dict]:
+    if http_request is None:
+        return None
+    return getattr(http_request.app.state, "live_rig", None)
+
+
+def _refuse_over_a_patched_rig(http_request: Optional[Request]) -> None:
+    """A demo rig must never replace a rig the venue patched.
+
+    The demo's fixtures sit at the demo's addresses. Installed over a live rig
+    they are sent to the venue's own fixtures, on universes that rig may not
+    even own. The wire audit of 2026-11 measured exactly that: 256 foreign
+    channels on universe 0 and 200 on universe 1 from one call.
+    """
+    live = _live_rig(http_request)
+    if live is not None and not live.get("demo", True):
+        raise HTTPException(
+            409,
+            f"The rig '{live.get('name') or 'patched rig'}' is live. A demo rig cannot be "
+            "applied over it: it would send the demo's patch to the venue's fixtures.",
+        )
+
+
+def _record_demo_rig(http_request: Optional[Request], preset_name: str, fixture_count: int) -> None:
+    if http_request is not None:
+        http_request.app.state.live_rig = {
+            "id": None, "name": preset_name, "demo": True, "fixtures": fixture_count,
+        }
+        # The engine was handed the demo rig directly, so the swap is counted
+        # here: an open 3D view reads the change of version as "ask again".
+        from ...services.rig.live_rig import bump_live_rig_version
+        bump_live_rig_version(http_request.app)
 
 # Global demo simulation instance
 _demo: Optional[DemoSimulation] = None
@@ -48,8 +86,29 @@ class DemoSpeedRequest(BaseModel):
 
 # === Demo Simulation Endpoints ===
 
+
+def enable_first_demo_accents(engine) -> None:
+    """Turn accents on for the first demo (Q9).
+
+    Accents stay off when the safety policy is no_strobe or the venue mode is
+    theatre / broadcast / corporate. A first demo must run them: lift a
+    no_strobe policy to conservative (the same caps the server starts with)
+    and a venue that forbids accents to club. A performance profile or a
+    concert/club venue is left as it is. The no_strobe switch remains
+    available after the demo; this only sets the demo's starting posture.
+    """
+    if engine is None:
+        return
+    policy = str(getattr(engine.config, "accessibility_mode", "") or "").strip().lower()
+    if policy in ACCENT_OFF_POLICIES:
+        engine.set_safety_profile("conservative")
+    venue = str(getattr(engine.config, "venue_mode", "") or "").strip().lower()
+    if venue in ACCENT_OFF_VENUES:
+        engine.config.venue_mode = "club"
+    engine.set_strobe_layer_enabled(True)
+
 @router.post("/demo/start")
-async def start_demo(request: DemoStartRequest):
+async def start_demo(request: DemoStartRequest, http_request: Request = None):
     """Start the demo simulation.
 
     Generates synthetic audio data to drive the lighting system through a
@@ -59,6 +118,7 @@ async def start_demo(request: DemoStartRequest):
 
     # Apply venue preset if requested
     if request.venue_preset:
+        _refuse_over_a_patched_rig(http_request)
         if request.venue_preset not in VENUE_PRESETS:
             raise HTTPException(400, f"Unknown venue preset: {request.venue_preset}. "
                                 f"Available: {list(VENUE_PRESETS.keys())}")
@@ -66,6 +126,7 @@ async def start_demo(request: DemoStartRequest):
             manager, preset = create_venue_rig(request.venue_preset)
             if manager:
                 _effects_engine.set_fixture_manager(manager)
+                _record_demo_rig(http_request, request.venue_preset, len(preset.fixtures))
                 # Apply default genre from venue
                 from ...services.lighting.genre_profiles import Genre
                 try:
@@ -88,7 +149,7 @@ async def start_demo(request: DemoStartRequest):
         _effects_engine.config.auto_mode = True
         _effects_engine.config.movement_enabled = True
         _effects_engine.config.dimmer_enabled = True
-        _effects_engine.set_strobe_layer_enabled(True)
+        enable_first_demo_accents(_effects_engine)
         _effects_engine.config.color_enabled = True
 
         # Set genre
@@ -265,12 +326,18 @@ async def get_venue_preset(preset_name: str):
 
 
 @router.get("/demo/rig")
-async def get_demo_rig(preset: str = "pro_beam_room"):
+async def get_demo_rig(preset: Optional[str] = None, request: Request = None):
     """Get a demo rig as a Rig-compatible JSON for the 3D visualizer.
 
     This returns fixture data shaped like the frontend's Rig type so the
     visualizer can render without needing a database rig.
     """
+    if not preset:
+        # No name asked for: the demo rig the engine is running right now, so
+        # the visualizer draws the rig whose state it is being sent.
+        live = _live_rig(request)
+        preset = live.get("name") if (live and live.get("demo") and live.get("name") in VENUE_PRESETS) \
+            else DEFAULT_DEMO_PRESET
     venue = VENUE_PRESETS.get(preset)
     if venue is None:
         raise HTTPException(404, f"Unknown preset: {preset}. Available: {list(VENUE_PRESETS.keys())}")
@@ -282,6 +349,7 @@ async def get_demo_rig(preset: str = "pro_beam_room"):
         "bar": "led_bar",
         "strobe": "strobe",
         "spot": "spot",
+        "par": "led_par",
     }
 
     # Channel maps per fixture type (key → 1-indexed channel_number)
@@ -330,9 +398,9 @@ async def get_demo_rig(preset: str = "pro_beam_room"):
             "position_x": f.x,
             "position_y": f.y,
             "position_z": f.z,
-            "rotation_x": 0,
-            "rotation_y": 0,
-            "rotation_z": 0,
+            "rotation_x": f.rotation[0],
+            "rotation_y": f.rotation[1],
+            "rotation_z": f.rotation[2],
             "group_name": f.fixture_type,
             "tags": [f.fixture_type],
             "is_active": True,
@@ -378,14 +446,67 @@ async def get_demo_rig(preset: str = "pro_beam_room"):
         "created_by": "demo",
         "is_active": True,
         "fixtures": rig_fixtures,
+        # The room round the rig, where the preset describes one. Scenery for
+        # the 3D view; a database rig has no such field.
+        "room_shell": venue.room.to_dict() if venue.room else None,
     }
 
 
+# === Demo rig back to a console: grandMA2 and MVR. See docs/CONSOLE_EXPORT.md. ===
+
+def _export_preset(preset_name: str):
+    """A demo preset as every console export reads it, or a 404.
+
+    Built from the same FixtureSpec list /demo/rig serves to the 3D view and
+    create_venue_rig hands to the engine.
+    """
+    from ...services.console_export.model import from_preset
+
+    venue = VENUE_PRESETS.get(preset_name)
+    if venue is None:
+        raise HTTPException(404, f"Venue preset not found: {preset_name}. "
+                            f"Available: {list(VENUE_PRESETS.keys())}")
+    return from_preset(venue)
+
+
+@router.get("/venues/presets/{preset_name}/export/console-summary")
+async def export_preset_console_summary(preset_name: str):
+    """What a console export of this demo preset holds, and what it leaves out."""
+    return console_export.summary(_export_preset(preset_name))
+
+
+@router.get("/venues/presets/{preset_name}/export/ma2-xml")
+async def export_preset_ma2_xml(preset_name: str, mark_names: bool = console_export.MARK_NAMES):
+    """Export a demo preset as a grandMA2 fixture layer XML."""
+    return console_export.ma2_xml_response(_export_preset(preset_name), mark_names)
+
+
+@router.get("/venues/presets/{preset_name}/export/ma2-macro")
+async def export_preset_ma2_macro(
+    preset_name: str,
+    first_group: int = console_export.FIRST_GROUP,
+    include: str = console_export.INCLUDE,
+    notes: bool = console_export.NOTES,
+    mark_names: bool = console_export.MARK_NAMES,
+):
+    """Export a demo preset's patch, labels and groups as grandMA2 command-line text."""
+    return console_export.ma2_script_response(
+        _export_preset(preset_name), first_group, include, notes, mark_names
+    )
+
+
+@router.get("/venues/presets/{preset_name}/export/mvr")
+async def export_preset_mvr(preset_name: str, mark_names: bool = console_export.MARK_NAMES):
+    """Export a demo preset as an MVR for MA3D or Capture."""
+    return console_export.mvr_response(_export_preset(preset_name), mark_names)
+
+
 @router.post("/venues/presets/{preset_name}/apply")
-async def apply_venue_preset(preset_name: str):
+async def apply_venue_preset(preset_name: str, request: Request = None):
     """Apply a venue preset - creates the rig and configures the system."""
     if _effects_engine is None:
         raise HTTPException(503, "Effects engine not initialized")
+    _refuse_over_a_patched_rig(request)
 
     manager, preset = create_venue_rig(preset_name)
     if manager is None:
@@ -419,6 +540,8 @@ async def apply_venue_preset(preset_name: str):
         pass
 
     _effects_engine.config.bpm = preset.default_bpm
+    enable_first_demo_accents(_effects_engine)
+    _record_demo_rig(request, preset_name, len(preset.fixtures))
 
     return {
         "status": "ok",

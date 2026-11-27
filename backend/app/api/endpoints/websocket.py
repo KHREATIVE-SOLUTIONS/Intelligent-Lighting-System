@@ -18,6 +18,7 @@ import numpy as np
 from ...core.config import settings
 from ...core.security import verify_token
 from ...schemas.audio import engine_energy, programme_level
+from ...services.effects.fixture_groups import profile_range_values
 from ...services.ml.training_recorder import get_recorder
 
 router = APIRouter()
@@ -302,6 +303,76 @@ def collect_dmx_frames(fixtures) -> Dict[int, List[int]]:
     return {int(u): frame for u, frame in frames.items()}
 
 
+def collect_output_frames(engine) -> Dict[int, List[int]]:
+    """The frames the engine hands to its DMX output: universe -> 512 values.
+
+    Rendered with the engine's own output master, exactly as `_emit_dmx` does,
+    so the grand master and a latched blackout are in them. This is what the
+    3D view draws. `collect_dmx_frames` renders at full and would show a lit
+    rig through a blackout.
+
+    Read-only: it renders from fixture state and touches neither the DMX
+    controller nor the wire.
+    """
+    fixtures = engine.fixtures
+    master = getattr(engine, 'output_master', 1.0)
+    get_frames = getattr(fixtures, 'get_dmx_frames', None)
+    frames = None
+    if callable(get_frames):
+        try:
+            frames = get_frames(master=master)
+        except TypeError:
+            # A stand-in rig with no master argument.
+            frames = get_frames()
+    if not frames:
+        frames = {}
+        for universe in fixture_universes(fixtures) or [0]:
+            try:
+                frames[universe] = fixtures.get_dmx_frame(universe=universe, master=master)
+            except TypeError:
+                frames[universe] = fixtures.get_dmx_frame(universe=universe)
+    return {int(u): frame for u, frame in frames.items()}
+
+
+# Says whether the engine's frames are reaching the DMX controller. Set by the
+# application at startup; None until then, and in tests that build no app.
+_wire_probe = None
+
+
+def set_wire_probe(probe) -> None:
+    """Register a no-argument callable that is true while engine output reaches the wire."""
+    global _wire_probe
+    _wire_probe = probe
+
+
+def engine_output_on_wire(app_state, engine) -> bool:
+    """True while the engine's frames are being handed to a DMX controller.
+
+    False for a demo rig held off the wire, with no controller, and while the
+    identify walkthrough has taken the show off the output.
+    """
+    if engine is None or getattr(app_state, 'dmx_controller', None) is None:
+        return False
+    if getattr(app_state, 'dmx_output_held', False):
+        return False
+    return getattr(engine, '_dmx_callback', None) is not None
+
+
+def output_status(engine) -> Dict[str, Any]:
+    """What stands between the look and the frames sent with it, for the 3D view."""
+    on_wire = None
+    if _wire_probe is not None:
+        try:
+            on_wire = bool(_wire_probe())
+        except Exception:
+            on_wire = None
+    return {
+        'master': float(getattr(engine, 'grand_master', 1.0)),
+        'blackout': bool(getattr(engine, 'blackout_active', False)),
+        'on_wire': on_wire,
+    }
+
+
 def primary_dmx_universe(frames: Dict[int, List[int]]) -> int:
     """The universe whose frame stands in for the rig in single-universe payloads."""
     if 0 in frames or not frames:
@@ -461,8 +532,9 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         ml_data=ml_data,
     )
 
-    # Get the current DMX frames (already updated by effects engine loop)
-    dmx_frames = collect_dmx_frames(effects_engine.fixtures)
+    # The frames the engine outputs (already updated by the effects engine
+    # loop), grand master and blackout applied: what the 3D view draws.
+    dmx_frames = collect_output_frames(effects_engine)
     primary_universe = primary_dmx_universe(dmx_frames)
     dmx_frame = dmx_frames.get(primary_universe, [0] * 512)
 
@@ -500,10 +572,12 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
                 is_beat=is_beat,
                 beat_position=beat_position
             )
-            # Record lighting state
+            # Record lighting state. Training data is the look at full, as it
+            # always was: an operator's master or blackout is not part of it.
+            look_frames = collect_dmx_frames(effects_engine.fixtures)
             recorder.record_lighting(
                 fixtures=fixture_states,
-                dmx_frame=dmx_frame
+                dmx_frame=look_frames.get(primary_dmx_universe(look_frames), [0] * 512)
             )
     except Exception:
         pass  # Don't let recording errors affect main pipeline
@@ -529,11 +603,16 @@ def update_effects_engine_audio(effects_engine, analysis: dict) -> dict:
         'dmx_frame': dmx_frame,
         'dmx_universe': primary_universe,
         'dmx_frames': serialize_dmx_frames(dmx_frames),
+        'output': output_status(effects_engine),
         'fixtures': fixture_states,
         'state': 'auto' if effects_engine.config.auto_mode else 'manual',
         'movement': active_lfo,  # Show active LFO effect
         'dimmer': 'manual'
     }
+    try:
+        result.update(effects_engine.idle_look_status())
+    except Exception:
+        pass
     try:
         from ...services.lighting.look_spec import build_lighting_look_spec
         result['look_spec'] = build_lighting_look_spec(effects_engine).model_dump(mode="json")
@@ -958,8 +1037,20 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
     state['pan_mod'] += (pan_signal - state['pan_mod']) * config.lowpass_pan
     state['tilt_mod'] += (tilt_signal - state['tilt_mod']) * config.lowpass_tilt
 
-    # Open shutter
-    shutter_open = 255
+    # Which byte opens a shutter or rests a strobe channel is the profile's to
+    # say. The numbers passed in below are what is sent when it says nothing.
+    def open_byte(fixture, channel_name: str, fallback: int) -> int:
+        ranges = profile_range_values(fixture, channel_name)
+        return ranges.open_byte() if ranges is not None else fallback
+
+    def dark_byte(fixture, channel_name: str, fallback: int) -> int:
+        ranges = profile_range_values(fixture, channel_name)
+        return ranges.closed_byte() if ranges is not None else fallback
+
+    def strobe_byte(fixture, channel_name: str, fallback: int) -> int:
+        """`fallback` is the rate as a raw byte, 0 being no strobe."""
+        ranges = profile_range_values(fixture, channel_name)
+        return ranges.strobe_byte(fallback / 255.0) if ranges is not None else fallback
 
     async def write(fixture, channel_name: str, value: float):
         offset = fixture.channels.get(channel_name)
@@ -1003,7 +1094,7 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
             await write(fixture, 'pan', pan_base + mirror * state['pan_mod'])
             await write(fixture, 'tilt', tilt_base + state['tilt_mod'])
             await write(fixture, 'dimmer', dimmer)
-            await write(fixture, 'shutter', shutter_open)
+            await write(fixture, 'shutter', open_byte(fixture, 'shutter', 255))
             await write_color(fixture, dimmer)
 
         washes = roles['washes']
@@ -1015,7 +1106,7 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
             await write(fixture, 'pan', pan_base + mirror * state['pan_mod'] * 0.5)
             await write(fixture, 'tilt', 118 + state['tilt_mod'] * 0.35)
             await write(fixture, 'dimmer', dimmer)
-            await write(fixture, 'shutter', shutter_open)
+            await write(fixture, 'shutter', open_byte(fixture, 'shutter', 255))
             await write_color(fixture, dimmer)
             await write(fixture, 'zoom', zoom)
 
@@ -1030,16 +1121,20 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
                 strobe = 80
 
             await write(fixture, 'dimmer', bar_dimmer)
-            await write(fixture, 'strobe', strobe)
-            await write(fixture, 'shutter', shutter_open)
+            await write(fixture, 'strobe', strobe_byte(fixture, 'strobe', strobe))
+            await write(fixture, 'shutter', open_byte(fixture, 'shutter', 255))
             await write_color(fixture, bar_dimmer)
 
         # Strobes idle dark and only fire on a high-arousal section change.
         firing = arousal > 0.75 and is_section
         for fixture in roles['strobes']:
             await write(fixture, 'dimmer', 255 if firing else 0)
-            await write(fixture, 'strobe', 160 if firing else 0)
-            await write(fixture, 'shutter', shutter_open if firing else 0)
+            if firing:
+                await write(fixture, 'strobe', strobe_byte(fixture, 'strobe', 160))
+                await write(fixture, 'shutter', open_byte(fixture, 'shutter', 255))
+            else:
+                await write(fixture, 'strobe', dark_byte(fixture, 'strobe', 0))
+                await write(fixture, 'shutter', dark_byte(fixture, 'shutter', 0))
             await write_color(fixture, 255 if firing else 0)
 
     except Exception:

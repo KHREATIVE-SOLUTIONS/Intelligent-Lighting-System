@@ -451,7 +451,13 @@ def test_migration_005_preserves_existing_rig_fixture_rows(migration_db):
         assert "zone" not in columns
         select_sql = f"SELECT {', '.join(columns)} FROM rig_fixtures ORDER BY id"
         before = connection.execute(select_sql).fetchall()
-        rigs_before = connection.execute("SELECT * FROM rigs ORDER BY id").fetchall()
+        # By name, as for rig_fixtures: a later migration adds a column to rigs
+        # (006, room_shell), and a row is preserved if what it held is unchanged.
+        rig_columns = _columns(connection, "rigs")
+        assert "room_shell" not in rig_columns
+        assert "room_scan_undo" not in rig_columns
+        rigs_sql = f"SELECT {', '.join(rig_columns)} FROM rigs ORDER BY id"
+        rigs_before = connection.execute(rigs_sql).fetchall()
         assert len(before) == 3
     finally:
         connection.close()
@@ -467,7 +473,28 @@ def test_migration_005_preserves_existing_rig_fixture_rows(migration_db):
         assert connection.execute(select_sql).fetchall() == before, (
             "migration 005 changed rows that were already in the rig"
         )
-        assert connection.execute("SELECT * FROM rigs ORDER BY id").fetchall() == rigs_before
+        assert connection.execute(rigs_sql).fetchall() == rigs_before
+        # Migration 006 adds the room shell and gives no existing rig a room.
+        assert "room_shell" in _columns(connection, "rigs"), (
+            "migration 006 did not add the room_shell column to rigs"
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM rigs WHERE room_shell IS NOT NULL"
+        ).fetchone()[0] == 0, "migration 006 invented a room for an existing rig"
+        # Migration 007 adds the room scan undo record, empty on an existing rig.
+        assert "room_scan_undo" in _columns(connection, "rigs"), (
+            "migration 007 did not add the room_scan_undo column to rigs"
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM rigs WHERE room_scan_undo IS NOT NULL"
+        ).fetchone()[0] == 0, "migration 007 invented an undo record for an existing rig"
+        # Migration 008 adds the record of room edits to undo, empty on an existing rig.
+        assert "room_shell_undo" in _columns(connection, "rigs"), (
+            "migration 008 did not add the room_shell_undo column to rigs"
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM rigs WHERE room_shell_undo IS NOT NULL"
+        ).fetchone()[0] == 0, "migration 008 invented a room edit to undo for an existing rig"
         assert connection.execute(
             "SELECT COUNT(*) FROM rig_fixtures WHERE zone IS NOT NULL"
         ).fetchone()[0] == 0, "migration 005 invented a zone for an existing fixture"

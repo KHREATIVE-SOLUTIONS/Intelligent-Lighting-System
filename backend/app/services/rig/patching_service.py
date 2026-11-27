@@ -13,6 +13,40 @@ logger = logging.getLogger(__name__)
 
 MAX_DMX_CHANNELS = 512
 MAX_UNIVERSES = 16
+# The footprint a fixture with no DMX mode is counted as.
+NO_MODE_CHANNELS = 16
+
+
+def fixture_rows(rig_fixtures) -> List[Dict[str, Any]]:
+    """Rig fixtures as the dicts find_conflicts, auto_patch and the programming audit read.
+
+    `rig_fixtures` need `fixture` and `mode` (with its channels) loaded.
+    """
+    rows = []
+    for rf in rig_fixtures:
+        channel_count = NO_MODE_CHANNELS
+        if rf.mode:
+            channel_count = rf.mode.channel_count
+        rows.append({
+            "id": rf.id,
+            "universe": rf.universe or 0,
+            "dmx_address": rf.dmx_address,
+            "channel_count": channel_count,
+            "is_address_locked": rf.is_address_locked,
+            "name": rf.name,
+            "fixture_type": (
+                rf.fixture.fixture_type.value
+                if rf.fixture and getattr(rf.fixture, "fixture_type", None)
+                else "other"
+            ),
+            "has_mode": rf.mode is not None,
+            "mode_name": rf.mode.name if rf.mode else None,
+            "channel_types": [
+                str(ch.channel_type.value if getattr(ch, "channel_type", None) else "other")
+                for ch in (rf.mode.channels if rf.mode else [])
+            ],
+        })
+    return rows
 
 
 class PatchConflict:

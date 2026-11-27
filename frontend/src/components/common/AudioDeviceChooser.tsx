@@ -56,10 +56,44 @@ export function sortCaptureDevices(devices: AudioCaptureDevice[]): {
   const loopback = devices.filter((d) => d.is_loopback);
   const pyaudioLoopback = loopback.filter((d) => d.device_type === 'pyaudio_loopback');
   return {
-    inputs: devices.filter((d) => !d.is_loopback && d.max_input_channels > 0),
+    inputs: shareableInputs(devices.filter((d) => !d.is_loopback && d.max_input_channels > 0)),
     // Prefer the PyAudio loopback entries when present; the others duplicate them.
     loopback: pyaudioLoopback.length > 0 ? pyaudioLoopback : loopback,
   };
+}
+
+// Windows lists one line-in once per host API. Kernel streaming and ASIO take
+// the device away from other programs, so the box refuses them; of the ones
+// that share, WASAPI carries the full device name, so show that one when it is
+// there. Other platforms have a single host API and pass through untouched.
+const EXCLUSIVE_HOSTAPI = /wdm[- ]?ks|kernel streaming|asio/i;
+
+function shareableInputs(inputs: AudioCaptureDevice[]): AudioCaptureDevice[] {
+  const onWindows = (d: AudioCaptureDevice) => d.platform === 'win32';
+  const usable = inputs.filter((d) => !(onWindows(d) && EXCLUSIVE_HOSTAPI.test(d.hostapi ?? '')));
+  const isWasapi = (d: AudioCaptureDevice) => onWindows(d) && /wasapi/i.test(d.hostapi ?? '');
+  return usable.some(isWasapi) ? usable.filter((d) => !onWindows(d) || isWasapi(d)) : usable;
+}
+
+// The device to open the chooser on: the one the box remembers (the same on
+// every screen), else the one this browser last started. With nothing
+// remembered, Windows opens on loopback, which was the only thing it could
+// capture before line inputs were accepted: a line-in is something the operator
+// picks, never something a first tap on Start lands on. Elsewhere, the first.
+export function pickInitialDevice(
+  all: AudioCaptureDevice[],
+  remembered: { name?: string | null; hostapi?: string | null },
+  browserName: string | null
+): AudioCaptureDevice | undefined {
+  const byName = (name?: string | null) => (name ? all.filter((d) => d.name === name) : []);
+  const onBox = byName(remembered.name);
+  return (
+    onBox.find((d) => d.hostapi === remembered.hostapi) ??
+    onBox[0] ??
+    byName(browserName)[0] ??
+    all.find((d) => d.platform === 'win32' && d.is_loopback) ??
+    all[0]
+  );
 }
 
 export default function AudioDeviceChooser() {
@@ -76,14 +110,20 @@ export default function AudioDeviceChooser() {
   const fetchDevices = useCallback(async () => {
     setRefreshing(true);
     try {
-      const captureDevices = await audioApi.getCaptureDevices();
+      const [captureDevices, boxStatus] = await Promise.all([
+        audioApi.getCaptureDevices(),
+        audioApi.getCaptureStatus().catch(() => null),
+      ]);
       const sorted = sortCaptureDevices(captureDevices);
       const all = [...sorted.inputs, ...sorted.loopback];
       setInputs(sorted.inputs);
       setDevices(sorted.loopback);
       if (all.length > 0) {
-        const remembered = readLastDevice();
-        const match = remembered ? all.find((d) => d.name === remembered) : undefined;
+        const match = pickInitialDevice(
+          all,
+          { name: boxStatus?.remembered_device, hostapi: boxStatus?.remembered_hostapi },
+          readLastDevice()
+        );
         setSelectedDevice((prev) =>
           all.some((d) => d.index === prev) ? prev : (match ?? all[0]).index
         );
@@ -189,7 +229,7 @@ export default function AudioDeviceChooser() {
             <MenuItem value={-1} disabled>
               Select a device...
             </MenuItem>
-            {inputs.length > 0 && <ListSubheader>Inputs (desk feed, mic)</ListSubheader>}
+            {inputs.length > 0 && <ListSubheader>Inputs (line-in, USB interface, mixer, mic)</ListSubheader>}
             {inputs.map((dev) => (
               <MenuItem key={`in-${dev.index}`} value={dev.index}>
                 <MicIcon sx={{ fontSize: 16, mr: 0.5 }} />

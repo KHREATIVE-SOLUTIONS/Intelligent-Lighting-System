@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional
 from xml.etree import ElementTree
 
 from app.models.fixture import FixtureType, ChannelType
+from app.services.fixture_library.xml_safety import parse_xml
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,22 @@ def _resolve_channel_type(attribute: str) -> ChannelType:
     return ChannelType.OTHER
 
 
+def attribute_is_known(attribute: str) -> bool:
+    """Whether this build has a meaning for a GDTF attribute.
+
+    An attribute listed in the map is known even where it is deliberately left
+    unaddressed (NoFunction, the additive cyan/magenta/yellow emitters). One
+    that resolves to nothing is kept on the profile under its own name and
+    typed "other", so the slot is counted and never written.
+    """
+    attribute = (attribute or "").strip()
+    if not attribute:
+        return False
+    if attribute in GDTF_CHANNEL_FUNCTION_MAP:
+        return True
+    return _resolve_channel_type(attribute) is not ChannelType.OTHER
+
+
 def _fine_channel_type(coarse: ChannelType) -> ChannelType:
     """The dedicated fine type for a coarse type, or the coarse type itself."""
     try:
@@ -377,11 +394,7 @@ def parse_gdtf(file_content: bytes) -> Dict[str, Any]:
     except zipfile.BadZipFile:
         raise ValueError("Invalid GDTF file - not a valid ZIP archive")
 
-    # Parse XML
-    try:
-        root = ElementTree.fromstring(xml_content)
-    except ElementTree.ParseError as e:
-        raise ValueError(f"Invalid GDTF XML: {e}")
+    root = parse_xml(xml_content, "GDTF XML")
 
     _strip_namespaces(root)
 
@@ -473,6 +486,7 @@ def parse_gdtf(file_content: bytes) -> Dict[str, Any]:
 
             channel_type = _resolve_channel_type(attribute)
             channel_name = attribute or geometry or f"Channel {offsets[0]}"
+            known = attribute_is_known(attribute)
 
             # Track color capabilities
             if channel_type in (ChannelType.RED, ChannelType.GREEN, ChannelType.BLUE):
@@ -500,6 +514,8 @@ def parse_gdtf(file_content: bytes) -> Dict[str, Any]:
                 "is_fine": False,
                 "coarse_channel": None,
                 "value_ranges": _extract_value_ranges(ch_el),
+                "attribute": attribute,
+                "attribute_known": known,
             })
 
             fine_type = _fine_channel_type(channel_type)
@@ -512,6 +528,8 @@ def parse_gdtf(file_content: bytes) -> Dict[str, Any]:
                     "is_fine": True,
                     "coarse_channel": coarse_number,
                     "value_ranges": None,
+                    "attribute": attribute,
+                    "attribute_known": known,
                 })
 
         if slots:
@@ -539,6 +557,10 @@ def parse_gdtf(file_content: bytes) -> Dict[str, Any]:
         "has_color_wheel": has_color_wheel,
         "source": "gdtf",
         "modes": modes,
+        # The type hints a GDTF carries besides its name, as written.
+        "short_name": fixture_type_el.get("ShortName", ""),
+        "long_name": fixture_type_el.get("LongName", ""),
+        "description": fixture_type_el.get("Description", ""),
     }
 
     # Travel the file does not declare is left to the profile default rather than

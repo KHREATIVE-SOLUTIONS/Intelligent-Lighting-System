@@ -1,0 +1,13 @@
+truth: build starts 15.3s, drop 30.3s, track ends 54.3s
+1_cold: sections=[(0.0, 'breakdown'), (2.3, 'drop'), (7.4, 'chorus'), (18.9, 'buildup'), (30.7, 'drop'), (40.0, 'chorus')]
+1_cold: rig level per 5s=[0.03, 0.03, 0.01, 0.04, 0.09, 0.15, 0.42, 0.36, 0.12, 0.11]
+1_cold: mean level 8s before drop=0.136, 8s after=0.404, peak after=1.00
+dense: sections=[(0.0, 'chorus'), (0.1, 'verse'), (5.9, 'chorus')]
+dense: rig level per 5s=[0.12, 0.14, 0.13, 0.14, 0.13, 0.13]
+2_after_dense: sections=[(0.0, 'chorus'), (4.8, 'breakdown'), (23.0, 'verse'), (30.5, 'buildup'), (30.9, 'drop'), (39.8, 'buildup'), (42.1, 'verse')]
+2_after_dense: rig level per 5s=[0.02, 0.01, 0.01, 0.02, 0.05, 0.14, 0.38, 0.33, 0.1, 0.1]
+2_after_dense: mean level 8s before drop=0.120, 8s after=0.370, peak after=1.00
+3_again: sections=[(0.0, 'verse'), (1.2, 'breakdown'), (22.2, 'verse'), (29.9, 'buildup'), (31.0, 'drop'), (53.6, 'verse')]
+3_again: rig level per 5s=[0.01, 0.01, 0.0, 0.02, 0.06, 0.14, 0.39, 0.36, 0.35, 0.34]
+3_again: mean level 8s before drop=0.126, 8s after=0.383, peak after=1.00
+exit=0

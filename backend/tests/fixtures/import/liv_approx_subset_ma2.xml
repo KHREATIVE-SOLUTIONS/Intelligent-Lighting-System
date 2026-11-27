@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MA xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://schemas.malighting.de/grandma2/xml/MA" major_vers="3" minor_vers="9" stream_vers="0">
+  <!-- Authored for the Intelligent Lighting System's import tests from its approximate LIV demo preset. Not a venue's real patch and not a manufacturer's file. -->
+  <Info datetime="2026-01-01T00:00:00" showfile="liv_approx_subset"/>
+  <Layer index="1" name="Mezzanine Spots">
+    <Fixture index="0" name="Mezzanine Spot 1" fixture_id="23">
+      <FixtureType name="2 Elation Design Spot 300E"><No>2</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>353</Address></Patch>
+        <AbsolutePosition>
+          <Location x="-7.5" y="-11" z="4"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="1" name="Mezzanine Spot 2" fixture_id="24">
+      <FixtureType name="2 Elation Design Spot 300E"><No>2</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>365</Address></Patch>
+        <AbsolutePosition>
+          <Location x="-2.5" y="-11" z="4"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="2" name="Mezzanine Spot 3" fixture_id="25">
+      <FixtureType name="2 Elation Design Spot 300E"><No>2</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>377</Address></Patch>
+        <AbsolutePosition>
+          <Location x="2.5" y="-11" z="4"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="3" name="Mezzanine Spot 4" fixture_id="26">
+      <FixtureType name="2 Elation Design Spot 300E"><No>2</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>389</Address></Patch>
+        <AbsolutePosition>
+          <Location x="7.5" y="-11" z="4"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+  </Layer>
+  <Layer index="2" name="Dome Centre Washes">
+    <Fixture index="0" name="Impression Wash 1" fixture_id="27">
+      <FixtureType name="3 Elation Impression RGB"><No>3</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>401</Address></Patch>
+        <AbsolutePosition>
+          <Location x="-3.6" y="1.5" z="3.05"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="1" name="Impression Wash 2" fixture_id="28">
+      <FixtureType name="3 Elation Impression RGB"><No>3</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>415</Address></Patch>
+        <AbsolutePosition>
+          <Location x="-1.2" y="1.5" z="3.05"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="2" name="Impression Wash 3" fixture_id="29">
+      <FixtureType name="3 Elation Impression RGB"><No>3</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>429</Address></Patch>
+        <AbsolutePosition>
+          <Location x="1.2" y="1.5" z="3.05"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="3" name="Impression Wash 4" fixture_id="30">
+      <FixtureType name="3 Elation Impression RGB"><No>3</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>443</Address></Patch>
+        <AbsolutePosition>
+          <Location x="3.6" y="1.5" z="3.05"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="4" name="Impression Wash 5" fixture_id="31">
+      <FixtureType name="3 Elation Impression RGB"><No>3</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>457</Address></Patch>
+        <AbsolutePosition>
+          <Location x="-3.6" y="-1.5" z="3.05"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="5" name="Impression Wash 6" fixture_id="32">
+      <FixtureType name="3 Elation Impression RGB"><No>3</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>471</Address></Patch>
+        <AbsolutePosition>
+          <Location x="-1.2" y="-1.5" z="3.05"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="6" name="Impression Wash 7" fixture_id="33">
+      <FixtureType name="3 Elation Impression RGB"><No>3</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>485</Address></Patch>
+        <AbsolutePosition>
+          <Location x="1.2" y="-1.5" z="3.05"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="7" name="Impression Wash 8" fixture_id="34">
+      <FixtureType name="3 Elation Impression RGB"><No>3</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>499</Address></Patch>
+        <AbsolutePosition>
+          <Location x="3.6" y="-1.5" z="3.05"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+  </Layer>
+  <Layer index="3" name="Strobes">
+    <Fixture index="0" name="Atomic Strobe 1" fixture_id="75">
+      <FixtureType name="4 Martin Atomic 3000 DMX"><No>4</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>993</Address></Patch>
+        <AbsolutePosition>
+          <Location x="-8" y="7.5" z="6.5"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="1" name="Atomic Strobe 2" fixture_id="76">
+      <FixtureType name="4 Martin Atomic 3000 DMX"><No>4</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>997</Address></Patch>
+        <AbsolutePosition>
+          <Location x="8" y="7.5" z="6.5"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="2" name="Atomic Strobe 3" fixture_id="77">
+      <FixtureType name="4 Martin Atomic 3000 DMX"><No>4</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>1001</Address></Patch>
+        <AbsolutePosition>
+          <Location x="-10.5" y="2.5" z="6.5"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="3" name="Atomic Strobe 4" fixture_id="78">
+      <FixtureType name="4 Martin Atomic 3000 DMX"><No>4</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>1005</Address></Patch>
+        <AbsolutePosition>
+          <Location x="10.5" y="2.5" z="6.5"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="4" name="Atomic Strobe 5" fixture_id="79">
+      <FixtureType name="4 Martin Atomic 3000 DMX"><No>4</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>1009</Address></Patch>
+        <AbsolutePosition>
+          <Location x="-10.5" y="-2.5" z="6.5"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="5" name="Atomic Strobe 6" fixture_id="80">
+      <FixtureType name="4 Martin Atomic 3000 DMX"><No>4</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>1013</Address></Patch>
+        <AbsolutePosition>
+          <Location x="10.5" y="-2.5" z="6.5"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="6" name="Atomic Strobe 7" fixture_id="81">
+      <FixtureType name="4 Martin Atomic 3000 DMX"><No>4</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>1017</Address></Patch>
+        <AbsolutePosition>
+          <Location x="-8" y="-7.5" z="6.5"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+    <Fixture index="7" name="Atomic Strobe 8" fixture_id="82">
+      <FixtureType name="4 Martin Atomic 3000 DMX"><No>4</No></FixtureType>
+      <SubFixture index="0" react_to_grandmaster="true" color="ffffff">
+        <Patch><Address>1021</Address></Patch>
+        <AbsolutePosition>
+          <Location x="8" y="-7.5" z="6.5"/>
+          <Rotation x="0" y="0" z="0"/>
+          <Scaling x="1" y="1" z="1"/>
+        </AbsolutePosition>
+      </SubFixture>
+    </Fixture>
+  </Layer>
+</MA>

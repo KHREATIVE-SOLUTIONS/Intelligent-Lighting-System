@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 from app.db.database import get_db
 from app.models.template import RigTemplate
 from app.models.rig import Rig, RigFixture
+from app.services.rig.live_rig import new_rig_is_active
 from app.models.fixture import Fixture, FixtureMode
 from app.services.lighting.key_lighting import parse_zone
 from app.services.rig.fixture_choice import choose_mode, mode_makes_light
@@ -189,7 +190,7 @@ async def apply_template(
         stage_depth=template.stage_depth,
         stage_height=template.stage_height,
         source_format="template",
-        is_active=True,
+        is_active=await new_rig_is_active(db),
     )
     db.add(rig)
     await db.flush()

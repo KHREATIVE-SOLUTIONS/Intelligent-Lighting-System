@@ -76,6 +76,9 @@ backend/data/models/efficientat/
 # Genre night checks: logs and audio clips from real gigs stay on the box.
 genre_check/
 
+# Wire-tier and soak output (databases, backend logs, captures, reports)
+.wire_out/
+
 # Temporary files
 *.tmp
 *.temp
@@ -100,3 +103,12 @@ secret_key
 
 # Local compose overrides (see docker-compose.override.example.yml)
 docker-compose.override.yml
+
+# The audio device the operator last chose; written beside the database
+audio_capture.json
+
+# Runtime logs from local launches
+*.err
+mac_run.log
+audio_cap.log
+visualizer/viz.log

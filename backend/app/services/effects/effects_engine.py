@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .fixture_groups import (
-    Fixture, FixtureGroup, FixtureGroupManager, create_demo_rig
+    Fixture, FixtureGroup, FixtureGroupManager, create_demo_rig, is_strobe_fixture
 )
 from .movement_patterns import (
     MovementEngine, MovementType, StaticLook, MovementParams, MOVEMENT_PRESETS
@@ -38,6 +38,12 @@ from .decision_engine import (
     DecisionEngine, LightingState, AudioState, EffectSelection
 )
 from .lfo_engine import LFOEngine
+from . import live_dimmer
+from . import live_library
+from . import live_looks
+from . import live_moves
+from . import live_roles
+from . import live_strobe
 from ..lighting.section_templates import get_section_template
 from ..lighting.fixture_capabilities import get_capability_profile_for_fixture
 from ..lighting.movement_patterns import PRO_MOVEMENT_PRESETS
@@ -88,6 +94,17 @@ class EffectsConfig:
     silence_threshold: float = 0.02  # RMS below this = silence
     silence_duration_for_song_change: float = 1.5  # Seconds of silence = new song
 
+    # Idle look: what the room shows once the music has been gone a long time.
+    # Shorter silences (a breakdown, a track change) stay black. Zero or less
+    # switches the idle look off. See `_idle_look_step`.
+    idle_look_after_seconds: float = 60.0
+    idle_look_fade_seconds: float = 3.0       # how long the look takes to arrive
+    idle_look_name: str = "warm_amber"        # one of `_IDLE_LOOKS`
+    idle_look_level: float = 0.35             # dimmer the look sits at, 0-1
+    # Sound has to stay above the threshold this long to count as music coming
+    # back. A cough into an open mic or a cable click does not drop the look.
+    idle_look_resume_seconds: float = 0.5
+
     # Move-In-Black (MIB)
     mib_enabled: bool = True
     mib_transition_ms: int = 450
@@ -124,6 +141,19 @@ class EffectsConfig:
     # Research-pack runtime context flags
     accessibility_mode: str = "no_strobe"     # no_strobe | conservative | performance
     venue_mode: str = "concert"               # theatre | broadcast | corporate | concert | club
+    # Seed for the look library's weighted-random choices. None seeds from the
+    # system, so no two nights are alike; a number replays the same show from
+    # the same music, which is how a change is compared before and after.
+    look_seed: Optional[int] = None
+    # Whether a look's own dimmer effect and chase style shape the beams
+    # (live_dimmer). Off, every look is lit by the renderer's one chase, as it
+    # was before; that is also what a look is measured against.
+    look_dimmer_effects: bool = True
+    # Whether a look's strobe mode may slow the drop strobe to a musical rate
+    # (live_strobe). It can only ever lower the rate asked for, inside the
+    # window the renderer already strobes in, under `strobe_hz_cap` as before.
+    # Off, every drop strobes at the renderer's own rate.
+    look_strobe_modes: bool = True
     camera_mode: bool = False
     major_change_min_bars: int = 2
 
@@ -318,35 +348,76 @@ _AMBIENT_DRIFT_HZ = 0.05      # one slow sweep every twenty seconds
 _AMBIENT_PAN_DEG = 10.0
 _AMBIENT_TILT_DEG = 6.0
 
+# Idle look. Silence that keeps arriving is the music stopping, and for a
+# breakdown or a track change the rig stays dark. After a long silence
+# (`idle_look_after_seconds`) nobody is waiting for a drop any more: the set is
+# over or has not begun, and a black room reads as a system that is switched
+# off. The rig then fades to one of these, and back out when music returns.
+#
+# Each look is a colour, the extra emitters that go with it, and whether the
+# heads drift. None of them strobes or moves at tempo. A colour of None is the
+# song's own colour, the look the ambient hold shows.
+_IDLE_LOOKS = {
+    "warm_amber": {"rgb": (1.0, 0.55, 0.12), "amber": 1.0, "white": 0.0, "drift": False},
+    "warm_white": {"rgb": (1.0, 0.78, 0.52), "amber": 0.3, "white": 0.5, "drift": False},
+    "cool_blue": {"rgb": (0.12, 0.32, 1.0), "amber": 0.0, "white": 0.0, "drift": False},
+    "song_colour": {"rgb": None, "amber": 0.0, "white": 0.0, "drift": True},
+}
+_IDLE_LOOK_DEFAULT = "warm_amber"
+_IDLE_FADE_OUT_S = 1.0
+# The longest quiet gap that is still inside the music: the space between the
+# hits of a kick playing on its own, a rest, a held breath.
+_IDLE_GAP_S = 2.0
+# Emitters the renderers do not write every frame. The idle look takes them
+# over while it is up and puts back what it found.
+_IDLE_HELD_ATTRS = ("strobe", "white", "amber", "uv", "lime", "indigo")
+# The renderer's own chase breathes with the beat between this and 1.10 of a
+# head's share.
+_CHASE_BUMP_LOW = 0.88
+# Every fixture's share of the moment's energy in a breakdown.
+_BREAKDOWN_LEVEL = 0.40
+
 # Club style, from the trained genre model. Energy and sections still decide how
 # big, how bright and how fast the show is; a style only leans the colours and
 # the character of the movement, the way an operator plays a techno room colder
 # and tighter than a house room. `speed` and `amp` scale the section's own
-# movement speed and size, `patterns` narrows the section's pattern pool (when
-# at least two survive), `palettes` are the song palettes cycled through.
+# movement speed and size, `patterns` leans the look library toward looks that
+# move in those ways (they are made likelier, never the only choice; see
+# live_library), `palettes` are the song palettes cycled through.
 _CLUB_STYLE_LOOKS = {
+    # `patterns` are movements from live_looks, and only ones the look library
+    # uses: a movement no look performs would lean toward nothing.
     "house": {"palettes": (ColorPalette.HOUSE, ColorPalette.POP), "speed": 1.0, "amp": 1.0,
-              "patterns": ("circle", "figure8", "pan_wave", "tilt_circle")},
+              "patterns": ("fan_circle_ripple", "columns_circle_unison", "fan_sweep_unison", "fan_sweep_rows",
+                           "centre_fly_fan", "fan_tilt_unison")},
     "techno": {"palettes": (ColorPalette.TECHNO, ColorPalette.EDM), "speed": 1.15, "amp": 0.85,
-               "patterns": ("tilt_cross", "odd_even", "tilt_circle", "circle")},
+               "patterns": ("columns_tilt_rows", "columns_tilt_ripple", "cross_tilt_unison", "centre_fly_fan",
+                            "cross_hold", "columns_sweep_unison")},
     "dnb": {"palettes": (ColorPalette.DUBSTEP, ColorPalette.TECHNO), "speed": 1.25, "amp": 1.1,
-            "patterns": ("odd_even", "tilt_cross", "figure8", "tilt_circle")},
+            "patterns": ("cross_tilt_unison", "columns_tilt_ripple", "cross_circle_rows", "centre_fly_fan",
+                         "columns_fly_fan", "cross_hold")},
     "trance": {"palettes": (ColorPalette.EDM, ColorPalette.AMBIENT), "speed": 0.9, "amp": 1.15,
-               "patterns": ("circle", "tilt_circle", "pan_wave", "figure8")},
+               "patterns": ("fan_circle_ripple", "centre_fly_fan", "fan_sweep_unison", "columns_circle_unison",
+                            "fan_tilt_unison", "columns_sweep_ripple")},
     "edm": {"palettes": (ColorPalette.EDM, ColorPalette.DUBSTEP), "speed": 1.0, "amp": 1.0,
             "patterns": None},
     "hip_hop": {"palettes": (ColorPalette.HIP_HOP, ColorPalette.ROCK), "speed": 0.8, "amp": 0.85,
-                "patterns": ("tilt_cross", "odd_even", "pan_wave")},
+                "patterns": ("columns_tilt_rows", "centre_tilt_unison", "cross_tilt_unison", "fan_sweep_unison",
+                             "cross_hold", "fan_tilt_unison")},
     "latin": {"palettes": (ColorPalette.HOUSE, ColorPalette.POP), "speed": 0.9, "amp": 1.05,
-              "patterns": ("figure8", "pan_wave", "circle")},
+              "patterns": ("fan_sweep_unison", "fan_circle_ripple", "columns_circle_unison", "columns_sweep_unison",
+                           "fan_sweep_rows", "fan_tilt_unison")},
     "afro": {"palettes": (ColorPalette.HOUSE, ColorPalette.HIP_HOP), "speed": 0.9, "amp": 1.0,
-             "patterns": ("pan_wave", "figure8", "circle")},
+             "patterns": ("fan_sweep_unison", "columns_circle_unison", "columns_sweep_unison", "columns_tilt_rows",
+                          "fan_sweep_rows", "columns_tilt_ripple")},
     "open_format": {"palettes": (ColorPalette.POP, ColorPalette.HOUSE), "speed": 1.0, "amp": 1.0,
                     "patterns": None},
     "rock": {"palettes": (ColorPalette.ROCK, ColorPalette.POP), "speed": 1.05, "amp": 1.0,
-             "patterns": ("tilt_cross", "odd_even", "pan_wave", "circle")},
+             "patterns": ("columns_tilt_rows", "cross_tilt_unison", "fan_sweep_unison", "cross_circle_rows",
+                          "columns_fly_fan", "fan_tilt_unison")},
     "lounge": {"palettes": (ColorPalette.AMBIENT, ColorPalette.HOUSE), "speed": 0.7, "amp": 0.7,
-               "patterns": ("pan_wave", "circle", "tilt_circle")},
+               "patterns": ("centre_tilt_unison", "columns_tilt_ripple", "fan_sweep_unison", "columns_circle_unison",
+                            "columns_sweep_ripple", "fan_tilt_unison")},
 }
 # A style is adopted after this many fresh, agreeing answers at or above this
 # confidence (the model answers every 5 s, so about 15 s of agreement). A
@@ -379,6 +450,7 @@ class EffectsEngine:
 
         # State
         self.running = False
+        self._run_task = None
         self.time = 0.0
         # Monotonic: an NTP step when the venue network comes up moved the wall
         # clock by an hour, which made one frame's delta huge or negative.
@@ -399,6 +471,12 @@ class EffectsEngine:
         # kind -> (preset name, the copy a layer holds); see _take_preset.
         self._held_presets: Dict[str, tuple] = {}
         self._blackout_latched: bool = False
+        # The stage in front of the wire, once one is attached. From then on it
+        # holds the master and the blackout latch for every writer, not just
+        # this one, and the engine renders at full and leaves the scaling to it.
+        self._output_stage = None
+        self._output_stage_patch_key = None
+        self._output_held = False
 
         # Beat tracking
         self.beat_count = 0
@@ -541,14 +619,32 @@ class EffectsEngine:
         self._rebuild_base_color: RGB = RGB(1.0, 1.0, 1.0)
         self._rebuild_snare_strobe_until: float = -999.0
         self._rebuild_snare_last_trigger: float = -999.0
-        self._rebuild_active_pattern: str = "tilt_cross"
+        # The look library's current look, by name, and the movement it uses.
+        self._rebuild_active_pattern: str = live_looks.DEFAULT_LOOK
+        self._rebuild_look_movement: str = live_looks.DEFAULT_LOOK
+        self._look_library = live_library.LibraryChooser(seed=getattr(self.config, "look_seed", None))
+        # The running look's dimmer effect and chase style, the one before it,
+        # and the beat the change was made on, so the two can be crossed.
+        self._rebuild_dimmer: Optional[live_dimmer.DimmerLook] = None
+        self._rebuild_dimmer_prev: Optional[live_dimmer.DimmerLook] = None
+        self._rebuild_dimmer_changed_beats: float = 0.0
+        # The beat clock as the dimmer shapes see it: it never runs a beam
+        # faster than live_dimmer.MAX_CYCLES_PER_S, whatever the tempo does.
+        self._rebuild_dimmer_clock = live_dimmer.PhaseClock()
+        # The running look's strobe mode; the rate it named for the drop
+        # strobe, held for one strobe window; and which window that was.
+        self._rebuild_strobe_mode: str = "none"
+        self._rebuild_strobe_mode_hz: Optional[float] = None
+        self._rebuild_strobe_window: float = -999.0
+        # Where each head was last sent, so the next frame can only ask for a
+        # move a fixture can make. Keyed by fixture id.
+        self._rebuild_head_pos: Dict[str, Tuple[float, float]] = {}
         # Bar zero is a real bar on the locked clock, so the hold has to start
         # before any bar the clock can report.
         self._rebuild_pattern_hold_until_bar: int = -(10 ** 9)
         # Phrase grid for look changes; see `_phrase_index`.
         self._phrase_origin_bar: Optional[int] = None
         self._rebuild_pattern_key: Optional[Tuple[str, int]] = None
-        self._rebuild_pattern_index: int = 0
         self._rebuild_color_key: Optional[Tuple[str, int]] = None
 
         # Which record is playing, as the analyser reports it.
@@ -561,6 +657,16 @@ class EffectsEngine:
         self._music_heard: bool = False
         self._audio_lost: bool = False
         self._ambient_mix: float = 0.0
+
+        # Idle look: see `_idle_look_step`.
+        self._idle_audio_loud: bool = False
+        self._idle_silence_since: Optional[float] = None
+        self._idle_last_loud_t: Optional[float] = None
+        self._idle_loud_time: float = 0.0
+        self._idle_active: bool = False
+        self._idle_mix: float = 0.0
+        self._idle_held: Dict[str, Dict[str, float]] = {}
+        self._idle_unknown_look: Optional[str] = None
 
         # Drop anticipation: speculative dip, confirmed hit.
         self._drop_dip: float = 0.0
@@ -601,6 +707,16 @@ class EffectsEngine:
         # would jump the heads.
         self._rebuild_style_speed = 1.0
         self._rebuild_style_amp = 1.0
+        # The running look's own speed and size, from the look library. Taken
+        # at the same moment and for the same reason.
+        self._rebuild_look_speed = 1.0
+        self._rebuild_look_amp = 1.0
+        # What the look's speed is multiplied by so no head is asked to turn
+        # faster than it can at this tempo (live_looks.speed_fit). 1.0 for
+        # every look at ordinary tempos. Fitted when a look is taken, and
+        # again if the section changes under it.
+        self._rebuild_speed_fit = 1.0
+        self._rebuild_fit_key: Optional[tuple] = None
 
         # Fixture phase choreography controls
         self._leader_follower_enabled: bool = True
@@ -1156,64 +1272,106 @@ class EffectsEngine:
                 key=lambda x: (float(getattr(x, "x", 0.0)), str(getattr(x, "id", ""))),
             )
 
-        # Precompute stable membership so paired fixtures always get distinct phase slots.
-        row_membership: Dict[str, Tuple[int, int, int]] = {}
-        for row_i, row_fixtures in selected_rows.items():
-            count = len(row_fixtures)
-            for local_i, fx in enumerate(row_fixtures):
-                row_membership[str(fx.id)] = (row_i, local_i, count)
+        # The part each fixture plays. See live_roles: beams carry the movement
+        # and the chase, washes and pars are a steady bed in a second colour,
+        # bars run their own pattern, strobes wait for an accent.
+        rig_has_beams = any(
+            str(getattr(f, "fixture_type", "") or "").lower() != "wash"
+            for f in all_fixtures if _is_motion_capable(f)
+        )
+        roles: Dict[str, str] = {
+            str(f.id): live_roles.role_for(getattr(f, "fixture_type", ""), _is_motion_capable(f), rig_has_beams)
+            for f in all_fixtures
+        }
+        bar_places = live_roles.truss_places([f for f in all_fixtures if roles[str(f.id)] == live_roles.BAR])
+        bed_places = live_roles.truss_places([f for f in all_fixtures if roles[str(f.id)] == live_roles.BED])
 
-        # Stable fixture order for MA-style linear chase.
+        # Stable fixture order for MA-style linear chase. The chase is the
+        # beams' alone: a wash that chased would stop being a bed.
         chase_order: List[Fixture] = []
         for ridx in sorted(selected_rows.keys()):
-            chase_order.extend(selected_rows[ridx])
+            chase_order.extend(fx for fx in selected_rows[ridx] if roles.get(str(fx.id)) == live_roles.BEAM)
         chase_index = {fx.id: idx for idx, fx in enumerate(chase_order)}
 
-        # Movement patterns are beat-locked and section-aware, with circle-heavy busker looks.
+        # The geometry the looks need: each head's place on its truss, which
+        # way its truss faces, and the point the rig plays to. See live_looks.
+        look_rig = live_looks.build_rig([f for f in movers if _is_motion_capable(f)])
+
+        # Movement is beat-locked and section-aware. Which look runs is the
+        # look library's choice: one that fits the moment, never the one
+        # already running and not one of its last few. A look is asked for on
+        # a new section or a new phrase, and its movement is a position for
+        # every head to aim at with a motion laid over it (live_looks).
         bar_clock = int(math.floor(self._beat_clock_bars()))
-        section_pattern_pool = {
-            "breakdown": ["pan_wave", "tilt_circle", "circle"],
-            "verse": ["tilt_cross", "circle", "pan_wave", "figure8"],
-            "buildup": ["tilt_circle", "circle", "figure8", "odd_even"],
-            "chorus": ["circle", "tilt_circle", "figure8", "pan_wave"],
-            "drop": ["tilt_circle", "circle", "odd_even", "figure8"],
-        }
-        pattern_pool = section_pattern_pool.get(section, ["tilt_cross", "circle", "pan_wave", "figure8", "odd_even"])
+        motion = live_looks.SECTION_MOTION.get(section, live_looks.DEFAULT_MOTION)
         style_look = _CLUB_STYLE_LOOKS.get(self._club_style or "")
-        if style_look and style_look["patterns"]:
-            narrowed = [p for p in pattern_pool if p in style_look["patterns"]]
-            if len(narrowed) >= 2:
-                pattern_pool = narrowed
         style_speed = float(style_look["speed"]) if style_look else 1.0
         style_amp = float(style_look["amp"]) if style_look else 1.0
         phrase = self._phrase_index()
+        # The beat clock's own tempo, the one that advances `beats`.
+        clock_period = float(self._clock_period or 0.0)
+        clock_bpm = (60.0 / clock_period) if clock_period > 0.0 else bpm
+        new_look = False
         if phrase is None:
-            # No phrase grid without a locked clock: rotate every few bars.
-            target_pattern = pattern_pool[bar_clock % len(pattern_pool)]
+            # No phrase grid without a locked clock: a new look every few bars.
             if bar_clock >= self._rebuild_pattern_hold_until_bar:
-                if target_pattern != self._rebuild_active_pattern:
-                    self._rebuild_active_pattern = target_pattern
-                    self._rebuild_style_speed = style_speed
-                    self._rebuild_style_amp = style_amp
+                new_look = True
                 hold_bars = max(1, int(getattr(self.config, "major_change_min_bars", 2) or 2))
                 self._rebuild_pattern_hold_until_bar = bar_clock + hold_bars
         elif (section, phrase) != self._rebuild_pattern_key:
-            # A new section or a new phrase: the next movement in this section's
-            # pool, never the one already running.
             self._rebuild_pattern_key = (section, phrase)
-            for _ in range(len(pattern_pool)):
-                self._rebuild_pattern_index += 1
-                candidate = pattern_pool[self._rebuild_pattern_index % len(pattern_pool)]
-                if candidate != self._rebuild_active_pattern or len(pattern_pool) == 1:
-                    break
-            self._rebuild_active_pattern = candidate
+            new_look = True
+        if new_look:
+            programme = self._programme_level
+            look = self._look_library.choose(
+                section=section,
+                energy=live_library.look_energy(section, programme),
+                mood=live_library.mood_of(self._smoothed_valence, self._smoothed_arousal),
+                characters=live_library.audio_characters(
+                    energy=energy, bass=bass, flux=flux, section=section,
+                    programme_level=programme, impact=self.time < self._drop_hit_until,
+                ),
+                bar=bar_clock,
+                style_movements=style_look["patterns"] if style_look else None,
+            )
+            movement, look_speed, look_amp = live_library.movement_of(look)
+            self._rebuild_active_pattern = look.name if look is not None else movement
+            self._rebuild_look_movement = movement
             self._rebuild_style_speed = style_speed
             self._rebuild_style_amp = style_amp
-        pattern = self._rebuild_active_pattern
+            self._rebuild_look_speed = look_speed
+            self._rebuild_look_amp = look_amp
+            # Only a look made for the drop names a rate for the drop's strobe.
+            # Without a phrase grid a look taken in the chorus can still be
+            # running when the drop lands.
+            self._rebuild_strobe_mode = (
+                live_strobe.mode_of(look) if look is not None and "drop" in look.sections else "none")
+            self._rebuild_dimmer_prev = self._rebuild_dimmer
+            # Slowed, by doubling, so no beam cycles faster than the limit at
+            # this tempo. Like the movement's fit below it is made when the
+            # look is taken: a chase's length scales a beat-locked phase.
+            self._rebuild_dimmer = (
+                live_dimmer.fit_to_tempo(live_dimmer.dimmer_of(look), clock_bpm) if look is not None else None)
+        pattern = self._rebuild_look_movement
 
-        pan_amp = 22.0
-        tilt_amp = 12.0
-        move_speed = 0.45
+        # Fit the look's speed to the tempo, so nothing outruns a head at any
+        # BPM or under any club style. Done when the look is taken, not every
+        # frame: speed scales a beat-locked phase, so changing it mid-look
+        # would jump the heads. The tempo is the beat clock's own, the one
+        # that advances `beats`, not the figure clamped for display. Fitted
+        # again if the section or the rig changes under the look.
+        fit_key = (pattern, section, look_rig.heads)
+        if new_look or self._rebuild_fit_key != fit_key:
+            self._rebuild_fit_key = fit_key
+            self._rebuild_speed_fit = live_looks.speed_fit(
+                pattern, look_rig, motion,
+                speed=self._rebuild_style_speed * self._rebuild_look_speed,
+                amp=self._rebuild_style_amp * self._rebuild_look_amp,
+                bpm=clock_bpm,
+                max_pan_deg_per_s=live_moves.MAX_PAN_DEG_PER_S,
+                max_tilt_deg_per_s=live_moves.MAX_TILT_DEG_PER_S,
+            )
+
         base_floor = 0.62
         chase_floor = 0.26
         chase_steps_per_beat = 1.5
@@ -1221,51 +1379,31 @@ class EffectsEngine:
         chase_falloff = 0.26
 
         if section == "breakdown":
-            pan_amp = 12.0
-            tilt_amp = 9.0
-            move_speed = 0.28
             base_floor = 0.26
             chase_floor = 0.18
             chase_steps_per_beat = 1.0
             chase_heads = 1
             chase_falloff = 0.22
         elif section == "verse":
-            pan_amp = 20.0
-            tilt_amp = 14.0
-            move_speed = 0.42
             base_floor = 0.68
             chase_floor = 0.24
             chase_steps_per_beat = 1.8
             chase_heads = 2
             chase_falloff = 0.24
         elif section == "buildup":
-            pan_amp = 30.0
-            tilt_amp = 22.0
-            move_speed = 0.70
             base_floor = 0.74
             chase_floor = 0.20
             chase_steps_per_beat = 3.0
             chase_heads = 3
             chase_falloff = 0.20
         elif section == "chorus":
-            pan_amp = 26.0
-            tilt_amp = 19.0
-            move_speed = 0.60
             base_floor = 0.78
             chase_floor = 0.22
             chase_steps_per_beat = 2.4
             chase_heads = 3
             chase_falloff = 0.22
         elif section == "drop":
-            pan_amp = 34.0
-            tilt_amp = 25.0
-            move_speed = 0.85
             base_floor = 1.0
-
-        # The club style's movement character, on top of the section's.
-        pan_amp *= self._rebuild_style_amp
-        tilt_amp *= self._rebuild_style_amp
-        move_speed *= self._rebuild_style_speed
 
         # The drop look, whether the detector named it or the anticipation path
         # committed to it a beat earlier. It is one sustained level across the
@@ -1302,14 +1440,44 @@ class EffectsEngine:
         strobe_enabled_runtime = bool(self.config.strobe_enabled) and strobe_allowed_by_policy
         strobe_duty = max(0.15, min(float(self.config.strobe_max_duty_cycle), 0.75))
         drop_strobe_target_freq = 22.0 if energy > 0.65 else 18.0
+        # The look's strobe mode (live_strobe) may name a slower, musical rate
+        # for this strobe, and nothing else: it is used only if it is below
+        # the renderer's own, it goes through the same clamp as the renderer's
+        # own, and the window and every switch stay where they were. It is taken
+        # once, when a strobe window opens, and held for that window: the
+        # flash grid is `time x hz`, so a rate that followed the tempo frame
+        # by frame would slide the grid and add flashes.
+        if section == "drop" and self._rebuild_strobe_window != self._rebuild_drop_until:
+            self._rebuild_strobe_window = self._rebuild_drop_until
+            self._rebuild_strobe_mode_hz = None
+            if bool(getattr(self.config, "look_strobe_modes", True)):
+                self._rebuild_strobe_mode_hz = live_strobe.mode_hz(
+                    self._rebuild_strobe_mode, clock_bpm, self._strobe_grid_hz(1.0e9, strobe_duty))
         drop_strobe_freq = self._strobe_grid_hz(drop_strobe_target_freq, strobe_duty)
+        drop_strobe_clamped = drop_strobe_freq < drop_strobe_target_freq
+        # A slower grid at the same duty would be a longer flash: a flash is
+        # `duty / hz` seconds, so once a beat at the venue's duty is the whole
+        # rig at full white for a sixth of a second. The duty is cut by as
+        # much as the rate is, so every flash is as long as the renderer's own
+        # and the light a window puts out can only fall. Both numbers only go
+        # down, so `hz + duty` stays under the cap.
+        drop_strobe_duty = strobe_duty
+        if (
+            self._rebuild_strobe_mode_hz is not None
+            and drop_strobe_freq > 0.0
+            and self.time < self._rebuild_drop_until
+        ):
+            slowed = self._strobe_grid_hz(self._rebuild_strobe_mode_hz, strobe_duty)
+            if 0.0 < slowed < drop_strobe_freq:
+                drop_strobe_duty = strobe_duty * slowed / drop_strobe_freq
+                drop_strobe_freq = slowed
         drop_strobe_on = (
             strobe_enabled_runtime
             and drop_strobe_freq > 0.0
             and section == "drop"
             and self.time < self._rebuild_drop_until
         )
-        if drop_strobe_freq < drop_strobe_target_freq:
+        if drop_strobe_clamped:
             self._record_safety_event(
                 "strobe_frequency_clamped",
                 {
@@ -1321,7 +1489,7 @@ class EffectsEngine:
                 throttle_s=1.0,
                 throttle_key="strobe_frequency_clamped_drop",
             )
-        drop_strobe_flash = drop_strobe_on and ((self.time * drop_strobe_freq) % 1.0) < strobe_duty
+        drop_strobe_flash = drop_strobe_on and ((self.time * drop_strobe_freq) % 1.0) < drop_strobe_duty
 
         # Snare strobe: very short fast white bursts on bright/transient hits.
         # `high` and `flux` are measured against the programme's own level, so a brushed
@@ -1393,6 +1561,7 @@ class EffectsEngine:
         live_emotional = self._rebuild_get_emotional_color(section)
         self._rebuild_base_color = self._rebuild_base_color.blend(live_emotional, 0.018)
         base_color = self._rebuild_base_color
+        bed_color = live_roles.secondary_colour(base_color.r, base_color.g, base_color.b, section)
         white_accent = 0.0
         if not strobe_on:
             # Decay persistent accent envelope (lets bass hits "hang" briefly).
@@ -1415,53 +1584,120 @@ class EffectsEngine:
             white_accent = max(0.0, min(0.40, white_accent))
 
         chase_active = section in {"verse", "buildup", "chorus"}
+        looks_light_beams = (
+            self._rebuild_dimmer is not None and bool(getattr(self.config, "look_dimmer_effects", True)))
+
+        # The dimmer's own clock. The fit made when the look was taken trusts
+        # the tempo; this does not. It follows the beat clock exactly while no
+        # beam would be cycled faster than live_dimmer.MAX_CYCLES_PER_S, and
+        # holds to that when the beat clock runs away or jumps. Whichever is
+        # lighting the beams sets the rate it is held to: the look's shape
+        # (and the one it is crossing from), or the renderer's own chase,
+        # where each beam is passed by one of `chase_heads` every
+        # `chase_len / chase_heads` steps. Advanced on every frame, drop
+        # included, so it is still on the grid when the beams are handed back.
+        if looks_light_beams:
+            dimmer_rate = live_dimmer.cycles_per_beat(self._rebuild_dimmer)
+            if self._rebuild_dimmer_prev is not None:
+                dimmer_rate = max(dimmer_rate, live_dimmer.cycles_per_beat(self._rebuild_dimmer_prev))
+        elif chase_active and chase_order:
+            dimmer_rate = chase_steps_per_beat * min(chase_heads, len(chase_order)) / len(chase_order)
+        else:
+            dimmer_rate = 0.0
+        # Once held back, the clock stays that far off the beat, so a swap no
+        # longer lands on it. It is put back on the beat clock at the first
+        # moment no beam is lit from it - the drop, or silence - where the
+        # step cannot be seen. A crossing in progress ends with it.
+        if self._rebuild_dimmer_clock.behind != 0.0 and (drop_look or energy <= 0.0):
+            self._rebuild_dimmer_clock.reset()
+            self._rebuild_dimmer_prev = None
+        dimmer_beats = self._rebuild_dimmer_clock.advance(beats, delta_time, dimmer_rate)
+        if new_look:
+            self._rebuild_dimmer_changed_beats = dimmer_beats
+        elif dimmer_beats - self._rebuild_dimmer_changed_beats >= live_dimmer.CROSSFADE_BEATS:
+            self._rebuild_dimmer_prev = None    # crossed; the old shape no longer counts
+
         chase_head = -1
         chase_dir = 1
         if chase_active and chase_order:
             chase_len = len(chase_order)
-            chase_tick = int(math.floor(beats * chase_steps_per_beat))
+            chase_tick = int(math.floor(dimmer_beats * chase_steps_per_beat))
             # Reverse direction every 2 bars for a busker-style sweep/bounce feel.
             chase_dir = -1 if (bar_clock % 4) >= 2 else 1
             chase_head = chase_tick % chase_len if chase_dir > 0 else (chase_len - 1 - (chase_tick % chase_len))
+
+        def _own_chase_peak(idx: int) -> float:
+            """A beam's share under the renderer's own chase: a few bright
+            heads with short tails, stepping along the rig."""
+            chase_len = max(1, len(chase_order))
+            best_peak = 0.0
+            spacing = max(1, chase_len // max(1, chase_heads))
+            for h in range(max(1, chase_heads)):
+                lead = (chase_head + (h * spacing * chase_dir)) % chase_len
+                dist = min((idx - lead) % chase_len, (lead - idx) % chase_len)
+                best_peak = max(best_peak, 1.0 - dist * chase_falloff)
+            return max(0.0, best_peak)
+
+        # The renderer's own chase breathes a little with the beat.
+        own_chase_bump = _CHASE_BUMP_LOW + 0.22 * (0.5 + 0.5 * math.sin(2.0 * math.pi * beat_phase))
+
+        # The look's own dimmer effect and chase style, for the beams, where
+        # the renderer's one chase (or the breakdown's level rig) used to be.
+        # Redistribute, never add: the beams' mean under a look is held to
+        # exactly what the one chase gave them on this frame, breath included,
+        # and no beam is above the moment's energy (see live_dimmer). So the
+        # rig's total is what it was on every frame and only where the light
+        # falls changes. A ceiling at the low point of the breath was tried:
+        # it made the rig smoother, and the release of a mispredicted drop's
+        # dip then became the largest rise in the build, which a contract
+        # test forbids. The drop, the snare accent and every other fixture
+        # family are not touched.
+        beam_levels: Dict[str, float] = {}
+        dimmer_look = self._rebuild_dimmer
+        if (
+            looks_light_beams
+            and chase_order
+            and not drop_look
+            and not snare_strobe_on
+        ):
+            ceiling: Optional[float] = None
+            if section == "breakdown":
+                ceiling = _BREAKDOWN_LEVEL
+            elif chase_active and chase_head >= 0:
+                ceiling = own_chase_bump * sum(
+                    _own_chase_peak(k) for k in range(len(chase_order))) / len(chase_order)
+            if ceiling is not None:
+                beam_levels = live_dimmer.crossfaded(
+                    dimmer_look, self._rebuild_dimmer_prev, live_dimmer.beam_places(chase_order),
+                    dimmer_beats, self._rebuild_dimmer_changed_beats, ceiling,
+                )
 
         snapshot = []
         for i, fixture in enumerate(all_fixtures):
             ftype = str(getattr(fixture, "fixture_type", "") or "").lower()
             is_mover = _is_motion_capable(fixture)
 
-            # Symmetric BPM movement around home look (pan=0, tilt=0/down-home).
-            if is_mover:
-                ridx, local_idx, row_count = row_membership.get(str(fixture.id), (0, 0, 1))
-
-                # Global phase slot prevents "every other pair looks static" artifacts.
-                global_idx = chase_index.get(fixture.id, local_idx)
-                global_count = max(1, len(chase_order))
-                global_frac = (global_idx / max(1, global_count - 1)) if global_count > 1 else 0.5
-                frac = global_frac
-                row_sign = -1.0 if ridx % 2 == 0 else 1.0
-                phase = ((beats * move_speed) + frac) % 1.0
-
-                pan = 0.0
-                tilt = 0.0
-                if pattern == "tilt_cross":
-                    pan = row_sign * (8.0 + pan_amp * (2.0 * frac - 1.0)) * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * math.sin(2.0 * math.pi * phase + (0.0 if ridx == 0 else math.pi))
-                elif pattern == "pan_wave":
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * (0.42 + 0.33 * math.cos(2.0 * math.pi * phase))
-                elif pattern == "circle":
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * (0.25 + 0.75 * math.cos(2.0 * math.pi * phase))
-                elif pattern == "tilt_circle":
-                    pan = row_sign * (pan_amp * 0.65) * math.sin(2.0 * math.pi * phase)
-                    tilt = (tilt_amp * 1.25) * (0.15 + 0.85 * math.cos(2.0 * math.pi * phase))
-                elif pattern == "figure8":
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * phase)
-                    tilt = tilt_amp * math.sin(4.0 * math.pi * phase)
-                else:  # odd_even
-                    parity_phase = phase if (local_idx % 2 == 0) else (phase + 0.5)
-                    pan = row_sign * pan_amp * math.sin(2.0 * math.pi * parity_phase)
-                    tilt = tilt_amp * math.cos(2.0 * math.pi * parity_phase)
+            # Position: the look gives this head a point in the room to aim
+            # at, moving in time with the beat clock, and the aim turns that
+            # into pan and tilt from where the head hangs. The club style leans
+            # the size and speed.
+            head = look_rig.by_id.get(str(fixture.id)) if is_mover else None
+            if head is not None:
+                fid = head.fid
+                target_pan, target_tilt = live_looks.head_pan_tilt(
+                    pattern, head, look_rig, beats, motion,
+                    speed=self._rebuild_style_speed * self._rebuild_look_speed * self._rebuild_speed_fit,
+                    amp=self._rebuild_style_amp * self._rebuild_look_amp,
+                )
+                # Never ask for a step a head cannot make: a change of pattern
+                # or section is a glide to the new position, not a jump.
+                last = self._rebuild_head_pos.get(fid)
+                if last is None:
+                    pan, tilt = target_pan, target_tilt
+                else:
+                    pan = live_moves.slew(last[0], target_pan, live_moves.MAX_PAN_DEG_PER_S, delta_time)
+                    tilt = live_moves.slew(last[1], target_tilt, live_moves.MAX_TILT_DEG_PER_S, delta_time)
+                self._rebuild_head_pos[fid] = (pan, tilt)
 
                 fixture.pan = max(-270.0, min(270.0, float(pan)))
                 fixture.tilt = max(-135.0, min(135.0, float(tilt)))
@@ -1471,26 +1707,36 @@ class EffectsEngine:
 
             # Dimmer policy: chase in verse/buildup/chorus, strobe on drop, calm breakdown.
             # All paths scale from zero when no audio — beams form on activation.
-            if section == "breakdown":
-                dim = energy * 0.40
+            role = roles.get(str(fixture.id), live_roles.BED)
+            if role == live_roles.ACCENT and (section == "breakdown" or not (drop_look or snare_strobe_on)):
+                # A strobe is dark outside the drop. Inside it, it does exactly
+                # what the rest of the rig does - the sustained drop level with
+                # the governed flashes on top - so the drop is, frame for frame,
+                # what it was before strobes had a role, and a strobe can never
+                # deepen or add to a flash.
+                dim = 0.0
+            elif section == "breakdown":
+                dim = energy * beam_levels.get(str(fixture.id), _BREAKDOWN_LEVEL)
             elif drop_look:
                 dim = 1.0 if strobe_flash else drop_bed
             elif snare_strobe_on:
                 dim = 1.0 if snare_strobe_flash else energy * 0.16
+            elif role == live_roles.BAR:
+                bar_u, bar_row = bar_places.get(str(fixture.id), (0.0, 0))
+                dim = energy * base_floor * live_roles.bar_shape(bar_u, bar_row, beats, section)
+            elif role == live_roles.WASH:
+                dim = energy * base_floor * live_roles.WASH_LEVEL
+            elif role == live_roles.BED:
+                _, bed_row = bed_places.get(str(fixture.id), (0.0, 0))
+                dim = energy * base_floor * live_roles.bed_shape(bed_row, beats)
             elif chase_active and is_mover and chase_head >= 0 and fixture.id in chase_index:
-                idx = chase_index[fixture.id]
-                chase_len = max(1, len(chase_order))
-                # Multi-head chase with short tails for stronger fixture-to-fixture bumps.
-                best_peak = 0.0
-                spacing = max(1, chase_len // max(1, chase_heads))
-                for h in range(max(1, chase_heads)):
-                    head = (chase_head + (h * spacing * chase_dir)) % chase_len
-                    dist = min((idx - head) % chase_len, (head - idx) % chase_len)
-                    peak = max(0.0, 1.0 - dist * chase_falloff)
-                    if peak > best_peak:
-                        best_peak = peak
-                beat_bump = 0.88 + 0.22 * (0.5 + 0.5 * math.sin(2.0 * math.pi * beat_phase))
-                dim = min(1.0, best_peak * beat_bump * energy)
+                if str(fixture.id) in beam_levels:
+                    # The look's dimmer effect and chase style.
+                    dim = min(1.0, energy * beam_levels[str(fixture.id)])
+                else:
+                    # Multi-head chase with short tails for stronger fixture-to-fixture bumps.
+                    best_peak = _own_chase_peak(chase_index[fixture.id])
+                    dim = min(1.0, best_peak * own_chase_bump * energy)
             else:
                 dim = energy * base_floor
             # The speculative dip, applied as a fraction of whatever the frame
@@ -1527,9 +1773,12 @@ class EffectsEngine:
                 fixture.green = 1.0
                 fixture.blue = 1.0
             else:
-                fixture.red = max(0.0, min(1.0, base_color.r * (1.0 - white_accent) + white_accent))
-                fixture.green = max(0.0, min(1.0, base_color.g * (1.0 - white_accent) + white_accent))
-                fixture.blue = max(0.0, min(1.0, base_color.b * (1.0 - white_accent) + white_accent))
+                # The bed takes the second colour; beams and bars take the first.
+                cr, cg, cb = bed_color if role in (live_roles.WASH, live_roles.BED) else (
+                    base_color.r, base_color.g, base_color.b)
+                fixture.red = max(0.0, min(1.0, cr * (1.0 - white_accent) + white_accent))
+                fixture.green = max(0.0, min(1.0, cg * (1.0 - white_accent) + white_accent))
+                fixture.blue = max(0.0, min(1.0, cb * (1.0 - white_accent) + white_accent))
                 # Apply section narrative shaping (saturation/whiteness/accent behavior).
                 self._apply_palette_narrative_to_fixture(fixture, i, section)
 
@@ -1661,6 +1910,209 @@ class EffectsEngine:
                 r=fixture.red, g=fixture.green, b=fixture.blue,
             )
 
+    # ------------------------------------------------------------------
+    # Idle look
+    # ------------------------------------------------------------------
+
+    def _idle_look_after_s(self) -> float:
+        """Seconds of silence before the idle look, or 0 when it is switched off."""
+        try:
+            after = float(self.config.idle_look_after_seconds)
+        except (TypeError, ValueError):
+            return 0.0
+        return after if math.isfinite(after) and after > 0.0 else 0.0
+
+    @property
+    def silence_seconds(self) -> float:
+        """How long the audio has been below the silence threshold, on engine time."""
+        if self._idle_silence_since is None:
+            return 0.0
+        return max(0.0, self.time - self._idle_silence_since)
+
+    @property
+    def idle_look_active(self) -> bool:
+        """True while a long silence has the rig on its idle look."""
+        return bool(self._idle_active)
+
+    def _idle_look_step(self, delta_time: float) -> None:
+        """Decide whether the room has been silent long enough for the idle look.
+
+        Counted on engine time, from the level each audio block arrived at:
+
+        * a quiet block starts the count, and it runs until music returns;
+        * music has returned once `idle_look_resume_seconds` of level above
+          the threshold have added up. They need not be unbroken: a dry kick
+          on its own is quiet between the hits, so quiet gaps of up to
+          `_IDLE_GAP_S` are forgiven. A longer gap starts the sum again, so
+          a blip neither drops the look nor restarts the count;
+        * an input that never arrived, or that the operator stopped, counts
+          nothing: there the room stays dark, as it always has;
+        * a feed that dies mid-silence keeps counting, so the look holds. One
+          that dies mid-music is the ambient hold's business, not this one's.
+
+        Only in auto mode. A look the operator set by hand is theirs.
+        """
+        after = self._idle_look_after_s()
+        if after <= 0.0 or self._last_audio_t is None:
+            self._idle_silence_since = None
+            self._idle_last_loud_t = None
+            self._idle_loud_time = 0.0
+            self._idle_active = False
+            return
+        dt = float(delta_time) if delta_time else 0.0
+        if not (0.0 < dt <= self.MAX_FRAME_DELTA):
+            dt = 0.0
+
+        now = self.time
+        loud = self._idle_audio_loud
+        if loud:
+            self._idle_loud_time += dt
+            self._idle_last_loud_t = now
+        elif self._idle_last_loud_t is None or now - self._idle_last_loud_t > _IDLE_GAP_S:
+            self._idle_loud_time = 0.0
+        try:
+            resume = max(0.0, float(self.config.idle_look_resume_seconds))
+        except (TypeError, ValueError):
+            resume = 0.0
+        if self._idle_loud_time > 0.0 and self._idle_loud_time >= resume:
+            # Music, and it stays music through the gaps between its notes.
+            self._idle_silence_since = None
+        elif not loud and self._idle_silence_since is None:
+            # Counted from the last sound, not from when the gap ran out.
+            last = self._idle_last_loud_t
+            self._idle_silence_since = now if last is None else min(now, last)
+
+        active = (
+            bool(self.config.auto_mode)
+            and self._idle_silence_since is not None
+            and (now - self._idle_silence_since) >= after
+        )
+        if active != self._idle_active:
+            self._idle_active = active
+            if active:
+                logger.info("Silent for %.0f s; fading to the idle look", after)
+            else:
+                logger.info("Leaving the idle look")
+
+    def _idle_look_spec(self) -> Tuple[str, dict]:
+        """The configured idle look, or the default when the name is not one."""
+        name = str(getattr(self.config, "idle_look_name", "") or "").strip().lower()
+        spec = _IDLE_LOOKS.get(name)
+        if spec is not None:
+            return name, spec
+        if name != self._idle_unknown_look:
+            self._idle_unknown_look = name
+            logger.warning(
+                "Unknown idle look %r; using %r. Known looks: %s",
+                name, _IDLE_LOOK_DEFAULT, ", ".join(sorted(_IDLE_LOOKS)),
+            )
+        return _IDLE_LOOK_DEFAULT, _IDLE_LOOKS[_IDLE_LOOK_DEFAULT]
+
+    def _apply_idle_look(self, delta_time: float) -> None:
+        """Cross the rendered frame to the idle look after a long silence.
+
+        Runs after the renderer and after the ambient hold, on the fixtures
+        themselves, so what it leaves goes out through `_emit_dmx` and the
+        output stage like any other frame: the grand master scales it, a
+        latched blackout holds it dark and strobe fixtures stay off.
+
+        Every fixture but a dedicated strobe sits at one low level in one
+        colour, with its strobe at zero. Heads go home, or drift slowly round
+        it. It fades in over `idle_look_fade_seconds` and out over
+        `_IDLE_FADE_OUT_S`, and neither is a flash.
+        """
+        dt = float(delta_time) if delta_time else 0.0
+        if not (0.0 < dt <= 0.25):
+            dt = 1.0 / 60.0
+        if self._idle_active:
+            try:
+                fade = float(self.config.idle_look_fade_seconds)
+            except (TypeError, ValueError):
+                fade = 0.0
+            if math.isfinite(fade) and fade > 0.0:
+                self._idle_mix = min(1.0, self._idle_mix + dt / fade)
+            else:
+                self._idle_mix = 1.0
+        else:
+            self._idle_mix = max(0.0, self._idle_mix - dt / _IDLE_FADE_OUT_S)
+        mix = self._idle_mix
+
+        fixtures = self.fixtures.get_fixtures_in_group("all")
+        if mix <= 0.0:
+            if self._idle_held:
+                # Hand back the emitters the look was holding.
+                for fixture in fixtures:
+                    for attr, value in self._idle_held.get(fixture.id, {}).items():
+                        setattr(fixture, attr, value)
+                self._idle_held = {}
+            return
+
+        _, spec = self._idle_look_spec()
+        rgb = spec["rgb"]
+        if rgb is None:
+            base = self._rebuild_base_color
+            rgb = (base.r, base.g, base.b)
+        targets = {"white": spec["white"], "amber": spec["amber"]}
+        try:
+            level = float(self.config.idle_look_level)
+        except (TypeError, ValueError):
+            level = 0.0
+        if not math.isfinite(level):
+            level = 0.0
+        audience_cap = max(0.0, min(1.0, float(self.config.audience_intensity_cap)))
+        level = max(0.0, min(1.0, level, audience_cap))
+        drift = 2.0 * math.pi * _AMBIENT_DRIFT_HZ * self.time
+        count = max(1, len(fixtures))
+        by_id = {}
+        for i, fixture in enumerate(fixtures):
+            held = self._idle_held.get(fixture.id)
+            if held is None:
+                held = self._idle_held[fixture.id] = {
+                    attr: float(getattr(fixture, attr, 0.0) or 0.0)
+                    for attr in _IDLE_HELD_ATTRS
+                }
+            # A strobe fixture has no gentle setting. It sits the look out.
+            target = 0.0 if is_strobe_fixture(fixture) else level
+            fixture.dimmer = max(0.0, min(1.0, fixture.dimmer + (target - fixture.dimmer) * mix))
+            fixture.red = fixture.red + (rgb[0] - fixture.red) * mix
+            fixture.green = fixture.green + (rgb[1] - fixture.green) * mix
+            fixture.blue = fixture.blue + (rgb[2] - fixture.blue) * mix
+            # No rate is a gentle one: the strobe is off for as long as any of
+            # the look is showing.
+            fixture.strobe = 0.0
+            for attr in _IDLE_HELD_ATTRS[1:]:
+                was = held[attr]
+                setattr(fixture, attr, was + (targets.get(attr, 0.0) - was) * mix)
+            if "pan" in (getattr(fixture, "channels", {}) or {}):
+                pan = tilt = 0.0
+                if spec["drift"]:
+                    offset = 2.0 * math.pi * i / count
+                    pan = _AMBIENT_PAN_DEG * math.sin(drift + offset)
+                    tilt = _AMBIENT_TILT_DEG * math.sin(0.5 * drift + offset)
+                fixture.pan = fixture.pan + (pan - fixture.pan) * mix
+                fixture.tilt = fixture.tilt + (tilt - fixture.tilt) * mix
+            by_id[fixture.id] = fixture
+        for entry in self._fixture_state_snapshot or []:
+            fixture = by_id.get(entry.get("id"))
+            if fixture is None:
+                continue
+            entry.update(
+                pan=fixture.pan, tilt=fixture.tilt, dimmer=fixture.dimmer,
+                r=fixture.red, g=fixture.green, b=fixture.blue,
+            )
+
+    def idle_look_status(self) -> Dict:
+        """The idle look's state, for the status payloads the UI reads."""
+        name, _ = self._idle_look_spec()
+        return {
+            "idle_look_active": self.idle_look_active,
+            # How far the fade has got, 0-1. Not the look's dimmer level.
+            "idle_look_mix": round(float(self._idle_mix), 3),
+            "idle_look": name,
+            "idle_look_after_seconds": self._idle_look_after_s(),
+            "silence_seconds": round(self.silence_seconds, 2),
+        }
+
     @property
     def audio_input_lost(self) -> bool:
         """True while music has stopped arriving and the ambient look holds."""
@@ -1681,6 +2133,13 @@ class EffectsEngine:
         self._last_audio_t = None
         self._audio_lost = False
         self._ambient_mix = 0.0
+        # The update_audio() above was silence of our own making; it must not
+        # start the idle look's count. The look comes down with the input.
+        self._idle_audio_loud = False
+        self._idle_silence_since = None
+        self._idle_last_loud_t = None
+        self._idle_loud_time = 0.0
+        self._idle_active = False
         # Whatever plays next may come from another input at another level.
         self.decision.reset_dynamics()
 
@@ -2049,13 +2508,96 @@ class EffectsEngine:
         """
         self._release_callback = callback
 
+    def attach_output_stage(self, stage) -> None:
+        """Hand the grand master and the blackout latch to the output stage.
+
+        The engine applied both itself, at its own render step, which left
+        every other writer outside them: a raw channel write lit a fixture
+        through a latched blackout. The stage sits in the transmitter, after
+        all of them. Whatever the operator had already set carries over.
+        """
+        self._output_stage = stage
+        self._output_stage_patch_key = None
+        if stage is None:
+            return
+        stage.set_master(self._grand_master)
+        if self._blackout_latched:
+            stage.blackout()
+        self._sync_output_stage()
+
+    def _beat_output_stage(self) -> None:
+        """Tell the stage's watchdog the loop has just finished a frame.
+
+        Called from the loop and nowhere else. A frame emitted by hand, or by
+        an API call such as a blackout, says nothing about whether the loop is
+        still running.
+        """
+        beat = getattr(self._output_stage, "heartbeat", None)
+        if beat is not None:
+            beat()
+
+    def set_output_held(self, held: bool) -> None:
+        """Say whether this rig is being kept off the wire (the unpatched demo)."""
+        self._output_held = bool(held)
+
+    def flash_policy(self) -> Tuple[bool, float]:
+        """Whether strobing is allowed right now, and the flash-rate cap."""
+        # Named rather than excluded: a profile this does not recognise is not
+        # a licence to strobe.
+        policy = str(getattr(self.config, "accessibility_mode", "no_strobe")).lower()
+        venue_mode = str(getattr(self.config, "venue_mode", "concert") or "concert").lower()
+        allowed = (
+            bool(self.config.strobe_enabled)
+            and policy in {"conservative", "performance"}
+            and not bool(getattr(self.config, "camera_mode", False))
+            and venue_mode not in {"theatre", "broadcast", "corporate"}
+        )
+        return allowed, self._strobe_cap_hz()
+
+    def _sync_output_stage(self) -> None:
+        """Keep the stage's flash policy and patch in step with the show.
+
+        Runs every frame, whether or not the engine is the one writing, so the
+        limit a manual or raw write meets is the one the venue has set now.
+        """
+        stage = self._output_stage
+        if stage is None:
+            return
+        try:
+            stage.set_flash_policy(*self.flash_policy())
+            fixtures = self.fixtures.fixtures
+            held = self._output_held
+            key = (held, id(self.fixtures), tuple(
+                (f.id, getattr(f, "universe", 0), f.dmx_address, len(f.channels),
+                 str(getattr(f, "fixture_type", "")))
+                for f in fixtures.values()
+            ))
+            if key != self._output_stage_patch_key:
+                # A rig that is rendered but kept off the wire says nothing
+                # about what is plugged in. Its pan slot may be a dimmer on the
+                # real rig, so the stage is told nothing and treats every slot
+                # as light.
+                # For the same reason it names no strobe fixtures.
+                if held:
+                    stage.set_patch({})
+                else:
+                    stage.set_patch(self.fixtures.light_patch(), self.fixtures.strobe_patch())
+                self._output_stage_patch_key = key
+        except Exception:
+            # The stage keeps its last policy and patch; unpatched slots are
+            # treated as light, so a failure here errs towards dark.
+            logger.exception("Could not sync the output stage")
+
     def _emit_dmx(self):
         """Send one DMX frame per universe that currently holds fixtures."""
+        self._sync_output_stage()
         callback = self._dmx_callback
         if callback is None:
             return
 
-        master = self.output_master
+        # With a stage attached the master is applied there, once, to every
+        # writer. Applying it here as well would square it.
+        master = 1.0 if self._output_stage is not None else self.output_master
         get_frames = getattr(self.fixtures, "get_dmx_frames", None)
         if get_frames is None:
             callback(0, self.fixtures.get_dmx_frame(universe=0, master=master))
@@ -2234,10 +2776,15 @@ class EffectsEngine:
             self._audio_lost = False
             logger.info("Audio input is back; leaving the ambient hold")
         try:
-            if float(energy) >= float(self.config.silence_threshold):
-                self._music_heard = True
+            loud = float(energy) >= float(self.config.silence_threshold)
         except (TypeError, ValueError):
-            pass
+            loud = False
+        if loud:
+            self._music_heard = True
+        # The level as it arrived, for `_idle_look_step`. Not the analysed
+        # energy the renderers read: that is pulled up to a resting level when
+        # the feed dies, which is not music.
+        self._idle_audio_loud = loud
         try:
             self._reported_track_id = int(track_id) if track_id is not None else None
         except (TypeError, ValueError):
@@ -2858,6 +3405,7 @@ class EffectsEngine:
         # feed that is no longer arriving.
         self._audio_loss_check()
         self._settle_if_audio_lost(delta_time)
+        self._idle_look_step(delta_time)
 
         # Update decision engine - genre-aware mode when pro lighting is active
         if self.config.auto_mode and self._pro_lighting_enabled:
@@ -2897,6 +3445,7 @@ class EffectsEngine:
                 self._rebuild_update_intent(delta_time)
             self._update_fixtures_rebuild(delta_time)
             self._apply_ambient_hold(delta_time)
+            self._apply_idle_look(delta_time)
             self._emit_dmx()
             return
 
@@ -3051,6 +3600,7 @@ class EffectsEngine:
 
         # Generate DMX frame
         self._update_fixtures(delta_time)
+        self._apply_idle_look(delta_time)
 
         # Output DMX
         self._emit_dmx()
@@ -3721,7 +4271,14 @@ class EffectsEngine:
     def get_pro_lighting_state(self) -> Dict:
         """Get current professional lighting state for API/WebSocket."""
         if not self._pro_lighting_enabled:
-            return {"enabled": False}
+            # The live renderer runs a look whether or not the pro modules are on.
+            return {
+                "enabled": False,
+                **self.idle_look_status(),
+                "look": self._rebuild_active_pattern,
+                "look_movement": self._rebuild_look_movement,
+                "look_speed_fit": round(self._rebuild_speed_fit, 3),
+            }
         timing_debug = self.decision.get_transition_debug()
         state = {
             "enabled": True,
@@ -3731,11 +4288,18 @@ class EffectsEngine:
             "palette_version": self._palette_version,
             "palette_locked": self._palette_locked,
             "palette": self._current_song_palette.value,
+            **self.idle_look_status(),
             "section_intensity": round(self.section_manager.get_intensity(), 3),
             "movement_energy": round(self.section_manager.get_movement_energy(), 3),
             "strobe_allowed": self.section_manager.is_strobe_allowed(),
             "buildup_progress": round(self.section_manager.get_buildup_progress(), 3),
             "pro_movement_pattern": self.pro_movement.params.pattern.value,
+            # What the live renderer is actually running: the look library's
+            # current look, and the movement performing it.
+            "look": self._rebuild_active_pattern,
+            "look_movement": self._rebuild_look_movement,
+            # Below 1 when the look was slowed to what a head can do at this tempo.
+            "look_speed_fit": round(self._rebuild_speed_fit, 3),
             "pro_strobe_active": self.pro_effects.strobe.is_active(),
             "pro_build_active": self.pro_effects.build.is_active,
             "key_lighting_zones": [z.value for z in self.key_lighting.get_active_zones()],
@@ -3970,15 +4534,21 @@ class EffectsEngine:
         so nothing swings while the room is dark.
         """
         self._blackout_latched = True
+        if self._output_stage is not None:
+            self._output_stage.blackout()
         self._zero_dimmers()
         self._emit_dmx()
 
     def restore(self):
         """Release an operator blackout; the show comes back on the next frame."""
         self._blackout_latched = False
+        if self._output_stage is not None:
+            self._output_stage.restore()
 
     @property
     def blackout_active(self) -> bool:
+        if self._output_stage is not None:
+            return self._output_stage.blackout_active
         return self._blackout_latched
 
     def set_grand_master(self, level: float) -> float:
@@ -3990,15 +4560,21 @@ class EffectsEngine:
         if value != value:  # NaN
             raise ValueError("grand master must be a number between 0 and 1")
         self._grand_master = max(0.0, min(1.0, value))
+        if self._output_stage is not None:
+            return self._output_stage.set_master(self._grand_master)
         return self._grand_master
 
     @property
     def grand_master(self) -> float:
+        if self._output_stage is not None:
+            return self._output_stage.master
         return self._grand_master
 
     @property
     def output_master(self) -> float:
         """The intensity scale actually applied to the next frame."""
+        if self._output_stage is not None:
+            return self._output_stage.output_master
         return 0.0 if self._blackout_latched else self._grand_master
 
     def _zero_dimmers(self):
@@ -4024,34 +4600,64 @@ class EffectsEngine:
 
     async def run(self):
         """Run the effects engine loop."""
+        self._run_task = asyncio.current_task()
         self.running = True
         interval = 1.0 / self.config.fps
         loop = asyncio.get_running_loop()
         next_frame = loop.time()
         error_logged = False
 
-        while self.running:
-            try:
-                self.update()
-                error_logged = False
-            except Exception:
-                # Keep loop alive in live use; one bad frame should not kill output.
-                # Logged once per failure streak, not 60 times a second.
-                if not error_logged:
-                    logger.exception("EffectsEngine update error (suppressing repeats)")
-                    error_logged = True
-            # Pace against a deadline: sleeping a whole interval after update()
-            # added the frame's own cost to every frame and ran below rate.
-            next_frame += interval
-            delay = next_frame - loop.time()
-            if delay < -interval:
-                next_frame = loop.time()
-            # Always yield a little: an overloaded frame must not starve the API.
-            await asyncio.sleep(max(0.002, delay))
+        try:
+            while self.running:
+                try:
+                    self.update()
+                    error_logged = False
+                    # Only a frame that was finished counts. A loop that fails on
+                    # every frame is still going round, with the buffers frozen.
+                    self._beat_output_stage()
+                except Exception:
+                    # Keep loop alive in live use; one bad frame should not kill output.
+                    # Logged once per failure streak, not 60 times a second.
+                    if not error_logged:
+                        logger.exception("EffectsEngine update error (suppressing repeats)")
+                        error_logged = True
+                # Pace against a deadline: sleeping a whole interval after update()
+                # added the frame's own cost to every frame and ran below rate.
+                next_frame += interval
+                delay = next_frame - loop.time()
+                if delay < -interval:
+                    next_frame = loop.time()
+                # Always yield a little: an overloaded frame must not starve the API.
+                await asyncio.sleep(max(0.002, delay))
+        finally:
+            # A cancelled task used to leave running True, so /start did nothing
+            # until /stop was called first.
+            self.running = False
+            if getattr(self, "_run_task", None) is asyncio.current_task():
+                self._run_task = None
+
+    def start_loop(self) -> asyncio.Task:
+        """Start the engine loop if no live task is already running.
+
+        After a cancelled loop, ``running`` may still be True until ``run``'s
+        finally runs. A live-task check, not only the flag, decides whether
+        a new task is needed.
+        """
+        task = getattr(self, "_run_task", None)
+        if task is not None and not task.done():
+            return task
+        self._run_task = asyncio.create_task(self.run())
+        return self._run_task
 
     def stop(self):
         """Stop the effects engine."""
         self.running = False
+        # Stopped on purpose is not hung. Without this the watchdog would black
+        # out the raw writes, test patterns and fixture tests that follow. The
+        # stage refuses if the loop had already gone quiet and the fade begun.
+        stand_down = getattr(self._output_stage, "stand_down_watchdog", None)
+        if stand_down is not None:
+            stand_down()
         # Not the operator blackout: stopping must not leave a latch behind
         # that keeps the room dark when the engine is started again.
         self._zero_dimmers()

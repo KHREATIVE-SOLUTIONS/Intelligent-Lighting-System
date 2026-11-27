@@ -24,6 +24,41 @@ import type {
   ProLightingState,
 } from '../types';
 import type { BoxHealthPayload, DmxStatusPayload } from '../utils/showHealth';
+import {
+  consoleExportPath,
+  consoleSummaryPath,
+  fallbackFilename,
+  filenameFromDisposition,
+} from '../utils/consoleExport';
+import type {
+  ConsoleExportKind,
+  ConsoleExportSummary,
+  ConsoleExportTarget,
+} from '../utils/consoleExport';
+import {
+  fixturePositionPath, roomOutlineCornerPath, roomOutlineCornersPath, roomOutlinePath, roomScanCarryOverAllPath, roomScanCarryOverPath,
+  roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellListPath, roomShellPath, roomShellUndoPath,
+} from '../utils/roomScan';
+import type { OutlineAnswer, OutlineChanges, OutlineRead } from '../utils/roomWallsEdit';
+import {
+  autoGroupsPath, handoffPackPath, patchSheetPath, readdressPath, readinessPath, setModesPath, undoFixPath,
+} from '../utils/readiness';
+import type {
+  AutoGroupsResult, ReaddressResult, ReadinessReport, SetModesResult, UndoFixResult,
+} from '../utils/readiness';
+// Types only: the module itself reads the 3D view's checks, which this file has no use for.
+import type {
+  ShellEditUndone, ShellItemAdd, ShellItemAdded, ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
+} from '../utils/roomShellEdit';
+import type {
+  RoomScanCarriedAll, RoomScanCarriedOver, RoomScanCarryOver, RoomScanOptions, RoomScanPreview, RoomScanUndoResult, RoomShellRemoved,
+} from '../utils/roomScan';
+import type {
+  SetupCheckFixture,
+  SetupCheckListing,
+  SetupCheckName,
+  SetupCheckState,
+} from '../utils/fixtureSetupChecks';
 
 const API_BASE_URL = '/api';
 
@@ -219,7 +254,9 @@ export const rigsApi = {
     await api.delete(`/rigs/${id}`);
   },
 
-  activate: async (id: number): Promise<Rig> => {
+  // Puts the rig on the running show. `live` is false when the rig has no
+  // fixtures to drive: it is marked active but the show keeps its rig.
+  activate: async (id: number): Promise<Rig & { live?: boolean }> => {
     const response = await api.post(`/rigs/${id}/activate`);
     return response.data;
   },
@@ -240,6 +277,25 @@ export const rigsApi = {
     data: Partial<RigFixtureCreate>
   ): Promise<RigFixture> => {
     const response = await api.put(`/rigs/${rigId}/fixtures/${fixtureId}`, data);
+    return response.data;
+  },
+
+  /**
+   * Stores where a person dragged a fixture in the 3D view. Unlike
+   * updateFixture, this confirms the position: the fixture stops being an
+   * unconfirmed guess. Leave `y` out to keep its height. The answer is the
+   * fixture as stored, which the server may have held inside the room.
+   */
+  setFixturePosition: async (
+    rigId: number,
+    fixtureId: number,
+    position: { x: number; z: number; y?: number },
+  ): Promise<RigFixture> => {
+    const response = await api.put(fixturePositionPath(rigId, fixtureId), {
+      position_x: position.x,
+      position_z: position.z,
+      ...(position.y === undefined ? {} : { position_y: position.y }),
+    });
     return response.data;
   },
 
@@ -403,6 +459,50 @@ export interface IdentifyStep {
   can_flash: boolean;
   blocked_reason: string | null;
   flashing: boolean;
+  /** True while the position is a generated guess nobody has checked. */
+  unconfirmed: boolean;
+  group: string | null;
+}
+
+/** A row's life in locate mode; see rig_identify.py. */
+export type IdentifyRowStage = 'ends' | 'fit_offer' | 'check' | 'each' | 'done';
+
+export interface IdentifyRowFixture {
+  fixture_id: number;
+  label: string;
+  position_x: number;
+  position_y: number;
+  position_z: number;
+  unconfirmed: boolean;
+  outcome: string | null;
+}
+
+export interface IdentifyRow {
+  number: number;
+  of: number;
+  group: string;
+  stage: IdentifyRowStage;
+  can_fit: boolean;
+  fit_blocked_reason: string | null;
+  fitted: boolean;
+  /** The row check is walking the light along the row right now. */
+  running: boolean;
+  direction: 'left_to_right' | 'address_order';
+  step_seconds: number;
+  /** One trim height for the row, or null while its lights differ. */
+  height: number | null;
+  /** In address order. */
+  fixtures: IdentifyRowFixture[];
+}
+
+export interface IdentifyNotLocated {
+  fixture_id: number;
+  label: string;
+  universe: number;
+  dmx_address: number;
+  group: string | null;
+  unconfirmed: boolean;
+  reason: string;
 }
 
 export interface IdentifyUnresponsive {
@@ -430,14 +530,69 @@ export interface IdentifySession {
   unresponsive: IdentifyUnresponsive[];
   heartbeat_timeout_s: number;
   flash_max_s: number;
+  /** 'unconfirmed' is locate mode: only the guessed positions, a row at a time. */
+  mode: 'all' | 'unconfirmed';
+  /** The row being located. `current` is null while its stage is fit_offer or check. */
+  row: IdentifyRow | null;
+  rows_total: number;
+  confirmed: number;
+  fitted: number;
+  still_unconfirmed: number;
+  /** Switched off, so never lit and never asked about. */
+  not_located: IdentifyNotLocated[];
+  not_located_count: number;
+  mirror_offer: { fixtures: number } | null;
+  mirrored: boolean;
 }
 
 const identifyPath = (rigId: number, sessionId?: string) =>
   sessionId ? `/rigs/${rigId}/identify/${sessionId}` : `/rigs/${rigId}/identify`;
 
 export const identifyApi = {
-  start: async (rigId: number): Promise<IdentifySession> => {
-    const response = await api.post(`${identifyPath(rigId)}/start`);
+  /** With `fixtureIds`, walks exactly those lights (the Readiness panel's Locate these). */
+  start: async (rigId: number, only?: 'unconfirmed', fixtureIds?: number[]): Promise<IdentifySession> => {
+    const body = fixtureIds && fixtureIds.length > 0 ? { fixture_ids: fixtureIds } : null;
+    const response = await api.post(`${identifyPath(rigId)}/start`, body, {
+      params: only ? { only } : undefined,
+    });
+    return response.data;
+  },
+
+  /** "It is where the plan shows it": accept the drawn position and move on. */
+  confirm: async (
+    rigId: number,
+    sessionId: string,
+    fixtureId?: number
+  ): Promise<IdentifySession> => {
+    const response = await api.post(
+      `${identifyPath(rigId, sessionId)}/confirm`,
+      null,
+      { params: fixtureId === undefined ? undefined : { fixture_id: fixtureId } }
+    );
+    return response.data;
+  },
+
+  /** Space the lights between a row's two located ends, or decline and tap each. */
+  fitRow: async (rigId: number, sessionId: string, accept: boolean): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/fit-row`, { accept });
+    return response.data;
+  },
+
+  /** Whether the light was seen to run along the fitted row in order. */
+  rowCheck: async (rigId: number, sessionId: string, passed: boolean): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/row-check`, { passed });
+    return response.data;
+  },
+
+  /** One trim height, in metres, for the row being located. */
+  rowHeight: async (rigId: number, sessionId: string, height: number): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/row-height`, { height });
+    return response.data;
+  },
+
+  /** Flip the guesses that are left about the centre line, or dismiss the offer. */
+  mirror: async (rigId: number, sessionId: string, accept: boolean): Promise<IdentifySession> => {
+    const response = await api.post(`${identifyPath(rigId, sessionId)}/mirror`, { accept });
     return response.data;
   },
 
@@ -525,6 +680,71 @@ export const identifyApi = {
       });
     } catch {
       // The server watchdog is the guarantee; this is only the fast path.
+    }
+  },
+};
+
+// Per-fixture setup checks: light one fixture from the patch and record what
+// the operator saw.
+const setupCheckPath = (rigId: number, fixtureId?: number) =>
+  fixtureId === undefined
+    ? `/rigs/${rigId}/setup-check`
+    : `/rigs/${rigId}/fixtures/${fixtureId}/setup-check`;
+
+export const setupChecksApi = {
+  /** Read-only: lights nothing. */
+  list: async (rigId: number): Promise<SetupCheckListing> => {
+    const response = await api.get(`/rigs/${rigId}/setup-checks`);
+    return response.data;
+  },
+
+  /** Hold one look steadily on one fixture, with the rest of the room dark. */
+  show: async (
+    rigId: number,
+    fixtureId: number,
+    check: SetupCheckName,
+    look: string
+  ): Promise<SetupCheckState> => {
+    const response = await api.post(`${setupCheckPath(rigId, fixtureId)}/show`, { check, look });
+    return response.data;
+  },
+
+  heartbeat: async (rigId: number): Promise<SetupCheckState> => {
+    const response = await api.post(`${setupCheckPath(rigId)}/heartbeat`);
+    return response.data;
+  },
+
+  release: async (rigId: number): Promise<SetupCheckState> => {
+    const response = await api.post(`${setupCheckPath(rigId)}/release`);
+    return response.data;
+  },
+
+  /** `passed: null` forgets the answer. */
+  recordResult: async (
+    rigId: number,
+    fixtureId: number,
+    check: SetupCheckName,
+    passed: boolean | null
+  ): Promise<SetupCheckFixture> => {
+    const response = await api.post(`${setupCheckPath(rigId, fixtureId)}/result`, { check, passed });
+    return response.data;
+  },
+
+  /**
+   * Release from a tab that is going away. A normal request is abandoned when
+   * the document unloads, which would leave the fixture lit and the show off
+   * the wire until the box's own timeout fires.
+   */
+  releaseOnUnload: (rigId: number): void => {
+    const token = useAuthStore.getState().token;
+    try {
+      void fetch(`${API_BASE_URL}${setupCheckPath(rigId)}/release`, {
+        method: 'POST',
+        keepalive: true,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+    } catch {
+      // The box's timeout is the guarantee; this is only the fast path.
     }
   },
 };
@@ -734,6 +954,9 @@ export interface AudioCaptureStatus {
   chunk_count?: number;
   last_rms?: number;
   last_peak?: number;
+  // The device last picked on the box, whichever browser picked it.
+  remembered_device?: string | null;
+  remembered_hostapi?: string | null;
 }
 
 export const audioApi = {
@@ -911,11 +1134,13 @@ export interface EffectsStatus {
   movement_enabled: boolean;
   dimmer_enabled: boolean;
   color_enabled: boolean;
-  // The rig the engine is driving right now (read once when the box boots).
+  // The rig the engine is driving right now.
   live_rig_id?: number | null;
   live_rig_name?: string | null;
   live_rig_demo?: boolean;
   live_rig_fixtures?: number;
+  // Changes each time the engine is given a rig, the same one again included.
+  live_rig_version?: number;
 }
 
 export const effectsApi = {
@@ -1261,12 +1486,278 @@ export const importExportApi = {
   },
 };
 
-export const demoApi = {
-  getRig: async (preset: string): Promise<Rig> => {
-    const response = await api.get('/demo/rig', {
-      params: { preset, t: Date.now() },
+// Back to the console: grandMA2 and MVR, for a database rig or a demo preset.
+// Fetched through `api` so the operator's session token goes with the request.
+/**
+ * Room scan (docs/ROOM_SCAN.md). The file is sent for the preview and again to
+ * apply: the server keeps nothing between the two, so what is applied is what
+ * that file says, read with those options.
+ */
+export const roomScanApi = {
+  /** Reads the scan against the rig and writes nothing. */
+  preview: async (rigId: number, file: File, options: RoomScanOptions): Promise<RoomScanPreview> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.post(roomScanPath(rigId), formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params: roomScanParams(options),
     });
     return response.data;
+  },
+
+  /** Stores the suggested room on the rig and, when asked, moves its unconfirmed template guesses. */
+  apply: async (
+    rigId: number,
+    file: File,
+    options: RoomScanOptions,
+    moveFixtures: boolean,
+  ): Promise<RoomScanPreview> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.post(roomScanPath(rigId), formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params: roomScanParams(options, { moveFixtures }),
+    });
+    return response.data;
+  },
+
+  /**
+   * Takes the stored room off the rig. Fixtures stay where they are unless
+   * `restoreFixtures` is set, which also puts back the ones the scan moved.
+   */
+  remove: async (rigId: number, restoreFixtures = false): Promise<RoomShellRemoved> => {
+    const response = await api.delete(
+      roomShellPath(rigId),
+      restoreFixtures ? { params: { restore_fixtures: true } } : undefined,
+    );
+    return response.data;
+  },
+
+  /**
+   * Puts the fixtures a room scan moved back where they stood before it. One a
+   * person has tapped, confirmed, dragged or moved since is left alone and
+   * comes back in `skipped_fixtures`.
+   */
+  undoMoves: async (rigId: number): Promise<RoomScanUndoResult> => {
+    const response = await api.post(roomScanUndoPath(rigId));
+    return response.data;
+  },
+
+  /**
+   * Puts a name and trim a scan applied again could not keep onto the item it read in their place:
+   * `entry` is one of the applied answer's `hand_edits.carry_over`, sent as it is. One step of the
+   * room's Undo. 409 where the room has changed since the scan was applied.
+   */
+  carryOver: async (rigId: number, entry: RoomScanCarryOver): Promise<RoomScanCarriedOver> => {
+    const response = await api.post(roomScanCarryOverPath(rigId), entry);
+    return response.data;
+  },
+
+  /**
+   * "Keep all" (slice 37): every entry at once, as ONE step of the room's Undo. All or none: one
+   * stale entry is a 409 and two for the same item a 422, and nothing is written either way.
+   */
+  carryOverAll: async (rigId: number, entries: RoomScanCarryOver[]): Promise<RoomScanCarriedAll> => {
+    const response = await api.post(roomScanCarryOverAllPath(rigId), { entries });
+    return response.data;
+  },
+
+  /**
+   * Renames, moves, resizes, raises or turns one raised area, overhead line
+   * or ring of the stored room. `index` is its place in the stored list, not
+   * on the plan. The fixtures hung on a line or ring go with it unless
+   * `carry_fixtures` is false, and come back in `fixtures_moved`: the rig is
+   * then to be read again. Answers the whole room as it now is, and how many
+   * edits can be undone. One that would carry a fixture out of the room is
+   * refused (422) and changes nothing.
+   */
+  editShellItem: async (
+    rigId: number,
+    kind: ShellItemKind,
+    index: number,
+    changes: ShellItemChanges,
+  ): Promise<ShellItemEdited> => {
+    const response = await api.patch(roomShellItemPath(rigId, kind, index), changes);
+    return response.data;
+  },
+
+  /** Takes one raised area, overhead line or ring out of the stored room. `undoShellEdit` brings it back. */
+  deleteShellItem: async (rigId: number, kind: ShellItemKind, index: number): Promise<ShellItemDeleted> => {
+    const response = await api.delete(roomShellItemPath(rigId, kind, index));
+    return response.data;
+  },
+
+  /**
+   * Puts a raised area, overhead line or ring into the stored room by hand,
+   * at the end of its list. It is marked as added by hand, not as the scan's.
+   */
+  addShellItem: async (rigId: number, kind: ShellItemKind, item: ShellItemAdd): Promise<ShellItemAdded> => {
+    const response = await api.post(roomShellListPath(rigId, kind), item);
+    return response.data;
+  },
+
+  /**
+   * Takes back the latest edit made to the stored room by hand: one edit for
+   * each call. Answers the whole room as it was before that edit. The
+   * fixtures that edit carried with a truss go back too (`fixtures_restored`;
+   * one moved since is left, in `fixtures_skipped`): the rig is then to be
+   * read again. The scan's own undo (`undoMoves`) is a different thing.
+   */
+  undoShellEdit: async (rigId: number): Promise<ShellEditUndone> => {
+    const response = await api.post(roomShellUndoPath(rigId));
+    return response.data;
+  },
+
+  /**
+   * The stored room's walls as corners (a box room's four), and what they
+   * leave outside them as the room now stands. Writes nothing.
+   */
+  getOutline: async (rigId: number): Promise<OutlineRead> => {
+    const response = await api.get(roomOutlinePath(rigId));
+    return response.data;
+  },
+
+  /**
+   * Redraws the stored room's walls, sets its height, or both. No fixture
+   * and nothing in the room is moved: the answer lists what the new walls
+   * leave outside. One step of the room's undo (`undoShellEdit`).
+   */
+  setOutline: async (rigId: number, changes: OutlineChanges): Promise<OutlineAnswer> => {
+    const response = await api.patch(roomOutlinePath(rigId), changes);
+    return response.data;
+  },
+
+  /** Moves one corner of the walls. `index` is its place in the outline, from 0. */
+  moveOutlineCorner: async (rigId: number, index: number, to: { x?: number; z?: number }): Promise<OutlineAnswer> => {
+    const response = await api.patch(roomOutlineCornerPath(rigId, index), to);
+    return response.data;
+  },
+
+  /**
+   * Adds a corner on the wall that leaves corner `after`: half way along it,
+   * where it changes no wall until it is moved, or at `at`.
+   */
+  addOutlineCorner: async (rigId: number, after: number, at?: { x: number; z: number }): Promise<OutlineAnswer> => {
+    const response = await api.post(roomOutlineCornersPath(rigId), { after, ...(at ?? {}) });
+    return response.data;
+  },
+
+  /** Takes one corner out of the walls: its two walls become one. A room keeps at least three. */
+  deleteOutlineCorner: async (rigId: number, index: number): Promise<OutlineAnswer> => {
+    const response = await api.delete(roomOutlineCornerPath(rigId, index));
+    return response.data;
+  },
+};
+
+export const consoleExportApi = {
+  summary: async (target: ConsoleExportTarget): Promise<ConsoleExportSummary> => {
+    const response = await api.get(consoleSummaryPath(target));
+    return response.data;
+  },
+
+  download: async (
+    target: ConsoleExportTarget,
+    kind: ConsoleExportKind,
+    markNames = false,
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const response = await api.get(consoleExportPath(target, kind), {
+      responseType: 'blob',
+      params: markNames ? { mark_names: true } : undefined,
+    });
+    return {
+      blob: response.data as Blob,
+      filename: filenameFromDisposition(
+        response.headers?.['content-disposition'],
+        fallbackFilename(target, kind),
+      ),
+    };
+  },
+};
+
+export interface DemoPresetSummary {
+  name: string;
+  display_name: string;
+  description: string;
+  total_fixtures: number;
+}
+
+export const demoApi = {
+  // With no preset named, the backend returns the demo rig its engine is
+  // running, so the view draws the rig whose state it is being sent.
+  getRig: async (preset?: string): Promise<Rig> => {
+    const response = await api.get('/demo/rig', {
+      params: preset ? { preset, t: Date.now() } : { t: Date.now() },
+    });
+    return response.data;
+  },
+
+  listPresets: async (): Promise<DemoPresetSummary[]> => {
+    const response = await api.get('/venues/presets');
+    const presets = (response.data?.presets ?? {}) as Record<string, Omit<DemoPresetSummary, 'name'>>;
+    return Object.entries(presets).map(([name, p]) => ({ ...p, name }));
+  },
+
+  // Puts a demo rig on the engine. The backend refuses (409) while a patched
+  // rig is live, because the demo's patch would go to the venue's fixtures.
+  applyPreset: async (name: string): Promise<void> => {
+    await api.post(`/venues/presets/${encodeURIComponent(name)}/apply`);
+  },
+};
+
+export const readinessApi = {
+  /** Every readiness check for the rig. Reads only. */
+  get: async (rigId: number): Promise<ReadinessReport> => {
+    const response = await api.get(readinessPath(rigId));
+    return response.data;
+  },
+
+  /** Puts each placed fixture that is in no group into one named for where it hangs and what it is. */
+  autoGroups: async (rigId: number): Promise<AutoGroupsResult> => {
+    const response = await api.post(autoGroupsPath(rigId));
+    return response.data;
+  },
+
+  /** Moves each fixture whose address clashes to a free one. `dryRun` answers the plan and changes nothing. */
+  readdress: async (rigId: number, dryRun: boolean): Promise<ReaddressResult> => {
+    const response = await api.post(readdressPath(rigId), null, {
+      params: dryRun ? { dry_run: true } : undefined,
+    });
+    return response.data;
+  },
+
+  /** Sets the DMX mode where only one is possible. `dryRun` answers the plan and changes nothing. */
+  setModes: async (rigId: number, dryRun: boolean): Promise<SetModesResult> => {
+    const response = await api.post(setModesPath(rigId), null, {
+      params: dryRun ? { dry_run: true } : undefined,
+    });
+    return response.data;
+  },
+
+  /**
+   * Puts back exactly what the last Make groups, Re-address or Set modes changed. Rejects
+   * with a 409 (detail.message) when a fixture it changed was changed since.
+   */
+  undoFix: async (rigId: number): Promise<UndoFixResult> => {
+    const response = await api.post(undoFixPath(rigId));
+    return response.data;
+  },
+
+  /** The venue handoff pack zip (docs/HANDOFF_PACK.md). Reads only. */
+  handoffPack: async (rigId: number): Promise<{ blob: Blob; filename: string }> => {
+    const response = await api.get(handoffPackPath(rigId), { responseType: 'blob' });
+    return {
+      blob: response.data as Blob,
+      filename: filenameFromDisposition(response.headers?.['content-disposition'], `rig_${rigId}_handoff_pack.zip`),
+    };
+  },
+
+  /**
+   * The printable patch sheet as an HTML blob (docs/HANDOFF_PACK.md). Fetched through
+   * this client so it carries the operator token; a bare link in a new tab would not.
+   */
+  patchSheet: async (rigId: number, universe?: number): Promise<Blob> => {
+    const response = await api.get(patchSheetPath(rigId, universe), { responseType: 'text' });
+    return new Blob([response.data as string], { type: 'text/html;charset=utf-8' });
   },
 };
 

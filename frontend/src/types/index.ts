@@ -114,6 +114,208 @@ export interface Rig {
   created_by?: string;
   is_active: boolean;
   fixtures: RigFixture[];
+  /**
+   * The room round the rig, where the rig describes one: scenery for the 3D
+   * view. A demo venue preset carries one it was written with; a database rig
+   * has one once a room scan has been applied to it (docs/ROOM_SCAN.md).
+   */
+  room_shell?: RoomShell | null;
+  /**
+   * Where fixtures stood before a room scan moved them, while that can still
+   * be undone. Null when there is nothing to undo. Read-only: written by the
+   * room-scan endpoint (docs/ROOM_SCAN.md).
+   */
+  room_scan_undo?: RoomScanUndoRecord | null;
+  /**
+   * The edits made to the stored room by hand that can still be undone, one
+   * at a time. Read-only: the rooms they go back to stay on the server
+   * (docs/ROOM_SCAN.md).
+   */
+  room_shell_edits?: RoomShellEdits | null;
+}
+
+/** How many edits to a rig's stored room can be undone, and what the next undo takes back. */
+export interface RoomShellEdits {
+  available: number;
+  /** What the latest edit did: "Stage renamed". Null when there is none. */
+  label?: string | null;
+}
+
+export interface RoomScanUndoRecord {
+  file?: string | null;
+  applied_at?: string | null;
+  moves?: Array<{
+    rig_fixture_id: number;
+    name?: string;
+    from: { x: number; y: number; z: number };
+    to: { x: number; y: number; z: number };
+  }> | null;
+}
+
+/**
+ * A box standing on the floor (or `base_height` above it). Its sides are
+ * square to the room unless it says a `heading_deg`.
+ */
+export interface RoomShellBox {
+  center_x: number;
+  center_z: number;
+  /** Along X, or along its heading when it has one. */
+  width: number;
+  /** Along Z, or square to its heading when it has one. */
+  depth: number;
+  height: number;
+  base_height?: number;
+  /**
+   * A raised area of a scanned room that does not stand square to it: degrees
+   * clockwise from across the room seen from above, over -90 and up to 90
+   * (previs/raisedArea.ts). Left out, it stands square, as every one did
+   * before a heading could be set.
+   */
+  heading_deg?: number;
+  name?: string;
+  basis?: string;
+  /** From a room scan: what its size suggests it is ('stage', 'riser' or 'booth'). */
+  kind?: string;
+  /**
+   * True on the one raised area of a scanned room that somebody has said is
+   * the DJ's booth (Edit Room, slice 28): the 3D view puts the decks and the
+   * DJ on it and aims its DJ and Floor cameras at it. Left out on every other,
+   * and in a room nobody has marked one in (previs/boothPick.ts).
+   */
+  is_dj_booth?: boolean;
+  /** True for anything a scan found: nobody has checked it against the room. */
+  suggested?: boolean;
+  /** True for one a person put into the room by hand (Edit Room): the scan did not find it. */
+  added_by_hand?: boolean;
+}
+
+/** A truss or bar a room scan found overhead, as a line on the plan at a height. */
+export interface RoomShellLine {
+  name?: string;
+  x1: number;
+  z1: number;
+  x2: number;
+  z2: number;
+  /** Height of its underside: where a fixture hangs from. */
+  height: number;
+  /** Where the scan read it, kept beside a `height` set by hand: a scan applied again matches by it. */
+  scan_height?: number;
+  top?: number;
+  length?: number;
+  /** Its width across the line. */
+  across?: number;
+  /**
+   * Which way it runs: 'x' is across the room, 'z' is upstage to downstage,
+   * 'angled' is anything else. A reader should go by the line's two ends, which
+   * every stored shell has; this and `heading_deg` are for wording.
+   */
+  axis?: string;
+  /** Degrees clockwise from across the room, seen from above: 0 runs across, 90 upstage to downstage. */
+  heading_deg?: number;
+  suggested?: boolean;
+  /** True for one a person put into the room by hand (Edit Room): the scan did not find it. */
+  added_by_hand?: boolean;
+  basis?: string;
+}
+
+/** A ring of truss a room scan found overhead: a circle on the plan at a height. */
+export interface RoomShellRing {
+  name?: string;
+  center_x: number;
+  center_z: number;
+  /** To the middle of the truss. */
+  radius: number;
+  /** Height of its underside: where a fixture hangs from. */
+  height: number;
+  /** Where the scan read it, kept beside a `height` set by hand: a scan applied again matches by it. */
+  scan_height?: number;
+  top?: number;
+  /** Its width across the ring, inside edge to outside edge. */
+  across?: number;
+  suggested?: boolean;
+  /** True for one a person put into the room by hand (Edit Room): the scan did not find it. */
+  added_by_hand?: boolean;
+  basis?: string;
+}
+
+/**
+ * The room around a rig, in metres and in the rig's own axes: origin at the
+ * centre of the floor, X across, Y up, -Z upstage. Mirrors `RoomShell` in
+ * backend/app/services/demo/venue_presets.py. Angles are degrees clockwise
+ * from upstage seen from above: 0 is -Z, 90 is +X, 180 is +Z.
+ */
+export interface RoomShell {
+  basis?: string;
+  /** A shallow dome ceiling: a spherical cap over a circle on the plan. */
+  dome?: {
+    radius: number;
+    center_x: number;
+    center_z: number;
+    rim_height: number;
+    apex_height: number;
+    diameter_ft?: number;
+    basis?: string;
+  } | null;
+  dance_floor?: { center_x: number; center_z: number; radius: number; basis?: string } | null;
+  /** Part of a flat ring at one height: a balcony or mezzanine. */
+  balcony?: {
+    center_x: number;
+    center_z: number;
+    inner_radius: number;
+    outer_radius: number;
+    soffit_height: number;
+    deck_height: number;
+    start_deg: number;
+    end_deg: number;
+    basis?: string;
+  } | null;
+  dj_booth?: RoomShellBox | null;
+  rear_stage?: RoomShellBox | null;
+  led_walls?: RoomShellBox[] | null;
+
+  // --- What a room scan writes (backend/app/services/room_scan/extract.py) ---
+  /** 'scan' when the shell was read from a phone scan of the room. */
+  source?: string;
+  /** True for a scanned shell: every part of it is a suggestion. */
+  suggested?: boolean;
+  /**
+   * The room's own box: wall to wall, floor to ceiling, centred on the origin.
+   * A room that is not a box also carries `outline`: the corners of its floor
+   * in order, clockwise seen from above, the last joined back to the first.
+   * Its walls are the segments between them, and width and depth are then the
+   * box round the outline. A shell with no outline is a box.
+   */
+  room?: {
+    width: number;
+    depth: number;
+    height: number;
+    outline?: Array<{ x: number; z: number }> | null;
+    suggested?: boolean;
+    basis?: string;
+  } | null;
+  /** Raised areas: a stage, a riser, a booth. */
+  risers?: RoomShellBox[] | null;
+  /** Trusses and bars found overhead, at any heading on the plan. */
+  truss_lines?: RoomShellLine[] | null;
+  /** Rings of truss found overhead. Absent from a shell stored before rings were read. */
+  truss_rings?: RoomShellRing[] | null;
+  hanging_bands?: Array<{
+    height: number; top?: number; lines?: number; rings?: number; suggested?: boolean; basis?: string;
+  }> | null;
+  /** How the scan was read: file, units, up axis, turns. */
+  scan?: {
+    file?: string | null;
+    format?: string;
+    points?: number;
+    triangles?: number;
+    point_cloud?: boolean;
+    units?: string;
+    up_axis?: string;
+    wall_turn_deg?: number;
+    quarter_turns?: number;
+    walls_found?: number;
+    other_overhead_objects?: number;
+  } | null;
 }
 
 export interface UniverseConfig {
@@ -192,6 +394,8 @@ export interface FixtureChannel {
   max_value: number;
   is_fine: boolean;
   coarse_channel?: number;
+  /** Named spans of this channel's values, where the profile gives them. */
+  value_ranges?: Array<{ name?: string | null; min_value: number; max_value: number }> | null;
 }
 
 export type ChannelType =

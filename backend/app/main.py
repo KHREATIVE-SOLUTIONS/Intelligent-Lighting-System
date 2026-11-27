@@ -19,6 +19,9 @@ from app.api.endpoints import (
     shows, rigs, fixtures, audio, dmx, websocket, effects, training, lfo,
     fixture_library, rig_patching, fixture_test, wizard, templates,
     rig_import_export, discovery, qr_scanning, demo, auth, rig_identify, genre_check,
+    venue_import, patch_sheet, room_scan, fixture_position, readiness, stage_plot,
+    focus_presets,
+    fixture_setup,
 )
 from app.core.config import settings
 from app.core.logging_config import configure_logging
@@ -41,7 +44,7 @@ from app.schemas.audio import engine_energy, programme_level
 logger = logging.getLogger(__name__)
 
 # Venue preset the show falls back to when no rig has been patched yet.
-DEMO_VENUE_PRESET = "pro_beam_room"
+DEMO_VENUE_PRESET = "liv_miami_approx"
 
 
 async def _load_active_rig_manager():
@@ -77,15 +80,10 @@ def _install_fixture_manager(app: FastAPI, manager, *, demo: bool = False):
     off the wire unless DEMO_RIG_DMX_OUTPUT says otherwise; a patched rig
     releases the hold.
     """
+    from app.services.rig.live_rig import swap_fixture_manager
+
     app.state.dmx_output_held = demo and not settings.DEMO_RIG_DMX_OUTPUT
-    engine = getattr(app.state, 'effects_engine', None)
-    if engine is not None:
-        setter = getattr(engine, 'set_fixture_manager', None)
-        if callable(setter):
-            setter(manager)
-        else:
-            engine.fixtures = manager
-    app.state.fixture_manager = manager
+    swap_fixture_manager(app, manager)
 
 
 def _send_engine_frame(app: FastAPI, universe: int, frame: list):
@@ -268,6 +266,12 @@ async def lifespan(app: FastAPI):
             strobe_max_duty_cycle=0.34,
             strobe_burst_max_s=0.10,
             strobe_refractory_s=0.30,
+            # What a long silence shows instead of a black room.
+            idle_look_after_seconds=settings.IDLE_LOOK_AFTER_SECONDS,
+            idle_look_fade_seconds=settings.IDLE_LOOK_FADE_SECONDS,
+            idle_look_name=settings.IDLE_LOOK_NAME,
+            idle_look_level=settings.IDLE_LOOK_LEVEL,
+            idle_look_resume_seconds=settings.IDLE_LOOK_RESUME_SECONDS,
         ))
 
         # Connect effects engine to DMX controller
@@ -278,6 +282,11 @@ async def lifespan(app: FastAPI):
             app.state.effects_engine.set_dmx_callback(dmx_callback)
             app.state.effects_engine.set_dmx_release_callback(
                 lambda universe: _release_engine_universe(app, universe)
+            )
+            # The grand master, the blackout latch and the flash limit belong to
+            # the stage in the transmitter, where every writer meets them.
+            app.state.effects_engine.attach_output_stage(
+                app.state.dmx_controller.output_stage
             )
 
         # Register with API
@@ -321,15 +330,19 @@ async def lifespan(app: FastAPI):
         await _boot_rig(app)
 
         # Start the effects engine async loop (BUG-016 fix: store task reference)
-        app.state.effects_engine_task = asyncio.create_task(app.state.effects_engine.run())
+        app.state.effects_engine_task = app.state.effects_engine.start_loop()
 
         # Start a WebSocket broadcast task that pushes DMX state to all connected clients at ~30fps
         # This is needed because server-side audio capture bypasses the WebSocket input path
         async def _broadcast_lighting_state():
             from app.api.endpoints.websocket import (
-                manager, convert_numpy_types, collect_dmx_frames,
-                primary_dmx_universe, serialize_dmx_frames,
+                manager, convert_numpy_types, collect_output_frames,
+                engine_output_on_wire, output_status,
+                primary_dmx_universe, serialize_dmx_frames, set_wire_probe,
             )
+            # Both payload builders (this loop and the audio socket) report
+            # whether the frames they send are reaching the DMX controller.
+            set_wire_probe(lambda: engine_output_on_wire(app.state, app.state.effects_engine))
             from app.services.lighting.look_spec import build_lighting_look_spec
             from datetime import datetime
             frame_count = 0
@@ -340,8 +353,9 @@ async def lifespan(app: FastAPI):
                     if ee is None:
                         continue
 
-                    # Build a DMX frame per universe the rig occupies
-                    dmx_frames = collect_dmx_frames(ee.fixtures)
+                    # The frame per universe the engine outputs, grand master
+                    # and blackout applied: the 3D view draws these.
+                    dmx_frames = collect_output_frames(ee)
                     primary_universe = primary_dmx_universe(dmx_frames)
                     dmx_frame = dmx_frames.get(primary_universe, [0] * 512)
                     fixture_states = ee.get_fixture_state_snapshot()
@@ -364,15 +378,24 @@ async def lifespan(app: FastAPI):
                         'dmx_frame': dmx_frame,
                         'dmx_universe': primary_universe,
                         'dmx_frames': serialize_dmx_frames(dmx_frames),
+                        'output': output_status(ee),
                         'fixtures': fixture_states,
                         'state': 'auto',
                         'movement': 'auto',
                         'dimmer': 'auto',
                     }
+                    try:
+                        lighting_data.update(ee.idle_look_status())
+                    except Exception:
+                        pass
                     if pro_state:
                         lighting_data['genre'] = pro_state.get('genre')
                         lighting_data['section'] = pro_state.get('section')
                         lighting_data['section_intensity'] = pro_state.get('section_intensity')
+                        # The look library's current look and the movement
+                        # performing it, for a UI that wants to name it.
+                        lighting_data['look'] = pro_state.get('look')
+                        lighting_data['look_movement'] = pro_state.get('look_movement')
                         lighting_data['pro_effects'] = {
                             'strobeMode': pro_state.get('pro_strobe_active', False) and 'beat_sync' or 'off',
                             'chaseType': 'off',
@@ -593,6 +616,7 @@ async def lifespan(app: FastAPI):
                         lambda: capture.start(
                             loop=loop,
                             device_name=remembered["device_name"] if remembered["running"] else None,
+                            device_hostapi=remembered.get("hostapi") if remembered["running"] else None,
                             keep_trying=True,
                         ),
                     )
@@ -758,9 +782,17 @@ app.include_router(fixture_library.router, prefix="/api/fixtures/library", tags=
 app.include_router(rig_patching.router, prefix="/api/rigs", tags=["Rig Patching"])
 app.include_router(fixture_test.router, prefix="/api", tags=["Fixture Test"])
 app.include_router(rig_identify.router, prefix="/api", tags=["Flash to Identify"])
+app.include_router(fixture_setup.router, prefix="/api", tags=["Fixture Setup Checks"])
 app.include_router(wizard.router, prefix="/api/wizard", tags=["Setup Wizard"])
 app.include_router(templates.router, prefix="/api/templates", tags=["Templates"])
 app.include_router(rig_import_export.router, prefix="/api", tags=["Import/Export"])
+app.include_router(venue_import.router, prefix="/api", tags=["Import/Export"])
+app.include_router(patch_sheet.router, prefix="/api", tags=["Import/Export"])
+app.include_router(room_scan.router, prefix="/api", tags=["Import/Export"])
+app.include_router(stage_plot.router, prefix="/api", tags=["Rigs"])
+app.include_router(focus_presets.router, prefix="/api", tags=["Rigs"])
+app.include_router(fixture_position.router, prefix="/api", tags=["Rigs"])
+app.include_router(readiness.router, prefix="/api", tags=["Rigs"])
 app.include_router(discovery.router, prefix="/api", tags=["Discovery"])
 app.include_router(qr_scanning.router, prefix="/api", tags=["QR Scanning"])
 app.include_router(demo.router, prefix="/api", tags=["Demo & Venues"])

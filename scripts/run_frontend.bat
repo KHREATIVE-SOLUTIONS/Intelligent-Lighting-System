@@ -1,4 +1,6 @@
 @echo off
+REM UI dev server only, for working on the UI against a backend that is already
+REM running on port 8000. To start everything, use start.bat in the project root.
 echo Starting Frontend Server...
 
 cd /d "%~dp0..\frontend"
