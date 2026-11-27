@@ -86,14 +86,65 @@ export interface ReaddressResult {
   message: string;
 }
 
+export interface ModeChoice {
+  id: number;
+  name: string;
+  channel_count: number;
+}
+
+interface SetModesFixture {
+  id: number;
+  name: string;
+  /** "guessed": it has no mode; "foreign": its mode is not one of its profile's. */
+  problem: 'guessed' | 'foreign';
+  mode_id_before: number | null;
+  mode_name_before: string | null;
+  /** The footprint the addresses check counts now (16 when it is guessed). */
+  channel_count_before: number;
+}
+
+export interface SetModesProposal extends SetModesFixture {
+  /** Why this mode and no other: the profile's only one, or the one of that many channels. */
+  reason: 'only_mode' | 'footprint' | 'address_span';
+  mode_id: number;
+  mode_name: string;
+  channel_count: number;
+}
+
+export interface SetModesByHand extends SetModesFixture {
+  candidates: ModeChoice[];
+  why: string;
+}
+
+export interface SetModesResult {
+  rig_id: number;
+  dry_run: boolean;
+  proposals: SetModesProposal[];
+  /** Fixtures with more than one possible mode, or none: never changed. */
+  by_hand: SetModesByHand[];
+  /** Overlaps or runs past 512 the new footprints make. No address is moved. */
+  clashes: { kind: 'overlap' | 'past_end'; fixture_ids: number[]; names: string[]; message: string }[];
+  undo?: ReadinessUndo | null;
+  message: string;
+}
+
 export const FIX_AUTO_GROUPS = 'auto-groups';
 export const FIX_READDRESS = 'readdress';
+export const FIX_SET_MODES = 'set-modes';
 export const FIX_LOCATE = 'locate';
 
 export const readinessPath = (rigId: number) => `/rigs/${rigId}/readiness`;
 export const autoGroupsPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/auto-groups`;
 export const readdressPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/readdress`;
+export const setModesPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/set-modes`;
 export const undoFixPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/undo`;
+
+/** "only mode", "matches its 24ch footprint": why Set modes chose this mode. */
+export function modeReasonText(p: SetModesProposal): string {
+  if (p.reason === 'only_mode') return "the profile's only mode";
+  if (p.reason === 'footprint') return `the only mode of its present ${p.channel_count}ch footprint`;
+  return `the only mode that fills its ${p.channel_count}-channel address span`;
+}
 
 const RANK: Record<ReadinessStatus, number> = { fail: 0, warn: 1, ok: 2 };
 
@@ -128,6 +179,7 @@ export function fixturesText(check: ReadinessCheck): string {
 export const FIX_LABELS: Record<string, string> = {
   [FIX_AUTO_GROUPS]: 'Make groups',
   [FIX_READDRESS]: 'Re-address',
+  [FIX_SET_MODES]: 'Set modes',
   [FIX_LOCATE]: 'Locate these',
 };
 

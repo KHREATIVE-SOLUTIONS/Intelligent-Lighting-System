@@ -40,8 +40,10 @@ import {
   roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellListPath, roomShellPath, roomShellUndoPath,
 } from '../utils/roomScan';
 import type { OutlineAnswer, OutlineChanges, OutlineRead } from '../utils/roomWallsEdit';
-import { autoGroupsPath, readdressPath, readinessPath, undoFixPath } from '../utils/readiness';
-import type { AutoGroupsResult, ReaddressResult, ReadinessReport, UndoFixResult } from '../utils/readiness';
+import { autoGroupsPath, readdressPath, readinessPath, setModesPath, undoFixPath } from '../utils/readiness';
+import type {
+  AutoGroupsResult, ReaddressResult, ReadinessReport, SetModesResult, UndoFixResult,
+} from '../utils/readiness';
 // Types only: the module itself reads the 3D view's checks, which this file has no use for.
 import type {
   ShellEditUndone, ShellItemAdd, ShellItemAdded, ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
@@ -1643,8 +1645,16 @@ export const readinessApi = {
     return response.data;
   },
 
+  /** Sets the DMX mode where only one is possible. `dryRun` answers the plan and changes nothing. */
+  setModes: async (rigId: number, dryRun: boolean): Promise<SetModesResult> => {
+    const response = await api.post(setModesPath(rigId), null, {
+      params: dryRun ? { dry_run: true } : undefined,
+    });
+    return response.data;
+  },
+
   /**
-   * Puts back exactly what the last Make groups or Re-address changed. Rejects
+   * Puts back exactly what the last Make groups, Re-address or Set modes changed. Rejects
    * with a 409 (detail.message) when a fixture it changed was changed since.
    */
   undoFix: async (rigId: number): Promise<UndoFixResult> => {
