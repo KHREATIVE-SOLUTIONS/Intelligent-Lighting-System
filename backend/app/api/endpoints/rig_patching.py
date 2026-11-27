@@ -30,6 +30,7 @@ from app.services.rig.patching_service import (
     MAX_UNIVERSES,
     PatchingService,
     PatchPlanError,
+    fixture_rows,
     plan_addresses,
 )
 from app.services.rig.rig_loader import build_manager_for_rig_id
@@ -61,34 +62,7 @@ async def _get_rig_fixtures_with_channels(rig_id: int, db: AsyncSession):
         )
     )
     rig_fixtures = result.scalars().all()
-
-    fixtures_data = []
-    for rf in rig_fixtures:
-        channel_count = 16  # Default fallback
-        if rf.mode:
-            channel_count = rf.mode.channel_count
-
-        fixtures_data.append({
-            "id": rf.id,
-            "universe": rf.universe or 0,
-            "dmx_address": rf.dmx_address,
-            "channel_count": channel_count,
-            "is_address_locked": rf.is_address_locked,
-            "name": rf.name,
-            "fixture_type": (
-                rf.fixture.fixture_type.value
-                if rf.fixture and getattr(rf.fixture, "fixture_type", None)
-                else "other"
-            ),
-            "has_mode": rf.mode is not None,
-            "mode_name": rf.mode.name if rf.mode else None,
-            "channel_types": [
-                str(ch.channel_type.value if getattr(ch, "channel_type", None) else "other")
-                for ch in (rf.mode.channels if rf.mode else [])
-            ],
-        })
-
-    return rig, rig_fixtures, fixtures_data
+    return rig, rig_fixtures, fixture_rows(rig_fixtures)
 
 
 @router.post("/{rig_id}/auto-patch")
