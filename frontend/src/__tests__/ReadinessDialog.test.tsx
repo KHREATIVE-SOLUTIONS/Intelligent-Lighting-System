@@ -12,7 +12,7 @@ import type {
 } from '../utils/readiness';
 
 vi.mock('../services/api', () => ({
-  readinessApi: { get: vi.fn(), autoGroups: vi.fn(), readdress: vi.fn() },
+  readinessApi: { get: vi.fn(), autoGroups: vi.fn(), readdress: vi.fn(), undoFix: vi.fn() },
 }));
 
 const api = vi.mocked(readinessApi);
@@ -70,6 +70,7 @@ beforeEach(() => {
   api.get.mockReset();
   api.autoGroups.mockReset();
   api.readdress.mockReset();
+  api.undoFix.mockReset();
 });
 afterEach(cleanup);
 
@@ -93,6 +94,22 @@ describe('ReadinessDialog', () => {
     expect(within(rows[2]).getByText('OK')).toBeTruthy();
     // A check that passed names no fixtures and offers nothing to press.
     expect(within(rows[2]).queryByRole('button')).toBeNull();
+  });
+
+  it('shows the DMX modes check like any other, with no fix to press', async () => {
+    const MODES = check({
+      id: 'modes', title: 'DMX modes', status: 'fail',
+      message: 'Spot 3 is set to mode "Basic", which its profile does not have.', fixture_ids: [13], fixture_count: 1,
+    });
+    api.get.mockResolvedValue(report([POSITIONS, MODES]));
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} />);
+    await flush();
+
+    const row = screen.getByTestId('readiness-check-modes');
+    expect(within(row).getByText('DMX modes')).toBeTruthy();
+    expect(within(row).getByText('Fail')).toBeTruthy();
+    expect(within(row).getByText(/its profile does not have/)).toBeTruthy();
+    expect(within(row).queryByRole('button', { name: /Make groups|Re-address/ })).toBeNull();
   });
 
   it('hands the fixtures a check names to the editor', async () => {
@@ -122,9 +139,9 @@ describe('ReadinessDialog', () => {
     await flush();
 
     fireEvent.click(screen.getByRole('button', { name: 'Make groups' }));
-    // Nothing is written until the operator says so: there is no undo for groups.
+    // Nothing is written until the operator says so.
     expect(api.autoGroups).not.toHaveBeenCalled();
-    expect(screen.getByText(/There is no undo for this/)).toBeTruthy();
+    expect(screen.getByText(/Undo puts them all back in one step/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Make them' }));
     await flush();
@@ -145,7 +162,7 @@ describe('ReadinessDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Make groups' }));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(api.autoGroups).not.toHaveBeenCalled();
-    expect(screen.queryByText(/There is no undo for this/)).toBeNull();
+    expect(screen.queryByText(/Undo puts them all back/)).toBeNull();
   });
 
   it('a fix that fails says nothing was changed and does not tell the editor to reload', async () => {
@@ -181,7 +198,7 @@ describe('ReadinessDialog', () => {
     expect(api.readdress).toHaveBeenLastCalledWith(7, true);
     const plan = screen.getByTestId('readiness-readdress-plan');
     expect(within(plan).getByText('Spot 2: 1.005 to 1.017')).toBeTruthy();
-    expect(within(plan).getByText(/There is no undo for this/)).toBeTruthy();
+    expect(within(plan).getByText(/on the fixture itself/)).toBeTruthy();
     expect(onChanged).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Move 1' }));
@@ -225,6 +242,80 @@ describe('ReadinessDialog', () => {
     const plan = screen.getByTestId('readiness-readdress-plan');
     expect(within(plan).getByText(/locked address/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Move/ })).toBeNull();
+  });
+
+  it('offers Undo after a fix; Undo takes it back in one step, tells the editor and checks again', async () => {
+    api.get
+      .mockResolvedValueOnce(report([GROUPS]))
+      .mockResolvedValueOnce(report([{ ...GROUPS, status: 'ok', fix: null }]))
+      .mockResolvedValueOnce(report([GROUPS]));
+    api.autoGroups.mockResolvedValue({ ...FIXED, undo: { fix: 'auto-groups', label: 'Undo Make groups', count: 3 } });
+    api.undoFix.mockResolvedValue({
+      rig_id: 7, fix: 'auto-groups', undo: null,
+      restored: [11, 12, 13].map((id) => ({ id, name: `Spot ${id}`, from: { group_name: 'Front truss Spots' }, to: { group_name: null } })),
+      message: 'Undid Make groups: 3 fixtures back in no group.',
+    });
+    const onChanged = vi.fn();
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} onChanged={onChanged} />);
+    await flush();
+    // Nothing to undo before a fix.
+    expect(screen.queryByTestId('readiness-undo')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make groups' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make them' }));
+    await flush();
+    expect(api.undoFix).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo Make groups' }));
+    await flush();
+
+    expect(api.undoFix).toHaveBeenCalledWith(7);
+    expect(onChanged).toHaveBeenCalledTimes(2);
+    expect(api.get).toHaveBeenCalledTimes(3);
+    expect(screen.getByText('Undid Make groups: 3 fixtures back in no group.')).toBeTruthy();
+    expect(screen.queryByTestId('readiness-undo')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Make groups' })).toBeTruthy();
+  });
+
+  it('Undo refused because the rig changed since says why and does not tell the editor to reload', async () => {
+    api.get.mockResolvedValue(report([CLASH]));
+    api.readdress
+      .mockResolvedValueOnce(PLAN)
+      .mockResolvedValueOnce({
+        ...PLAN, dry_run: false, message: 'Moved 1 fixture.', undo: { fix: 'readdress', label: 'Undo Re-address', count: 1 },
+      });
+    const refused = 'Cannot undo Re-address: 1 of the fixtures it changed has been changed or removed since (Spot 2).';
+    api.undoFix.mockRejectedValue({ response: { status: 409, data: { detail: { message: refused, stale: [] } } } });
+    const onChanged = vi.fn();
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} onChanged={onChanged} />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Re-address' }));
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Move 1' }));
+    await flush();
+    expect(onChanged).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo Re-address' }));
+    await flush();
+
+    expect(screen.getByText(refused)).toBeTruthy();
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('readiness-undo')).toBeNull();
+  });
+
+  it('a fix with no undo to offer shows no Undo button', async () => {
+    api.get.mockResolvedValue(report([GROUPS]));
+    api.autoGroups.mockResolvedValue({ ...FIXED, changed: [], undo: null, message: 'No group was needed.' });
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make groups' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make them' }));
+    await flush();
+
+    expect(screen.getByText('No group was needed.')).toBeTruthy();
+    expect(screen.queryByTestId('readiness-undo')).toBeNull();
   });
 
   it('Locate these hands exactly the named fixtures to the walkthrough and writes nothing', async () => {
