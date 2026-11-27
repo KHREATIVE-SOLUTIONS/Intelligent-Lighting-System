@@ -304,6 +304,25 @@ describe('ReadinessDialog', () => {
     expect(screen.queryByTestId('readiness-undo')).toBeNull();
   });
 
+  it('Undo that fails for another reason says nothing changed and keeps the button to try again', async () => {
+    api.get.mockResolvedValue(report([GROUPS]));
+    api.autoGroups.mockResolvedValue({ ...FIXED, undo: { fix: 'auto-groups', label: 'Undo Make groups', count: 3 } });
+    api.undoFix.mockRejectedValue({ response: { status: 500 } });
+    const onChanged = vi.fn();
+    render(<ReadinessDialog open rigId={7} rigName="Club" onClose={() => {}} onChanged={onChanged} />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make groups' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make them' }));
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Undo Make groups' }));
+    await flush();
+
+    expect(screen.getByText('Undo did not run: nothing was changed. Try again.')).toBeTruthy();
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Undo Make groups' })).toBeTruthy();
+  });
+
   it('a fix with no undo to offer shows no Undo button', async () => {
     api.get.mockResolvedValue(report([GROUPS]));
     api.autoGroups.mockResolvedValue({ ...FIXED, changed: [], undo: null, message: 'No group was needed.' });

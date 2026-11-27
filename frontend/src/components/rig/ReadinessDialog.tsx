@@ -160,11 +160,15 @@ export default function ReadinessDialog({
     setFixing(true);
     try {
       const result = await readinessApi.undoFix(rigId);
+      setUndo(null); // spent
       setFixNote({ severity: 'success', text: result.message });
       if (result.restored.length > 0) onChanged?.();
       await load();
     } catch (e) {
       const detail = (e as { response?: { status?: number; data?: { detail?: { message?: string } } } }).response;
+      // Refused: the rig changed since, so this undo can no longer be offered. Any other
+      // failure wrote nothing and the record is still on the rig, so Undo stays to try again.
+      if (detail?.status === 409) setUndo(null);
       setFixNote({
         severity: 'error',
         text: detail?.status === 409 && detail.data?.detail?.message
@@ -172,8 +176,6 @@ export default function ReadinessDialog({
           : 'Undo did not run: nothing was changed. Try again.',
       });
     } finally {
-      // Spent or refused, either way it is no longer the undo to offer.
-      setUndo(null);
       setFixing(false);
     }
   };
