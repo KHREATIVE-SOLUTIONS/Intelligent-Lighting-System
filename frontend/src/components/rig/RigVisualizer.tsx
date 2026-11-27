@@ -10,13 +10,22 @@ import {
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, PerspectiveCamera, Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { demoApi, rigsApi } from '../../services/api';
+import { demoApi, effectsApi, rigsApi } from '../../services/api';
 import type { DemoPresetSummary } from '../../services/api';
 import type { Rig, RigFixture, RoomShellBox } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
 import { useHealthStore } from '../../stores/healthStore';
 import { audioWebSocket } from '../../services/websocket';
-import { createDemoRigFollower, onEngineOnAnotherRig, onLinkRestored, settleRig } from '../../utils/demoRigSync';
+import {
+  createDemoRigFollower,
+  fetchEngineRig,
+  livePatchedRigId,
+  onEngineOnAnotherRig,
+  onLinkRestored,
+  onPatchedRigActivated,
+  settleRig,
+} from '../../utils/demoRigSync';
+import type { EngineRigApis } from '../../utils/demoRigSync';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
 import { ConsoleExportButton } from './ConsoleExportSection';
 import { createBeatClock, ingestAnalysis } from './previs/beatClock';
@@ -1347,6 +1356,13 @@ function BeamDebugOverlay({ buffer }: { buffer: MutableRefObject<Record<number, 
 // MAIN EXPORT COMPONENT
 // ============================================================================
 
+// How the live view finds the rig the engine is running.
+const engineRigApis: EngineRigApis<Rig> = {
+  getStatus: effectsApi.getStatus,
+  getPatchedRig: rigsApi.get,
+  getDemoRig: demoApi.getRig,
+};
+
 export default function RigVisualizer() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -1457,9 +1473,10 @@ export default function RigVisualizer() {
     try {
       // Through the shared axios instance, which is what attaches the operator
       // token; a bare fetch() here 401s on a box that has a password set.
-      // No preset is named: the backend answers with the demo rig its engine
-      // is running, so this view draws the rig whose state it receives.
-      setRig(await demoApi.getRig());
+      // This view is sent state for the rig the engine runs, so that is the
+      // rig it draws: the patched rig once one has been activated, and the
+      // engine's demo rig until then.
+      setRig(await fetchEngineRig(engineRigApis));
     } catch (error) {
       console.error('Failed to fetch demo rig:', error);
       setLoadError(`Failed to load demo rig: ${(error as any)?.message || 'unknown error'}`);
@@ -1489,7 +1506,11 @@ export default function RigVisualizer() {
   const demoRigFollower = useMemo(
     () =>
       createDemoRigFollower<Rig>({
-        source: demoApi,
+        source: {
+          // Asked which rig the engine runs, the answer may be a patched rig.
+          getRig: (preset) => (preset ? demoApi.getRig(preset) : fetchEngineRig(engineRigApis)),
+          applyPreset: demoApi.applyPreset,
+        },
         draw: (next) => {
           if (!showingDemo.current) return;
           setRig((drawn) => settleRig(drawn, next));
@@ -1518,6 +1539,33 @@ export default function RigVisualizer() {
       stopPoll();
     };
   }, [isDemo, demoRigFollower]);
+
+  // Activate puts a rig on the running engine with no restart, from the rig
+  // pages or another tab. The status poll's next reading carries a new rig
+  // version, and the view draws again: on the live view, whichever rig the
+  // engine now runs; on a patched rig's own page, that rig as it was just
+  // applied, so an edit shows without a reload. Quietly, like the demo
+  // follower: the canvas stays up and an unchanged rig is not rebuilt.
+  const shownRigId = useRef<number | null>(null);
+  shownRigId.current = id ? Number(id) : null;
+  useEffect(() => {
+    return onPatchedRigActivated(useHealthStore, (report) => {
+      const pageRigId = shownRigId.current;
+      if (pageRigId === null) {
+        void demoRigFollower.follow();
+        return;
+      }
+      if (livePatchedRigId(report) !== pageRigId) return;
+      rigsApi
+        .get(pageRigId)
+        .then((next) => {
+          if (shownRigId.current === pageRigId) setRig((drawn) => settleRig(drawn, next));
+        })
+        .catch(() => {
+          // Keep what is drawn; the next activation asks again.
+        });
+    });
+  }, [demoRigFollower]);
 
   // Put a different demo rig on the engine, then draw it.
   const changeDemoPreset = async (name: string) => {
@@ -1668,7 +1716,8 @@ export default function RigVisualizer() {
           <BackIcon />
         </IconButton>
         <Typography variant="h5">{rig.name}</Typography>
-        {isDemo && demoPresets.length > 0 && (
+        {/* Hidden once a patched rig is drawn: a demo rig cannot go over it. */}
+        {isDemo && rig.id === 0 && demoPresets.length > 0 && (
           <TextField
             select
             size="small"

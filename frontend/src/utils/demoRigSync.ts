@@ -54,6 +54,75 @@ export function onLinkRestored(link: LinkSource, callback: () => void): () => vo
 export interface EngineRigReport {
   live_rig_name?: string | null;
   live_rig_demo?: boolean;
+  /** The patched rig on the engine; null while a demo rig runs. */
+  live_rig_id?: number | null;
+  /** Changes each time the engine is given a rig, the same one again included. */
+  live_rig_version?: number | null;
+}
+
+/** The id of the patched rig the engine is running, or null on a demo rig. */
+export function livePatchedRigId(report: EngineRigReport | null): number | null {
+  if (!report || report.live_rig_demo || report.live_rig_id == null) return null;
+  return report.live_rig_id;
+}
+
+/**
+ * Names the patched rig on the engine and which install of it, or null while
+ * a demo rig runs or nothing is known. Two readings with different marks mean
+ * a rig was activated in between: another rig, or the same one after an edit.
+ */
+export function patchedRigMark(report: EngineRigReport | null): string | null {
+  const id = livePatchedRigId(report);
+  return id === null ? null : `${id}:${report?.live_rig_version ?? ''}`;
+}
+
+/** The health store, for a listener that needs the reading it starts from. */
+export interface EngineReportSource extends EngineReportStore {
+  getState(): { effects: EngineRigReport | null };
+}
+
+/**
+ * Calls back each time a status reading shows a patched rig was put on the
+ * engine: Activate was pressed, here or in another tab. It is how an open 3D
+ * view learns to draw the rig again without the backend restarting.
+ *
+ * A reading that only repeats the last one is not a change, and nor is the
+ * first reading a page sees, which describes the rig it has just loaded. A
+ * demo rig coming on is left to onEngineOnAnotherRig.
+ *
+ * Returns the function that stops listening.
+ */
+export function onPatchedRigActivated(
+  store: EngineReportSource,
+  callback: (report: EngineRigReport) => void
+): () => void {
+  let known = store.getState().effects !== null;
+  let mark = patchedRigMark(store.getState().effects);
+  return store.subscribe((state, previous) => {
+    if (state.effects === previous.effects || state.effects === null) return;
+    const next = patchedRigMark(state.effects);
+    const changed = known && next !== null && next !== mark;
+    known = true;
+    mark = next;
+    if (changed) callback(state.effects);
+  });
+}
+
+/** Where the 3D view gets rigs from. */
+export interface EngineRigApis<R> {
+  getStatus(): Promise<EngineRigReport>;
+  getPatchedRig(id: number): Promise<R>;
+  /** With no preset named: the demo rig the engine is running. */
+  getDemoRig(preset?: string): Promise<R>;
+}
+
+/**
+ * The rig the engine is running: the patched rig if one is live, else its
+ * demo rig. The view is sent state for that rig, so that is the one to draw.
+ */
+export async function fetchEngineRig<R>(apis: EngineRigApis<R>): Promise<R> {
+  const id = livePatchedRigId(await apis.getStatus());
+  return id === null ? apis.getDemoRig() : apis.getPatchedRig(id);
 }
 
 /**

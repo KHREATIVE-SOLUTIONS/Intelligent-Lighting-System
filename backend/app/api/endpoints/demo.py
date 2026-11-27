@@ -47,6 +47,10 @@ def _record_demo_rig(http_request: Optional[Request], preset_name: str, fixture_
         http_request.app.state.live_rig = {
             "id": None, "name": preset_name, "demo": True, "fixtures": fixture_count,
         }
+        # The engine was handed the demo rig directly, so the swap is counted
+        # here: an open 3D view reads the change of version as "ask again".
+        from ...services.rig.live_rig import bump_live_rig_version
+        bump_live_rig_version(http_request.app)
 
 # Global demo simulation instance
 _demo: Optional[DemoSimulation] = None
@@ -122,6 +126,7 @@ async def start_demo(request: DemoStartRequest, http_request: Request = None):
             manager, preset = create_venue_rig(request.venue_preset)
             if manager:
                 _effects_engine.set_fixture_manager(manager)
+                _record_demo_rig(http_request, request.venue_preset, len(preset.fixtures))
                 # Apply default genre from venue
                 from ...services.lighting.genre_profiles import Genre
                 try:

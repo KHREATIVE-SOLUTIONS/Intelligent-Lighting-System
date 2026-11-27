@@ -41,6 +41,7 @@ import {
   ViewInAr as BuilderIcon,
 } from '@mui/icons-material';
 import { rigsApi, fixturesApi } from '../../services/api';
+import ActivateRigButton from './ActivateRigButton';
 import FixtureTestPanel from './FixtureTestPanel';
 import LibraryFixturePicker from './LibraryFixturePicker';
 import type { Rig, Fixture, RigFixtureCreate, PatchConflict, FixtureChannel } from '../../types';
@@ -266,6 +267,17 @@ export default function RigEditor() {
         >
           3D View
         </Button>
+        <ActivateRigButton
+          rigId={rig.id}
+          isActive={rig.is_active}
+          size="medium"
+          variant="outlined"
+          onDone={(feedback) => {
+            // Not a refetch: that swaps the page for "Loading..." and would
+            // take the result message down with it.
+            if (feedback.severity !== 'error') setRig((current) => current && { ...current, is_active: true });
+          }}
+        />
         <Button startIcon={<SaveIcon />} variant="contained" onClick={handleSave}>
           Save
         </Button>

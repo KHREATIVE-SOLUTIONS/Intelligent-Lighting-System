@@ -27,6 +27,7 @@ from app.models.fixture import Fixture, FixtureMode, FixtureChannel, FixtureType
 from app.services.fixture_library.gdtf_parser import parse_gdtf
 from app.services.fixture_library.mvr_parser import parse_mvr
 from app.services.fixture_library.console_parsers import detect_and_parse
+from app.services.rig.live_rig import new_rig_is_active
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -123,7 +124,7 @@ async def import_mvr(
         stage_height=stage.get("height", 6.0),
         source_format="mvr",
         source_file=file.filename,
-        is_active=True,
+        is_active=await new_rig_is_active(db),
     )
     db.add(rig)
     await db.flush()
@@ -187,7 +188,7 @@ async def import_console_patch(
         name=rig_name or f"Console Import - {file.filename}",
         source_format="console",
         source_file=file.filename,
-        is_active=True,
+        is_active=await new_rig_is_active(db),
     )
     db.add(rig)
     await db.flush()

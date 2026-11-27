@@ -414,6 +414,9 @@ def _build_fixture(
         fixture.yaw = float(rf.rotation_y or 0.0)
     except (TypeError, ValueError):
         fixture.yaw = 0.0
+    # Channels the fixture occupies on the wire, which can be more than it has
+    # named channels for. The overlap check before a rig goes live reads it.
+    fixture.channel_span = max(1, int(span))
     # What the light points at, or None when the rig declares nothing. Every
     # fixture carries the attribute so a consumer never has to tell "no zone"
     # apart from "built by a path that predates zones".
@@ -553,6 +556,17 @@ def build_manager_from_rig(rig: Rig) -> FixtureGroupManager:
     manager = _build_manager(rig, diagnostics)
     manager.rig_diagnostics = diagnostics
     return manager
+
+
+async def load_rig_for_engine(db: AsyncSession, rig_id: int) -> Optional[Rig]:
+    """The rig as the database holds it now, ready for `build_manager_from_rig`.
+
+    A session that already loaded this rig keeps its old fixture list unless
+    told otherwise, so everything is read again: a rig edited a moment ago in
+    the same session must be built from the edit.
+    """
+    result = await db.execute(_rig_query(rig_id).execution_options(populate_existing=True))
+    return result.scalar_one_or_none()
 
 
 async def build_manager_for_rig_id(db: AsyncSession, rig_id: int) -> FixtureGroupManager:
