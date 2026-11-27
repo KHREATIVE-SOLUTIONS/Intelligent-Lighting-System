@@ -78,6 +78,12 @@ in `warnings`. Each of those keys is sent only when it has something in it.
 lost: a line's or ring's name or trim where the scan read a truss there at
 another height or to one side, and a record of a deleted item that was
 dropped because the scan did not see it (each with its own `message`).
+Since slice 36 it also names a raised area read to one side, a line or ring
+no longer read at all, and of two stored items that pick one new one the one
+that loses; `carry_over` gives each warning with a new item behind it in a
+form POST /api/rigs/{rig_id}/room-scan/carry-over takes as it is, to put the
+old name and trim onto that item as one step of the room's Undo
+(services/room_scan/carry_over.py).
 
 PATCH /api/rigs/{rig_id}/room-shell/outline redraws the room's walls (every
 corner of its floor) and sets its height; PATCH, POST and DELETE under
@@ -89,7 +95,7 @@ room is moved to suit new walls: each answer lists what they leave outside.
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
@@ -106,6 +112,7 @@ from app.services.room_scan.carry import (
     apply_areas, apply_moves, areas_report, carried_area_moves, carried_areas, carried_moves, carried_words,
     put_back, put_back_words, refuse_areas_outside, refuse_outside,
 )
+from app.services.room_scan.carry_over import carry_over
 from app.services.room_scan.edit import (
     KINDS, ShellEditError, add_item, delete_item, dj_booth_place, edit_item, edit_words, first_stage, item_name,
     one_dj_booth,
@@ -655,6 +662,49 @@ async def delete_room_outline_corner(rig_id: int, index: int, db: AsyncSession =
     return {**answer, "index": index}
 
 
+def _with_what_it_carries(
+    rig: Rig, before: Dict[str, Any], kind: str, index: int, shell: Dict[str, Any], item: Dict[str, Any],
+    carry: bool,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """(the shell with what stood on the item moved, the fixture moves, the raised areas carried).
+
+    Edit Room's rules for one edited item, shared by its PATCH and by a
+    carry-over (slice 36): the fixtures hung on a line or ring, or standing on
+    a raised area, go with it, and so do the raised areas standing on a raised
+    area. Worked out from the room as it was and checked before anything is
+    written: one that would leave the room refuses the whole edit
+    (ShellEditError). `carry` false moves nothing.
+    """
+    moves = carried_moves(before, kind, index, item, rig.fixtures) if carry else []
+    refuse_outside(shell, kind, item, moves)
+    stacked = carried_areas(before, index, item) if kind == "risers" and carry else []
+    refuse_areas_outside(shell, item, stacked)
+    for entry, theirs in zip(stacked, carried_area_moves(before, stacked, rig.fixtures)):
+        refuse_outside(shell, kind, entry["item"], theirs)
+        moves = moves + theirs
+    shell = apply_areas(shell, stacked)
+    if kind == "risers":
+        # A carried area is written from the room as it was, where it may still have been the booth.
+        shell = one_dj_booth(shell, index)
+    return shell, moves, stacked
+
+
+def _store_edit(
+    rig: Rig, before: Dict[str, Any], shell: Dict[str, Any], kind: str,
+    moves: List[Dict[str, Any]], stacked: List[Dict[str, Any]], done: str,
+) -> None:
+    """Write one edit and what it carried as one step of the room's Undo."""
+    apply_moves(rig.fixtures, moves)
+    carried = [f"{len(stacked)} raised area{'' if len(stacked) == 1 else 's'}"] if stacked else []
+    if moves:
+        carried.append(f"{len(moves)} fixture{'' if len(moves) == 1 else 's'}")
+    label = f"{done}, with {' and '.join(carried)}" if carried else done
+    # A new object throughout: the column is plain JSON, so a change made in place is never written.
+    rig.room_shell = shell
+    # One step for the item and what it carried: one undo takes both back.
+    rig.room_shell_undo = push_step(rig.room_shell_undo, before, label, fixtures=moves, kind=kind)
+
+
 @router.patch("/rigs/{rig_id}/room-shell/{kind}/{index}")
 async def edit_room_shell_item(
     rig_id: int,
@@ -712,33 +762,11 @@ async def edit_room_shell_item(
     try:
         shell, item = edit_item(before, kind, index, **body.model_dump(exclude={"carry_fixtures"}))
         done = edit_words(kind, before[kind][index], item)
-        # Where the fixtures hung on it would go, worked out and checked before anything is written:
-        # one that would leave the room refuses the whole edit, the truss's included.
-        moves = carried_moves(before, kind, index, item, rig.fixtures) if carry and done is not None else []
-        refuse_outside(shell, kind, item, moves)
-        # The raised areas standing on a raised area go with it, and so do the fixtures standing on those.
-        # All of it is read from the room as it was, and checked before anything is written.
-        stacked = carried_areas(before, index, item) if kind == "risers" and carry and done is not None else []
-        refuse_areas_outside(shell, item, stacked)
-        for entry, theirs in zip(stacked, carried_area_moves(before, stacked, rig.fixtures)):
-            refuse_outside(shell, kind, entry["item"], theirs)
-            moves = moves + theirs
-        shell = apply_areas(shell, stacked)
-        if kind == "risers":
-            # A carried area is written from the room as it was, where it may still have been the booth.
-            shell = one_dj_booth(shell, index)
+        shell, moves, stacked = _with_what_it_carries(rig, before, kind, index, shell, item, carry and done is not None)
     except ShellEditError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)
     if done is not None:
-        apply_moves(rig.fixtures, moves)
-        carried = [f"{len(stacked)} raised area{'' if len(stacked) == 1 else 's'}"] if stacked else []
-        if moves:
-            carried.append(f"{len(moves)} fixture{'' if len(moves) == 1 else 's'}")
-        label = f"{done}, with {' and '.join(carried)}" if carried else done
-        # A new object throughout: the column is plain JSON, so a change made in place is never written.
-        rig.room_shell = shell
-        # One step for the truss and what it carried: one undo takes both back.
-        rig.room_shell_undo = push_step(rig.room_shell_undo, before, label, fixtures=moves, kind=kind)
+        _store_edit(rig, before, shell, kind, moves, stacked, done)
         await db.flush()
         logger.info(
             "Room shell: rig %s '%s': %s %d: %s (%d fixtures and %d raised areas carried)",
@@ -892,4 +920,74 @@ async def add_room_shell_item(
         "dj_booth": dj_booth_place(shell),
         "undo": undo_summary(rig.room_shell_undo),
         "message": f"{name} was added to the stored room as a {KINDS[kind]}. No fixture was moved.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Carrying a lost name and trim over (slice 36)
+# ---------------------------------------------------------------------------
+
+class CarryOverEntry(BaseModel):
+    """One entry of `hand_edits.carry_over`, sent back as the scan's answer gave it.
+
+    Keys the answer has and this does not read (`reason`, `warning`) are
+    passed over. Nothing is held to a type here, for the reason given on
+    ShellItemEdit: carry_over.py refuses what is not right in a sentence.
+    """
+    kind: Optional[Any] = None
+    new_index: Optional[Any] = None
+    new_name: Optional[Any] = None
+    edits: Optional[Any] = None
+    old_name: Optional[Any] = None
+    old_trim_or_height: Optional[Any] = None
+    old_base_height: Optional[Any] = None
+    # As for a PATCH: left out (or null), the fixtures hung on a truss whose trim changes go with it.
+    carry_fixtures: Optional[bool] = True
+
+
+@router.post("/rigs/{rig_id}/room-scan/carry-over")
+async def carry_over_lost_edit(rig_id: int, body: CarryOverEntry, db: AsyncSession = Depends(get_db)):
+    """Put a name and trim a scan applied again could not keep onto the item it read in its place.
+
+    The body is one entry of the applied answer's `hand_edits.carry_over`
+    (services/room_scan/carry_over.py). Only the fields in its `edits` are
+    written: the old name, a line's or ring's old trim, a raised area's old
+    height and base height. Each is marked as set by hand, as Edit Room marks
+    it, so the next scan keeps it. The fixtures hung on a truss whose trim
+    changes, or standing on a raised area whose height does, go with it by
+    Edit Room's own rules (as PATCH .../room-shell/{kind}/{index}); none
+    otherwise. One step of the room's Undo (POST .../room-shell/undo).
+
+    409 where the room has changed since: the item at `new_index` is no longer
+    there or no longer called `new_name`. 422 for an entry that is not one, or
+    a trim the room does not hold. Nothing reaches a device.
+    """
+    rig = await _rig_with_fixtures(db, rig_id)
+    _not_during_locate(rig, "edit the room")
+    before = rig.room_shell
+    carry = body.carry_fixtures is not False
+    try:
+        shell, item, done = carry_over(before, body.model_dump(exclude={"carry_fixtures"}))
+        kind, index = body.kind, body.new_index
+        shell, moves, stacked = _with_what_it_carries(rig, before, kind, index, shell, item, carry and done is not None)
+    except ShellEditError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
+    if done is not None:
+        _store_edit(rig, before, shell, kind, moves, stacked, done)
+        await db.flush()
+        logger.info(
+            "Room scan carry-over: rig %s '%s': %s %d: %s (%d fixtures and %d raised areas carried)",
+            rig.id, rig.name, kind, index, done, len(moves), len(stacked),
+        )
+    stored = shell if done is not None else before
+    return {
+        "rig_id": rig.id, "kind": kind, "index": index, "item": item, "room_shell": stored,
+        "changed": done is not None,
+        "undo": undo_summary(rig.room_shell_undo),
+        "fixtures_moved": moves,
+        "items_moved": areas_report(stacked),
+        "message": (
+            f"{done}. {carried_words(kind, item, len(moves), carry, areas=len(stacked))}"
+            if done is not None else f"{item_name(kind, item)} already has it. Nothing was changed."
+        ),
     }
