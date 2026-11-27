@@ -21,8 +21,11 @@ this module never disagrees with the view a check sends the operator to:
 
 Reads only. Nothing is written, nothing is sent to a device.
 
-`plan_auto_groups` is the one fix: a group for each position and kind of
-fixture, for the fixtures that have none. It plans; the endpoint writes.
+Two fixes plan here and the endpoints write: `plan_auto_groups` (a group for
+each position and kind of fixture, for the fixtures that have none) and
+`plan_readdress` (a free address for each fixture that clashes). The third,
+Locate, is the flash-and-tap walkthrough started with the fixtures the
+Positions check names; it has no planner.
 """
 
 import math
@@ -32,7 +35,7 @@ from app.services.console_export.ma2 import ma2_script, ma2_xml
 from app.services.console_export.model import ExportRig, from_rig
 from app.services.console_export.mvr import mvr_bytes
 from app.services.rig.patching_service import (
-    MAX_DMX_CHANNELS, NO_MODE_CHANNELS, PatchingService, fixture_rows,
+    MAX_DMX_CHANNELS, NO_MODE_CHANNELS, PatchingService, PatchPlanError, fixture_rows, plan_addresses,
 )
 from app.services.rig.programming_audit import build_programming_audit
 from app.services.room_scan.carry import HANGING_KINDS, hung_fixtures
@@ -51,6 +54,8 @@ FIXTURE_IDS_MAX = 50
 # is outside it. Enough for a light hung on the wall itself.
 ROOM_TOLERANCE_M = 0.25
 FIX_AUTO_GROUPS = "auto-groups"
+FIX_READDRESS = "readdress"
+FIX_LOCATE = "locate"
 HANG_POSITION_PREFIX = "hang_position:"
 GROUP_NAME_MAX = 100  # RigFixture.group_name is String(100)
 
@@ -172,7 +177,7 @@ def check_positions(rows: Sequence[Any]) -> Dict[str, Any]:
     if unplaced:
         parts.append(f"{_fixtures(len(unplaced))} have no position at all and sit at 0,0,0 ({_named(unplaced)})")
     message = "; ".join(parts) + ". Confirm them with flash-and-tap (Locate) or by dragging them in the 3D view."
-    return _check("positions", "Positions", WARN, message, (rf.id for rf in guessed + unplaced))
+    return _check("positions", "Positions", WARN, message, (rf.id for rf in guessed + unplaced), fix=FIX_LOCATE)
 
 
 def check_addresses(rows: Sequence[Any], data: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -242,7 +247,8 @@ def check_addresses(rows: Sequence[Any], data: Sequence[Dict[str, Any]]) -> Dict
     sentences = []
     if proven_parts:
         sentences.append(
-            ". ".join(proven_parts) + ". Re-patch them (Auto Patch, or edit the address) before programming."
+            ". ".join(proven_parts) + ". Re-address moves only the fixtures that clash, or edit the "
+            "address, before programming."
         )
     if guessed_parts:
         sentences.append(
@@ -251,7 +257,9 @@ def check_addresses(rows: Sequence[Any], data: Sequence[Dict[str, Any]]) -> Dict
             "pick its mode and look again."
         )
     status = FAIL if proven_parts else WARN
-    return _check("addresses", "DMX addresses", status, " ".join(sentences), proven_ids + guessed_ids)
+    return _check(
+        "addresses", "DMX addresses", status, " ".join(sentences), proven_ids + guessed_ids, fix=FIX_READDRESS,
+    )
 
 
 def check_profiles(rows: Sequence[Any]) -> Dict[str, Any]:
@@ -420,15 +428,23 @@ def readiness(rig: Any, rows: Sequence[Any]) -> Dict[str, Any]:
 # The fix: groups by position and kind
 # ---------------------------------------------------------------------------
 
-def existing_groups(rows: Sequence[Any]) -> Dict[str, str]:
-    """Every group name in the rig, lower-cased, to the name as written."""
-    names: Dict[str, str] = {}
+def _group_names(rows: Sequence[Any]) -> List[str]:
+    """Every group name in the rig as written, first seen first: group names and group tags."""
+    names: List[str] = []
     for rf in rows:
         for name in [(rf.group_name or "").strip()] + [
             t[len("group:"):].strip() for t in _tags(rf) if t.startswith("group:")
         ]:
-            if name:
-                names.setdefault(name.lower(), name)
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def existing_groups(rows: Sequence[Any]) -> Dict[str, str]:
+    """Every group name in the rig, lower-cased, to the name as written."""
+    names: Dict[str, str] = {}
+    for name in _group_names(rows):
+        names.setdefault(name.lower(), name)
     return names
 
 
@@ -488,15 +504,20 @@ def auto_group_name(place: str, kind: str) -> str:
 
 
 def plan_auto_groups(rig: Any, rows: Sequence[Any]) -> Dict[str, Any]:
-    """Which fixture goes in which new group. Changes nothing.
+    """Which fixture goes in which group. Changes nothing.
 
     Only fixtures in no group at all are given one, as their `group_name`.
-    A name the rig already uses (any case, as a group or a group tag) is not
-    made again: its fixtures are left as they are and the name is listed as
-    skipped. A fixture with no position is left out: there is no place to
-    name it by.
+    When the rig already has a group of exactly the name this would make
+    (same letters, same case: the name Make groups itself writes), the
+    fixture joins it and the group is listed as `added`. The rig does not
+    record who made a group, so that exact name is the only sign one was made
+    here; a name that differs only in case ("front truss spots") was typed by
+    someone, and its fixtures are left alone and listed as `skipped`. No
+    fixture is ever taken out of a group. A fixture with no position is left
+    out: there is no place to name it by.
     """
     taken = existing_groups(rows)
+    exact = set(_group_names(rows))
     trusses = _truss_names(rig, rows)
     wanted: Dict[str, List[Any]] = {}
     unplaced: List[Any] = []
@@ -509,17 +530,130 @@ def plan_auto_groups(rig: Any, rows: Sequence[Any]) -> Dict[str, Any]:
         wanted.setdefault(auto_group_name(place_name(rig, rf, trusses), fixture_kind(rf)), []).append(rf)
 
     assign: Dict[int, str] = {}
-    created, skipped = [], []
+    created, added, skipped = [], [], []
     for name, members in wanted.items():
-        if name.lower() in taken:
-            skipped.append({"name": taken[name.lower()], "fixture_ids": [rf.id for rf in members]})
+        entry = {"name": name, "fixture_ids": [rf.id for rf in members]}
+        if name in exact:
+            added.append(entry)
+        elif name.lower() in taken:
+            skipped.append({"name": taken[name.lower()], "fixture_ids": entry["fixture_ids"]})
             continue
-        created.append({"name": name, "fixture_ids": [rf.id for rf in members]})
+        else:
+            created.append(entry)
         for rf in members:
             assign[rf.id] = name
     return {
         "assign": assign,
         "created": created,
+        "added": added,
         "skipped": skipped,
         "unplaced_ids": [rf.id for rf in unplaced],
+    }
+
+
+# ---------------------------------------------------------------------------
+# The fix: re-address the fixtures that clash
+# ---------------------------------------------------------------------------
+
+def address_label(universe: int, address: int) -> str:
+    """ "1.001": universe as the check names it (counted from 1), then the address."""
+    return f"{int(universe) + 1}.{int(address):03d}"
+
+
+def plan_readdress(rows: Sequence[Any]) -> Dict[str, Any]:
+    """Where each fixture that clashes goes. Changes nothing: it reads dicts, not the rows.
+
+    A fixture clashes when its footprint overlaps one kept in place, or runs
+    off its universe (the audit's 1-512 rule). Fixtures are kept in place in
+    order: every address-locked fixture first, then by id, so of two that
+    overlap the one patched first (lower id) stays. Of a chain A-B-C only B
+    moves. Each one that moves takes the first free range at or after its own
+    address in its universe, else the first free range in that universe, else
+    the next universe with room (plan_addresses). A fixture that cannot move
+    (address-locked, or no room anywhere) is listed in `left` with the reason.
+
+    The footprint is the one the check uses: a fixture with no DMX mode is
+    counted as NO_MODE_CHANNELS, and its move is marked `guessed`.
+    """
+    data = fixture_rows(rows)
+    by_id = {d["id"]: d for d in data}
+    off_universe = {
+        row["fixture_id"] for row in build_programming_audit(list(data))["patch_report"] if not row["range_ok"]
+    }
+
+    order = sorted(data, key=lambda d: (not d["is_address_locked"], int(d["id"])))
+    kept: List[Dict[str, Any]] = []
+    movers: List[Tuple[Dict[str, Any], str, List[int]]] = []
+    left: List[Dict[str, Any]] = []
+    for d in order:
+        clashes = sorted({
+            c["fixture_a_id"] if c["fixture_b_id"] == d["id"] else c["fixture_b_id"]
+            for c in PatchingService.find_conflicts(kept + [d])
+            if d["id"] in (c["fixture_a_id"], c["fixture_b_id"])
+        })
+        reason = "overlap" if clashes else ("past_end" if d["id"] in off_universe else None)
+        if reason is None or d["is_address_locked"]:
+            kept.append(d)
+            if reason is not None:
+                left.append({
+                    "id": d["id"], "name": d["name"], "reason": "locked",
+                    "clashes_with": clashes,
+                    "message": f"{d['name'] or 'Fixture ' + str(d['id'])} has a locked address, so it was not moved.",
+                })
+            continue
+        movers.append((d, reason, clashes))
+
+    occupied: Dict[int, List[Tuple[int, int]]] = {}
+    for d in kept:
+        start = int(d["dmx_address"])
+        occupied.setdefault(int(d["universe"]), []).append((start, start + int(d["channel_count"]) - 1))
+
+    moves: List[Dict[str, Any]] = []
+    for d, reason, clashes in sorted(movers, key=lambda m: (int(m[0]["universe"]), int(m[0]["dmx_address"]), int(m[0]["id"]))):
+        universe, address, footprint = int(d["universe"]), int(d["dmx_address"]), int(d["channel_count"])
+        target: Optional[Tuple[int, int]] = None
+        try:
+            # At or after where it was, in its own universe: the lower addresses are held for this try only.
+            ahead = {universe: occupied.get(universe, []) + ([(1, address - 1)] if address > 1 else [])}
+            target = plan_addresses(ahead, footprint, 1, universe=universe, max_universes=universe + 1)[0]
+        except PatchPlanError:
+            try:
+                target = plan_addresses(occupied, footprint, 1, universe=universe)[0]
+            except PatchPlanError as e:
+                left.append({
+                    "id": d["id"], "name": d["name"], "reason": "no_room", "clashes_with": clashes,
+                    "message": f"{d['name'] or 'Fixture ' + str(d['id'])} was not moved: {e}.",
+                })
+                continue
+        to_u, to_a = target
+        occupied.setdefault(to_u, []).append((to_a, to_a + footprint - 1))
+        moves.append({
+            "id": d["id"],
+            "name": d["name"],
+            "reason": reason,
+            "clashes_with": clashes,
+            "channel_count": footprint,
+            "guessed": not d["has_mode"],
+            "from_universe": universe,
+            "from_address": address,
+            "to_universe": to_u,
+            "to_address": to_a,
+            "from_label": address_label(universe, address),
+            "to_label": address_label(to_u, to_a),
+        })
+
+    # The plan's own proof: with the moves made, the rule the check uses finds nothing left
+    # except what `left` already names.
+    after = [dict(by_id[i]) for i in by_id]
+    planned = {m["id"]: m for m in moves}
+    for d in after:
+        if d["id"] in planned:
+            d["universe"], d["dmx_address"] = planned[d["id"]]["to_universe"], planned[d["id"]]["to_address"]
+    still = PatchingService.find_conflicts(after)
+    still_off = [r["fixture_id"] for r in build_programming_audit(after)["patch_report"] if not r["range_ok"]]
+    return {
+        "moves": moves,
+        "left": left,
+        "conflicts_after": len(still),
+        "past_end_after": len(still_off),
     }

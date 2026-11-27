@@ -965,6 +965,17 @@ class MirrorAnswer(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class StartRequest(BaseModel):
+    """Which lights to walk. Left out, the walk is chosen by `only`."""
+
+    fixture_ids: Optional[List[int]] = Field(
+        default=None,
+        max_length=4096,
+        description="Walk exactly these lights of the rig (the Readiness panel's Locate these). "
+                    "With only=unconfirmed they are walked a row at a time, as locate mode walks.",
+    )
+
+
 @router.post("/rigs/{rig_id}/identify/start")
 async def start_walkthrough(
     rig_id: int,
@@ -973,6 +984,7 @@ async def start_walkthrough(
         description="'unconfirmed' walks just the lights whose position is a generated guess, "
                     "a row at a time (locate mode). Left out, every active light is walked.",
     ),
+    body: Optional[StartRequest] = None,
     request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -983,6 +995,16 @@ async def start_walkthrough(
             detail=f"'only' can be '{MODE_UNCONFIRMED}' or left out, not '{only}'.",
         )
     locate = only == MODE_UNCONFIRMED
+    chosen = set(body.fixture_ids) if body is not None and body.fixture_ids is not None else None
+    if chosen is not None and not chosen:
+        raise HTTPException(status_code=400, detail="No lights were named to walk.")
+
+    def wanted(rf: RigFixture) -> bool:
+        # Named lights are walked whatever their tags: the Positions check also names
+        # lights with no position at all, which carry no position_unconfirmed tag.
+        if chosen is not None:
+            return rf.id in chosen
+        return not locate or is_unconfirmed(rf.tags)
     service = get_test_service(request)
     rig = await _load_rig(rig_id, db)
 
@@ -993,10 +1015,7 @@ async def start_walkthrough(
         .order_by(RigFixture.universe, RigFixture.dmx_address, RigFixture.id)
     )
     everything = result.scalars().all()
-    rig_fixtures = [
-        rf for rf in everything
-        if rf.is_active and (not locate or is_unconfirmed(rf.tags))
-    ]
+    rig_fixtures = [rf for rf in everything if rf.is_active and wanted(rf)]
     # A switched-off fixture drives nothing, so it can never be the one that is
     # lit. It is reported, with the reason, instead of being left out of the count.
     not_located = [
@@ -1010,11 +1029,20 @@ async def start_walkthrough(
             "reason": _switched_off_reason(rf.tags),
         }
         for rf in everything
-        if not rf.is_active and (not locate or is_unconfirmed(rf.tags))
+        if not rf.is_active and wanted(rf)
     ]
     # Both refusals come before anything touches the wire: a walkthrough with
     # nothing to walk must not take the show down to say so.
     if not rig_fixtures:
+        if chosen is not None:
+            detail = "None of the lights named is on this rig and switched on, so there is nothing to walk."
+            if not_located:
+                detail += (
+                    f" {len(not_located)} of them {'are' if len(not_located) != 1 else 'is'} switched off: "
+                    + ", ".join(entry["label"] for entry in not_located[:8])
+                    + ("..." if len(not_located) > 8 else "") + "."
+                )
+            raise HTTPException(status_code=400, detail=detail)
         if not locate:
             raise HTTPException(
                 status_code=400,

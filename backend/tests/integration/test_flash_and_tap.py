@@ -299,6 +299,54 @@ async def test_a_rig_with_no_guesses_left_is_refused_before_the_show_is_touched(
     assert unknown.status_code == 400, unknown.text
 
 
+async def test_named_lights_are_walked_exactly_including_one_with_no_position(
+    client: AsyncClient, sample_rig_data, sample_fixture_data, dmx_state
+):
+    """The Readiness panel's Locate these: the lights the Positions check names, and no others."""
+    lights = [
+        light("Measured", 1, -4.0, 0.0, tags=MEASURED),
+        light("Guess A", 41, -2.0, 0.0),
+        light("Guess B", 81, 2.0, 0.0),
+        light("Nowhere", 121, 0.0, 0.0, tags=["position_source:none", TAG_UNPLACED]),
+        light("Off Guess", 161, 4.0, 0.0, active=False),
+    ]
+    rig_id, ids = await build_rig(client, sample_rig_data, sample_fixture_data, lights)
+    named = [ids["Guess B"], ids["Nowhere"], ids["Off Guess"]]
+
+    started = await client.post(
+        f"/api/rigs/{rig_id}/identify/start", params={"only": "unconfirmed"}, json={"fixture_ids": named},
+    )
+
+    assert started.status_code == 200, started.text
+    state = started.json()
+    assert state["mode"] == "unconfirmed"
+    assert state["total"] == 2, "Guess A was not named and the measured light is not a guess"
+    assert state["current"]["fixture_id"] in (ids["Guess B"], ids["Nowhere"])
+    assert [entry["label"] for entry in state["not_located"]] == ["Off Guess"]
+    base = f"/api/rigs/{rig_id}/identify/{state['session_id']}"
+    walked = []
+    while not state["complete"]:
+        walked.append(state["current"]["fixture_id"])
+        state = await tap(client, base, state, 1.0, 1.0)
+    assert sorted(walked) == sorted([ids["Guess B"], ids["Nowhere"]])
+
+    rows = await fixtures_by_name(client, rig_id)
+    assert TAG_UNPLACED not in rows["Nowhere"]["tags"], "a tap gives a light with no position one"
+    assert TAG_UNCONFIRMED in rows["Guess A"]["tags"]
+
+
+async def test_an_empty_or_foreign_list_of_lights_is_refused(
+    client: AsyncClient, sample_rig_data, sample_fixture_data, dmx_state
+):
+    rig_id, _ = await build_rig(client, sample_rig_data, sample_fixture_data, [light("Guess", 1, 0.0, 0.0)])
+    dmx_state.get_universe(0).set_channel(401, 200)
+
+    for body in ({"fixture_ids": []}, {"fixture_ids": [999999]}):
+        refused = await client.post(f"/api/rigs/{rig_id}/identify/start", params={"only": "unconfirmed"}, json=body)
+        assert refused.status_code == 400, refused.text
+    assert dmx_state.get_universe(0).data[400] == 200
+
+
 # ---------------------------------------------------------------------------
 # Row by row, ends first
 # ---------------------------------------------------------------------------

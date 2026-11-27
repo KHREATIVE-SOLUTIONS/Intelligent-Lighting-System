@@ -413,3 +413,172 @@ class TestMakeGroups:
             assert await snapshot(db_session, rig_id) == before
         else:
             assert {c["id"] for c in body["changed"]} <= set(checks["groups"]["fixture_ids"]) | set(body["unplaced_ids"])
+
+    @pytest.mark.asyncio
+    async def test_a_fixture_joins_a_group_of_exactly_the_name_it_would_get(self, client: AsyncClient, db_session):
+        rig, rows = await make_rig(db_session, [
+            {"group_name": "Front truss Spots", "x": -1.0, "z": 2.0},   # made by an earlier run
+            {"group_name": None, "x": 1.0, "z": 2.0},                    # patched since
+            {"group_name": "Keep me", "x": 2.0, "z": 2.0},               # same place and kind, a hand group
+        ])
+
+        body = (await client.post(f"/api/rigs/{rig.id}/readiness/fix/auto-groups")).json()
+
+        assert body["created"] == []
+        assert body["added"] == [{"name": "Front truss Spots", "fixture_ids": [rows[1].id]}]
+        assert [c["id"] for c in body["changed"]] == [rows[1].id]
+        assert "Added 1 fixture to Front truss Spots" in body["message"]
+        for rf in rows:
+            await db_session.refresh(rf)
+        assert [rf.group_name for rf in rows] == ["Front truss Spots", "Front truss Spots", "Keep me"]
+        _, checks = await get(client, rig.id)
+        assert checks["groups"]["status"] == "ok"
+
+        after = await snapshot(db_session, rig.id)
+        second = (await client.post(f"/api/rigs/{rig.id}/readiness/fix/auto-groups")).json()
+        assert second["added"] == [] and second["changed"] == []
+        assert await snapshot(db_session, rig.id) == after
+
+    @pytest.mark.asyncio
+    async def test_a_group_tag_of_the_exact_name_is_joined_too(self, client: AsyncClient, db_session):
+        rig, rows = await make_rig(db_session, [
+            {"group_name": None, "x": -1.0, "z": 2.0, "tags": ["position_source:mvr", "group:Front truss Spots"]},
+            {"group_name": None, "x": 1.0, "z": 2.0},
+        ])
+
+        body = (await client.post(f"/api/rigs/{rig.id}/readiness/fix/auto-groups")).json()
+
+        assert body["added"] == [{"name": "Front truss Spots", "fixture_ids": [rows[1].id]}]
+
+
+async def readdress(client, rig_id, dry_run=False):
+    response = await client.post(
+        f"/api/rigs/{rig_id}/readiness/fix/readdress", params={"dry_run": "true"} if dry_run else None,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def addresses(db, rows):
+    out = []
+    for rf in rows:
+        await db.refresh(rf)
+        out.append((rf.universe, rf.dmx_address))
+    return out
+
+
+class TestReaddress:
+
+    @pytest.mark.asyncio
+    async def test_a_dry_run_on_the_liv_rig_plans_and_changes_nothing(self, client: AsyncClient, db_session):
+        rig_id = await imported_liv(client)
+        before = await snapshot(db_session, rig_id)
+
+        body = await readdress(client, rig_id, dry_run=True)
+
+        assert body["dry_run"] is True
+        assert [m["name"] for m in body["moves"]] == ["Booth Wash 2"]
+        move = body["moves"][0]
+        assert move["from_label"] == "4.337"
+        assert move["guessed"] is True, "the Booth Washes have no DMX mode: the clash is a guess"
+        assert move["to_universe"] == 3 and move["to_address"] >= 341
+        assert body["conflicts_after"] == 0 and body["past_end_after"] == 0
+        assert body["message"].startswith("Would move 1 fixture: Booth Wash 2 4.337 to 4.")
+        assert await snapshot(db_session, rig_id) == before
+
+    @pytest.mark.asyncio
+    async def test_the_liv_rig_is_ok_after_and_a_second_call_moves_nothing(self, client: AsyncClient, db_session):
+        rig_id = await imported_liv(client)
+        planned = await readdress(client, rig_id, dry_run=True)
+
+        body = await readdress(client, rig_id)
+
+        assert body["dry_run"] is False
+        assert body["moves"] == planned["moves"], "the dry run is the plan that is applied"
+        _, checks = await get(client, rig_id)
+        assert checks["addresses"]["status"] == "ok", checks["addresses"]["message"]
+        assert checks["addresses"]["fix"] is None
+        after = await snapshot(db_session, rig_id)
+        again = await readdress(client, rig_id)
+        assert again["moves"] == [] and again["left"] == []
+        assert again["message"].startswith("Nothing to move")
+        assert await snapshot(db_session, rig_id) == after
+
+    @pytest.mark.asyncio
+    async def test_only_the_clashing_fixture_moves(self, client: AsyncClient, db_session):
+        rig, rows = await make_rig(db_session, [{"dmx_address": 1}, {"dmx_address": 5}, {"dmx_address": 30}])
+        _, checks = await get(client, rig.id)
+        assert checks["addresses"]["fix"] == "readdress"
+
+        body = await readdress(client, rig.id)
+
+        assert [(m["id"], m["from_label"], m["to_label"], m["reason"]) for m in body["moves"]] == [
+            (rows[1].id, "1.005", "1.011", "overlap"),
+        ]
+        assert body["moves"][0]["clashes_with"] == [rows[0].id]
+        assert await addresses(db_session, rows) == [(0, 1), (0, 11), (0, 30)]
+        _, checks = await get(client, rig.id)
+        assert checks["addresses"]["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_the_fixture_patched_first_keeps_its_place(self, client: AsyncClient, db_session):
+        # The lower id sits at the higher address: it still stays.
+        rig, rows = await make_rig(db_session, [{"dmx_address": 5}, {"dmx_address": 1}])
+
+        body = await readdress(client, rig.id)
+
+        assert [m["id"] for m in body["moves"]] == [rows[1].id]
+        assert await addresses(db_session, rows) == [(0, 5), (0, 15)]
+
+    @pytest.mark.asyncio
+    async def test_in_a_chain_only_the_middle_one_moves(self, client: AsyncClient, db_session):
+        rig, rows = await make_rig(db_session, [{"dmx_address": 1}, {"dmx_address": 5}, {"dmx_address": 12}])
+
+        body = await readdress(client, rig.id)
+
+        assert [m["id"] for m in body["moves"]] == [rows[1].id]
+        assert await addresses(db_session, rows) == [(0, 1), (0, 22), (0, 12)]
+
+    @pytest.mark.asyncio
+    async def test_past_512_moves_within_its_universe_when_there_is_room(self, client: AsyncClient, db_session):
+        rig, rows = await make_rig(db_session, [{"dmx_address": 1}, {"dmx_address": 507}])
+
+        body = await readdress(client, rig.id)
+
+        assert [(m["reason"], m["to_label"]) for m in body["moves"]] == [("past_end", "1.011")]
+        _, checks = await get(client, rig.id)
+        assert checks["addresses"]["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_past_512_in_a_full_universe_moves_to_the_next(self, client: AsyncClient, db_session):
+        full = [{"dmx_address": 1 + i * 10} for i in range(51)]   # 1-510 taken, 2 channels left
+        rig, rows = await make_rig(db_session, full + [{"dmx_address": 511}, {"universe": 1, "dmx_address": 1}])
+
+        body = await readdress(client, rig.id)
+
+        assert [(m["id"], m["to_label"]) for m in body["moves"]] == [(rows[51].id, "2.011")]
+        assert await addresses(db_session, rows[50:]) == [(0, 501), (1, 11), (1, 1)]
+        _, checks = await get(client, rig.id)
+        assert checks["addresses"]["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_a_locked_address_never_moves(self, client: AsyncClient, db_session):
+        rig, rows = await make_rig(db_session, [
+            {"dmx_address": 1}, {"dmx_address": 5, "is_address_locked": True},
+            {"dmx_address": 101, "is_address_locked": True}, {"dmx_address": 105, "is_address_locked": True},
+        ])
+
+        body = await readdress(client, rig.id)
+
+        assert [m["id"] for m in body["moves"]] == [rows[0].id], "the unlocked one moves, though patched first"
+        assert [entry["id"] for entry in body["left"]] == [rows[3].id]
+        assert body["left"][0]["reason"] == "locked"
+        assert "locked address" in body["message"]
+        assert body["conflicts_after"] == 1
+        assert await addresses(db_session, rows[1:]) == [(0, 5), (0, 101), (0, 105)]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_rig_is_a_404(self, client: AsyncClient):
+        for params in (None, {"dry_run": "true"}):
+            response = await client.post("/api/rigs/999999/readiness/fix/readdress", params=params)
+            assert response.status_code == 404
