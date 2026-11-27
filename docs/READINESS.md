@@ -31,7 +31,7 @@ rather than a rig.
 | Positions | never | a fixture stands where a layout guessed and nobody confirmed it (`position_unconfirmed`), or has no position at all and sits at 0,0,0 (`unplaced`). Offers **Locate these** |
 | DMX addresses | two fixtures with known footprints share a channel, or a fixture runs past channel 512 | the only clashes involve a fixture with no DMX mode (see below). Either way, offers **Re-address** |
 | Fixture profiles | a fixture matched no profile, or has the import's placeholder profile | never |
-| DMX modes | a matched fixture's mode is not one of its own profile's modes (another profile's, or one that no longer exists) | a matched fixture has no DMX mode, so its footprint is guessed as 16 channels |
+| DMX modes | a matched fixture's mode is not one of its own profile's modes (another profile's, or one that no longer exists) | a matched fixture has no DMX mode, so its footprint is guessed as 16 channels. Either way, offers **Set modes** |
 | Inside the room | never | a placed fixture is more than 0.25 m outside the scanned room's walls, floor or ceiling, or outside its outline (an L or a notch) |
 | Groups | never | a fixture is in no group, so a console would put it in "Ungrouped". Offers **Make groups** |
 | Room scan edits | never | hand edits to the last room were not kept when the room was scanned again |
@@ -57,8 +57,8 @@ does not disagree with the rest of the system:
 - **DMX modes**: each matched fixture's `mode_id` against its profile's
   modes. Unmatched fixtures are left to Fixture profiles. A mode from another
   profile gives the wrong channel count and layout, so it fails; no mode warns,
-  because the addresses check is then guessing. Pick the mode in the patch
-  editor and check again; there is no fix button.
+  because the addresses check is then guessing. **Set modes** sets the ones
+  only one mode can be; pick the rest in the patch editor and check again.
 - **Inside the room**: the stored room's box (width, depth, height) and its
   outline, as positioning reads them. Fixtures with no position are left to
   the Positions check.
@@ -69,17 +69,18 @@ does not disagree with the rest of the system:
 
 ## The fixes
 
-Three checks offer a button. The two that write ask first, and each answer
-lists what it changed. After either writes, the editor reads the rig again
-and the panel checks again.
+Four checks offer a button. The three that write ask first, and each answer
+lists what it changed. After any of them writes, the editor reads the rig
+again and the panel checks again.
 
 ### Undo
 
-Make groups and Re-address are each **one step of Undo**. When a fix changes
-something, the panel shows **Undo Make groups** or **Undo Re-address** beside
-its answer. Pressing it puts back exactly the columns that fix wrote
-(`group_name`, or `universe` and `dmx_address`) on exactly the fixtures it
-changed, then the editor reads the rig again and the panel checks again.
+Make groups, Re-address and Set modes are each **one step of Undo**. When a
+fix changes something, the panel shows **Undo Make groups**, **Undo
+Re-address** or **Undo Set modes** beside its answer. Pressing it puts back
+exactly the columns that fix wrote (`group_name`; `universe` and
+`dmx_address`; or `mode_id`) on exactly the fixtures it changed, then the
+editor reads the rig again and the panel checks again.
 
 `POST /api/rigs/{rig_id}/readiness/fix/undo`. What the last fix changed is
 kept on the rig (`rigs.readiness_undo`), so it survives a reload, but only
@@ -92,7 +93,8 @@ one step is kept:
   in words ("Cannot undo Re-address: 1 of the fixtures it changed has been
   changed or removed since (Spot 2). Nothing was put back. Set the address
   by hand."). Put them back by hand from the fix's answer instead. Any other
-  failure writes nothing and leaves the Undo button to try again;
+  failure writes nothing and leaves the Undo button to try again. A refused
+  Undo Set modes ends "Set the DMX mode by hand.";
 - with nothing to undo it says so and changes nothing; an undo that ran is
   spent, so a second one finds nothing.
 
@@ -169,10 +171,55 @@ It leaves out:
 - the fixture itself. Nothing is sent to a device: **set each moved fixture
   to its new address on the fixture**, or the rig and the room will disagree;
 - choosing a DMX mode. A fixture with no mode is moved by its guessed
-  16-channel footprint and the plan says so ("may not be real"); picking the
-  mode first may be the better fix;
+  16-channel footprint and the plan says so ("may not be real"); running
+  Set modes, or picking the mode, first may be the better fix;
 - undo beyond one step (see Undo): an older move is put back by hand from
   the `from_label` in its answer.
+
+## Set modes
+
+On the DMX modes check. Like Re-address, pressing it changes nothing yet:
+it asks for the plan (`?dry_run=true`) and shows each mode it would set and
+why ("Spot 3: Basic to Extended (24ch), the only mode of its present 24ch
+footprint"), the fixtures to **pick by hand** with the modes each could be,
+and any address clash the new footprints would make. **Set N** applies
+exactly that plan; with nothing it can set, the only button is Close.
+
+`POST /api/rigs/{rig_id}/readiness/fix/set-modes` writes `mode_id` on the
+fixtures the DMX modes check names (no mode, or a mode not of its profile),
+and nothing else. The footprint is the mode's channel count, so nothing
+else needs writing. A mode is proposed only when it is unambiguous, tried in
+this order:
+
+1. the profile has **exactly one mode**;
+2. exactly one of the profile's modes has the channel count of the mode the
+   fixture is set to now (another profile's mode, when that mode still
+   exists). The 16 channels guessed for a fixture with no mode are not a
+   footprint and are never matched;
+3. exactly one mode has the channel count of its **address span**: the
+   distance from its start address to the next fixture's start in its
+   universe. An imported 12-channel par patched every 12 channels gets its
+   12-channel mode.
+
+When two modes fit as well, or none does, the fixture is listed under
+`by_hand` with its candidate modes and the reason, and is **never changed**.
+A profile with no modes is listed with none. A second call finds nothing to
+set.
+
+It never moves an address. When a new footprint makes a fixture overlap its
+neighbour or run past channel 512, the plan lists it under `clashes`
+("Spot 3 and Spot 4 would overlap.") and the answer says to run Re-address
+afterwards. The DMX addresses check then fails on it: the clash was hidden
+by the guess before, and is now known to be real.
+
+It leaves out:
+
+- unmatched fixtures: the Fixture profiles check is about them, and they
+  have no profile to take a mode from;
+- the fixture itself. Nothing is sent to a device: this sets the mode the
+  rig *thinks* the fixture is in. Check that the fixture's own menu agrees;
+- undo beyond one step (see Undo): an older Set modes is put back by hand
+  from `mode_id_before` in its answer.
 
 ## Locate these
 
@@ -208,11 +255,12 @@ Readiness is a check of the rig as stored, not of the venue. It does not:
   writer that runs without error can still produce a file a console reads
   differently;
 - undo more than the last fix, or a fix whose fixtures were changed since
-  (refused, 409): those are put back by hand from the fix's `changed` or
-  `moves` list. Undo is not on the editor's undo stack either, and the Undo
-  button is offered only in the panel that ran the fix (the endpoint works
-  after a reload);
-- fix a DMX mode: the DMX modes check names the fixtures, the mode is
-  picked by hand;
+  (refused, 409): those are put back by hand from the fix's `changed`,
+  `moves` or `proposals` list. Undo is not on the editor's undo stack either,
+  and the Undo button is offered only in the panel that ran the fix (the
+  endpoint works after a reload);
+- choose between DMX modes: Set modes sets only a mode that is the one
+  possible answer; where a profile has more than one that could fit, the
+  mode is picked by hand;
 - fix the Fixture profiles, Inside the room, Room scan edits or export checks
   from the panel: Select on plan finds the fixtures, the fix is by hand.

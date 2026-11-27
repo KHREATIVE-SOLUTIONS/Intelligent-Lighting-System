@@ -254,7 +254,7 @@ async def fix_set_modes(
 
 @router.post("/rigs/{rig_id}/readiness/fix/undo")
 async def undo_readiness_fix(rig_id: int, db: AsyncSession = Depends(get_db)):
-    """Put back exactly what the last Make groups or Re-address changed, as one step.
+    """Put back exactly what the last Make groups, Re-address or Set modes changed, as one step.
 
     Only the columns that fix wrote, only on the fixtures it changed. When
     any of them has been changed or removed since, nothing is put back: 409,
