@@ -20,6 +20,7 @@ import {
   GridOn as GridIcon,
   MeetingRoom as RoomScanIcon,
   EditLocationAlt as EditRoomIcon,
+  FactCheck as ReadinessIcon,
 } from '@mui/icons-material';
 import type { SnapMode } from '../../stores/rigEditorStore';
 import { DEFAULT_LAY_CHOICE, LAY_MODES, LAY_MODE_LABELS, parseSpacing } from './rowSpace2d';
@@ -56,6 +57,8 @@ interface RigEditorToolbarProps {
    * button is left out when this is, and for a rig with no scanned room.
    */
   onEditRoom?: () => void;
+  /** Opens the venue readiness checks. The button is left out when this is. */
+  onReadiness?: () => void;
   /** Selects the whole row the selected fixture is in. The button is left out when this is. */
   onSelectRow?: () => void;
   /** How many fixtures are selected: the button needs one to go by. */
@@ -105,6 +108,7 @@ export default function RigEditorToolbar({
   onRoomScan,
   hasRoom = false,
   onEditRoom,
+  onReadiness,
   onSelectRow,
   selectedCount = 0,
   onLayRow,
@@ -309,6 +313,13 @@ export default function RigEditorToolbar({
           Identify Lights
         </Button>
       </Tooltip>
+      {onReadiness && (
+        <Tooltip title="Can this rig be programmed? Positions, addresses, profiles, room, groups and exports, checked in one place. Reads only">
+          <Button size="small" startIcon={<ReadinessIcon />} onClick={onReadiness}>
+            Readiness
+          </Button>
+        </Tooltip>
+      )}
       {onRoomScan && (
         <Tooltip
           title={

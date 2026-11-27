@@ -22,6 +22,7 @@ import PatchTable from './PatchTable';
 import FixtureProperties from './FixtureProperties';
 import IdentifyWalkthrough from './IdentifyWalkthrough';
 import RoomScanDialog from './RoomScanDialog';
+import ReadinessDialog from './ReadinessDialog';
 import { pendingCarryOverOf, undoCount } from '../../utils/roomScan';
 import RoomShellEditDialog from './RoomShellEditDialog';
 import {
@@ -55,6 +56,7 @@ export default function RigBuilder() {
   const [identifyOpen, setIdentifyOpen] = useState(false);
   const [roomScanOpen, setRoomScanOpen] = useState(false);
   const [roomEditOpen, setRoomEditOpen] = useState(false);
+  const [readinessOpen, setReadinessOpen] = useState(false);
   // Edit Room's walls mode: the dialog is put away and the corners of the
   // room's walls are dragged on the plan, where fixtures then take no press.
   const [wallsMode, setWallsMode] = useState(false);
@@ -226,6 +228,13 @@ export default function RigBuilder() {
     // waiting to be written would land after it and put one of them back.
     await flushPositions();
     setRoomScanOpen(true);
+  };
+
+  const handleReadiness = async () => {
+    // The checks read positions from the server: a drag still waiting to be
+    // written would be judged where it was, not where it is on screen.
+    await flushPositions();
+    setReadinessOpen(true);
   };
 
   const handleEditRoom = async () => {
@@ -765,6 +774,7 @@ export default function RigBuilder() {
         onRoomScan={() => { void handleRoomScan(); }}
         hasRoom={rig.room_shell?.source === 'scan'}
         onEditRoom={() => { void handleEditRoom(); }}
+        onReadiness={() => { void handleReadiness(); }}
         selectedCount={selectedFixtures.length}
         onSelectRow={() => { if (selectedFixtures.length > 0) handleSelectRow(selectedFixtures[0].id); }}
         onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
@@ -1002,6 +1012,19 @@ export default function RigBuilder() {
           void fetchRig();
         }}
         onFinished={() => { void fetchRig(); }}
+      />
+
+      {/* Readiness reads only; Make groups writes group names, so the rig is read again. */}
+      <ReadinessDialog
+        open={readinessOpen}
+        rigId={rig.id}
+        rigName={rig.name}
+        onClose={() => setReadinessOpen(false)}
+        onSelectFixtures={(ids) => {
+          selectFixtures(ids);
+          setReadinessOpen(false);
+        }}
+        onChanged={() => { void fetchRig(); }}
       />
 
       {/* A scan that is applied moves fixtures and stores a room on the server:

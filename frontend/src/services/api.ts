@@ -40,6 +40,8 @@ import {
   roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellListPath, roomShellPath, roomShellUndoPath,
 } from '../utils/roomScan';
 import type { OutlineAnswer, OutlineChanges, OutlineRead } from '../utils/roomWallsEdit';
+import { autoGroupsPath, readinessPath } from '../utils/readiness';
+import type { AutoGroupsResult, ReadinessReport } from '../utils/readiness';
 // Types only: the module itself reads the 3D view's checks, which this file has no use for.
 import type {
   ShellEditUndone, ShellItemAdd, ShellItemAdded, ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
@@ -1615,6 +1617,20 @@ export const demoApi = {
   // rig is live, because the demo's patch would go to the venue's fixtures.
   applyPreset: async (name: string): Promise<void> => {
     await api.post(`/venues/presets/${encodeURIComponent(name)}/apply`);
+  },
+};
+
+export const readinessApi = {
+  /** Every readiness check for the rig. Reads only. */
+  get: async (rigId: number): Promise<ReadinessReport> => {
+    const response = await api.get(readinessPath(rigId));
+    return response.data;
+  },
+
+  /** Puts each placed fixture that is in no group into one named for where it hangs and what it is. */
+  autoGroups: async (rigId: number): Promise<AutoGroupsResult> => {
+    const response = await api.post(autoGroupsPath(rigId));
+    return response.data;
   },
 };
 
