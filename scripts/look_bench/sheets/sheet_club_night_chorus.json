@@ -23,22 +23,22 @@
    "mirror_error_m": 0.0,
    "mirror_pairs": 8,
    "uneven_spacing": null,
-   "max_lean_deg": 67.5,
+   "max_lean_deg": 66.0,
    "max_pan_deg": 70.7,
    "landings_outside_room": 0,
    "pan_rate_deg_s": 0,
-   "tilt_rate_deg_s": 42,
+   "tilt_rate_deg_s": 60,
    "too_fast": false
   },
   "columns_circle_unison": {
    "mirror_error_m": 0.0,
    "mirror_pairs": 8,
    "uneven_spacing": 0.0,
-   "max_lean_deg": 29.2,
+   "max_lean_deg": 39.8,
    "max_pan_deg": 28.0,
    "landings_outside_room": 0,
    "pan_rate_deg_s": 94,
-   "tilt_rate_deg_s": 27,
+   "tilt_rate_deg_s": 60,
    "too_fast": false
   },
   "columns_fly_fan": {
@@ -78,33 +78,33 @@
    "mirror_error_m": 0.0,
    "mirror_pairs": 8,
    "uneven_spacing": 0.0,
-   "max_lean_deg": 29.2,
+   "max_lean_deg": 39.8,
    "max_pan_deg": 0.0,
    "landings_outside_room": 0,
    "pan_rate_deg_s": 0,
-   "tilt_rate_deg_s": 27,
+   "tilt_rate_deg_s": 60,
    "too_fast": false
   },
   "columns_tilt_rows": {
    "mirror_error_m": 0.0,
    "mirror_pairs": 8,
    "uneven_spacing": 0.0,
-   "max_lean_deg": 29.2,
+   "max_lean_deg": 39.8,
    "max_pan_deg": 0.0,
    "landings_outside_room": 0,
    "pan_rate_deg_s": 0,
-   "tilt_rate_deg_s": 27,
+   "tilt_rate_deg_s": 60,
    "too_fast": false
   },
   "cross_circle_rows": {
    "mirror_error_m": 0.0,
    "mirror_pairs": 8,
-   "uneven_spacing": 0.028,
-   "max_lean_deg": 68.0,
-   "max_pan_deg": 87.3,
+   "uneven_spacing": 0.596,
+   "max_lean_deg": 66.0,
+   "max_pan_deg": 86.9,
    "landings_outside_room": 0,
    "pan_rate_deg_s": 94,
-   "tilt_rate_deg_s": 42,
+   "tilt_rate_deg_s": 61,
    "too_fast": false
   },
   "cross_hold": {
@@ -122,22 +122,22 @@
    "mirror_error_m": 0.0,
    "mirror_pairs": 8,
    "uneven_spacing": 0.0,
-   "max_lean_deg": 68.0,
+   "max_lean_deg": 66.0,
    "max_pan_deg": 77.4,
    "landings_outside_room": 0,
    "pan_rate_deg_s": 0,
-   "tilt_rate_deg_s": 42,
+   "tilt_rate_deg_s": 60,
    "too_fast": false
   },
   "fan_circle_ripple": {
    "mirror_error_m": 0.0,
    "mirror_pairs": 8,
-   "uneven_spacing": 0.142,
-   "max_lean_deg": 45.3,
-   "max_pan_deg": 81.7,
+   "uneven_spacing": 0.096,
+   "max_lean_deg": 50.0,
+   "max_pan_deg": 82.1,
    "landings_outside_room": 0,
    "pan_rate_deg_s": 94,
-   "tilt_rate_deg_s": 38,
+   "tilt_rate_deg_s": 60,
    "too_fast": false
   },
   "fan_sweep_rows": {
@@ -166,13 +166,13 @@
    "mirror_error_m": 0.0,
    "mirror_pairs": 8,
    "uneven_spacing": 0.0,
-   "max_lean_deg": 45.3,
+   "max_lean_deg": 50.0,
    "max_pan_deg": 56.3,
    "landings_outside_room": 0,
    "pan_rate_deg_s": 0,
-   "tilt_rate_deg_s": 38,
+   "tilt_rate_deg_s": 60,
    "too_fast": false
   }
  },
- "picture": "scripts\\look_bench\\sheets\\sheet_club_night_chorus.png"
+ "picture": "..\\scripts\\look_bench\\sheets\\sheet_club_night_chorus.png"
 }

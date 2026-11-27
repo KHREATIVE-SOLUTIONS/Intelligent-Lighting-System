@@ -251,9 +251,25 @@ SECTION_MOTION: Dict[str, SectionMotion] = {
 }
 DEFAULT_MOTION = SECTION_MOTION["verse"]
 
-# At size 1.0: a tilt lengthens and shortens the throw by this share, and a
-# sweep swings it this many degrees either side.
-TILT_DEPTH = 0.40
+# At size 1.0: a tilt leans the beam this many degrees further out and back
+# in, and a sweep swings it this many degrees either side.
+#
+# A tilt used to stretch the throw by a share of its length (0.40), which on a
+# truss resting 22 degrees off vertical was 16 degrees of travel: a third of
+# what the looks were designed with (the April engine's tilts swung 20 to 55
+# degrees). It is set in degrees now, so it is the same swing on every rig.
+TILT_DEG = 18.0
+# However large a look and a section make it, never more than this either way.
+# The quickest look in the library (speed 1.5) then tilts at 164 degrees a
+# second at 174 BPM, inside the 180 a head has.
+TILT_MAX_DEG = 24.0
+# A tilt comes no closer to straight down than this and leans no further out
+# than this, so the swing is never flattened against straight down or the
+# lean limit. The outward figure is what keeps a fanned beam inside the room:
+# at 66 the look sheet had the outer beams of a fan landing past the walls on
+# five of the seven demo rigs.
+LEAN_IN_DEG = 8.0
+TILT_OUT_LEAN_DEG = 50.0
 SWEEP_DEG = 28.0
 
 
@@ -294,7 +310,8 @@ def head_target(
     gx, gz = base[0] - head.x, base[2] - head.z
     stretch, swing = 1.0, 0.0
     if look.motion in ("tilt", "circle"):
-        stretch = 1.0 + min(0.8, TILT_DEPTH * size) * (math.cos(theta) if look.motion == "circle" else math.sin(theta))
+        wave = math.cos(theta) if look.motion == "circle" else math.sin(theta)
+        stretch = _tilt_stretch(math.hypot(gx, gz), head.y - base[1], size, wave)
     if look.motion in ("sweep", "circle"):
         # Mirrored: the two halves of the truss swing opposite ways. A centre
         # head has no side, so it swings with the right-hand half.
@@ -304,6 +321,32 @@ def head_target(
     rx = (gx * cos_s + gz * sin_s) * stretch
     rz = (-gx * sin_s + gz * cos_s) * stretch
     return _keep_in_front(head, (head.x + rx, base[1], head.z + rz))
+
+
+def _tilt_stretch(throw: float, drop: float, size: float, wave: float) -> float:
+    """How much longer or shorter the throw is, for a tilt at `wave` (-1..1).
+
+    The beam leans out from its resting angle by up to `TILT_DEG` x size and
+    back in by the same, in degrees. Where the room for that runs out - close
+    to straight down, or close to the lean limit - that side of the swing is
+    shorter rather than flattened, and the beam still passes through its
+    resting position, so the position the look starts from is the one drawn.
+    """
+    if throw < 1e-9 or drop < 1e-9:
+        return 1.0
+    rest = math.degrees(math.atan2(throw, drop))
+    swing = min(TILT_MAX_DEG, TILT_DEG * max(0.0, size))
+    if wave >= 0.0:
+        # Out to the limit, and never less far than the old share-of-the-throw
+        # stretch went: a beam already leaning near the limit (all centre, a
+        # cross) would otherwise travel less than it used to.
+        old_reach = math.degrees(math.atan(
+            min(1.8, 1.0 + 0.40 * max(0.0, size)) * math.tan(math.radians(rest)))) - rest
+        room = min(max(TILT_OUT_LEAN_DEG - rest, old_reach), (LEAN_MAX_DEG - 2.0) - rest)
+    else:
+        room = rest - LEAN_IN_DEG
+    lean = rest + min(swing, max(0.0, room)) * wave
+    return math.tan(math.radians(lean)) / math.tan(math.radians(rest))
 
 
 def _keep_in_front(head: Head, target: Point) -> Point:
@@ -363,6 +406,74 @@ def head_pan_tilt(
     if look.motion == "fly":
         return _fly(look, head, rig, beats, motion, speed, amp)
     return aim(head, head_target(look_name, head, rig, beats, motion, speed, amp))
+
+
+# ---------------------------------------------------------------------------
+# Speed: no look faster than a head can turn
+# ---------------------------------------------------------------------------
+
+# Samples across one cycle when measuring how fast a look turns a head.
+_RATE_SAMPLES = 48
+# A look is fitted to the tempo when it is taken and then runs for a phrase.
+# This much is kept back for the tempo drifting upward meanwhile, and for the
+# measurement being a sample.
+SPEED_HEADROOM = 0.95
+_PEAK_RATE_CACHE: Dict[tuple, Tuple[float, float]] = {}
+
+
+def peak_rates(look_name: str, rig: Rig, motion: SectionMotion, amp: float = 1.0) -> Tuple[float, float]:
+    """The fastest any head pans and tilts in a look, in degrees per beat at speed 1.
+
+    A look's angle is a function of beats x speed, so its rate at any speed
+    and tempo is this times the speed times beats per second, exactly.
+    """
+    key = (look_name, rig.heads, motion, round(float(amp), 3))
+    cached = _PEAK_RATE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    look = LOOKS.get(look_name) or LOOKS[DEFAULT_LOOK]
+    peak_pan = peak_tilt = 0.0
+    if look.motion != "hold" and rig.heads:
+        span = float(motion.cycle_beats) * (2.0 if look.motion == "fly" else 1.0)
+        step = span / _RATE_SAMPLES
+        for head in rig.heads:
+            first = last = head_pan_tilt(look_name, head, rig, 0.0, motion, 1.0, amp)
+            for i in range(1, _RATE_SAMPLES + 1):
+                now = first if i == _RATE_SAMPLES else head_pan_tilt(look_name, head, rig, i * step, motion, 1.0, amp)
+                peak_pan = max(peak_pan, abs(now[0] - last[0]) / step)
+                peak_tilt = max(peak_tilt, abs(now[1] - last[1]) / step)
+                last = now
+    if len(_PEAK_RATE_CACHE) > 512:
+        _PEAK_RATE_CACHE.clear()
+    _PEAK_RATE_CACHE[key] = (peak_pan, peak_tilt)
+    return peak_pan, peak_tilt
+
+
+def speed_fit(
+    look_name: str,
+    rig: Rig,
+    motion: SectionMotion,
+    speed: float,
+    amp: float,
+    bpm: float,
+    max_pan_deg_per_s: float,
+    max_tilt_deg_per_s: float,
+) -> float:
+    """What to multiply a look's speed by so no head is asked to outrun itself.
+
+    1.0 when the look is already within what a head can do at this tempo,
+    which is every look in the library at ordinary tempos. Never above 1.0:
+    this slows a look that is too fast and never speeds one up.
+    """
+    pan_per_beat, tilt_per_beat = peak_rates(look_name, rig, motion, amp)
+    beats_per_s = max(0.0, float(bpm)) / 60.0 * max(0.0, float(speed))
+    fit = 1.0
+    for per_beat, limit in ((pan_per_beat, max_pan_deg_per_s), (tilt_per_beat, max_tilt_deg_per_s)):
+        asked = per_beat * beats_per_s
+        allowed = SPEED_HEADROOM * float(limit)
+        if asked > allowed > 0.0:
+            fit = min(fit, allowed / asked)
+    return fit
 
 
 def _fly(look: Look, head: Head, rig: Rig, beats: float, motion: SectionMotion,

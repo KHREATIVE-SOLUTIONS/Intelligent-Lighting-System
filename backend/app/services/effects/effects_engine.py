@@ -38,10 +38,12 @@ from .decision_engine import (
     DecisionEngine, LightingState, AudioState, EffectSelection
 )
 from .lfo_engine import LFOEngine
+from . import live_dimmer
 from . import live_library
 from . import live_looks
 from . import live_moves
 from . import live_roles
+from . import live_strobe
 from ..lighting.section_templates import get_section_template
 from ..lighting.fixture_capabilities import get_capability_profile_for_fixture
 from ..lighting.movement_patterns import PRO_MOVEMENT_PRESETS
@@ -143,6 +145,15 @@ class EffectsConfig:
     # system, so no two nights are alike; a number replays the same show from
     # the same music, which is how a change is compared before and after.
     look_seed: Optional[int] = None
+    # Whether a look's own dimmer effect and chase style shape the beams
+    # (live_dimmer). Off, every look is lit by the renderer's one chase, as it
+    # was before; that is also what a look is measured against.
+    look_dimmer_effects: bool = True
+    # Whether a look's strobe mode may slow the drop strobe to a musical rate
+    # (live_strobe). It can only ever lower the rate asked for, inside the
+    # window the renderer already strobes in, under `strobe_hz_cap` as before.
+    # Off, every drop strobes at the renderer's own rate.
+    look_strobe_modes: bool = True
     camera_mode: bool = False
     major_change_min_bars: int = 2
 
@@ -360,6 +371,11 @@ _IDLE_GAP_S = 2.0
 # Emitters the renderers do not write every frame. The idle look takes them
 # over while it is up and puts back what it found.
 _IDLE_HELD_ATTRS = ("strobe", "white", "amber", "uv", "lime", "indigo")
+# The renderer's own chase breathes with the beat between this and 1.10 of a
+# head's share.
+_CHASE_BUMP_LOW = 0.88
+# Every fixture's share of the moment's energy in a breakdown.
+_BREAKDOWN_LEVEL = 0.40
 
 # Club style, from the trained genre model. Energy and sections still decide how
 # big, how bright and how fast the show is; a style only leans the colours and
@@ -607,6 +623,19 @@ class EffectsEngine:
         self._rebuild_active_pattern: str = live_looks.DEFAULT_LOOK
         self._rebuild_look_movement: str = live_looks.DEFAULT_LOOK
         self._look_library = live_library.LibraryChooser(seed=getattr(self.config, "look_seed", None))
+        # The running look's dimmer effect and chase style, the one before it,
+        # and the beat the change was made on, so the two can be crossed.
+        self._rebuild_dimmer: Optional[live_dimmer.DimmerLook] = None
+        self._rebuild_dimmer_prev: Optional[live_dimmer.DimmerLook] = None
+        self._rebuild_dimmer_changed_beats: float = 0.0
+        # The beat clock as the dimmer shapes see it: it never runs a beam
+        # faster than live_dimmer.MAX_CYCLES_PER_S, whatever the tempo does.
+        self._rebuild_dimmer_clock = live_dimmer.PhaseClock()
+        # The running look's strobe mode; the rate it named for the drop
+        # strobe, held for one strobe window; and which window that was.
+        self._rebuild_strobe_mode: str = "none"
+        self._rebuild_strobe_mode_hz: Optional[float] = None
+        self._rebuild_strobe_window: float = -999.0
         # Where each head was last sent, so the next frame can only ask for a
         # move a fixture can make. Keyed by fixture id.
         self._rebuild_head_pos: Dict[str, Tuple[float, float]] = {}
@@ -682,6 +711,12 @@ class EffectsEngine:
         # at the same moment and for the same reason.
         self._rebuild_look_speed = 1.0
         self._rebuild_look_amp = 1.0
+        # What the look's speed is multiplied by so no head is asked to turn
+        # faster than it can at this tempo (live_looks.speed_fit). 1.0 for
+        # every look at ordinary tempos. Fitted when a look is taken, and
+        # again if the section changes under it.
+        self._rebuild_speed_fit = 1.0
+        self._rebuild_fit_key: Optional[tuple] = None
 
         # Fixture phase choreography controls
         self._leader_follower_enabled: bool = True
@@ -1273,6 +1308,9 @@ class EffectsEngine:
         style_speed = float(style_look["speed"]) if style_look else 1.0
         style_amp = float(style_look["amp"]) if style_look else 1.0
         phrase = self._phrase_index()
+        # The beat clock's own tempo, the one that advances `beats`.
+        clock_period = float(self._clock_period or 0.0)
+        clock_bpm = (60.0 / clock_period) if clock_period > 0.0 else bpm
         new_look = False
         if phrase is None:
             # No phrase grid without a locked clock: a new look every few bars.
@@ -1303,7 +1341,36 @@ class EffectsEngine:
             self._rebuild_style_amp = style_amp
             self._rebuild_look_speed = look_speed
             self._rebuild_look_amp = look_amp
+            # Only a look made for the drop names a rate for the drop's strobe.
+            # Without a phrase grid a look taken in the chorus can still be
+            # running when the drop lands.
+            self._rebuild_strobe_mode = (
+                live_strobe.mode_of(look) if look is not None and "drop" in look.sections else "none")
+            self._rebuild_dimmer_prev = self._rebuild_dimmer
+            # Slowed, by doubling, so no beam cycles faster than the limit at
+            # this tempo. Like the movement's fit below it is made when the
+            # look is taken: a chase's length scales a beat-locked phase.
+            self._rebuild_dimmer = (
+                live_dimmer.fit_to_tempo(live_dimmer.dimmer_of(look), clock_bpm) if look is not None else None)
         pattern = self._rebuild_look_movement
+
+        # Fit the look's speed to the tempo, so nothing outruns a head at any
+        # BPM or under any club style. Done when the look is taken, not every
+        # frame: speed scales a beat-locked phase, so changing it mid-look
+        # would jump the heads. The tempo is the beat clock's own, the one
+        # that advances `beats`, not the figure clamped for display. Fitted
+        # again if the section or the rig changes under the look.
+        fit_key = (pattern, section, look_rig.heads)
+        if new_look or self._rebuild_fit_key != fit_key:
+            self._rebuild_fit_key = fit_key
+            self._rebuild_speed_fit = live_looks.speed_fit(
+                pattern, look_rig, motion,
+                speed=self._rebuild_style_speed * self._rebuild_look_speed,
+                amp=self._rebuild_style_amp * self._rebuild_look_amp,
+                bpm=clock_bpm,
+                max_pan_deg_per_s=live_moves.MAX_PAN_DEG_PER_S,
+                max_tilt_deg_per_s=live_moves.MAX_TILT_DEG_PER_S,
+            )
 
         base_floor = 0.62
         chase_floor = 0.26
@@ -1373,14 +1440,44 @@ class EffectsEngine:
         strobe_enabled_runtime = bool(self.config.strobe_enabled) and strobe_allowed_by_policy
         strobe_duty = max(0.15, min(float(self.config.strobe_max_duty_cycle), 0.75))
         drop_strobe_target_freq = 22.0 if energy > 0.65 else 18.0
+        # The look's strobe mode (live_strobe) may name a slower, musical rate
+        # for this strobe, and nothing else: it is used only if it is below
+        # the renderer's own, it goes through the same clamp as the renderer's
+        # own, and the window and every switch stay where they were. It is taken
+        # once, when a strobe window opens, and held for that window: the
+        # flash grid is `time x hz`, so a rate that followed the tempo frame
+        # by frame would slide the grid and add flashes.
+        if section == "drop" and self._rebuild_strobe_window != self._rebuild_drop_until:
+            self._rebuild_strobe_window = self._rebuild_drop_until
+            self._rebuild_strobe_mode_hz = None
+            if bool(getattr(self.config, "look_strobe_modes", True)):
+                self._rebuild_strobe_mode_hz = live_strobe.mode_hz(
+                    self._rebuild_strobe_mode, clock_bpm, self._strobe_grid_hz(1.0e9, strobe_duty))
         drop_strobe_freq = self._strobe_grid_hz(drop_strobe_target_freq, strobe_duty)
+        drop_strobe_clamped = drop_strobe_freq < drop_strobe_target_freq
+        # A slower grid at the same duty would be a longer flash: a flash is
+        # `duty / hz` seconds, so once a beat at the venue's duty is the whole
+        # rig at full white for a sixth of a second. The duty is cut by as
+        # much as the rate is, so every flash is as long as the renderer's own
+        # and the light a window puts out can only fall. Both numbers only go
+        # down, so `hz + duty` stays under the cap.
+        drop_strobe_duty = strobe_duty
+        if (
+            self._rebuild_strobe_mode_hz is not None
+            and drop_strobe_freq > 0.0
+            and self.time < self._rebuild_drop_until
+        ):
+            slowed = self._strobe_grid_hz(self._rebuild_strobe_mode_hz, strobe_duty)
+            if 0.0 < slowed < drop_strobe_freq:
+                drop_strobe_duty = strobe_duty * slowed / drop_strobe_freq
+                drop_strobe_freq = slowed
         drop_strobe_on = (
             strobe_enabled_runtime
             and drop_strobe_freq > 0.0
             and section == "drop"
             and self.time < self._rebuild_drop_until
         )
-        if drop_strobe_freq < drop_strobe_target_freq:
+        if drop_strobe_clamped:
             self._record_safety_event(
                 "strobe_frequency_clamped",
                 {
@@ -1392,7 +1489,7 @@ class EffectsEngine:
                 throttle_s=1.0,
                 throttle_key="strobe_frequency_clamped_drop",
             )
-        drop_strobe_flash = drop_strobe_on and ((self.time * drop_strobe_freq) % 1.0) < strobe_duty
+        drop_strobe_flash = drop_strobe_on and ((self.time * drop_strobe_freq) % 1.0) < drop_strobe_duty
 
         # Snare strobe: very short fast white bursts on bright/transient hits.
         # `high` and `flux` are measured against the programme's own level, so a brushed
@@ -1487,14 +1584,93 @@ class EffectsEngine:
             white_accent = max(0.0, min(0.40, white_accent))
 
         chase_active = section in {"verse", "buildup", "chorus"}
+        looks_light_beams = (
+            self._rebuild_dimmer is not None and bool(getattr(self.config, "look_dimmer_effects", True)))
+
+        # The dimmer's own clock. The fit made when the look was taken trusts
+        # the tempo; this does not. It follows the beat clock exactly while no
+        # beam would be cycled faster than live_dimmer.MAX_CYCLES_PER_S, and
+        # holds to that when the beat clock runs away or jumps. Whichever is
+        # lighting the beams sets the rate it is held to: the look's shape
+        # (and the one it is crossing from), or the renderer's own chase,
+        # where each beam is passed by one of `chase_heads` every
+        # `chase_len / chase_heads` steps. Advanced on every frame, drop
+        # included, so it is still on the grid when the beams are handed back.
+        if looks_light_beams:
+            dimmer_rate = live_dimmer.cycles_per_beat(self._rebuild_dimmer)
+            if self._rebuild_dimmer_prev is not None:
+                dimmer_rate = max(dimmer_rate, live_dimmer.cycles_per_beat(self._rebuild_dimmer_prev))
+        elif chase_active and chase_order:
+            dimmer_rate = chase_steps_per_beat * min(chase_heads, len(chase_order)) / len(chase_order)
+        else:
+            dimmer_rate = 0.0
+        # Once held back, the clock stays that far off the beat, so a swap no
+        # longer lands on it. It is put back on the beat clock at the first
+        # moment no beam is lit from it - the drop, or silence - where the
+        # step cannot be seen. A crossing in progress ends with it.
+        if self._rebuild_dimmer_clock.behind != 0.0 and (drop_look or energy <= 0.0):
+            self._rebuild_dimmer_clock.reset()
+            self._rebuild_dimmer_prev = None
+        dimmer_beats = self._rebuild_dimmer_clock.advance(beats, delta_time, dimmer_rate)
+        if new_look:
+            self._rebuild_dimmer_changed_beats = dimmer_beats
+        elif dimmer_beats - self._rebuild_dimmer_changed_beats >= live_dimmer.CROSSFADE_BEATS:
+            self._rebuild_dimmer_prev = None    # crossed; the old shape no longer counts
+
         chase_head = -1
         chase_dir = 1
         if chase_active and chase_order:
             chase_len = len(chase_order)
-            chase_tick = int(math.floor(beats * chase_steps_per_beat))
+            chase_tick = int(math.floor(dimmer_beats * chase_steps_per_beat))
             # Reverse direction every 2 bars for a busker-style sweep/bounce feel.
             chase_dir = -1 if (bar_clock % 4) >= 2 else 1
             chase_head = chase_tick % chase_len if chase_dir > 0 else (chase_len - 1 - (chase_tick % chase_len))
+
+        def _own_chase_peak(idx: int) -> float:
+            """A beam's share under the renderer's own chase: a few bright
+            heads with short tails, stepping along the rig."""
+            chase_len = max(1, len(chase_order))
+            best_peak = 0.0
+            spacing = max(1, chase_len // max(1, chase_heads))
+            for h in range(max(1, chase_heads)):
+                lead = (chase_head + (h * spacing * chase_dir)) % chase_len
+                dist = min((idx - lead) % chase_len, (lead - idx) % chase_len)
+                best_peak = max(best_peak, 1.0 - dist * chase_falloff)
+            return max(0.0, best_peak)
+
+        # The renderer's own chase breathes a little with the beat.
+        own_chase_bump = _CHASE_BUMP_LOW + 0.22 * (0.5 + 0.5 * math.sin(2.0 * math.pi * beat_phase))
+
+        # The look's own dimmer effect and chase style, for the beams, where
+        # the renderer's one chase (or the breakdown's level rig) used to be.
+        # Redistribute, never add: the beams' mean under a look is held to
+        # exactly what the one chase gave them on this frame, breath included,
+        # and no beam is above the moment's energy (see live_dimmer). So the
+        # rig's total is what it was on every frame and only where the light
+        # falls changes. A ceiling at the low point of the breath was tried:
+        # it made the rig smoother, and the release of a mispredicted drop's
+        # dip then became the largest rise in the build, which a contract
+        # test forbids. The drop, the snare accent and every other fixture
+        # family are not touched.
+        beam_levels: Dict[str, float] = {}
+        dimmer_look = self._rebuild_dimmer
+        if (
+            looks_light_beams
+            and chase_order
+            and not drop_look
+            and not snare_strobe_on
+        ):
+            ceiling: Optional[float] = None
+            if section == "breakdown":
+                ceiling = _BREAKDOWN_LEVEL
+            elif chase_active and chase_head >= 0:
+                ceiling = own_chase_bump * sum(
+                    _own_chase_peak(k) for k in range(len(chase_order))) / len(chase_order)
+            if ceiling is not None:
+                beam_levels = live_dimmer.crossfaded(
+                    dimmer_look, self._rebuild_dimmer_prev, live_dimmer.beam_places(chase_order),
+                    dimmer_beats, self._rebuild_dimmer_changed_beats, ceiling,
+                )
 
         snapshot = []
         for i, fixture in enumerate(all_fixtures):
@@ -1510,7 +1686,7 @@ class EffectsEngine:
                 fid = head.fid
                 target_pan, target_tilt = live_looks.head_pan_tilt(
                     pattern, head, look_rig, beats, motion,
-                    speed=self._rebuild_style_speed * self._rebuild_look_speed,
+                    speed=self._rebuild_style_speed * self._rebuild_look_speed * self._rebuild_speed_fit,
                     amp=self._rebuild_style_amp * self._rebuild_look_amp,
                 )
                 # Never ask for a step a head cannot make: a change of pattern
@@ -1540,7 +1716,7 @@ class EffectsEngine:
                 # deepen or add to a flash.
                 dim = 0.0
             elif section == "breakdown":
-                dim = energy * 0.40
+                dim = energy * beam_levels.get(str(fixture.id), _BREAKDOWN_LEVEL)
             elif drop_look:
                 dim = 1.0 if strobe_flash else drop_bed
             elif snare_strobe_on:
@@ -1554,19 +1730,13 @@ class EffectsEngine:
                 _, bed_row = bed_places.get(str(fixture.id), (0.0, 0))
                 dim = energy * base_floor * live_roles.bed_shape(bed_row, beats)
             elif chase_active and is_mover and chase_head >= 0 and fixture.id in chase_index:
-                idx = chase_index[fixture.id]
-                chase_len = max(1, len(chase_order))
-                # Multi-head chase with short tails for stronger fixture-to-fixture bumps.
-                best_peak = 0.0
-                spacing = max(1, chase_len // max(1, chase_heads))
-                for h in range(max(1, chase_heads)):
-                    head = (chase_head + (h * spacing * chase_dir)) % chase_len
-                    dist = min((idx - head) % chase_len, (head - idx) % chase_len)
-                    peak = max(0.0, 1.0 - dist * chase_falloff)
-                    if peak > best_peak:
-                        best_peak = peak
-                beat_bump = 0.88 + 0.22 * (0.5 + 0.5 * math.sin(2.0 * math.pi * beat_phase))
-                dim = min(1.0, best_peak * beat_bump * energy)
+                if str(fixture.id) in beam_levels:
+                    # The look's dimmer effect and chase style.
+                    dim = min(1.0, energy * beam_levels[str(fixture.id)])
+                else:
+                    # Multi-head chase with short tails for stronger fixture-to-fixture bumps.
+                    best_peak = _own_chase_peak(chase_index[fixture.id])
+                    dim = min(1.0, best_peak * own_chase_bump * energy)
             else:
                 dim = energy * base_floor
             # The speculative dip, applied as a fraction of whatever the frame
@@ -4107,6 +4277,7 @@ class EffectsEngine:
                 **self.idle_look_status(),
                 "look": self._rebuild_active_pattern,
                 "look_movement": self._rebuild_look_movement,
+                "look_speed_fit": round(self._rebuild_speed_fit, 3),
             }
         timing_debug = self.decision.get_transition_debug()
         state = {
@@ -4127,6 +4298,8 @@ class EffectsEngine:
             # current look, and the movement performing it.
             "look": self._rebuild_active_pattern,
             "look_movement": self._rebuild_look_movement,
+            # Below 1 when the look was slowed to what a head can do at this tempo.
+            "look_speed_fit": round(self._rebuild_speed_fit, 3),
             "pro_strobe_active": self.pro_effects.strobe.is_active(),
             "pro_build_active": self.pro_effects.build.is_active,
             "key_lighting_zones": [z.value for z in self.key_lighting.get_active_zones()],
