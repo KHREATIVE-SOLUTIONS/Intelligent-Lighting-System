@@ -411,7 +411,7 @@ def _build_fixture(
     # if it faced downstage, and the 3D view - which does turn the body - shows
     # a beam the engine never meant.
     try:
-        fixture.yaw = float(rf.rotation_y or 0.0)
+        fixture.yaw = float(getattr(rf, 'rotation_y', 0.0) or 0.0)
     except (TypeError, ValueError):
         fixture.yaw = 0.0
     # Channels the fixture occupies on the wire, which can be more than it has
