@@ -40,8 +40,8 @@ import {
   roomScanParams, roomScanPath, roomScanUndoPath, roomShellItemPath, roomShellListPath, roomShellPath, roomShellUndoPath,
 } from '../utils/roomScan';
 import type { OutlineAnswer, OutlineChanges, OutlineRead } from '../utils/roomWallsEdit';
-import { autoGroupsPath, readdressPath, readinessPath } from '../utils/readiness';
-import type { AutoGroupsResult, ReaddressResult, ReadinessReport } from '../utils/readiness';
+import { autoGroupsPath, readdressPath, readinessPath, undoFixPath } from '../utils/readiness';
+import type { AutoGroupsResult, ReaddressResult, ReadinessReport, UndoFixResult } from '../utils/readiness';
 // Types only: the module itself reads the 3D view's checks, which this file has no use for.
 import type {
   ShellEditUndone, ShellItemAdd, ShellItemAdded, ShellItemChanges, ShellItemDeleted, ShellItemEdited, ShellItemKind,
@@ -1640,6 +1640,15 @@ export const readinessApi = {
     const response = await api.post(readdressPath(rigId), null, {
       params: dryRun ? { dry_run: true } : undefined,
     });
+    return response.data;
+  },
+
+  /**
+   * Puts back exactly what the last Make groups or Re-address changed. Rejects
+   * with a 409 (detail.message) when a fixture it changed was changed since.
+   */
+  undoFix: async (rigId: number): Promise<UndoFixResult> => {
+    const response = await api.post(undoFixPath(rigId));
     return response.data;
   },
 };

@@ -22,7 +22,9 @@ import {
   locateLabel,
   sortedChecks,
 } from '../../utils/readiness';
-import type { ReaddressResult, ReadinessCheck, ReadinessReport, ReadinessStatus } from '../../utils/readiness';
+import type {
+  ReaddressResult, ReadinessCheck, ReadinessReport, ReadinessStatus, ReadinessUndo,
+} from '../../utils/readiness';
 
 const CHIP: Record<ReadinessStatus, { label: string; color: 'success' | 'warning' | 'error' }> = {
   ok: { label: 'OK', color: 'success' },
@@ -56,11 +58,11 @@ interface ReadinessDialogProps {
 
 /**
  * Venue readiness: every check the backend runs, worst first, each with the
- * fixtures it names. Opening it and Check again read only. Two fixes write,
- * each asked for first because the rig has no undo for groups or addresses:
+ * fixtures it names. Opening it and Check again read only. Two fixes write:
  * Make groups, and Re-address, which shows its planned moves (a dry run)
- * before anything moves. Locate these hands the named fixtures to the
- * flash-and-tap walkthrough.
+ * before anything moves. Either one is a single step of Undo, offered beside
+ * its answer (POST .../readiness/fix/undo). Locate these hands the named
+ * fixtures to the flash-and-tap walkthrough.
  */
 export default function ReadinessDialog({
   open, rigId, rigName, onClose, onSelectFixtures, onLocate, onChanged,
@@ -72,6 +74,9 @@ export default function ReadinessDialog({
   const [plan, setPlan] = useState<ReaddressResult | null>(null);
   const [fixing, setFixing] = useState(false);
   const [fixNote, setFixNote] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
+  // The undo a fix pressed here answered with. Only offered after a fix in this
+  // panel, so the button always sits beside the answer it takes back.
+  const [undo, setUndo] = useState<ReadinessUndo | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -92,6 +97,7 @@ export default function ReadinessDialog({
     setAsking(null);
     setPlan(null);
     setFixNote(null);
+    setUndo(null);
     void load();
   }, [open, load]);
 
@@ -106,6 +112,7 @@ export default function ReadinessDialog({
     try {
       const result = await readinessApi.autoGroups(rigId);
       setFixNote({ severity: 'success', text: result.message });
+      setUndo(result.undo ?? null);
       if (result.changed.length > 0) onChanged?.();
       await load();
     } catch {
@@ -137,11 +144,36 @@ export default function ReadinessDialog({
     try {
       const result = await readinessApi.readdress(rigId, false);
       setFixNote({ severity: 'success', text: result.message });
+      setUndo(result.undo ?? null);
       if (result.moves.length > 0) onChanged?.();
       await load();
     } catch {
       setFixNote({ severity: 'error', text: 'Re-address did not run: nothing was changed. Try again.' });
     } finally {
+      setFixing(false);
+    }
+  };
+
+  /** Takes back the last fix as one step. Refused (409) when a fixture it changed was changed since. */
+  const undoFix = async () => {
+    cancel();
+    setFixing(true);
+    try {
+      const result = await readinessApi.undoFix(rigId);
+      setFixNote({ severity: 'success', text: result.message });
+      if (result.restored.length > 0) onChanged?.();
+      await load();
+    } catch (e) {
+      const detail = (e as { response?: { status?: number; data?: { detail?: { message?: string } } } }).response;
+      setFixNote({
+        severity: 'error',
+        text: detail?.status === 409 && detail.data?.detail?.message
+          ? detail.data.detail.message
+          : 'Undo did not run: nothing was changed. Try again.',
+      });
+    } finally {
+      // Spent or refused, either way it is no longer the undo to offer.
+      setUndo(null);
       setFixing(false);
     }
   };
@@ -181,8 +213,8 @@ export default function ReadinessDialog({
     >
       Give each placed fixture that is in no group a group named for where it hangs and what it is,
       such as "Front truss Spots". A fixture joins a group of exactly that name if the rig has one;
-      no fixture is taken out of a group, and groups named any other way are left alone. There is no
-      undo for this: the answer lists each fixture changed.
+      no fixture is taken out of a group, and groups named any other way are left alone. The answer
+      lists each fixture changed, and Undo puts them all back in one step.
     </Alert>
   );
 
@@ -211,8 +243,8 @@ export default function ReadinessDialog({
         ) : (
           <>
             <Typography variant="body2" sx={{ mb: 0.5 }}>
-              Only the fixtures that clash move; every other address stays. There is no undo for
-              this: set each one to its new address on the fixture itself.
+              Only the fixtures that clash move; every other address stays. Set each one to its new
+              address on the fixture itself (Undo puts the rig's addresses back in one step).
             </Typography>
             <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
               {moves.slice(0, PLAN_SHOWN).map((m) => (
@@ -289,7 +321,26 @@ export default function ReadinessDialog({
             <Alert severity={SEVERITY[report.status]} data-testid="readiness-headline" sx={{ mb: 1 }}>
               {headline(report)}
             </Alert>
-            {fixNote && <Alert severity={fixNote.severity} sx={{ mb: 1 }}>{fixNote.text}</Alert>}
+            {fixNote && (
+              <Alert
+                severity={fixNote.severity}
+                data-testid="readiness-fix-note"
+                sx={{ mb: 1 }}
+                action={undo && (
+                  <Button
+                    color="inherit"
+                    size="small"
+                    data-testid="readiness-undo"
+                    disabled={fixing}
+                    onClick={() => { void undoFix(); }}
+                  >
+                    {undo.label}
+                  </Button>
+                )}
+              >
+                {fixNote.text}
+              </Alert>
+            )}
             {sortedChecks(report.checks).map(renderCheck)}
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
               These checks read the rig and write nothing; the exports are built in memory. What each

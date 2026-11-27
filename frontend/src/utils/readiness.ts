@@ -27,6 +27,23 @@ export interface ReadinessReport {
   operator_guide: string;
 }
 
+/** What Undo would take back: the last fix that changed the rig. */
+export interface ReadinessUndo {
+  fix: string;
+  /** "Undo Make groups", "Undo Re-address". */
+  label: string;
+  count: number;
+}
+
+export interface UndoFixResult {
+  rig_id: number;
+  /** The fix taken back; null when there was nothing to undo. */
+  fix: string | null;
+  restored: { id: number; name: string; from: Record<string, unknown>; to: Record<string, unknown> }[];
+  undo: null;
+  message: string;
+}
+
 export interface AutoGroupsResult {
   rig_id: number;
   created: { name: string; fixture_ids: number[] }[];
@@ -35,6 +52,8 @@ export interface AutoGroupsResult {
   skipped: { name: string; fixture_ids: number[] }[];
   unplaced_ids: number[];
   changed: { id: number; name: string; group_before: string | null; group_name: string }[];
+  /** The rig's undo after this call: this fix if it changed something, else the one before (or null). */
+  undo?: ReadinessUndo | null;
   message: string;
 }
 
@@ -63,6 +82,7 @@ export interface ReaddressResult {
   left: { id: number; name: string; reason: string; clashes_with: number[]; message: string }[];
   conflicts_after: number;
   past_end_after: number;
+  undo?: ReadinessUndo | null;
   message: string;
 }
 
@@ -73,6 +93,7 @@ export const FIX_LOCATE = 'locate';
 export const readinessPath = (rigId: number) => `/rigs/${rigId}/readiness`;
 export const autoGroupsPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/auto-groups`;
 export const readdressPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/readdress`;
+export const undoFixPath = (rigId: number) => `/rigs/${rigId}/readiness/fix/undo`;
 
 const RANK: Record<ReadinessStatus, number> = { fail: 0, warn: 1, ok: 2 };
 
