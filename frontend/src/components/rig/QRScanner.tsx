@@ -51,10 +51,13 @@ export interface ScanResult {
 }
 
 export function scanResultOf(answer: QrScanAnswer, now = Date.now()): ScanResult {
+  // A printed label of a fixture already patched (by the UI, an import, RDM)
+  // comes back `identified` with `already_patched`: nothing was added.
+  const added = answer.action === 'added' && answer.already_patched !== true;
   return {
     rig_fixture_id: answer.rig_fixture_id,
-    added: answer.action === 'added',
-    message: answer.message || (answer.action === 'added' ? 'Added to the rig' : 'Already in the rig'),
+    added,
+    message: answer.message || (added ? 'Added to the rig' : 'Already in the rig'),
     timestamp: now,
   };
 }

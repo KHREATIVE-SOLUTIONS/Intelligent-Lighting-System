@@ -13,7 +13,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,7 @@ from sqlalchemy.orm import selectinload
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
 from app.models.fixture import Fixture
+from app.services import qr_encode
 from app.services.label_sheet import Label, label_sheet_pdf
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,44 @@ async def process_qr_scan(
     if not fixture_id:
         raise HTTPException(status_code=400, detail="Could not parse QR code data")
 
+    # A printed label (generate_label_sheet) names its rig fixture. When that
+    # rig fixture is in this rig, the fixture is already patched, however it got
+    # there (UI, import, RDM, an earlier scan): say so and add nothing. Its
+    # fixture_id must agree too: rig fixture ids are SQLite rowids and can be
+    # reused after a delete, so a stale label could name some other fixture.
+    label_rf_id = scan_data.get("rig_fixture_id")
+    if not isinstance(label_rf_id, int) or isinstance(label_rf_id, bool):
+        label_rf_id = None
+    label_note = ""
+    if label_rf_id is not None:
+        # A query, not session.get(): it flushes first, so a delete earlier in
+        # the session is seen.
+        result = await db.execute(select(RigFixture).where(RigFixture.id == label_rf_id))
+        labelled = result.scalar_one_or_none()
+        if labelled is not None and labelled.rig_id == rig_id and labelled.fixture_id == fixture_id:
+            if not labelled.qr_code_data:
+                # Later scans match on the text as well.
+                labelled.qr_code_data = qr_data
+                await db.flush()
+            return {
+                "action": "identified",
+                "already_patched": True,
+                "matched_by": "rig_fixture_id",
+                "rig_fixture_id": labelled.id,
+                "universe": labelled.universe,
+                "dmx_address": labelled.dmx_address,
+                "message": (
+                    f"{labelled.name or 'Fixture'} is already patched at "
+                    f"{labelled.universe}.{labelled.dmx_address}: nothing added"
+                ),
+            }
+        if labelled is None:
+            label_note = f"The label's rig fixture {label_rf_id} no longer exists. "
+        elif labelled.rig_id != rig_id:
+            label_note = f"The label's rig fixture {label_rf_id} is not in this rig. "
+        else:
+            label_note = f"The label's rig fixture {label_rf_id} is now a different fixture. "
+
     # Find or verify fixture
     result = await db.execute(select(Fixture).where(Fixture.id == fixture_id))
     fixture = result.scalar_one_or_none()
@@ -89,7 +128,11 @@ async def process_qr_scan(
     if existing:
         return {
             "action": "identified",
+            "already_patched": True,
+            "matched_by": "qr_code_data",
             "rig_fixture_id": existing.id,
+            "universe": existing.universe,
+            "dmx_address": existing.dmx_address,
             "message": f"Fixture already in rig at address {existing.dmx_address}",
         }
 
@@ -120,9 +163,10 @@ async def process_qr_scan(
 
     return {
         "action": "added",
+        "already_patched": False,
         "rig_fixture_id": rf.id,
         "dmx_address": rf.dmx_address,
-        "message": f"Added {fixture.model} at address {rf.dmx_address}",
+        "message": f"{label_note}Added {fixture.model} at address {rf.dmx_address}",
     }
 
 
@@ -130,9 +174,16 @@ async def process_qr_scan(
 async def generate_qr_code(
     fixture_id: int,
     size: int = Query(default=200, ge=50, le=500),
+    output: str = Query(default="png", alias="format", pattern="^(png|json)$"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a QR code image for a fixture."""
+    """A QR code PNG for a fixture profile, drawn by app/services/qr_encode.py.
+
+    The code holds `{"fixture_id", "manufacturer", "model"}`, which the scan
+    route adds by fixture_id. `size` is the side in pixels, rounded down to a
+    whole number of pixels a module (never below one) so every module is the
+    same width. `?format=json` answers the code's text instead.
+    """
     result = await db.execute(select(Fixture).where(Fixture.id == fixture_id))
     fixture = result.scalar_one_or_none()
     if not fixture:
@@ -143,26 +194,29 @@ async def generate_qr_code(
         "manufacturer": fixture.manufacturer,
         "model": fixture.model,
     })
-
-    # Try to generate QR code (requires qrcode library)
     try:
-        import qrcode
-        qr = qrcode.QRCode(version=1, box_size=10, border=4)
-        qr.add_data(qr_data)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
+        matrix = qr_encode.encode(qr_data, ecc="M")
+    except ValueError:
+        # Names too long for a version 10 code: the id alone still scans.
+        qr_data = json.dumps({"fixture_id": fixture.id})
+        matrix = qr_encode.encode(qr_data, ecc="M")
 
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-
-        return StreamingResponse(buf, media_type="image/png")
-    except ImportError:
-        # qrcode library not installed - return JSON data instead
+    if output == "json":
         return {
             "qr_data": qr_data,
-            "message": "Install 'qrcode' package to generate QR code images",
+            "message": "QR code text. Leave out ?format=json for the PNG.",
         }
+
+    quiet = 4
+    module_px = max(1, size // (len(matrix) + 2 * quiet))
+    img = qr_encode.to_image(matrix, module_px=module_px, quiet=quiet)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="fixture_{fixture_id}_qr.png"'},
+    )
 
 
 @router.get("/rigs/{rig_id}/labels/pdf")

@@ -120,6 +120,48 @@ describe('the QR scanner', () => {
     expect(await screen.findAllByText('Added Spot 3 at address 17')).not.toHaveLength(0);
     await waitFor(() => expect(onScan).toHaveBeenCalledWith(31, true));
   });
+
+  it('reads an already-patched label as not added', () => {
+    const answer = {
+      action: 'identified' as const, already_patched: true, matched_by: 'rig_fixture_id' as const,
+      rig_fixture_id: 31, universe: 0, dmx_address: 33, message: 'Spot SL is already patched at 0.33: nothing added',
+    };
+    expect(scanResultOf(answer, 5)).toEqual({
+      rig_fixture_id: 31, added: false, message: 'Spot SL is already patched at 0.33: nothing added', timestamp: 5,
+    });
+    expect(scanResultOf({ ...answer, message: '' }, 5).message).toBe('Already in the rig');
+  });
+
+  it('shows a scanned label of a patched fixture as already in the rig, not added', async () => {
+    calls.scanQr.mockResolvedValue({
+      action: 'identified', already_patched: true, matched_by: 'rig_fixture_id',
+      rig_fixture_id: 31, universe: 0, dmx_address: 33, message: 'Spot SL is already patched at 0.33: nothing added',
+    });
+    const onScan = vi.fn();
+    render(<QRScanner rigId={RIG_ID} open onClose={() => {}} onScan={onScan} />);
+    const code = '{"fixture_id": 4, "rig_fixture_id": 31}';
+    fireEvent.change(screen.getByRole('textbox', { name: 'QR code or fixture ID' }), { target: { value: code } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(calls.scanQr).toHaveBeenCalledWith(RIG_ID, code));
+    expect(await screen.findAllByText('Spot SL is already patched at 0.33: nothing added')).not.toHaveLength(0);
+    expect(screen.getAllByText('Already in the rig')).not.toHaveLength(0);
+    expect(screen.queryByText('Added to the rig')).toBeNull();
+    expect(screen.queryByText('Added')).toBeNull();
+    await waitFor(() => expect(onScan).toHaveBeenCalledWith(31, false));
+  });
+
+  it('shows why a stale label was added again', async () => {
+    const message = "The label's rig fixture 9 no longer exists. Added Spot at address 49";
+    calls.scanQr.mockResolvedValue({ action: 'added', already_patched: false, rig_fixture_id: 40, dmx_address: 49, message });
+    render(<QRScanner rigId={RIG_ID} open onClose={() => {}} />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'QR code or fixture ID' }), {
+      target: { value: '{"fixture_id": 4, "rig_fixture_id": 9}' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(await screen.findAllByText(message)).not.toHaveLength(0);
+    expect(screen.getByText('Added to the rig')).toBeTruthy();
+  });
 });
 
 describe('Generate Labels', () => {
