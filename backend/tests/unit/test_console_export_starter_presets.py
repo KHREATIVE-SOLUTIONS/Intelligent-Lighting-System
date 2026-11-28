@@ -182,6 +182,14 @@ def test_no_strobe_range_means_no_strobe_preset():
     assert "0 taken as narrow" in table.preset("Zoom Narrow").assumed[1]
 
 
+def test_shutter_ranges_that_name_no_open_value_store_no_shutter_open():
+    ranges = [{"name": "Closed", "min_value": 0, "max_value": 19},
+              {"name": "Strobe slow to fast", "min_value": 20, "max_value": 255}]
+    _, table = rig([row(1, [ch(1, "dimmer"), ch(2, "shutter", ranges)])])
+    assert table.preset("Shutter Open").skipped == {1: "its shutter ranges name no open value"}
+    assert table.preset("Strobe Fast").dmx[1] == {"shutter": 20 + int(0.9 * 235)}
+
+
 def test_dimmer_presets_go_by_the_dimmer_channel():
     rows = [row(1, [ch(1, "dimmer")]), row(2, [ch(1, "red"), ch(2, "green"), ch(3, "blue")]), row(3, None)]
     _, table = rig(rows)

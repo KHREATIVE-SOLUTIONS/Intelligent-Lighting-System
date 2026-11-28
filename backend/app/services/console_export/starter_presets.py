@@ -342,8 +342,11 @@ def _beam_values(name: str, prof: _Profile) -> Tuple[Optional[int], str, str, st
             ranges = resolve_channel_ranges(kind, getattr(channel, "value_ranges", None))
             if ranges is not None and ranges.open is not None:
                 return ranges.open, kind, "", ""
-            if kind == "shutter":
+            if kind == "shutter" and not getattr(channel, "value_ranges", None):
                 return 255, kind, "", "no range names open; 255 taken as open"
+            if kind == "shutter":
+                # Ranges that name no open value: 255 may well be a strobe.
+                return None, "", "its shutter ranges name no open value", ""
         return None, "", "it has no shutter channel that names an open value", ""
     if name.startswith("Strobe"):
         channel, ranges = _strobe_channel(prof)
