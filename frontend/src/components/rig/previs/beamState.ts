@@ -179,9 +179,11 @@ export function buildChannelMap(fixture: BeamFixtureInput): Record<string, numbe
 /**
  * Which way round a fixture answers pan and tilt.
  *
- * Nothing in the engine inverts an axis yet, so this describes the fixture,
- * not the frame: a head hung the other way round, or set to invert in its own
- * menu, moves the opposite way for the same values. The tags `pan_invert` and
+ * The engine does not correct for these, so this describes the fixture, not
+ * the frame: a head set to invert in its own menu, say, moves the opposite way
+ * for the same values. (The patch's hang flags are different: the engine
+ * applies those on the way to DMX, and `profile.hang` undoes them when a frame
+ * is read; see ./hangFlags.ts.) The tags `pan_invert` and
  * `tilt_invert` each flip one axis. The rig's older single `is_inverted` flag
  * does not say which axis it means; it is read here as pan.
  */
