@@ -1,4 +1,4 @@
-import { memo, useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import type { MutableRefObject } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
@@ -8,11 +8,11 @@ import {
   ArrowBack as BackIcon,
 } from '@mui/icons-material';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Grid, PerspectiveCamera, Html } from '@react-three/drei';
+import { OrbitControls, Grid, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { demoApi, effectsApi, rigsApi } from '../../services/api';
 import type { DemoPresetSummary } from '../../services/api';
-import type { Rig, RigFixture, RoomShellBox } from '../../types';
+import type { Rig, RoomShellBox } from '../../types';
 import { useDMXStore } from '../../stores/dmxStore';
 import { useHealthStore } from '../../stores/healthStore';
 import { audioWebSocket } from '../../services/websocket';
@@ -30,15 +30,13 @@ import AudioDeviceChooser from '../common/AudioDeviceChooser';
 import { ConsoleExportButton } from './ConsoleExportSection';
 import { createBeatClock, ingestAnalysis } from './previs/beatClock';
 import type { BeatClock } from './previs/beatClock';
-import { beamMouth, beamTube, createBeamMaterial, shapeBeam } from './previs/beamShape';
-import { buildBeamProfile, buildChannelMap, createBeamState, isPositionUnconfirmed, readBeamState } from './previs/beamState';
-import { beamDirection, beamLanding, hangBeam } from './previs/beamThrow';
-import type { BeamRoom, BeamSurface, BeamVector } from './previs/beamThrow';
+import { isPositionUnconfirmed } from './previs/beamState';
 import { ClubRoom } from './previs/ClubRoom';
 import { BeatClockTicker, Crowd, PlacedCrowd } from './previs/Crowd';
 import { DJBooth } from './previs/DJBooth';
-import { FixtureHead, FixtureSupport, FixtureYoke } from './previs/FixtureBody';
-import { FIXTURE_SPECS, resolveModelKind } from './previs/fixtureSpecs';
+import { FixtureRig } from './previs/FixtureRig';
+import { describeFixture } from './previs/fixtureRuntime';
+import type { BeamDebugSnapshot } from './previs/fixtureRuntime';
 import { GuessMarkers } from './previs/GuessMarkers';
 import type { GuessPoint } from './previs/GuessMarkers';
 import { createOutputFeed, ingestOutput, summariseFeed } from './previs/outputFeed';
@@ -52,10 +50,7 @@ import { isDjBooth } from './previs/boothPick';
 import type { FloorCamera } from './previs/scanFloor';
 import { RoomShellView } from './previs/RoomShellView';
 import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
-import { poolConeDeg, poolRadius } from './previs/poolLight';
-import { FloorPools, createPoolBuffer, emptyPoolRenderer, updatePools, writePoolSlot } from './previs/FloorPools';
-import type { PoolBuffer, PoolRenderer } from './previs/FloorPools';
-import type { CameraMode, FixtureMount } from './previs/layout';
+import type { CameraMode } from './previs/layout';
 import { RigTruss } from './previs/Truss';
 import { FixtureDragLayer } from './previs/FixtureDragLayer';
 import type { DragHandle } from './previs/FixtureDragLayer';
@@ -77,37 +72,7 @@ import {
   PREVIZ_SHADOWS_KEY, defaultShowLabels, previzDpr, readViewToggle, writeViewToggle,
 } from './previs/viewSettings';
 
-type BeamDebugSnapshot = {
-  fixtureId: number;
-  fixtureLabel: string;
-  targetPanDeg: number;
-  targetTiltDeg: number;
-  currentPanDeg: number;
-  currentTiltDeg: number;
-  panVelocityDegPerSec: number;
-  tiltVelocityDegPerSec: number;
-  signalConfidence: number;
-  hold: boolean;
-  strobeLogical: number;
-  strobeChannelValue: number;
-  strobeChannelIndex?: number;
-  strobeSource: 'strobe' | 'shutter' | 'none';
-  shutter: 'open' | 'closed' | 'strobe';
-  zoomLogical: number;
-  zoomChannelValue: number;
-  zoomChannelIndex?: number;
-  zoomSource: 'zoom' | 'beam_angle' | 'fallback';
-  finalIntensity: number;
-  finalSpotAngleDeg: number;
-  capabilityWarnings: string[];
-  motionSource: string;
-};
-
 type QualityMode = 'performance' | 'balanced' | 'ultra';
-
-// A fixture not in the venue layout (a position that is not a number) still
-// has to draw: treat it as hung, with no pipe.
-const DEFAULT_MOUNT: FixtureMount = { type: 'truss', drop: 0 };
 
 // ============================================================================
 // CONSTANTS
@@ -125,539 +90,6 @@ const ZONE_POSITIONS: Record<string, { x: number; z: number }> = {
   DSC: { x: 0, z: 0.33 },
   DSR: { x: 0.33, z: 0.33 },
 };
-
-type MotionInertiaProfile = {
-  panMaxVelDegPerSec: number;
-  tiltMaxVelDegPerSec: number;
-  panMaxAccelDegPerSec2: number;
-  tiltMaxAccelDegPerSec2: number;
-  damping: number;
-};
-
-// Fixture types that pan and tilt whether or not the profile lists the channels.
-const MOVING_HEAD_TYPES = new Set(['moving_head', 'mover', 'spot', 'beam', 'wash', 'profile', 'hybrid']);
-
-const FIXTURE_MOTION_PROFILES: Record<string, MotionInertiaProfile> = {
-  moving_head: { panMaxVelDegPerSec: 220, tiltMaxVelDegPerSec: 180, panMaxAccelDegPerSec2: 540, tiltMaxAccelDegPerSec2: 420, damping: 0.88 },
-  mover: { panMaxVelDegPerSec: 220, tiltMaxVelDegPerSec: 180, panMaxAccelDegPerSec2: 540, tiltMaxAccelDegPerSec2: 420, damping: 0.88 },
-  beam: { panMaxVelDegPerSec: 260, tiltMaxVelDegPerSec: 220, panMaxAccelDegPerSec2: 720, tiltMaxAccelDegPerSec2: 560, damping: 0.86 },
-  spot: { panMaxVelDegPerSec: 180, tiltMaxVelDegPerSec: 150, panMaxAccelDegPerSec2: 420, tiltMaxAccelDegPerSec2: 340, damping: 0.90 },
-  wash: { panMaxVelDegPerSec: 170, tiltMaxVelDegPerSec: 150, panMaxAccelDegPerSec2: 360, tiltMaxAccelDegPerSec2: 300, damping: 0.91 },
-  profile: { panMaxVelDegPerSec: 175, tiltMaxVelDegPerSec: 150, panMaxAccelDegPerSec2: 380, tiltMaxAccelDegPerSec2: 320, damping: 0.90 },
-  hybrid: { panMaxVelDegPerSec: 220, tiltMaxVelDegPerSec: 180, panMaxAccelDegPerSec2: 520, tiltMaxAccelDegPerSec2: 420, damping: 0.88 },
-  default: { panMaxVelDegPerSec: 130, tiltMaxVelDegPerSec: 110, panMaxAccelDegPerSec2: 260, tiltMaxAccelDegPerSec2: 220, damping: 0.92 },
-};
-
-// ============================================================================
-// UTILITY FUNCTIONS
-// ============================================================================
-
-// What kind of fixture this is. Worked out in one place because three things
-// have to agree on it: the control loop, the model that is drawn, and the venue
-// layout that decides how the fixture is mounted.
-function describeFixture(fixture: RigFixture, channelMap: Record<string, number> = buildChannelMap(fixture)) {
-  const fixtureType: string = fixture.fixture?.fixture_type || 'other';
-  const hasPanTiltChannels = channelMap.pan !== undefined && channelMap.tilt !== undefined;
-  const isMovingHead = hasPanTiltChannels || MOVING_HEAD_TYPES.has(fixtureType);
-  return {
-    fixtureType,
-    hasPanTiltChannels,
-    isMovingHead,
-    modelKind: resolveModelKind(fixtureType, isMovingHead),
-  };
-}
-
-// The two ways a fixture can face. Everything that points (housing, beam, spot
-// light) is built pointing down its own -Y; half a turn about X points it up.
-const FACING_DOWN: [number, number, number] = [0, 0, 0];
-const FACING_UP: [number, number, number] = [Math.PI, 0, 0];
-
-/** Below this a beam is not drawn at all. */
-const BEAM_VISIBLE_FROM = 0.015;
-
-// ============================================================================
-// FIXTURE 3D COMPONENT
-// ============================================================================
-
-// Memoised, and given nothing that changes from frame to frame: everything
-// that moves is written straight to three.js objects in the frame loop. With
-// a hundred and thirty fixtures, one React render of each per frame was most
-// of a frame's time.
-const Fixture3D = memo(function Fixture3D({
-  fixture,
-  feed,
-  fixtureIndex,
-  pools,
-  beamSegments,
-  mount,
-  room,
-  longestThrow,
-  showLabel,
-  debugBuffer,
-  debug,
-}: {
-  fixture: RigFixture;
-  /** The frames the engine outputs, read in the frame loop. Never written. */
-  feed: MutableRefObject<OutputFeed>;
-  fixtureIndex: number;
-  /** Where this fixture writes its floor pool each frame, at slot `fixtureIndex`. */
-  pools: MutableRefObject<PoolBuffer>;
-  beamSegments: number;
-  mount: FixtureMount;
-  /** What a beam can land on: the floor, the ceiling and, when drawn, the walls. */
-  room: BeamRoom;
-  /** The furthest any beam can travel in this room. */
-  longestThrow: number;
-  showLabel: boolean;
-  /** Rows for the beam debug table, written only while it is open. */
-  debugBuffer: MutableRefObject<Record<number, BeamDebugSnapshot>>;
-  debug: boolean;
-}) {
-  const groupRef = useRef<THREE.Group>(null);
-  const headRef = useRef<THREE.Group>(null);
-  const yokeRef = useRef<THREE.Group>(null);
-  const lensRef = useRef<THREE.Mesh>(null);
-  const beamRef = useRef<THREE.Mesh>(null);
-
-  // What this fixture does with the values it is sent: its channels, travel,
-  // invert and beam angle, worked out once. The frame loop reads a frame
-  // through it into `beam`, and draws that.
-  const profile = useMemo(() => buildBeamProfile(fixture), [fixture]);
-  const channelMap = profile.channels;
-  const [beam] = useState(() => createBeamState());
-  const universe = Number(fixture.universe) || 0;
-
-  // Smoothed values to avoid jitter
-  const smoothed = useRef({ intensity: 0, r: 1, g: 1, b: 1 });
-
-  const FIXED_CONTROL_DT = 1 / 60;
-  const MAX_STABLE_DELTA = 1 / 20;
-  const DELTA_SPIKE_FACTOR = 2.2;
-  const controlAccumulator = useRef(0);
-  const stableDeltaEstimate = useRef(FIXED_CONTROL_DT);
-
-  const orientationState = useRef({
-    previousPanRad: 0,
-    previousTiltRad: 0,
-    previousTargetPanRad: 0,
-    previousTargetTiltRad: 0,
-    currentPanRad: 0,
-    currentTiltRad: 0,
-    targetPanRad: 0,
-    targetTiltRad: 0,
-    panVelocityRadPerSec: 0,
-    tiltVelocityRadPerSec: 0,
-    holdDurationSec: 0,
-  });
-
-  const { fixtureType, isMovingHead, modelKind } = useMemo(
-    () => describeFixture(fixture, channelMap),
-    [fixture, channelMap]
-  );
-  const isBeamLike = fixtureType === 'beam' || fixtureType === 'moving_head' || fixtureType === 'mover';
-  const isSpotLike = fixtureType === 'spot';
-  const modelSpec = FIXTURE_SPECS[modelKind];
-  // How far down the beam from the fixture's own position its spot light sits.
-  const lightDepth = modelSpec.lensOffset + 0.02;
-  const motionProfile = FIXTURE_MOTION_PROFILES[fixtureType] || FIXTURE_MOTION_PROFILES.default;
-
-  // How the rig says the fixture is hung, beyond its yaw: rotation_x and
-  // rotation_z, for one on its side or leaning. Applied to the yoke, the head
-  // and the beam together, inside the yaw.
-  const hangRx = THREE.MathUtils.degToRad(Number(fixture.rotation_x) || 0);
-  const hangRz = THREE.MathUtils.degToRad(Number(fixture.rotation_z) || 0);
-  const leaning = hangRx !== 0 || hangRz !== 0;
-  const hangRotation = useMemo<[number, number, number]>(() => [hangRx, 0, hangRz], [hangRx, hangRz]);
-
-  // A fixed-body fixture standing on the floor faces the ceiling: the model,
-  // its beam and its spot light are turned over together, below. That is a
-  // guess from where it stands, so a rotation the rig gives outright wins.
-  const lensUp = mount.type === 'stand' && mount.lensUp && !leaning;
-  // A fixture patched lower than its own feet is raised to stand on the floor.
-  const standLift = mount.type === 'stand' ? mount.lift : 0;
-  // Height of the point the light comes from.
-  const sourceY = fixture.position_y + standLift;
-
-  // Where the beam lands is worked out every frame, below: it is where the
-  // drawn beam ends and what the spot light's range is measured from.
-  const beamPointing = useRef<BeamVector>({ x: 0, y: -1, z: 0 });
-  const beamSurface = useRef<BeamSurface>({ x: 0, y: 0, z: 0, d: 0 });
-  const mouth = useMemo(() => beamMouth(modelKind), [modelKind]);
-  // One beam material for the life of the fixture, shaped in the frame loop.
-  const beamMaterial = useMemo(() => createBeamMaterial(), []);
-  useEffect(() => () => beamMaterial.dispose(), [beamMaterial]);
-
-  // The yaw the rig says this fixture is hung at. Object3D.rotation.y takes the
-  // wizard's convention directly: 0 aims down local +Z (downstage, toward the
-  // audience), +90 deg aims toward +X. Ignoring it rendered every fixture facing
-  // the same way, so "each fixture points at the performance area" had no
-  // observable effect in the previs.
-  const bodyYawRad = useMemo(
-    () => THREE.MathUtils.degToRad(fixture.rotation_y || 0),
-    [fixture.rotation_y]
-  );
-
-  const [beamColor] = useState(() => new THREE.Color(1, 1, 1));
-  const beamPosition = useMemo<[number, number, number]>(() => [0, -mouth.offset, 0], [mouth]);
-
-  useFrame((_, rawDelta) => {
-    const delta = Math.min(rawDelta, MAX_STABLE_DELTA);
-
-    // Smooth and clamp noisy frame spikes before they enter the control loop.
-    stableDeltaEstimate.current = THREE.MathUtils.lerp(stableDeltaEstimate.current, delta, 0.15);
-    const spikeLimit = Math.max(FIXED_CONTROL_DT * 1.5, stableDeltaEstimate.current * DELTA_SPIKE_FACTOR);
-    const stableDelta = Math.min(delta, spikeLimit);
-
-    // What this fixture is being sent: its own channels out of the frame the
-    // engine outputs for its universe, read through its profile. Nothing else
-    // feeds the picture, so a blackout, the grand master and a closed shutter
-    // show here exactly as they would in the room. With no frame yet the
-    // fixture is dark and its head at centre.
-    readBeamState(profile, feed.current.frames.get(universe), fixture.dmx_address, beam);
-    // A closed shutter, a zero dimmer and a colour mixed to black are all dark.
-    const rawDimmer = beam.lit ? beam.intensity : 0;
-    const strobe = beam.shutter === 'strobe' ? beam.strobeRate : 0;
-    const zoom = beam.zoom;
-
-    // Smooth interpolation
-    const s = smoothed.current;
-    const lerp = Math.min(1, stableDelta * 15);
-    s.intensity += (rawDimmer - s.intensity) * lerp;
-    s.r += (beam.r - s.r) * lerp;
-    s.g += (beam.g - s.g) * lerp;
-    s.b += (beam.b - s.b) * lerp;
-
-    // Apply strobe effect (rapid intensity modulation)
-    let effectiveIntensity = s.intensity;
-    if (strobe > 0) {
-      const strobeFreq = 2 + strobe * 20; // 2-22 Hz
-      const strobePhase = (performance.now() / 1000 * strobeFreq) % 1;
-      effectiveIntensity = strobePhase < 0.5 ? s.intensity : 0;
-    }
-
-    // Volumetric intensity follows backend dimmer directly — no artificial floors.
-    // Beams form from true darkness when audio activates.
-    const volumetricIntensity = effectiveIntensity;
-
-    // Update beam color
-    const luminance = 0.2126 * s.r + 0.7152 * s.g + 0.0722 * s.b;
-    if (isBeamLike && luminance < 0.09) {
-      // Keep dark palettes moody but still visible in haze previs.
-      const lift = (0.09 - luminance) / 0.09;
-      beamColor.setRGB(
-        THREE.MathUtils.clamp(s.r + 0.25 * lift, 0, 1),
-        THREE.MathUtils.clamp(s.g + 0.30 * lift, 0, 1),
-        THREE.MathUtils.clamp(s.b + 0.40 * lift, 0, 1)
-      );
-    } else {
-      beamColor.setRGB(s.r, s.g, s.b);
-    }
-    // Written straight to the beam, not through React state: a state change
-    // here re-rendered every fixture on every frame.
-    beamMaterial.uniforms.beamColor.value.copy(beamColor);
-    beamMaterial.uniforms.beamIntensity.value = volumetricIntensity;
-    if (beamRef.current) beamRef.current.visible = volumetricIntensity >= BEAM_VISIBLE_FROM;
-
-    // Update lens glow emissive
-    if (lensRef.current) {
-      const lensMat = lensRef.current.material as THREE.MeshStandardMaterial;
-      lensMat.emissive.setRGB(s.r, s.g, s.b);
-      lensMat.emissiveIntensity = volumetricIntensity * 3;
-      // Dark glass when the fixture is off, taking its colour as it comes up.
-      const lensTint = 0.5 * Math.min(1, s.intensity * 4);
-      lensMat.color.setRGB(0.045 + s.r * lensTint, 0.05 + s.g * lensTint, 0.06 + s.b * lensTint);
-    }
-
-    // How wide the light is. The pool and the drawn beam both come from this.
-    const finalSpotAngleDeg = poolConeDeg(isSpotLike, zoom);
-
-    let targetPanDeg = 0;
-    let targetTiltDeg = 0;
-    let currentPanDeg = 0;
-    let currentTiltDeg = 0;
-    let panVelocityDegPerSec = 0;
-    let tiltVelocityDegPerSec = 0;
-    let signalConfidence = 1;
-    let hold = false;
-
-    // Pan/tilt for moving heads
-    if (isMovingHead) {
-      const panRangeRad = THREE.MathUtils.degToRad(profile.panRangeDeg);
-      const tiltRangeRad = THREE.MathUtils.degToRad(profile.tiltRangeDeg);
-      // Degrees from centre, the fixture's pan and tilt invert already applied.
-      const targetPan = THREE.MathUtils.degToRad(beam.panDeg);
-      const targetTilt = THREE.MathUtils.degToRad(beam.tiltDeg);
-
-      controlAccumulator.current += stableDelta;
-      let stepCount = 0;
-      const o = orientationState.current;
-      while (controlAccumulator.current >= FIXED_CONTROL_DT && stepCount < 5) {
-        o.previousPanRad = o.currentPanRad;
-        o.previousTiltRad = o.currentTiltRad;
-        o.previousTargetPanRad = o.targetPanRad;
-        o.previousTargetTiltRad = o.targetTiltRad;
-        o.targetPanRad = targetPan;
-        o.targetTiltRad = targetTilt;
-
-        // Fixture-specific inertia profile: velocity/accel clamps + damping.
-        const panErrorRad = o.targetPanRad - o.currentPanRad;
-        const tiltErrorRad = o.targetTiltRad - o.currentTiltRad;
-
-        const panDesiredVel = THREE.MathUtils.clamp(
-          panErrorRad / FIXED_CONTROL_DT,
-          -THREE.MathUtils.degToRad(motionProfile.panMaxVelDegPerSec),
-          THREE.MathUtils.degToRad(motionProfile.panMaxVelDegPerSec)
-        );
-        const tiltDesiredVel = THREE.MathUtils.clamp(
-          tiltErrorRad / FIXED_CONTROL_DT,
-          -THREE.MathUtils.degToRad(motionProfile.tiltMaxVelDegPerSec),
-          THREE.MathUtils.degToRad(motionProfile.tiltMaxVelDegPerSec)
-        );
-
-        const panVelDelta = panDesiredVel - o.panVelocityRadPerSec;
-        const tiltVelDelta = tiltDesiredVel - o.tiltVelocityRadPerSec;
-        const panMaxDelta = THREE.MathUtils.degToRad(motionProfile.panMaxAccelDegPerSec2) * FIXED_CONTROL_DT;
-        const tiltMaxDelta = THREE.MathUtils.degToRad(motionProfile.tiltMaxAccelDegPerSec2) * FIXED_CONTROL_DT;
-
-        o.panVelocityRadPerSec += THREE.MathUtils.clamp(panVelDelta, -panMaxDelta, panMaxDelta);
-        o.tiltVelocityRadPerSec += THREE.MathUtils.clamp(tiltVelDelta, -tiltMaxDelta, tiltMaxDelta);
-        o.panVelocityRadPerSec *= motionProfile.damping;
-        o.tiltVelocityRadPerSec *= motionProfile.damping;
-
-        o.currentPanRad += o.panVelocityRadPerSec * FIXED_CONTROL_DT;
-        o.currentTiltRad += o.tiltVelocityRadPerSec * FIXED_CONTROL_DT;
-
-        o.currentPanRad = THREE.MathUtils.clamp(o.currentPanRad, -panRangeRad / 2, panRangeRad / 2);
-        o.currentTiltRad = THREE.MathUtils.clamp(o.currentTiltRad, -tiltRangeRad / 2, tiltRangeRad / 2);
-
-        const panErr = Math.abs(o.targetPanRad - o.currentPanRad);
-        const tiltErr = Math.abs(o.targetTiltRad - o.currentTiltRad);
-        const targetPanDelta = Math.abs(o.targetPanRad - o.previousTargetPanRad);
-        const targetTiltDelta = Math.abs(o.targetTiltRad - o.previousTargetTiltRad);
-        const targetStable = targetPanDelta < THREE.MathUtils.degToRad(0.08) && targetTiltDelta < THREE.MathUtils.degToRad(0.08);
-        const canShowHold = effectiveIntensity > 0.08;
-        if (
-          canShowHold &&
-          targetStable &&
-          panErr < THREE.MathUtils.degToRad(0.15) &&
-          tiltErr < THREE.MathUtils.degToRad(0.15)
-        ) {
-          o.holdDurationSec += FIXED_CONTROL_DT;
-        } else {
-          o.holdDurationSec = 0;
-        }
-
-        controlAccumulator.current -= FIXED_CONTROL_DT;
-        stepCount += 1;
-      }
-
-      if (stepCount === 5 && controlAccumulator.current >= FIXED_CONTROL_DT) {
-        // Prevent spiral-of-death if rendering starves for too long.
-        controlAccumulator.current = 0;
-      }
-
-      if (headRef.current) {
-        const alpha = Math.min(1, controlAccumulator.current / FIXED_CONTROL_DT);
-        // A moving head pans its yoke about the vertical and tilts the head
-        // inside the yoke, so tilt has to be applied first and pan second:
-        // 'YXZ'. With three's default 'XYZ' the pan turned the head about its
-        // own beam, and no amount of pan moved a beam in this view.
-        headRef.current.rotation.order = 'YXZ';
-        headRef.current.rotation.y = THREE.MathUtils.lerp(o.previousPanRad, o.currentPanRad, alpha);
-        headRef.current.rotation.x = THREE.MathUtils.lerp(o.previousTiltRad, o.currentTiltRad, alpha);
-        // The yoke arms take the same pan and nothing else. They are a separate
-        // group beside the head, so the beam's direction is still set by the
-        // two lines above and by nothing in the model.
-        if (yokeRef.current) yokeRef.current.rotation.y = headRef.current.rotation.y;
-      }
-
-      const panErrorNorm = Math.min(1, Math.abs(o.targetPanRad - o.currentPanRad) / Math.max(0.0001, panRangeRad));
-      const tiltErrorNorm = Math.min(1, Math.abs(o.targetTiltRad - o.currentTiltRad) / Math.max(0.0001, tiltRangeRad));
-      const spikePenalty = Math.min(0.5, Math.max(0, (rawDelta - stableDelta) * 5));
-      const confidence = Math.max(0, 1 - ((panErrorNorm + tiltErrorNorm) * 0.5 + spikePenalty));
-
-      targetPanDeg = THREE.MathUtils.radToDeg(o.targetPanRad);
-      targetTiltDeg = THREE.MathUtils.radToDeg(o.targetTiltRad);
-      currentPanDeg = THREE.MathUtils.radToDeg(o.currentPanRad);
-      currentTiltDeg = THREE.MathUtils.radToDeg(o.currentTiltRad);
-      panVelocityDegPerSec = THREE.MathUtils.radToDeg(o.panVelocityRadPerSec);
-      tiltVelocityDegPerSec = THREE.MathUtils.radToDeg(o.tiltVelocityRadPerSec);
-      signalConfidence = confidence;
-      hold = o.holdDurationSec > 0.35;
-    } else if (headRef.current) {
-      // Nothing turns the head of a fixture that cannot pan or tilt, so it has
-      // to be put straight here. Fixtures are keyed by id and every demo rig
-      // numbers its fixtures from 1, so when the rig is swapped under an open
-      // view this component is reused for whatever has the same id in the new
-      // rig. A par drawn where a moving head was kept that head's last pan and
-      // tilt: its housing was drawn turned and its beam leaned with it.
-      const turn = headRef.current.rotation;
-      if (turn.x !== 0 || turn.y !== 0 || turn.z !== 0) turn.set(0, 0, 0);
-    }
-
-    // Where the beam lands: the first of the floor, the ceiling and the walls
-    // along it. The drawn beam ends there and the spot light's range is
-    // measured from it, so the beam, its pool and the room agree. Worked out
-    // for every fixture, with or without a spot light, from the head group
-    // itself: this frame's pan and tilt, the ones the beam is drawn with. A
-    // fixture that cannot move stays at 0.
-    const head = headRef.current;
-    // In the fixture's own frame first, then turned by how it is hung: the
-    // same nest of turns the groups below are drawn with.
-    const pointing = hangBeam(
-      beamDirection(head ? head.rotation.x : 0, head ? head.rotation.y : 0, lensUp, beamPointing.current),
-      hangRx,
-      hangRz,
-      bodyYawRad
-    );
-    const reach = beamLanding(
-      fixture.position_x,
-      sourceY,
-      fixture.position_z,
-      pointing,
-      room,
-      longestThrow,
-      beamSurface.current
-    );
-    // Shaped here and not in the beam's own frame callback: that one runs
-    // before this, so it would draw the beam with last frame's length on this
-    // frame's head, and its end would trail its pool as the head moves.
-    // It ends as wide as its pool, measured from where the light sits (the
-    // lens), and on the surface the pool is on.
-    const coneRad = THREE.MathUtils.degToRad(finalSpotAngleDeg);
-    shapeBeam(
-      beamMaterial,
-      mouth,
-      reach,
-      poolRadius(reach - lightDepth, coneRad),
-      beamSurface.current
-    );
-    // The pool where it lands: a decal (FloorPools.tsx), from the same numbers.
-    writePoolSlot(
-      pools.current,
-      fixtureIndex,
-      effectiveIntensity,
-      s.r,
-      s.g,
-      s.b,
-      fixture.position_x,
-      sourceY,
-      fixture.position_z,
-      pointing,
-      reach,
-      lightDepth,
-      coneRad,
-      beamSurface.current
-    );
-
-    if (!debug) return;
-    const strobeChannel = beam.strobeSource === 'none' ? undefined : channelMap[beam.strobeSource];
-    debugBuffer.current[fixture.id] = {
-      fixtureId: fixture.id,
-      fixtureLabel: fixture.name || fixture.fixture?.model || `Fixture ${fixture.id}`,
-      targetPanDeg,
-      targetTiltDeg,
-      currentPanDeg,
-      currentTiltDeg,
-      panVelocityDegPerSec,
-      tiltVelocityDegPerSec,
-      signalConfidence,
-      hold,
-      strobeLogical: strobe,
-      strobeChannelValue: beam.strobeValue,
-      strobeChannelIndex: strobeChannel === undefined ? undefined : strobeChannel + 1,
-      strobeSource: beam.strobeSource,
-      shutter: beam.shutter,
-      zoomLogical: zoom,
-      zoomChannelValue: beam.zoomValue,
-      zoomChannelIndex: beam.zoomSource === 'zoom' ? channelMap.zoom + 1 : undefined,
-      zoomSource: beam.zoomSource,
-      finalIntensity: effectiveIntensity,
-      finalSpotAngleDeg,
-      capabilityWarnings: [
-        beam.strobeSource === 'none' ? 'no strobe or shutter channel' : '',
-        beam.zoomSource === 'fallback' ? 'no zoom channel or beam angle' : '',
-        profile.invert.pan ? 'pan inverted' : '',
-        profile.invert.tilt ? 'tilt inverted' : '',
-      ].filter(Boolean),
-      motionSource: beam.hasSignal ? 'output frame' : 'no frame',
-    };
-  });
-
-  return (
-    <group
-      ref={groupRef}
-      position={[fixture.position_x, fixture.position_y + standLift, fixture.position_z]}
-      rotation={[0, bodyYawRad, 0]}
-    >
-      {/* What holds it up: base or bracket, and the reach to truss, wall or floor */}
-      <FixtureSupport kind={modelKind} mount={mount} bodyYaw={bodyYawRad} />
-
-      {/* How the rig says it is hung, beyond its yaw: on its side, leaning.
-          The support above stays upright; the yoke, head and beam take it. */}
-      <group rotation={hangRotation}>
-      {/* Yoke arms: turn with pan, beside the head rather than around it */}
-      {isMovingHead && (
-        <FixtureYoke ref={yokeRef} kind={modelKind} standing={mount.type === 'stand'} />
-      )}
-
-      {/* Head group (rotates for moving heads). It sits on the fixture's own
-          position, so the beam starts where the rig says the fixture is. */}
-      <group ref={headRef}>
-        {/* Which way the fixture faces: down, or up for a fixed-body fixture
-            standing on the floor. One turn for the housing, the beam and the
-            spot light, so the three cannot point apart. The housing used to be
-            turned on its own and the light went on shining into the floor. */}
-        <group rotation={lensUp ? FACING_UP : FACING_DOWN}>
-          {/* Housing and the lit lens; the lens material is driven in useFrame */}
-          <FixtureHead kind={modelKind} lensRef={lensRef} />
-
-          {/* The beam, from the lit face to where it lands. Always mounted
-              and shown or hidden in the frame loop. Not culled by three: the
-              tube is shaped in the shader, so its own bounds (a unit
-              cylinder) say nothing about where the beam is on screen. */}
-          <mesh
-            ref={beamRef}
-            geometry={beamTube(beamSegments)}
-            material={beamMaterial}
-            position={beamPosition}
-            visible={false}
-            frustumCulled={false}
-            dispose={null}
-          />
-        </group>
-      </group>
-      </group>
-
-      {/* Fixture ID label for quick patch/debug identification */}
-      {showLabel && (
-        <Html
-          position={[0, 0.55, 0]}
-          center
-          occlude={false}
-          distanceFactor={12}
-          style={{ pointerEvents: 'none' }}
-        >
-          <div
-            style={{
-              padding: '2px 6px',
-              borderRadius: 4,
-              background: 'rgba(0,0,0,0.65)',
-              color: '#f0f4ff',
-              fontSize: '10px',
-              fontFamily: 'Consolas, monospace',
-              lineHeight: 1.1,
-              whiteSpace: 'nowrap',
-              border: '1px solid rgba(255,255,255,0.2)',
-            }}
-          >
-            {fixture.id}
-          </div>
-        </Html>
-      )}
-    </group>
-  );
-});
 
 // ============================================================================
 // BARE STAGE FLOOR (shown when the venue is hidden)
@@ -816,21 +248,6 @@ function HazeParticles({ count, spread }: { count: number; spread: [number, numb
   );
 }
 
-// Draws the pools the fixtures wrote this frame. Mounted after them, so its
-// frame callback runs after theirs.
-function PoolsDriver({
-  renderer,
-  pools,
-}: {
-  renderer: MutableRefObject<PoolRenderer>;
-  pools: MutableRefObject<PoolBuffer>;
-}) {
-  useFrame(() => {
-    updatePools(renderer.current, pools.current, pools.current.capacity);
-  });
-  return null;
-}
-
 function AtmosphereLayers({ width, depth, height }: { width: number; depth: number; height: number }) {
   const layers = [0.22, 0.45, 0.66, 0.84];
   return (
@@ -911,13 +328,7 @@ function Scene({
     if (qualityMode === 'ultra') return { hazeCount: 360, beamSegments: 24, crowdCount: 320 };
     return { hazeCount: 220, beamSegments: 16, crowdCount: 180 };
   }, [qualityMode]);
-
-  // Every fixture's floor pool, one slot each, written in the frame loop and
-  // drawn as decals in one draw (FloorPools.tsx). Sized to the rig.
-  const fixtureCount = rig.fixtures?.length ?? 0;
-  const pools = useRef<PoolBuffer>(createPoolBuffer(fixtureCount));
-  if (pools.current.capacity !== fixtureCount) pools.current = createPoolBuffer(fixtureCount);
-  const poolRenderer = useRef<PoolRenderer>(emptyPoolRenderer());
+  const rigFixtures = useMemo(() => rig.fixtures ?? [], [rig.fixtures]);
 
   // The room, the truss and how each fixture is mounted all come from one
   // layout, so they agree with each other and with the cameras.
@@ -1146,28 +557,21 @@ function Scene({
       />
 
       {/* Fixtures */}
-      {rig.fixtures?.map((fixture, index) => (
-        <Fixture3D
-          key={fixture.id}
-          fixture={fixture}
-          feed={feed}
-          fixtureIndex={index}
-          pools={pools}
-          beamSegments={quality.beamSegments}
-          mount={venue.mounts.get(fixture.id) ?? DEFAULT_MOUNT}
-          room={room}
-          longestThrow={longestThrow}
-          showLabel={showLabels}
-          debugBuffer={debugBuffer}
-          debug={debug}
-        />
-      ))}
-
-      {/* The pools where the beams land; with Shadows on, the brightest few
-          get a real shadow-casting light instead. Driven after the fixtures
-          have written this frame's pools. */}
-      <FloorPools capacity={fixtureCount} realLights={shadows} renderer={poolRenderer} />
-      <PoolsDriver renderer={poolRenderer} pools={pools} />
+      {/* Every fixture: bodies, beams and floor pools as instanced draws,
+          moved by one frame callback (FixtureRig.tsx). With Shadows on, the
+          brightest few beams get a real shadow-casting light. */}
+      <FixtureRig
+        fixtures={rigFixtures}
+        mounts={venue.mounts}
+        feed={feed}
+        room={room}
+        longestThrow={longestThrow}
+        beamSegments={quality.beamSegments}
+        shadows={shadows}
+        showLabels={showLabels}
+        debug={debug}
+        debugBuffer={debugBuffer}
+      />
 
       {/* Positions that are a guess, marked as one */}
       <GuessMarkers points={guesses} />

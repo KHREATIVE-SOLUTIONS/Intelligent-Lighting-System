@@ -144,6 +144,108 @@ export function createBeamMaterial(): THREE.ShaderMaterial {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Every beam in one draw (docs/PREVIZ_PERFORMANCE.md)
+//
+// The same tube and the same shaping as above, with the six uniforms turned
+// into per-instance attributes so all of a rig's beams are one InstancedMesh.
+// ---------------------------------------------------------------------------
+
+/** Per-instance attribute names, and how many floats each takes. */
+export const BEAM_INSTANCE_ATTRIBUTES = {
+  beamShape: 4, // near half-width, near half-depth, far half-width, far half-depth
+  beamSurface: 4,
+  beamPaint: 4, // r, g, b, intensity
+  beamLength: 1,
+} as const;
+
+export const INSTANCED_BEAM_VERTEX_SHADER = `
+  attribute vec4 beamShape;
+  attribute vec4 beamSurface;
+  attribute vec4 beamPaint;
+  attribute float beamLength;
+  varying vec4 vBeamPaint;
+  void main() {
+    mat4 placeMatrix = modelMatrix;
+    #ifdef USE_INSTANCING
+      placeMatrix = modelMatrix * instanceMatrix;
+    #endif
+    vBeamPaint = beamPaint;
+    vec4 place = placeMatrix * vec4(position.x * beamShape.x, 0.0, position.z * beamShape.y, 1.0);
+    if (position.y < -0.5) {
+      vec4 flatEnd = placeMatrix * vec4(position.x * beamShape.z, -beamLength, position.z * beamShape.w, 1.0);
+      vec3 edge = flatEnd.xyz - place.xyz;
+      float closing = dot(beamSurface.xyz, edge);
+      float share = 1.0;
+      if (abs(closing) > 0.000001) {
+        float meets = (beamSurface.w - dot(beamSurface.xyz, place.xyz)) / closing;
+        if (meets > 0.0) share = clamp(meets, ${BEAM_EDGE_SHORTEST.toFixed(2)}, ${BEAM_EDGE_LONGEST.toFixed(2)});
+      }
+      place.xyz += edge * share;
+    }
+    gl_Position = projectionMatrix * viewMatrix * place;
+  }
+`;
+
+export const INSTANCED_BEAM_FRAGMENT_SHADER = `
+  varying vec4 vBeamPaint;
+  void main() {
+    gl_FragColor = vec4(vBeamPaint.rgb, vBeamPaint.a * 0.42);
+  }
+`;
+
+/** The material every beam of a rig is drawn with, in one instanced draw. */
+export function createInstancedBeamMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: INSTANCED_BEAM_VERTEX_SHADER,
+    fragmentShader: INSTANCED_BEAM_FRAGMENT_SHADER,
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+}
+
+/** The typed arrays one instanced beam mesh draws from. */
+export type BeamInstanceArrays = {
+  shape: Float32Array;
+  surface: Float32Array;
+  paint: Float32Array;
+  length: Float32Array;
+};
+
+/**
+ * Write one beam's shape and paint at instance `i`: the same numbers
+ * `shapeBeam` gives the uniforms, plus its colour and intensity.
+ */
+export function packBeamInstance(
+  out: BeamInstanceArrays,
+  i: number,
+  mouth: BeamMouth,
+  landing: number,
+  endRadius: number,
+  surface: BeamSurface,
+  r: number,
+  g: number,
+  b: number,
+  intensity: number,
+): void {
+  const k = i * 4;
+  out.shape[k] = mouth.halfX;
+  out.shape[k + 1] = mouth.halfZ;
+  out.shape[k + 2] = Math.max(mouth.halfX, endRadius);
+  out.shape[k + 3] = Math.max(mouth.halfZ, endRadius);
+  out.surface[k] = surface.x;
+  out.surface[k + 1] = surface.y;
+  out.surface[k + 2] = surface.z;
+  out.surface[k + 3] = surface.d;
+  out.paint[k] = r;
+  out.paint[k + 1] = g;
+  out.paint[k + 2] = b;
+  out.paint[k + 3] = intensity;
+  out.length[i] = beamLengthFrom(mouth, landing);
+}
+
 /**
  * Give a beam its shape for this frame: from `mouth` to where the beam lands,
  * `landing` being the distance from the light source, ending as wide as the
