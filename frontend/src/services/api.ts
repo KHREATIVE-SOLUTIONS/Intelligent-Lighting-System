@@ -225,6 +225,10 @@ export const cuesApi = {
 };
 
 // Rigs API
+/** The route that draws one rig fixture's label QR (its token included). */
+const rigFixtureQrPath = (rigId: number, rigFixtureId: number): string =>
+  `/rigs/${rigId}/fixtures/${rigFixtureId}/qr-code`;
+
 export const rigsApi = {
   list: async (page = 1, size = 20, search?: string): Promise<PaginatedResponse<Rig>> => {
     const params = new URLSearchParams({ page: String(page), size: String(size) });
@@ -387,14 +391,14 @@ export const rigsApi = {
 
   /** The route that draws one rig fixture's label QR (its token included) as a PNG. */
   rigFixtureQrPath: (rigId: number, rigFixtureId: number): string =>
-    `/rigs/${rigId}/fixtures/${rigFixtureId}/qr-code`,
+    rigFixtureQrPath(rigId, rigFixtureId),
 
   /**
    * One rig fixture's label QR as a PNG blob. Fetched through this client, not
    * an <img src>, because every /api GET needs the operator's token.
    */
   rigFixtureQrPng: async (rigId: number, rigFixtureId: number, size = 300): Promise<Blob> => {
-    const response = await api.get(rigsApi.rigFixtureQrPath(rigId, rigFixtureId), {
+    const response = await api.get(rigFixtureQrPath(rigId, rigFixtureId), {
       params: { size },
       responseType: 'blob',
     });

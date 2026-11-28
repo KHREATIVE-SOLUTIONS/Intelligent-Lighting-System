@@ -58,8 +58,16 @@ describe('RigFixtureQrDialog', () => {
 
     rerender(<RigFixtureQrDialog rigId={7} fixture={null} onClose={onClose} />);
     await flush();
-    expect(revokeObjectURL).toHaveBeenCalledWith(BLOB_URL);
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // Kept while closed (the fade shows it), freed when the dialog goes.
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    cleanup();
+    expect(revokeObjectURL).toHaveBeenCalledWith(BLOB_URL);
+  });
+
+  it('asks for the backend route of that rig fixture', async () => {
+    const actual = await vi.importActual<typeof import('../services/api')>('../services/api');
+    expect(actual.rigsApi.rigFixtureQrPath(7, 12)).toBe('/rigs/7/fixtures/12/qr-code');
   });
 
   it('says so when the PNG cannot be loaded', async () => {

@@ -27,7 +27,14 @@ interface RigFixtureQrDialogProps {
 export default function RigFixtureQrDialog({ rigId, fixture, onClose }: RigFixtureQrDialogProps) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const fixtureId = fixture?.id ?? null;
+  // Kept through the close so the fading dialog still shows the code, its
+  // title and its file name; the image is freed when the next fixture opens
+  // or the dialog unmounts.
+  const [shown, setShown] = useState(fixture);
+  useEffect(() => {
+    if (fixture) setShown(fixture);
+  }, [fixture]);
+  const fixtureId = (fixture ?? shown)?.id ?? null;
 
   useEffect(() => {
     if (fixtureId === null) return undefined;
@@ -51,7 +58,7 @@ export default function RigFixtureQrDialog({ rigId, fixture, onClose }: RigFixtu
     };
   }, [rigId, fixtureId]);
 
-  const label = fixture?.name || (fixtureId !== null ? `Fixture ${fixtureId}` : '');
+  const label = (fixture ?? shown)?.name || (fixtureId !== null ? `Fixture ${fixtureId}` : '');
   const filename = `rig_${rigId}_fixture_${fixtureId}_qr.png`;
 
   return (
