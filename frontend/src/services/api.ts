@@ -24,6 +24,7 @@ import type {
   ProLightingState,
 } from '../types';
 import type { BoxHealthPayload, DmxStatusPayload } from '../utils/showHealth';
+import { announceRigChange, rigChangedBy } from '../utils/focusTargetsSync';
 import {
   consoleExportPath,
   consoleSummaryPath,
@@ -88,6 +89,9 @@ api.interceptors.response.use(
     if (typeof reissued === 'string' && reissued) {
       useAuthStore.getState().setSession(reissued);
     }
+    // A rig written: whatever shows who can reach a focus target reads it again.
+    const changed = rigChangedBy(response.config?.method, response.config?.url);
+    if (changed !== null) announceRigChange(changed);
     return response;
   },
   (error) => {

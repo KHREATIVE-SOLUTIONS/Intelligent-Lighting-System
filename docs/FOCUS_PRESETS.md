@@ -5,15 +5,19 @@ the rig and the points the room gives to aim at, and written into the grandMA2
 script and the handoff pack. The point is to walk into a venue with the focus
 already roughed in, then touch each preset up in the room.
 
-**Status:** backend, a Focus presets panel and target markers in the 3D view
+**Status:** backend, a Focus presets panel with each head's pan, tilt and DMX,
+target markers in the 3D view, and a visual-only preview of a preset there
 (see [In the app](#in-the-app)). The maths is checked against the 3D view's
 beam drawing and covered by tests. No preset has been loaded onto a desk, and
 nothing has been focused in a real room with these values.
 
 ## Computing is read-only
 
-Nothing here sends DMX or moves a light. There is no preview route: a preview
-would have to go through the output stage like any other look. The only write
+Nothing here sends DMX or moves a light. There is no preview route. The
+preview in the app is drawn in the 3D view only, from the table below; it
+never goes through the output stage, the engine or Art-Net, so a real head
+does not move. Putting a real head on a target would have to go through the
+output stage like any other look, and is not built. The only write
 is adding or removing a custom target, which touches `rigs.focus_targets` and
 nothing else (the rig's `updated_at` is left as it was).
 
@@ -27,6 +31,14 @@ nothing else (the rig's `updated_at` is left as it was).
 | DELETE | `/api/rigs/{id}/focus-presets/targets/{target_id}` | Remove one. 404 if the rig has no such target |
 
 An unknown rig is a 404 on every route.
+
+In the JSON each target has `fixtures`, one row per moving head: `fixture_id`
+(the console number), `rig_fixture_id` (the rig fixture row's own id, which
+the 3D view draws the head by; the console number is given out again when two
+fixtures share one or one has none), `name`, `mount`, `reachable`, `reason`,
+`pan_deg`, `tilt_deg`, `pan_attr_deg`, `tilt_attr_deg`, `pan_dmx`,
+`pan_fine_dmx`, `tilt_dmx`, `tilt_fine_dmx` and `throw_m`. The CSV has no
+`rig_fixture_id` column.
 
 The presets also go into:
 
@@ -100,9 +112,55 @@ for a database rig only; a demo preset has no room to aim in.
   under its field; a refusal from the server is shown in its own words.
 - **Remove** is on custom targets only, and asks first. The presets after it
   move up one slot in the next script and pack.
+- **Show pan, tilt and DMX for each head** opens a table under the target:
+  each head's number and name (with hung or standing, and 8 or 16 bit), pan
+  and tilt in degrees from the centre of the travel (physical, before invert
+  and swap, one decimal), and pan and tilt DMX as the API gives them: one
+  number on an 8-bit axis, `coarse / fine` on a 16-bit one, after invert and
+  swap. A head that cannot reach shows dashes and its reason. Click Fixture
+  to sort by fixture number, up or down. The same values as the CSV.
+- **Preview** (on every target with heads to aim) aims the heads in the 3D
+  view; see below. It is offered while a 3D view shows the same rig (open it,
+  then use Export there); otherwise it is greyed out and says so. While one is
+  previewed, its button reads **Stop preview**, and a line at the top of the
+  panel names it with its own Stop preview.
 - **Download CSV** fetches `focus-presets.csv` (the one in the handoff pack)
   through the app's client, so it carries the operator's token.
 - Nothing in the panel moves a light or sends DMX.
+
+**The reach follows the rig.** Every rig write the app's client makes and the
+server accepts (a fixture dragged in the 2D plan or the 3D view, turned,
+retagged, added or removed, a rig saved, the room edited, a scan applied) is
+announced, in this tab and in others (`announceRigChange` in
+`utils/focusTargetsSync.ts`, from the client's response handler in
+`services/api.ts`). The panel and the 3D markers read the table again 400 ms
+after the last one, so a drag's run of saves is one read, and the reach
+colours change without turning the markers off and on. Lighting a fixture to
+find it, the identify session's keep-alive, the focus targets' own writes and
+the stage plot are not counted.
+
+**Previewing a preset in the 3D view.** Preview on a target and every moving
+head that can reach it is drawn aimed at it, lit white, using the pan and
+tilt the table gives. A head that cannot reach stays at home (pan and tilt at
+centre) and dark, and is listed over the view with its reason, under a line
+such as "Previewing DJ booth: 2 heads aimed at it. In the 3D view only;
+nothing is sent to the lights." with Stop preview. Other fixtures carry on as
+the engine's frames draw them.
+
+- **Visual only.** The aim is drawn over what the view read from the engine's
+  frame for that head, in the frame loop, and written nowhere: no DMX, no
+  Art-Net, no engine call. The lights in the room do not move.
+- Previewing a second target switches to it. The preview stops with Stop
+  preview, when the 3D view leaves the rig (another rig or another page), and
+  when the target is removed or can no longer be placed. Closing the export
+  dialog does not stop it: that is how you see it.
+- A moved fixture moves the preview too: it reads the same table.
+- **Standing heads.** The 3D view draws every moving head hung, so a standing
+  head's angles are turned into the hung head's that point its beam the same
+  way (pan 180 - p, tilt +-180 - t). A standing head aimed within 45 degrees
+  of the ceiling cannot be drawn that way and stays at home, listed.
+- Heads are found by `rig_fixture_id`. A row the view has no fixture for is
+  listed ("it is not in the 3D view"), never put on another head.
 
 **In the 3D view**, "Show focus targets in 3D" (next to "Show stage plot in
 3D") puts a small marker at each target. It is off until turned on, and the
@@ -126,10 +184,15 @@ choice is kept per rig in the browser (`localStorage`,
 
 Code: `frontend/src/utils/focusPresets.ts` (reading the table, checking a
 typed target, the sentences, the marker look),
+`utils/focusPreview.ts` (the preview's aims, pure), `utils/focusTargetsSync.ts`
+(target and rig change announcements), `stores/focusPreviewStore.ts` (which
+target is previewed, and which rig a 3D view shows),
 `components/rig/useFocusPresets.ts`, `components/rig/FocusPresetsPanel.tsx`,
-`components/rig/previs/FocusTargetMarkers.tsx`, `useFocusTargets3d.ts` and
-`FocusTargets3dToggle.tsx`. Tests: `focusPresets.test.ts`,
-`FocusPresetsPanel.test.tsx` and `FocusTargets3d.test.tsx` in
+`components/rig/previs/FocusTargetMarkers.tsx`, `useFocusTargets3d.ts`,
+`FocusTargets3dToggle.tsx` and `FocusPreviewNotice.tsx`; the frame loop in
+`RigVisualizer.tsx` (`previewAims`). Tests: `focusPresets.test.ts`,
+`FocusPresetsPanel.test.tsx`, `FocusTargets3d.test.tsx`,
+`focusPreview.test.ts` and `FocusPresetsPreview.test.tsx` in
 `frontend/src/__tests__`.
 
 ## The maths, in short
@@ -211,6 +274,9 @@ reason and the head columns blank.
 - `backend/tests/unit/test_focus_presets_table.py`: default and custom
   targets, which rows are movers and how their tags are read, the CSV, the
   MA2 presets, and row order not changing the bytes.
+- `backend/tests/unit/test_focus_presets_rig_fixture_id.py`: every head's row
+  names its rig fixture, also when its console number was given out again,
+  and the CSV has no new column.
 - `backend/tests/integration/test_api_focus_presets.py`: the routes and their
   404s and 422s, reading changes nothing, adding a target writes only
   `focus_targets`, the `ma2-macro` export and the handoff pack.
@@ -218,12 +284,18 @@ reason and the head columns blank.
 ## What is left
 
 - Not loaded onto a grandMA2 and not focused in a real room.
-- No preview of a preset: the panel shows the table but cannot put a head on
-  a target (that would have to go through the output stage).
-- The panel shows reach, not each head's pan, tilt and DMX values; those are
-  in the CSV.
-- The 3D markers' reach look is read when they are turned on and after a
-  target is added or removed. A fixture moved in the 3D view does not read it
-  again; turn the markers off and on, or reopen the view.
+- The preview is in the 3D view only. Putting a real head on a target (a
+  live preview through the output stage, with the operator's say-so) is not
+  built.
+- The preview draws a standing head on the view's hung head; one aimed near
+  the ceiling is left at home. The view does not yet stand a mover on its
+  base.
+- The frontend tests for this work (`focusPreview.test.ts`,
+  `FocusPresetsPreview.test.tsx`) were written in a worktree with no
+  `node_modules` and have not been run yet; run them, and `npx tsc --noEmit`,
+  before merging. The backend test was run.
+- A rig write made outside the app's client (a script against the API, the
+  database edited, and the QR scanner's `/rigs/{id}/scan`, which posts with
+  bare axios) is not announced; reopen the panel or the view.
 - Mount is guessed from height when not tagged; there is no column for it.
 - grandMA3 is not targeted.
