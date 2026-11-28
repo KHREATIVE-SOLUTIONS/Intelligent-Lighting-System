@@ -21,7 +21,8 @@ import {
 import { audioApi, demoApi, readinessApi } from '../../services/api';
 import { focusPresetsApi } from '../../services/focusPresetsApi';
 import { useHealthStore } from '../../stores/healthStore';
-import { outputVerifiablyIdle, planDemoReady, runDemoReadyPlan } from '../../utils/demoReady';
+import { compareDemoPlans, errorText, outputVerifiablyIdle, planDemoReady, runDemoReadyPlan } from '../../utils/demoReady';
+import { FIX_AUTO_GROUPS } from '../../utils/readiness';
 import type { DemoActionResult, DemoOutcome, DemoReadyAudio, DemoReadyPlan } from '../../utils/demoReady';
 import { readAudioHealth, readDmxHealth } from '../../utils/showHealth';
 import {
@@ -81,11 +82,18 @@ const STATUS_TEXT: Record<VenueStepStatus, string> = {
 
 type SubDialog = 'focus' | 'export' | 'audio' | null;
 
-/** Get demo-ready: reading the box, the plan shown, then its results as they come in. */
+/**
+ * Get demo-ready: reading the box, the plan shown (with what changed when the
+ * confirm-time re-read found a different plan), reading it again on confirm,
+ * then its results as they come in.
+ */
 type DemoState =
   | { step: 'planning' }
-  | { step: 'plan'; plan: DemoReadyPlan }
+  | { step: 'plan' | 'checking'; plan: DemoReadyPlan; changes?: string[] }
   | { step: 'running' | 'done'; plan: DemoReadyPlan; results: DemoActionResult[] };
+
+/** Undo for a Make groups this run applied. */
+type DemoUndo = { state: 'running' } | { state: 'done' | 'failed' | 'other'; message: string } | null;
 
 const OUTCOME_TEXT: Record<DemoOutcome, string> = { done: 'Done', skipped: 'Skipped', failed: 'Failed' };
 
@@ -190,38 +198,86 @@ export default function VenueSetupChecklist({
   };
 
   const [demo, setDemo] = useState<DemoState | null>(null);
+  const [undo, setUndo] = useState<DemoUndo>(null);
 
-  // Get demo-ready, step one: read the box (readiness and audio, nothing
-  // written) and show the plan. Nothing runs until the operator confirms.
-  const planDemo = async () => {
-    setDemo({ step: 'planning' });
+  const closeDemo = () => {
+    setDemo(null);
+    setUndo(null);
+  };
+
+  // Reads the box (readiness and audio, nothing written) and plans from it.
+  // Output and the demo flag come from the health store's latest reading at
+  // the time of the call, not from this render, so the confirm-time re-read
+  // sees whatever the poller has seen since the plan was shown.
+  const readPlan = async (): Promise<DemoReadyPlan> => {
     const [report, status, devices] = await Promise.allSettled([
       rigId !== null ? readinessApi.get(rigId) : Promise.resolve(null),
       audioApi.getCaptureStatus(),
       audioApi.getCaptureDevices(),
     ]);
+    const health = useHealthStore.getState();
     let audio: DemoReadyAudio | null = null;
     if (status.status === 'fulfilled' && devices.status === 'fulfilled') {
       audio = {
         // A feed sent to the box counts as heard, as the status bar reads it.
-        running: !!status.value.running || box?.services?.audio_input === 'live',
+        running: !!status.value.running || health.box?.services?.audio_input === 'live',
         ...sortCaptureDevices(devices.value),
         remembered: { name: status.value.remembered_device, hostapi: status.value.remembered_hostapi },
         browserName: readLastDevice(),
       };
     }
-    const plan = planDemoReady({
+    return planDemoReady({
       rig,
-      demoRunning: effects?.live_rig_demo ?? null,
-      outputIdle: outputVerifiablyIdle(dmx, reachable, box),
+      demoRunning: health.effects?.live_rig_demo ?? null,
+      outputIdle: outputVerifiablyIdle(health.dmx, health.reachable, health.box),
       readiness: report.status === 'fulfilled' ? report.value : null,
       audio,
     });
+  };
+
+  // Get demo-ready, step one: show the plan. Nothing runs until the operator confirms.
+  const planDemo = async () => {
+    setUndo(null);
+    setDemo({ step: 'planning' });
+    const plan = await readPlan();
     // Closed while reading: stay closed.
     setDemo((current) => (current?.step === 'planning' ? { step: 'plan', plan } : current));
   };
 
-  // Step two, on confirm: each action in turn, a line for each, then read the statuses again.
+  // Step two, on confirm: read everything again. If the plan is not the one
+  // shown (output went live, a device or a check changed, a read failed),
+  // nothing runs: the new plan is shown with what changed, to confirm again.
+  const confirmDemo = async (shown: DemoReadyPlan) => {
+    setDemo({ step: 'checking', plan: shown });
+    const fresh = await readPlan();
+    const changes = compareDemoPlans(shown, fresh);
+    if (changes.changed) {
+      setDemo({ step: 'plan', plan: fresh, changes: changes.lines });
+      return;
+    }
+    await runDemo(fresh);
+  };
+
+  // Undo a Make groups this run applied: the rig's undo record takes it back.
+  const undoGroups = async () => {
+    if (rigId === null) return;
+    setUndo({ state: 'running' });
+    try {
+      const result = await readinessApi.undoFix(rigId);
+      // The rig keeps one undo: a fix made since the run replaces it.
+      const other = result.fix === null
+        ? `Nothing was undone: the rig had no fix to take back. ${result.message}`
+        : `The rig's last fix was not Make groups: "${result.fix}" was taken back instead. ${result.message}`;
+      setUndo(result.fix === FIX_AUTO_GROUPS
+        ? { state: 'done', message: `Undone. ${result.message}` }
+        : { state: 'other', message: other });
+    } catch (e) {
+      setUndo({ state: 'failed', message: errorText(e) });
+    }
+    setRefresh((n) => n + 1);
+  };
+
+  // Each action in turn, a line for each, then read the statuses again.
   const runDemo = async (plan: DemoReadyPlan) => {
     const results: DemoActionResult[] = [];
     setDemo({ step: 'running', plan, results });
@@ -337,20 +393,35 @@ export default function VenueSetupChecklist({
 
       <Dialog
         open={demo !== null}
-        onClose={() => { if (demo?.step !== 'running') setDemo(null); }}
+        onClose={() => { if (demo?.step !== 'running' && demo?.step !== 'checking') closeDemo(); }}
         maxWidth="sm"
         fullWidth
         data-testid="demo-ready-dialog"
       >
         <DialogTitle>Get demo-ready</DialogTitle>
-        {(demo?.step === 'planning' || demo?.step === 'running') && <LinearProgress />}
+        {(demo?.step === 'planning' || demo?.step === 'checking' || demo?.step === 'running') && <LinearProgress />}
         <DialogContent dividers>
           {demo?.step === 'planning' && (
             <Typography variant="body2">Reading the readiness checks and the audio inputs. Nothing is changed.</Typography>
           )}
           {demo && demo.step !== 'planning' && (
             <Box component="div" sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-              {demo.step === 'plan' ? (
+              {demo.step === 'checking' && (
+                <Typography variant="body2" data-testid="demo-ready-checking">
+                  Reading the output, readiness and audio again before anything runs.
+                </Typography>
+              )}
+              {(demo.step === 'plan' || demo.step === 'checking') && demo.changes && demo.changes.length > 0 && (
+                <Box component="div" data-testid="demo-ready-changes">
+                  <Typography variant="subtitle2" color="warning.main">
+                    Nothing ran: the box changed since the plan was shown. This is the new plan; confirm it to run it.
+                  </Typography>
+                  {demo.changes.map((line) => (
+                    <Typography key={line} variant="body2">{line}</Typography>
+                  ))}
+                </Box>
+              )}
+              {demo.step === 'plan' || demo.step === 'checking' ? (
                 <Box component="div" data-testid="demo-ready-plan">
                   <Typography variant="subtitle2">
                     {demo.plan.actions.length > 0 ? 'It will, in this order:' : 'Nothing to do by itself: everything it could do is done.'}
@@ -373,6 +444,34 @@ export default function VenueSetupChecklist({
                       data-outcome={r.outcome}
                     >
                       {r.label}: {OUTCOME_TEXT[r.outcome]}. {r.message}
+                      {/* Undo only for a Make groups this run applied, once the run is over. */}
+                      {demo.step === 'done' && r.kind === 'makeGroups' && r.outcome === 'done' && rigId !== null && (
+                        <>
+                          {(undo === null || undo.state === 'running' || undo.state === 'failed') && (
+                            <Button
+                              size="small"
+                              sx={{ ml: 1 }}
+                              data-testid="demo-ready-undo-groups"
+                              disabled={undo?.state === 'running'}
+                              onClick={() => { void undoGroups(); }}
+                            >
+                              Undo
+                            </Button>
+                          )}
+                          {undo && undo.state !== 'running' && (
+                            <Typography
+                              component="span"
+                              variant="body2"
+                              display="block"
+                              color={undo.state === 'done' ? 'success.main' : 'error'}
+                              data-testid="demo-ready-undo-result"
+                              data-state={undo.state}
+                            >
+                              {undo.message}
+                            </Typography>
+                          )}
+                        </>
+                      )}
                     </Typography>
                   ))}
                 </Box>
@@ -399,19 +498,19 @@ export default function VenueSetupChecklist({
         <DialogActions>
           {demo?.step === 'plan' && (
             <>
-              <Button onClick={() => setDemo(null)}>Cancel</Button>
+              <Button onClick={closeDemo}>Cancel</Button>
               <Button
                 variant="contained"
                 data-testid="demo-ready-confirm"
                 disabled={demo.plan.actions.length === 0}
-                onClick={() => { void runDemo(demo.plan); }}
+                onClick={() => { void confirmDemo(demo.plan); }}
               >
                 Do {demo.plan.actions.length === 1 ? 'it' : `these ${demo.plan.actions.length}`}
               </Button>
             </>
           )}
           {(demo?.step === 'done' || demo?.step === 'planning') && (
-            <Button data-testid="demo-ready-close" onClick={() => setDemo(null)}>Close</Button>
+            <Button data-testid="demo-ready-close" disabled={undo?.state === 'running'} onClick={closeDemo}>Close</Button>
           )}
         </DialogActions>
       </Dialog>

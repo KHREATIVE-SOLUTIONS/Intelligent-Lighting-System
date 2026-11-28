@@ -119,8 +119,9 @@ describe('Get demo-ready', () => {
     expect(demo.applyPreset).toHaveBeenCalledWith('liv_miami_approx');
     expect(readiness.autoGroups).toHaveBeenCalledWith(1);
     expect(audio.startCapture).toHaveBeenCalledWith(7);
-    // The run reads once each, then the checklist's refresh reads both again.
-    await waitFor(() => expect(readiness.get.mock.calls.length).toBe(readsBefore + 2));
+    // Readiness is read again at confirm (the re-check), once by the run, and
+    // once more by the checklist's refresh; focus once by the run and once by the refresh.
+    await waitFor(() => expect(readiness.get.mock.calls.length).toBe(readsBefore + 3));
     expect(focus.get.mock.calls.length).toBe(focusBefore + 2);
     // Never puts a rig on the show or touches output.
     expect(rigs.activate).not.toHaveBeenCalled();
@@ -155,5 +156,85 @@ describe('Get demo-ready', () => {
     await waitFor(() => expect(screen.getByTestId('demo-ready-close')).toBeTruthy());
     expect(demo.applyPreset).not.toHaveBeenCalled();
     expect(screen.getByTestId('demo-ready-result-audioInput').getAttribute('data-outcome')).toBe('done');
+  });
+
+  it('re-reads on confirm and, when the plan changed, runs nothing and shows the new plan to confirm', async () => {
+    await openPlan(EMPTY_RIG);
+    expect(screen.getByTestId('demo-ready-action-loadDemo')).toBeTruthy();
+    // Output goes live between showing the plan and confirming it.
+    act(() => {
+      useHealthStore.setState({
+        reachable: true,
+        dmx: { status: 'running', connected: true, transmitting: true, fps: 40, target_ip: '2.0.0.10' },
+        box: null,
+      });
+    });
+    fireEvent.click(screen.getByTestId('demo-ready-confirm'));
+    await waitFor(() => expect(screen.getByTestId('demo-ready-changes')).toBeTruthy());
+
+    expect(demo.applyPreset).not.toHaveBeenCalled();
+    expect(readiness.autoGroups).not.toHaveBeenCalled();
+    expect(audio.startCapture).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('demo-ready-results')).toBeNull();
+    const changes = screen.getByTestId('demo-ready-changes').textContent ?? '';
+    expect(changes).toMatch(/Nothing ran/);
+    expect(changes).toMatch(/No longer does: Load the LIV Miami/);
+    expect(changes).toMatch(/Now left to you: Load the LIV Miami/);
+    expect(screen.queryByTestId('demo-ready-action-loadDemo')).toBeNull();
+    expect(screen.getByTestId('demo-ready-manual-loadDemo')).toBeTruthy();
+
+    // Confirming the new plan runs it, without the demo.
+    fireEvent.click(screen.getByTestId('demo-ready-confirm'));
+    await waitFor(() => expect(screen.getByTestId('demo-ready-close')).toBeTruthy());
+    expect(demo.applyPreset).not.toHaveBeenCalled();
+    expect(readiness.autoGroups).toHaveBeenCalledWith(1);
+    expect(audio.startCapture).toHaveBeenCalledWith(7);
+    expect(screen.queryByTestId('demo-ready-result-loadDemo')).toBeNull();
+  });
+
+  it('offers Undo for the Make groups it applied, and shows it undone and reads the statuses again', async () => {
+    readiness.undoFix.mockResolvedValue({ rig_id: 1, fix: 'auto-groups', restored: [], undo: null, message: 'Took back Make groups on 4 fixtures.' });
+    await openPlan(EMPTY_RIG);
+    fireEvent.click(screen.getByTestId('demo-ready-confirm'));
+    await waitFor(() => expect(screen.getByTestId('demo-ready-close')).toBeTruthy());
+    await flush();
+    const readsBefore = readiness.get.mock.calls.length;
+
+    const line = screen.getByTestId('demo-ready-result-makeGroups');
+    fireEvent.click(within(line).getByTestId('demo-ready-undo-groups'));
+    await waitFor(() => expect(screen.getByTestId('demo-ready-undo-result')).toBeTruthy());
+
+    expect(readiness.undoFix).toHaveBeenCalledTimes(1);
+    expect(readiness.undoFix).toHaveBeenCalledWith(1);
+    const result = screen.getByTestId('demo-ready-undo-result');
+    expect(result.getAttribute('data-state')).toBe('done');
+    expect(result.textContent).toMatch(/Undone\. Took back Make groups on 4 fixtures\./);
+    expect(screen.queryByTestId('demo-ready-undo-groups')).toBeNull();
+    await waitFor(() => expect(readiness.get.mock.calls.length).toBe(readsBefore + 1));
+  });
+
+  it('shows the error text when Undo fails and keeps the button', async () => {
+    readiness.undoFix.mockRejectedValue({ response: { status: 409, data: { detail: 'The rig changed since the fix.' } } });
+    await openPlan(EMPTY_RIG);
+    fireEvent.click(screen.getByTestId('demo-ready-confirm'));
+    await waitFor(() => expect(screen.getByTestId('demo-ready-close')).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('demo-ready-undo-groups'));
+    await waitFor(() => expect(screen.getByTestId('demo-ready-undo-result')).toBeTruthy());
+    const result = screen.getByTestId('demo-ready-undo-result');
+    expect(result.getAttribute('data-state')).toBe('failed');
+    expect(result.textContent).toBe('The rig changed since the fix.');
+    expect(screen.getByTestId('demo-ready-undo-groups')).toBeTruthy();
+  });
+
+  it('offers no Undo when Make groups had nothing to group', async () => {
+    readiness.autoGroups.mockResolvedValue({ rig_id: 1, created: [], skipped: [], unplaced_ids: [], changed: [], message: 'Every placed fixture is already in a group.' });
+    await openPlan(EMPTY_RIG);
+    fireEvent.click(screen.getByTestId('demo-ready-confirm'));
+    await waitFor(() => expect(screen.getByTestId('demo-ready-close')).toBeTruthy());
+
+    expect(screen.getByTestId('demo-ready-result-makeGroups').getAttribute('data-outcome')).toBe('skipped');
+    expect(screen.queryByTestId('demo-ready-undo-groups')).toBeNull();
+    expect(readiness.undoFix).not.toHaveBeenCalled();
   });
 });
