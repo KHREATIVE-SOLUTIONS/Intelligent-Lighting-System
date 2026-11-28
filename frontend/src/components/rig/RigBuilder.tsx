@@ -1083,6 +1083,7 @@ export default function RigBuilder() {
             conflicts={conflicts}
             selectedUniverse={patchUniverse}
             onUniverseChange={setPatchUniverse}
+            rigId={rig.id}
           />
         </Paper>
       </Box>

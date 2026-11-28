@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Box,
   Typography,
@@ -11,8 +11,11 @@ import {
   Chip,
   Tabs,
   Tab,
+  IconButton,
+  Tooltip,
 } from '@mui/material';
-import { Warning as WarningIcon } from '@mui/icons-material';
+import { Warning as WarningIcon, QrCode2 as QrCodeIcon } from '@mui/icons-material';
+import RigFixtureQrDialog from './RigFixtureQrDialog';
 import type { RigFixture, PatchConflict } from '../../types';
 
 interface PatchTableProps {
@@ -20,6 +23,8 @@ interface PatchTableProps {
   conflicts?: PatchConflict[];
   selectedUniverse?: number;
   onUniverseChange?: (universe: number) => void;
+  /** The rig these fixtures are in: given, each row gets a Show QR action. */
+  rigId?: number;
 }
 
 export default function PatchTable({
@@ -27,7 +32,10 @@ export default function PatchTable({
   conflicts = [],
   selectedUniverse = 0,
   onUniverseChange,
+  rigId,
 }: PatchTableProps) {
+  const [qrFixture, setQrFixture] = useState<{ id: number; name: string } | null>(null);
+
   // Get unique universes
   const universes = useMemo(() => {
     const unis = new Set(fixtures.map((f) => f.universe));
@@ -143,17 +151,29 @@ export default function PatchTable({
                   c.universe === selectedUniverse &&
                   (c.fixture_a_id === f.id || c.fixture_b_id === f.id)
               );
+              const label = f.name || f.fixture?.model || `Fixture ${f.id}`;
               return (
                 <TableRow key={f.id} sx={isConflict ? { bgcolor: 'rgba(244,67,54,0.08)' } : {}}>
                   <TableCell>{f.dmx_address}</TableCell>
                   <TableCell sx={{ maxWidth: 100 }}>
                     <Typography variant="body2" noWrap>
-                      {f.name || f.fixture?.model || `Fixture ${f.id}`}
+                      {label}
                     </Typography>
                   </TableCell>
                   <TableCell>{mode?.channel_count || '?'}</TableCell>
-                  <TableCell>
+                  <TableCell sx={{ whiteSpace: 'nowrap' }}>
                     {isConflict && <WarningIcon color="error" fontSize="small" />}
+                    {rigId !== undefined && (
+                      <Tooltip title="Show QR">
+                        <IconButton
+                          size="small"
+                          aria-label={`Show QR for ${label}`}
+                          onClick={() => setQrFixture({ id: f.id, name: label })}
+                        >
+                          <QrCodeIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    )}
                   </TableCell>
                 </TableRow>
               );
@@ -161,6 +181,10 @@ export default function PatchTable({
           </TableBody>
         </Table>
       </TableContainer>
+
+      {rigId !== undefined && (
+        <RigFixtureQrDialog rigId={rigId} fixture={qrFixture} onClose={() => setQrFixture(null)} />
+      )}
     </Box>
   );
 }

@@ -385,6 +385,22 @@ export const rigsApi = {
     return response.data as Blob;
   },
 
+  /** The route that draws one rig fixture's label QR (its token included) as a PNG. */
+  rigFixtureQrPath: (rigId: number, rigFixtureId: number): string =>
+    `/rigs/${rigId}/fixtures/${rigFixtureId}/qr-code`,
+
+  /**
+   * One rig fixture's label QR as a PNG blob. Fetched through this client, not
+   * an <img src>, because every /api GET needs the operator's token.
+   */
+  rigFixtureQrPng: async (rigId: number, rigFixtureId: number, size = 300): Promise<Blob> => {
+    const response = await api.get(rigsApi.rigFixtureQrPath(rigId, rigFixtureId), {
+      params: { size },
+      responseType: 'blob',
+    });
+    return response.data as Blob;
+  },
+
   /**
    * Discovered RDM devices added to a rig. The route takes the devices' stored
    * row ids (`saved_devices[].id` from `rdmApi.devices`, not their RDM UIDs)
@@ -410,6 +426,11 @@ export interface QrScanAnswer {
    * rig_fixture_id, or by the code text stored on an earlier scan.
    */
   matched_by?: 'rig_fixture_id' | 'qr_code_data';
+  /**
+   * On a rig_fixture_id match: true when the label was printed before labels
+   * carried a token, so it matched on its rig fixture id and profile only.
+   */
+  older_label?: boolean;
   rig_fixture_id: number;
   /** Where the fixture is patched (`universe` only on an already-patched answer). */
   universe?: number;
