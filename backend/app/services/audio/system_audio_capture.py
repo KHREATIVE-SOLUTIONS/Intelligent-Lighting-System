@@ -183,6 +183,9 @@ class SystemAudioCapture:
         self._selection_hostapi: Optional[str] = None
         self._watchdog: Optional[threading.Thread] = None
         self._watchdog_stop = threading.Event()
+        # The clock the stall check reads. Tests swap in a manual clock so
+        # "went quiet for STALL_S" is decided by the test, not by scheduling.
+        self._clock = time.monotonic
         self._last_chunk_t: Optional[float] = None
         self._reconnecting = False
         self._reconnect_attempts = 0
@@ -305,7 +308,7 @@ class SystemAudioCapture:
     def _dispatch_chunk(self, audio_data: np.ndarray):
         if not self._running:
             return
-        self._last_chunk_t = time.monotonic()
+        self._last_chunk_t = self._clock()
         if not self.on_audio_chunk:
             return
         try:
@@ -581,7 +584,7 @@ class SystemAudioCapture:
         if not started and not keep_trying:
             return False
         self._wanted = True
-        self._last_chunk_t = time.monotonic() if started else None
+        self._last_chunk_t = self._clock() if started else None
         self._reconnecting = not started
         self._reconnect_attempts = 0 if started else 1
         if not started:
@@ -629,7 +632,7 @@ class SystemAudioCapture:
     def _watchdog_step(self) -> float:
         """One look at the capture; returns how long to wait before the next."""
         last = self._last_chunk_t
-        stalled = (not self._running) or last is None or (time.monotonic() - last) > self.STALL_S
+        stalled = (not self._running) or last is None or (self._clock() - last) > self.STALL_S
         if not stalled:
             return self.WATCH_S
         if not self._reconnecting:
@@ -645,7 +648,7 @@ class SystemAudioCapture:
             ok = False
         if ok:
             logger.info("Audio capture reconnected: %s", self._device_name)
-            self._last_chunk_t = time.monotonic()
+            self._last_chunk_t = self._clock()
             self._reconnecting = False
             self._reconnect_attempts = 0
             return self.WATCH_S
