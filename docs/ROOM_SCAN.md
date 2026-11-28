@@ -125,6 +125,15 @@ was run and has only its 13 older errors. **Its tests are written and have
 not been run, and the build was not run**: `npx vitest run` and `npm run
 build` were refused in the session that wrote it (see What is left).
 
+**A room from a walkthrough video: built, and tested everywhere except against
+a real COLMAP.** COLMAP is not installed on the machine this was written on, so
+the reconstruction step has only been driven with a stand-in process. Frame
+sampling was run with real ffmpeg and real OpenCV; finding which way is up,
+scaling, and the API are tested against a synthetic room handed over tipped and
+unscaled, as a photogrammetry tool hands one over. The first real video is a
+test of the COLMAP commands (see [What is left](#what-is-left)). See
+[From a walkthrough video](#from-a-walkthrough-video).
+
 Everything here is free and local. Nothing is uploaded anywhere but this
 system's own backend, and no outside service or model is called.
 
@@ -603,6 +612,140 @@ it is open.
   scan is applied again. Undo here brings it back, until then." For one
   added by hand it says what it always did ("Undo here brings it back,
   until the scan is read again."): the scan never read it.
+
+## From a walkthrough video
+
+A phone with no LiDAR and no scanning app can still film the room. **Room
+Scan**, **Or a walkthrough video** sends the video to this system's backend,
+which rebuilds the room from it with free tools installed on that machine and
+hands the result to the same preview and apply as any scan file.
+
+**A scanning app is still the better route** where one is available: Polycam
+and Scaniverse give a measured mesh in a minute. A video gives a sparse cloud
+with no scale, after several minutes of processor time. Use it when the video
+is all there is.
+
+### What has to be installed
+
+| Tool | For | Licence | Needed |
+| --- | --- | --- | --- |
+| **ffmpeg** on PATH | reading frames out of the video | LGPL/GPL, run as a separate program | this, or OpenCV |
+| OpenCV (`cv2`) importable by the backend | the same, when ffmpeg is missing | Apache 2.0 | fallback only; not in `requirements.txt` |
+| **COLMAP** | turning frames into a point cloud | BSD | yes |
+| OpenMVS (`DensifyPointCloud`, `InterfaceCOLMAP`) | a dense cloud where COLMAP's own cannot run | AGPL, run as a separate program | no |
+
+Nothing is installed by this system. COLMAP: download a release from
+<https://github.com/colmap/colmap/releases>, unpack it, and either put its
+folder on PATH or set `COLMAP_PATH` in `backend/.env` to the folder (or to
+`COLMAP.bat` or the `colmap` executable), then restart the backend. A
+`COLMAP_PATH` that points at nothing is reported as "not installed"; PATH is not
+searched instead.
+
+With no COLMAP the dialog says so before anything is uploaded, with the
+download address and the alternative (scan with Polycam or Scaniverse, export
+OBJ or PLY). `GET /api/room-scan/video/tools` gives the same answer.
+
+Settings (`backend/.env`): `COLMAP_PATH`, `OPENMVS_PATH`, `ROOM_VIDEO_MAX_MB`
+(default 500), `ROOM_VIDEO_TIMEOUT_MIN` (default 60: the whole job is stopped
+after that).
+
+### Filming
+
+One to two minutes, walking slowly round the whole room, lights up. Keep the
+floor and the ceiling in shot some of the time, keep part of what you just
+filmed in view as you turn, and do not let a blank wall fill the picture:
+COLMAP needs things to recognise. Hold the phone the same way up throughout.
+1080p is plenty; frames are shrunk to 1600 pixels on their long side.
+
+### Give one measurement
+
+A video carries no real size. Choose **Ceiling height** or **Length of the
+longest wall** and type it in metres (1 to 200). It can be given before the
+video or after: the scale is applied when the cloud is fetched, so changing the
+measurement reads the room again in a moment without rebuilding it.
+
+With no measurement the scale is **assumed**: the phone is taken to have been
+held 1.5 m above the floor (or, where the cameras' height is no use, the
+ceiling is taken to be 3 m). The preview then leads with a warning that every
+size is a guess. Do not apply an assumed-scale room and trust its numbers.
+
+### What the server does
+
+`backend/app/services/room_scan/video.py`, run as a background job by
+`video_jobs.py`. One job runs at a time; a second is refused with 409.
+
+1. **Frames.** About `3 x 150` candidate frames are taken evenly through the
+   video (at most 4 a second). A frame is dropped as *blurred* when its
+   sharpness (variance of the Laplacian over a 512-pixel centre crop) is under
+   half that of its neighbours, and as a *repeat* when it shows what the last
+   kept frame showed (the phone stood still). Repeats are judged on the whole
+   frame shrunk to 32 by 32, against that frame's own contrast, so a blank
+   wall in the middle of the picture or a dim room is not taken for a phone
+   standing still. At most 150 are kept, the sharpest of each stretch. Fewer
+   than 12 is refused with advice on filming. A video filmed upright (sideways
+   pixels plus a rotation recorded beside them) comes out upright from both
+   ffmpeg and OpenCV; that is tested.
+2. **COLMAP**: `feature_extractor` (one camera for all frames),
+   `exhaustive_matcher` up to 100 frames or `sequential_matcher` beyond,
+   `mapper`, then `model_converter` to text. If the first two fail they are
+   tried again asking for the CPU. Where the mapper writes several models, the
+   one holding the most frames is used. COLMAP runs as a separate process at
+   low priority with no window, and is killed (with anything it started) when
+   the job is stopped, runs out of time, or the backend shuts down.
+3. **Dense**, only when asked: COLMAP's `patch_match_stereo` and
+   `stereo_fusion` (these need an NVIDIA card with CUDA), else OpenMVS where it
+   is installed. Any failure falls back to the sparse cloud, with a note.
+4. **Strays.** A reconstruction leaves a few percent of its points nowhere
+   near the room (a bad match, a reflection, something seen through a door).
+   Everything after this measures the room by where its points end, so a point
+   whose sixth-nearest neighbour is three times further off than is usual in
+   the cloud is dropped first. Without this a cloud with 3% strays read as a
+   room a third of its real width.
+5. **Up.** A photogrammetry model has no up. The average of every frame's
+   image-down is close to gravity; from there the direction is searched (within
+   24 degrees) for the one across which the cloud is thinnest, which is the one
+   square to the floor and ceiling. The cloud is turned so that is +Y.
+6. **Scale**, when the cloud is fetched: the floor and ceiling (and for a wall
+   measurement the walls) are found with the scan reader's own code, and the
+   cloud is scaled so the measured thing is the size given.
+
+The cloud is written as a binary PLY in metres, Y-up, whose header carries
+what is known about it (`comment room_scan_note ...`,
+`comment room_scan_warning ...`, `room_scan_up_axis`,
+`room_scan_metres_per_unit`). The PLY reader takes those into the preview's
+"How the scan was read" and warnings, so they survive the cloud being
+downloaded and sent back. Other PLY comments are ignored as before.
+
+The video, its frames and COLMAP's database are deleted when the job ends,
+however it ends. The finished cloud is kept in memory for two hours (the four
+most recent), and not across a restart.
+
+### The video API
+
+| Route | Does |
+| --- | --- |
+| `GET /api/room-scan/video/tools` | what is installed: `ready`, `frames`, `photogrammetry`, `dense`, `message` (what to install; null when ready), `max_upload_mb` |
+| `POST /api/rigs/{rig_id}/room-scan/video?filename=walk.mp4&quality=sparse` | starts a job. **The request body is the video itself**, not a form, so the size limit acts while it arrives. Answers `202` with the job |
+| `GET /api/rigs/{rig_id}/room-scan/video/{job_id}` | the job: `state` (`queued`, `running`, `done`, `failed`, `cancelled`), `stage`, `stage_label`, `detail`, `progress` (0 to 1, by stage), `elapsed_s`, `error`, `tools`, `frames`, `cloud`, `notes`, `warnings` |
+| `GET /api/rigs/{rig_id}/room-scan/video/{job_id}/cloud.ply?ceiling_height=4.2` | the finished cloud, scaled. Or `longest_wall=`; with neither the scale is assumed (`X-Room-Scale-Assumed: true`) |
+| `DELETE /api/rigs/{rig_id}/room-scan/video/{job_id}` | stops a running job, or forgets a finished one |
+
+The `cloud.ply` is then sent to `POST /api/rigs/{rig_id}/room-scan` like any
+scan file, for the preview and again to apply. No route here writes to a rig.
+
+| Status | When |
+| --- | --- |
+| 200 with `state: "unavailable"` | the video was sent to a machine with no COLMAP (or no frame reader). `error` says what to install or do instead. Not an error status: nothing went wrong |
+| 400 | the name is not a video's (`.mp4 .mov .m4v .avi .mkv .webm .3gp`), the body is empty, both measurements were given, or the measurement is outside 1 to 200 m |
+| 404 | no such rig; or no such job **on that rig** (a job is only answered for under the rig it was started for) |
+| 409 | another video is being processed; or `cloud.ply` was asked of a job that is not `done` |
+| 413 | the video is over the limit (checked from `Content-Length` first, and again as the bytes arrive) |
+
+A job that fails says why in `error`, in words for the operator: which COLMAP
+step failed and the end of its output, that the frames could not be joined
+(with how to film again), that too few frames or points came out, or that it
+ran out of time. Each ends by naming the alternative, a scanning app's OBJ or
+PLY.
 
 ## The API
 
@@ -4833,6 +4976,43 @@ Pixar's USD library from the same rooms (slice 24).
   2D plan's tooltip for a floating area; and the 3D box drawn from its base
   up.
 
+For the walkthrough video:
+
+- `backend/tests/unit/test_room_video.py`: the missing-tool messages and how
+  COLMAP is found; which frames are dropped as blurred, repeated or black, and
+  how too many are thinned; **frame sampling with real ffmpeg and real OpenCV**
+  on clips made by ffmpeg (skipped where they are not installed): a portrait
+  clip whose middle barely changes, a clip filmed upright with its rotation in
+  the metadata, a dark clip, a clip that never moves with and without grain,
+  and a file that is not a video; the room recovered from **sparse, noisy
+  clouds with strays** (600 to 5,000 points), which is what a video gives; an
+  outside tool run, stopped and timed out for real (with the Python
+  interpreter as the tool); COLMAP's text files read back into camera positions;
+  a model tipped about every axis stood up to within 0.15 degrees, where the
+  phone's own down was more than 3 degrees out; the room recovered at its real
+  size from a ceiling height and from a wall length, and through the scan
+  reader with its stage intact; the assumed scale, and its warning; the whole
+  run in order against a stand-in for COLMAP (CPU retry, the larger of two
+  models, each failure's wording, dense falling back to sparse); and the job
+  runner (off the calling thread, one at a time, stop, crash, cleanup,
+  shutdown).
+- `backend/tests/integration/test_api_room_video.py`: the tools answer; a video
+  sent with no COLMAP is answered, not failed; starting does not wait; the
+  result previews and applies through the ordinary route and lands on the rig;
+  the assumed-scale warning reaches the preview; a second measurement needs no
+  second reconstruction; stop frees the slot; a job belongs to its rig; the
+  size limit, declared and undeclared; the login.
+- `frontend/src/__tests__/roomVideo.test.ts`: paths, which files are refused
+  before sending, the measurement and its parameters, and the status wording.
+  **Written but not run** (`npx vitest run` was refused again in the session
+  that put it on master; `npx tsc --noEmit` ran with only its 13 older errors).
+
+**What these do not show:** that a real COLMAP accepts the commands in step 2,
+that its text output is laid out as the stand-in writes it (it follows COLMAP's
+documented format), or that a real room's sparse cloud is dense enough for the
+reader to find walls in. The stand-in proves the steps are called in order and
+their files read. Nothing more.
+
 ## What is left
 
 - **Slice 32's frontend test has not been run, and nor has the build with
@@ -5861,5 +6041,32 @@ Pixar's USD library from the same rooms (slice 24).
   - **A big edit moves everybody**: the crowd is seeded from the room, so
     any change to the floor or a raised area is a new crowd, not the old one
     stepping aside.
-- **Photos to a room** (photogrammetry inside this system) is out of scope: the
-  phone apps already do it for free.
+- **A real video through a real COLMAP.** Never run. Expect to adjust the
+  COLMAP commands in `video.py` (option names differ between COLMAP versions;
+  as few as possible are passed), and the frame thresholds. On Windows COLMAP
+  is taken to ship as `COLMAP.bat` beside `bin/colmap.exe`; that layout was not
+  checked against a download.
+- **Dense clouds**: the COLMAP stereo and OpenMVS commands are the least
+  certain part and have no test beyond "a failure falls back to sparse".
+- **Up from a video with no rotation recorded.** If the phone was held
+  sideways and the video does not say so (some editing and messaging apps strip
+  it), "image down" is not down, the up search starts 90 degrees out and the
+  room comes out on its side. The preview's Up axis setting does **not** fix
+  this in general: the error is not a swap of Y and Z. Send the video straight
+  from the phone, or film again.
+- **How sparse is too sparse.** Synthetic clouds of 600 to 5,000 points, 3 cm
+  of noise, 3% strays and as little as a tenth of the points on the floor and
+  ceiling read correctly. A real room with a bare floor may give fewer than
+  that there; then the floor is taken from the lowest points, with a warning.
+- **Refusals made before the upload is read** (400, 404, and 413 from
+  `Content-Length`) may reach a browser as a dropped connection rather than
+  their message if it is part-way through a large upload. The dialog checks
+  the name and size itself first; `unavailable` and 409 read the upload and
+  drop it before answering.
+- **Progress inside a step.** The bar moves a stage at a time; COLMAP's mapper,
+  the slow one, shows as one long stage.
+- **Jobs do not survive a restart**, and closing the dialog stops the job
+  (the button says so; a click outside or Escape does not close it while a
+  video is being worked on).
+- **Measurements** are the ceiling height or the longest wall only; there is no
+  picking two points in the cloud.
