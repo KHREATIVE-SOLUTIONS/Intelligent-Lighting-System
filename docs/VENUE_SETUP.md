@@ -80,7 +80,8 @@ What it may do, and only this (`DEMO_ACTION_KINDS`):
   (flash and tap), Output target and Export to console are always in the
   manual list. Loading the demo swaps the engine's fixtures, so it is planned
   only when output is not set up, not connected, or held until a rig is
-  patched (`outputVerifiablyIdle`); otherwise loading the demo is a manual step
+  patched (`outputVerifiablyIdle`; no reading yet counts as maybe sending);
+  otherwise loading the demo is a manual step
   too. The box also refuses (409) to load a demo over a patched live rig; the
   run shows that as Failed. It never activates a saved rig.
 - **Only Make groups is applied.** It adds groups and nothing else; its undo
@@ -129,6 +130,11 @@ What it may do, and only this (`DEMO_ACTION_KINDS`):
   status only.
 - Patch sheet import is the console (MA2 XML / CSV) import, which makes a new
   rig. Nothing lays fixtures out from a patch sheet automatically.
+- After a run the checklist reads readiness and focus again at once; the
+  Venue, Audio and Output rows come from the status bar's poller and catch up
+  on its next poll.
+- The plan is not re-checked on confirm: the output state is the one read when
+  the plan was shown. The box's 409 over a patched live rig is the guard after that.
 - Get demo-ready cannot tell which demo preset is running, only that one is;
   if another demo is on the engine it leaves it there.
 - The readiness panel offers Undo only beside a fix it ran itself, so a Make

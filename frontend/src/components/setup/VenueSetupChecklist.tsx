@@ -210,16 +210,15 @@ export default function VenueSetupChecklist({
         browserName: readLastDevice(),
       };
     }
-    setDemo({
-      step: 'plan',
-      plan: planDemoReady({
-        rig,
-        demoRunning: effects?.live_rig_demo ?? null,
-        outputIdle: outputVerifiablyIdle(dmx, reachable, box),
-        readiness: report.status === 'fulfilled' ? report.value : null,
-        audio,
-      }),
+    const plan = planDemoReady({
+      rig,
+      demoRunning: effects?.live_rig_demo ?? null,
+      outputIdle: outputVerifiablyIdle(dmx, reachable, box),
+      readiness: report.status === 'fulfilled' ? report.value : null,
+      audio,
     });
+    // Closed while reading: stay closed.
+    setDemo((current) => (current?.step === 'planning' ? { step: 'plan', plan } : current));
   };
 
   // Step two, on confirm: each action in turn, a line for each, then read the statuses again.

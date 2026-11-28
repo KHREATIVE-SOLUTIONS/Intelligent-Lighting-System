@@ -133,7 +133,9 @@ describe('pickDemoAudioDevice', () => {
 
 describe('outputVerifiablyIdle', () => {
   it('is true only when output is held, not set up or not connected', () => {
-    expect(outputVerifiablyIdle(null, true, null)).toBe(true);
+    expect(outputVerifiablyIdle(null, true, null)).toBe(false);
+    expect(outputVerifiablyIdle(null, true, { dmx_detail: { output_held_until_rig_patched: true } })).toBe(true);
+    expect(outputVerifiablyIdle({ status: 'not_initialized' }, true, null)).toBe(true);
     expect(outputVerifiablyIdle({ status: 'running', connected: false }, true, null)).toBe(true);
     expect(outputVerifiablyIdle({ status: 'running', connected: true }, true, { dmx_detail: { output_held_until_rig_patched: true } } as never)).toBe(true);
     expect(outputVerifiablyIdle({ status: 'running', connected: true, transmitting: true }, true, null)).toBe(false);

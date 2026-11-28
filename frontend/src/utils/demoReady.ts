@@ -94,8 +94,9 @@ export function outputVerifiablyIdle(
 ): boolean {
   if (!reachable) return false;
   if (box?.dmx_detail?.output_held_until_rig_patched) return true;
-  if (!dmx || dmx.status === 'not_initialized') return true;
-  return dmx.connected === false || dmx.status === 'disconnected';
+  // No reading is not evidence: the health store starts empty before its first poll.
+  if (!dmx) return false;
+  return dmx.status === 'not_initialized' || dmx.connected === false || dmx.status === 'disconnected';
 }
 
 /**

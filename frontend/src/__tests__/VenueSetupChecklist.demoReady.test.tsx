@@ -67,8 +67,11 @@ async function openPlan(rig: SetupRig | null) {
 }
 
 beforeEach(() => {
-  // A fresh box: nothing going out, no audio captured.
-  useHealthStore.setState({ reachable: true, dmx: null, capture: null, effects: null, box: null, lastAnalysisAt: null });
+  // A fresh box: output held until a rig is patched, no audio captured.
+  useHealthStore.setState({
+    reachable: true, dmx: { status: 'running', connected: true }, capture: null, effects: null,
+    box: { dmx_detail: { output_held_until_rig_patched: true } }, lastAnalysisAt: null,
+  });
   readiness.get.mockResolvedValue(REPORT);
   readiness.autoGroups.mockResolvedValue({ rig_id: 1, created: [], skipped: [], unplaced_ids: [], changed: [{ id: 1, name: 'A', group_before: null, group_name: 'Front Spots' }], message: 'Grouped 4 fixtures.' });
   focus.get.mockResolvedValue({ heads: 2, targets: [{}] } as never);
