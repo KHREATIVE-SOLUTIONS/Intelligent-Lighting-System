@@ -486,7 +486,8 @@ def starter_presets_script(rig: ExportRig, table: StarterPresets, notes: bool = 
         stored = True
         same: Dict[Tuple[Tuple[str, float], ...], List[int]] = {}
         for number in sorted(p.values):
-            same.setdefault(tuple(sorted(p.values[number].items())), []).append(number)
+            # In the order the mix was built (red, green, blue, white...), not by name.
+            same.setdefault(tuple(p.values[number].items()), []).append(number)
         for values, numbers in same.items():
             out += ["ClearSelection", f"Fixture {selection(numbers)}"]
             for kind, value in values:

@@ -14,6 +14,9 @@ memory (nothing is written to disk, nothing is sent anywhere):
 - <rig>_ma2.xml, <rig>_ma2_script.txt, <rig>.mvr   the console exports, from the
   same writers the export routes use (console_export/ma2.py and mvr.py); the
   script carries the focus presets as Position presets
+- <rig>_ma2_starter_presets.txt   dimmer, colour and beam presets as grandMA2
+  command-line text (console_export/starter_presets.py); left out when the
+  caller turns `starter_presets` off
 - README.txt      what each file is, which positions are guessed, any Fail check,
   and any file that is missing because its writer failed
 
@@ -35,6 +38,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from app.services.console_export.ma2 import ma2_script, ma2_xml
 from app.services.console_export.model import ExportRig, from_rig
 from app.services.console_export.mvr import mvr_bytes
+from app.services.console_export.starter_presets import build_starter_presets, starter_presets_script
 from app.services.focus_presets.table import build_table as build_focus_table, focus_csv
 from app.services.rig.patch_sheet import (  # noqa: F401 - POSITION_* and worst_first are re-exported
     POSITION_CONFIRMED, POSITION_GUESSED, POSITION_NONE, STATUS_WORDS as _STATUS_WORDS,
@@ -177,8 +181,17 @@ def _exports(export: ExportRig, focus: Optional[Any] = None) -> List[Tuple[str, 
     ]
 
 
-def build_handoff_pack(rig: Any, rows: Sequence[Any], now: Optional[datetime] = None) -> Tuple[bytes, str]:
-    """The zip's bytes and its file name. `rows` need `fixture` and `mode` (with channels) loaded."""
+def starter_presets_name(export: ExportRig) -> str:
+    return f"{export.file_stem()}_ma2_starter_presets.txt"
+
+
+def build_handoff_pack(
+    rig: Any, rows: Sequence[Any], now: Optional[datetime] = None, starter_presets: bool = True,
+) -> Tuple[bytes, str]:
+    """The zip's bytes and its file name. `rows` need `fixture` and `mode` (with channels) loaded.
+
+    `starter_presets` adds the grandMA2 dimmer, colour and beam starter presets as their own file.
+    """
     read_at = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%d %H:%M:%S")
     report = readiness(rig, rows)
     export = from_rig(rig, rows)
@@ -215,6 +228,16 @@ def build_handoff_pack(rig: Any, rows: Sequence[Any], now: Optional[datetime] = 
             built[name] = write()
             files[name] = what
         except Exception as e:  # noqa: BLE001 - a failed writer leaves its file out, the pack still builds
+            missing[name] = f"the writer stopped with an error: {type(e).__name__}: {e}"
+    if starter_presets:
+        name = starter_presets_name(export)
+        try:
+            table = build_starter_presets(rows, export)
+            built[name] = starter_presets_script(export, table).encode("utf-8")
+            files[name] = ("grandMA2 starter presets: dimmer (Preset 1.x), colour (4.x) and beam (5.x) "
+                           "from each fixture's profile channels; who is left out and why is in its notes. "
+                           "Paste after the MA2 script. See docs/CONSOLE_EXPORT.md.")
+        except Exception as e:  # noqa: BLE001 - the presets are left out, the pack still builds
             missing[name] = f"the writer stopped with an error: {type(e).__name__}: {e}"
 
     buffer = io.BytesIO()

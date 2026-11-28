@@ -47,14 +47,20 @@ async def read_readiness(rig_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/rigs/{rig_id}/handoff-pack")
-async def download_handoff_pack(rig_id: int, db: AsyncSession = Depends(get_db)):
+async def download_handoff_pack(
+    rig_id: int,
+    starter_presets: bool = Query(
+        True, description="Add grandMA2 starter presets (dimmer, colour, beam) as their own file",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
     """Everything needed to program this rig, as one zip: patch.csv, groups.csv,
     readiness.md, the grandMA2 and MVR exports and a README. Built in memory;
     reads only. A console file whose writer fails is left out and named in
     README.txt and readiness.md. See docs/HANDOFF_PACK.md.
     """
     rig, rows, _ = await _get_rig_fixtures_with_channels(rig_id, db)
-    content, filename = build_handoff_pack(rig, rows)
+    content, filename = build_handoff_pack(rig, rows, starter_presets=starter_presets)
     return Response(
         content=content,
         media_type="application/zip",
