@@ -33,9 +33,10 @@ import { focusTargets3dKey, parseFocusPresets } from '../utils/focusPresets';
 import { announceFocusTargetsChange, announceRigChange } from '../utils/focusTargetsSync';
 import { RIG_ID } from './focusPresetsFixture';
 import { VIEW_FIXTURES, previewAnswer } from './focusPreviewFixture';
+import type { PreviewAnswer } from './focusPreviewFixture';
 
 /** What the server answers now; a test changes it to stand for a moved fixture or a removed target. */
-let answer = previewAnswer();
+let answer: PreviewAnswer = previewAnswer();
 const fetchSpy = vi.fn();
 const store = () => useFocusPreviewStore.getState();
 
@@ -100,7 +101,7 @@ describe('reach read again after a rig change', () => {
     // Debounced: nothing read straight away.
     expect(api.get).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2));
-    expect(textOf(row('dance_floor').getByTestId('focus-target-reach'))).toContain('1 of 3 moving heads can reach it.');
+    await waitFor(() => expect(textOf(row('dance_floor').getByTestId('focus-target-reach'))).toContain('1 of 3 moving heads can reach it.'));
     // Four announcements, one of them another rig's: one read.
     await new Promise((resolve) => setTimeout(resolve, RIG_CHANGE_DEBOUNCE_MS + 100));
     expect(api.get).toHaveBeenCalledTimes(2);
@@ -204,7 +205,7 @@ describe('previewing a preset in the 3D view', () => {
     answer.custom_targets = [];
     act(() => announceFocusTargetsChange(RIG_ID, {}));
     await waitFor(() => expect(store().preview).toBeNull());
-    expect(view.preview).toBeNull();
+    await waitFor(() => expect(view.preview).toBeNull());
   });
 
   it('ignores a preview of another rig', async () => {

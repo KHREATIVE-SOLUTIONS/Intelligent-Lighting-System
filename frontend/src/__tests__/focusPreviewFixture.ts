@@ -29,9 +29,15 @@ const UNREACHABLE = {
   pan_dmx: null, pan_fine_dmx: null, tilt_dmx: null, tilt_fine_dmx: null,
 };
 
-export function previewAnswer() {
-  const answer = focusAnswer();
-  answer.targets = answer.targets.map((t) => {
+/** The answer with its targets as loose rows, so a test can change them freely. */
+export type PreviewAnswer = Omit<ReturnType<typeof focusAnswer>, 'targets' | 'custom_targets'> & {
+  targets: Row[];
+  custom_targets: Row[];
+};
+
+export function previewAnswer(): PreviewAnswer {
+  const base = focusAnswer();
+  const targets: Row[] = base.targets.map((t): Row => {
     if (t.skipped) return t;
     if (t.key === 'dj_booth') {
       return {
@@ -57,5 +63,5 @@ export function previewAnswer() {
       ],
     };
   });
-  return answer;
+  return { ...base, targets, custom_targets: [...base.custom_targets] };
 }

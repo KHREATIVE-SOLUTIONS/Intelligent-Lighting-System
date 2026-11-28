@@ -295,6 +295,7 @@ reason and the head columns blank.
   `node_modules` and have not been run yet; run them, and `npx tsc --noEmit`,
   before merging. The backend test was run.
 - A rig write made outside the app's client (a script against the API, the
-  database edited) is not announced; reopen the panel or the view.
+  database edited, and the QR scanner's `/rigs/{id}/scan`, which posts with
+  bare axios) is not announced; reopen the panel or the view.
 - Mount is guessed from height when not tagged; there is no column for it.
 - grandMA3 is not targeted.
