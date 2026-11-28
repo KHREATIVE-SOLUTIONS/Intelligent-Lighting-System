@@ -213,7 +213,7 @@ def old_rig_db():
     """
     tmpdir = tempfile.mkdtemp(prefix="ils-pan-tilt-migration-")
     path = Path(tmpdir) / "old_rig.db"
-    _alembic(path, "005")
+    _alembic(path, "011")
 
     connection = sqlite3.connect(path)
     try:
@@ -235,7 +235,7 @@ def old_rig_db():
             )
         connection.commit()
         assert not set(FLAGS) & set(_columns(connection, "rig_fixtures")), (
-            "revision 005 already has the flag columns; this is not an old rig"
+            "revision 011 already has the flag columns; this is not an old rig"
         )
     finally:
         connection.close()
@@ -362,10 +362,11 @@ async def test_a_flag_set_on_an_upgraded_rig_reaches_the_engine(old_rig_db):
 
 @pytest.fixture
 def inverted_legacy_db():
-    """A database at revision 006 with mixed is_inverted / hang-flag rows."""
+    """A database at revision 012 (flags added, is_inverted not yet mapped)
+    with mixed is_inverted / hang-flag rows."""
     tmpdir = tempfile.mkdtemp(prefix="ils-is-inverted-migration-")
     path = Path(tmpdir) / "inverted_legacy.db"
-    _alembic(path, "006")
+    _alembic(path, "012")
 
     connection = sqlite3.connect(path)
     try:
