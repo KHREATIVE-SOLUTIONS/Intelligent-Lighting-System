@@ -7,13 +7,20 @@
  * reach a point is worked out on the server. Each change is announced
  * (focusTargetsSync.ts), and a change announced by another hook showing the
  * same rig is read here, so the 3D markers follow the panel without a reload.
+ * Any rig write the app's client makes (a fixture moved or turned in the 2D
+ * plan or the 3D view, any rig save, a room edit) is announced too, and read
+ * here once the writes settle (RIG_CHANGE_DEBOUNCE_MS), so the reach colours
+ * are never left showing where the heads used to be.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { focusPresetsApi } from '../../services/focusPresetsApi';
 import { refusalText } from '../../services/stagePlotApi';
 import type { FocusTable, NewTarget } from '../../utils/focusPresets';
-import { announceFocusTargetsChange, onFocusTargetsChange } from '../../utils/focusTargetsSync';
+import { announceFocusTargetsChange, onFocusTargetsChange, onRigChange } from '../../utils/focusTargetsSync';
+
+/** How long after the last rig write the table is read again. */
+export const RIG_CHANGE_DEBOUNCE_MS = 400;
 
 export type FocusPresetsStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -77,9 +84,21 @@ export default function useFocusPresets(rigId: number | null | undefined): Focus
     }
     void read(rigId, false);
     const off = onFocusTargetsChange(rigId, self, () => { void read(rigId, true); });
+    // A fixture moved or turned, or the room edited: read again once the
+    // writes settle, so a drag's run of saves is one read, not one each.
+    let wait: ReturnType<typeof setTimeout> | null = null;
+    const offRig = onRigChange(rigId, () => {
+      if (wait !== null) clearTimeout(wait);
+      wait = setTimeout(() => {
+        wait = null;
+        void read(rigId, true);
+      }, RIG_CHANGE_DEBOUNCE_MS);
+    });
     return () => {
       seq.current += 1;
       off();
+      offRig();
+      if (wait !== null) clearTimeout(wait);
     };
   }, [rigId, self, read]);
 
