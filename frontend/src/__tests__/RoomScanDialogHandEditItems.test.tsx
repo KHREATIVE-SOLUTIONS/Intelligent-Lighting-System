@@ -14,6 +14,8 @@ import type { RoomScanHandEditItem, RoomScanHandEdits, RoomScanPreview } from '.
 
 vi.mock('../services/api', () => ({
   roomScanApi: { preview: vi.fn(), apply: vi.fn(), remove: vi.fn(), undoMoves: vi.fn() },
+  // The dialog asks which video tools the server has when it opens; no answer keeps that section quiet.
+  roomVideoApi: { tools: () => new Promise(() => {}), stop: () => Promise.resolve() },
 }));
 
 const api = vi.mocked(roomScanApi);

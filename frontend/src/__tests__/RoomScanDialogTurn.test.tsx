@@ -8,6 +8,8 @@ import type { RoomScanMove, RoomScanPreview } from '../utils/roomScan';
 
 vi.mock('../services/api', () => ({
   roomScanApi: { preview: vi.fn(), apply: vi.fn(), remove: vi.fn(), undoMoves: vi.fn() },
+  // The dialog asks which video tools the server has when it opens; no answer keeps that section quiet.
+  roomVideoApi: { tools: () => new Promise(() => {}), stop: () => Promise.resolve() },
 }));
 
 const api = vi.mocked(roomScanApi);
@@ -138,7 +140,8 @@ describe('the Turn column of the Room Scan dialog', () => {
     api.apply.mockResolvedValue(scan(moves, {
       room_shell_stored: true, fixtures_moved: 0, fixtures_still_unconfirmed: 2, message: 'Stored.',
     }));
-    fireEvent.click(screen.getByRole('checkbox'));
+    // Named: the walkthrough-video box ("Dense cloud") is a checkbox too.
+    fireEvent.click(screen.getByRole('checkbox', { name: /Also move these/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Store the room' }));
     await flush();
     expect(api.apply.mock.calls[0][3]).toBe(false);
