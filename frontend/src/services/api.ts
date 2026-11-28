@@ -403,9 +403,21 @@ export const rigsApi = {
 export interface QrScanAnswer {
   /** Added to the rig, or already in it with this code. */
   action: 'added' | 'identified';
+  /** True when the code named a fixture already in the rig: nothing was added. */
+  already_patched?: boolean;
+  /**
+   * How an already-patched fixture was found: by the printed label's
+   * rig_fixture_id, or by the code text stored on an earlier scan.
+   */
+  matched_by?: 'rig_fixture_id' | 'qr_code_data';
   rig_fixture_id: number;
-  /** Only when added: an already-patched fixture's address is in `message`. */
+  /** Where the fixture is patched (`universe` only on an already-patched answer). */
+  universe?: number;
   dmx_address?: number;
+  /**
+   * The server's sentence. An add from a label whose rig fixture was deleted
+   * or is in another rig says so first.
+   */
   message: string;
 }
 
