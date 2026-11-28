@@ -21,6 +21,7 @@ import {
   MeetingRoom as RoomScanIcon,
   EditLocationAlt as EditRoomIcon,
   FactCheck as ReadinessIcon,
+  Checklist as VenueSetupIcon,
 } from '@mui/icons-material';
 import type { SnapMode } from '../../stores/rigEditorStore';
 import { DEFAULT_LAY_CHOICE, LAY_MODES, LAY_MODE_LABELS, parseSpacing } from './rowSpace2d';
@@ -59,6 +60,8 @@ interface RigEditorToolbarProps {
   onEditRoom?: () => void;
   /** Opens the venue readiness checks. The button is left out when this is. */
   onReadiness?: () => void;
+  /** Opens the New venue setup checklist. The button is left out when this is. */
+  onVenueSetup?: () => void;
   /** Selects the whole row the selected fixture is in. The button is left out when this is. */
   onSelectRow?: () => void;
   /** How many fixtures are selected: the button needs one to go by. */
@@ -109,6 +112,7 @@ export default function RigEditorToolbar({
   hasRoom = false,
   onEditRoom,
   onReadiness,
+  onVenueSetup,
   onSelectRow,
   selectedCount = 0,
   onLayRow,
@@ -302,6 +306,13 @@ export default function RigEditorToolbar({
         </span>
       </Tooltip>
 
+      {onVenueSetup && (
+        <Tooltip title="New venue setup: venue, patch, layout, locate, checks, focus, audio, output and export, in order, with what is done and what is next">
+          <Button size="small" variant="outlined" startIcon={<VenueSetupIcon />} onClick={onVenueSetup}>
+            Venue Setup
+          </Button>
+        </Tooltip>
+      )}
       <Button size="small" startIcon={<AutoPatchIcon />} onClick={onAutoPatch}>
         Auto-Patch
       </Button>

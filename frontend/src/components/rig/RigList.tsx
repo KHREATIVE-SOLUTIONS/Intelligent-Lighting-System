@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import VenueSetupChecklist from '../setup/VenueSetupChecklist';
 import {
   Box,
   Typography,
@@ -48,7 +49,10 @@ export default function RigList() {
   const [search, setSearch] = useState('');
   const [newRigMenuOpen, setNewRigMenuOpen] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  // ?import=1 (the venue setup checklist's Import buttons) opens the import dialog.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [importDialogOpen, setImportDialogOpen] = useState(() => searchParams.get('import') === '1');
+  const [venueSetupOpen, setVenueSetupOpen] = useState(false);
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [newRig, setNewRig] = useState<RigCreate>({
     name: '',
@@ -72,6 +76,12 @@ export default function RigList() {
   useEffect(() => {
     fetchRigs();
   }, [page, search]);
+
+  useEffect(() => {
+    if (searchParams.get('import') !== '1') return;
+    setImportDialogOpen(true);
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const handleCreate = async () => {
     try {
@@ -115,14 +125,32 @@ export default function RigList() {
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
         <Typography variant="h4">Rigs</Typography>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => setNewRigMenuOpen(true)}
-        >
-          New Rig
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button variant="outlined" onClick={() => setVenueSetupOpen(true)}>
+            Venue setup
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => setNewRigMenuOpen(true)}
+          >
+            New Rig
+          </Button>
+        </Box>
       </Box>
+
+      {/* With no rig open, only step 1 (and the audio input) can be opened from here;
+          the rig's own steps are in the Rig builder's Venue Setup. */}
+      <VenueSetupChecklist
+        open={venueSetupOpen}
+        onClose={() => setVenueSetupOpen(false)}
+        rig={null}
+        handlers={{
+          newRig: () => setNewRigMenuOpen(true),
+          importRig: () => setImportDialogOpen(true),
+          patchSheetImport: () => setImportDialogOpen(true),
+        }}
+      />
 
       <TextField
         fullWidth

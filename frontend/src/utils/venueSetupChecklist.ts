@@ -306,6 +306,9 @@ const JUDGES: Record<VenueStepKey, (input: VenueSetupInput) => Judged> = {
   export: judgeExport,
 };
 
+/** The steps that mean something before any rig is open. */
+const RIGLESS_STEPS: ReadonlySet<VenueStepKey> = new Set<VenueStepKey>(['venue', 'audio', 'output']);
+
 export function buildVenueSetupSteps(input: VenueSetupInput): VenueStep[] {
   const skipped = input.skipped ?? new Set<VenueStepKey>();
   return VENUE_STEP_ORDER.map((key, index) => {
@@ -315,10 +318,12 @@ export function buildVenueSetupSteps(input: VenueSetupInput): VenueStep[] {
     let status: VenueStepStatus = judged.status;
     let detail = judged.detail;
     // Done is done, whatever was skipped. Otherwise a skip wins, then a step
-    // with nothing to judge and nothing to open says so.
+    // with nothing to judge and nothing to open says so. With no rig open, a
+    // rig's step is waiting on step 1, not missing from the build.
+    const waitsOnRig = !input.rig && !RIGLESS_STEPS.has(key);
     if (status !== 'done' && skipped.has(key)) {
       status = 'skipped';
-    } else if (status === 'not_started' && actions.length === 0) {
+    } else if (status === 'not_started' && actions.length === 0 && !waitsOnRig) {
       status = 'unavailable';
       detail = `Not available yet on this build. ${detail}`;
     }

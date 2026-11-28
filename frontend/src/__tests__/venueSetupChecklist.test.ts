@@ -219,6 +219,15 @@ describe('buildVenueSetupSteps', () => {
       expect(s.actions).toEqual([]);
     });
 
+    it('with no rig open, says a rig step waits on step 1 rather than calling it missing', () => {
+      const s = step('locate', { available: new Set<VenueActionKey>(['openDemo']) });
+      expect(s.status).toBe('not_started');
+      expect(s.detail).toContain('step 1');
+      expect(s.detail).not.toMatch(/Not available yet/);
+      // A step that means something without a rig still says it is missing.
+      expect(step('output', { available: new Set<VenueActionKey>(['openDemo']) }).status).toBe('unavailable');
+    });
+
     it('still reports a done step as done when its action is missing', () => {
       expect(step('output', { available: new Set(), output: ok('Sending ArtNet.') }).status).toBe('done');
     });

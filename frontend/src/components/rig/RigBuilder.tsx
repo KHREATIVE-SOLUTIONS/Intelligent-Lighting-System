@@ -41,6 +41,7 @@ import StagePlotControl from './StagePlotControl';
 import useStagePlot from './useStagePlot';
 import { refusalText } from '../../services/stagePlotApi';
 import { isGuessed } from '../../utils/stagePlot';
+import VenueSetupChecklist, { setupRigOf } from '../setup/VenueSetupChecklist';
 
 /** Long enough that a drag is one request, short enough to feel immediate. */
 const POSITION_SAVE_DEBOUNCE_MS = 400;
@@ -63,6 +64,7 @@ export default function RigBuilder() {
   const [roomScanOpen, setRoomScanOpen] = useState(false);
   const [roomEditOpen, setRoomEditOpen] = useState(false);
   const [readinessOpen, setReadinessOpen] = useState(false);
+  const [venueSetupOpen, setVenueSetupOpen] = useState(false);
   // The fixtures Readiness's Locate these named: flash-and-tap walks just those.
   const [locateIds, setLocateIds] = useState<number[] | undefined>(undefined);
   // Edit Room's walls mode: the dialog is put away and the corners of the
@@ -884,6 +886,7 @@ export default function RigBuilder() {
         hasRoom={rig.room_shell?.source === 'scan'}
         onEditRoom={() => { void handleEditRoom(); }}
         onReadiness={() => { void handleReadiness(); }}
+        onVenueSetup={() => setVenueSetupOpen(true)}
         selectedCount={selectedFixtures.length}
         onSelectRow={() => { if (selectedFixtures.length > 0) handleSelectRow(selectedFixtures[0].id); }}
         onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
@@ -1205,6 +1208,27 @@ export default function RigBuilder() {
         onFixturesMoved={handleRoomFixturesMoved}
         onDragWalls={handleDragWalls}
         onArrangeItems={handleArrangeItems}
+      />
+
+      {/* The New venue setup checklist (docs/VENUE_SETUP.md). It reads only;
+          each step's button opens the same dialog its toolbar button does. */}
+      <VenueSetupChecklist
+        open={venueSetupOpen}
+        onClose={() => setVenueSetupOpen(false)}
+        rig={setupRigOf(rig)}
+        conflictCount={conflicts.length}
+        stagePlot={{ present: stagePlot.present, calibrated: !!stagePlot.info?.calibration }}
+        handlers={{
+          autoPatch: handleAutoPatch,
+          locate: () => { void handleIdentify(); },
+          readiness: () => { void handleReadiness(); },
+          roomScan: () => { void handleRoomScan(); },
+          ...(rig.room_shell?.source === 'scan' ? { editRoom: () => { void handleEditRoom(); } } : {}),
+          stagePlot: () => {
+            if (stagePlot.present && !stagePlot.info?.calibration) stagePlot.startCalibrate();
+            else setNotice({ severity: 'success', text: 'The Stage plot buttons are above the plan: upload the venue’s plot there, then calibrate it.' });
+          },
+        }}
       />
 
       <Snackbar
