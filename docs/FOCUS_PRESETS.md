@@ -310,8 +310,9 @@ reason and the head columns blank.
 - A rig write made outside the app (a script against the API, the database
   edited) is not announced; reopen the panel or the view.
 - The QR scanner and RDM discovery dialogs are not opened from anywhere in
-  the app yet. The RDM import also sends `{device_uids, rig_id}` where the
-  server takes a list of device ids as the body and `rig_id` as a query
-  parameter, so it is refused (422) until one of them changes.
+  the app yet. The RDM import also sends `{device_uids, rig_id}` (string
+  UIDs) where the route's signature takes a bare list of integer device ids
+  as the body and `rig_id` as a query parameter, so by that signature it
+  would be refused (422); not tried against a server.
 - Mount is guessed from height when not tagged; there is no column for it.
 - grandMA3 is not targeted.

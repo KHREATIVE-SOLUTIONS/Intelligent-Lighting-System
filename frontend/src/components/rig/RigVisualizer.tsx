@@ -70,8 +70,7 @@ import FocusTargets3dToggle from './previs/FocusTargets3dToggle';
 import useFocusTargets3d from './previs/useFocusTargets3d';
 import FocusPreviewNotice from './previs/FocusPreviewNotice';
 import { useFocusPreviewStore } from '../../stores/focusPreviewStore';
-import type { ViewAim } from '../../utils/focusPreview';
-import { viewTravelLimit } from '../../utils/focusPreview';
+import { viewTravelLimit, type ViewAim } from '../../utils/focusPreview';
 import type { FocusMarker } from '../../utils/focusPresets';
 
 type BeamDebugSnapshot = {
