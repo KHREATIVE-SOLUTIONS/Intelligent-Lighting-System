@@ -17,8 +17,9 @@ npx vitest run RigBuilder
 ## Why some files have a longer timeout
 
 The `src/__tests__/RigBuilder*.test.tsx` files render the whole RigBuilder
-(router, editor store, 2D plan) for every test. Run alone, each test takes
-about 1-3 s. In a full parallel run every worker thread is busy at once, and
+(router, editor store, 2D plan) for every test. Run alone, the four heaviest
+(Items, RoomAdjust, RoomCarry, Walls) pass 45/45 in about 70-130 s. In a full
+parallel run every worker thread is busy at once, and
 on a loaded machine (measured on a 16-thread Windows PC, Nov 2026) 3 to 13 of
 them went past vitest's 5 s default and failed with `Test timed out in
 5000ms`, while the same files passed 45/45 alone.
@@ -48,6 +49,13 @@ suite competing for CPU:
 ```
 npx vitest run src/__tests__/RigBuilderWalls.test.tsx --reporter=verbose
 ```
+
+With the test timeout raised, Testing Library's own 1000 ms default for
+`findBy*` / `waitFor` is the next limit a loaded machine can hit: a failure
+there reads `Unable to find ...`, not `Test timed out`.
+
+If the suite is still red from load, a `maxThreads` cap under `test.poolOptions.threads`
+in `vite.config.ts` is the fallback.
 
 If a file still times out in a full run, check first for avoidable slowness
 (fake timers left running after a test, real `setTimeout` waits, rendering
