@@ -4,16 +4,18 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { CircularProgress } from '@mui/material';
 import Layout from './components/common/Layout';
 import Dashboard from './components/dashboard/Dashboard';
-import ShowEditor from './components/show/ShowEditor';
-import ShowList from './components/show/ShowList';
-import RigEditor from './components/rig/RigEditor';
-import RigList from './components/rig/RigList';
-import RigVisualizer from './components/rig/RigVisualizer';
 import LoginScreen from './components/auth/LoginScreen';
 import { authApi } from './services/api';
 import { useAuthStore } from './stores/authStore';
 
-// Lazy-loaded new components
+// Every page but the dashboard (the first screen) loads when it is first
+// opened. The visualizer carries three.js and the whole 3D previs, so keeping
+// it out of the first load matters most (docs/BUNDLE_SIZE.md).
+const ShowEditor = lazy(() => import('./components/show/ShowEditor'));
+const ShowList = lazy(() => import('./components/show/ShowList'));
+const RigEditor = lazy(() => import('./components/rig/RigEditor'));
+const RigList = lazy(() => import('./components/rig/RigList'));
+const RigVisualizer = lazy(() => import('./components/rig/RigVisualizer'));
 const FixtureLibrary = lazy(() => import('./components/fixtures/FixtureLibrary'));
 const FixtureDetail = lazy(() => import('./components/fixtures/FixtureDetail'));
 const FixtureEditor = lazy(() => import('./components/fixtures/FixtureEditor'));
@@ -79,14 +81,14 @@ function App() {
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
-          <Route path="shows" element={<ShowList />} />
-          <Route path="shows/:id" element={<ShowEditor />} />
-          <Route path="rigs" element={<RigList />} />
+          <Route path="shows" element={<Suspense fallback={<Loading />}><ShowList /></Suspense>} />
+          <Route path="shows/:id" element={<Suspense fallback={<Loading />}><ShowEditor /></Suspense>} />
+          <Route path="rigs" element={<Suspense fallback={<Loading />}><RigList /></Suspense>} />
           <Route path="rigs/new/wizard" element={<Suspense fallback={<Loading />}><RigWizard /></Suspense>} />
           <Route path="rigs/:id/builder" element={<Suspense fallback={<Loading />}><RigBuilder /></Suspense>} />
-          <Route path="rigs/:id" element={<RigEditor />} />
-          <Route path="visualizer" element={<RigVisualizer />} />
-          <Route path="rigs/:id/visualizer" element={<RigVisualizer />} />
+          <Route path="rigs/:id" element={<Suspense fallback={<Loading />}><RigEditor /></Suspense>} />
+          <Route path="visualizer" element={<Suspense fallback={<Loading />}><RigVisualizer /></Suspense>} />
+          <Route path="rigs/:id/visualizer" element={<Suspense fallback={<Loading />}><RigVisualizer /></Suspense>} />
           <Route path="fixtures" element={<Suspense fallback={<Loading />}><FixtureLibrary /></Suspense>} />
           <Route path="fixtures/new" element={<Suspense fallback={<Loading />}><FixtureEditor /></Suspense>} />
           <Route path="fixtures/:id" element={<Suspense fallback={<Loading />}><FixtureDetail /></Suspense>} />
