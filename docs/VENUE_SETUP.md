@@ -27,8 +27,21 @@ screens that already exist. It writes nothing itself and never sends DMX.
 
 A step can be **Done**, **Needs attention**, **Not started**, **Skipped** or
 **Not available yet**. A button whose screen does not exist on this build is
-shown as a "not available yet" chip, never as a dead button. The first step
-still to do is highlighted, and the title says what is next.
+shown as a "not available yet" chip, never as a dead button.
+
+Under the title two lines say where the venue stands:
+
+- **Progress**: `"Main room": 6 of 9 done, 1 needs attention, 1 skipped.` The
+  attention and skipped parts are left out when there are none.
+- **Next**: `Next: 4. Locate`, the first step in order that is neither done nor
+  skipped and has a button to press. A step that is not available yet (or
+  needs attention but has nothing on this build to open) is passed over, so
+  Next never points at a dead end. When nothing is left to open the line says so.
+
+The Next step's row carries a **Next** chip and a bar down its left side, its
+buttons are filled rather than outlined. Next follows the statuses as they
+arrive (readiness and focus are fetched after the panel opens), and skipping
+the Next step moves it on to the following one.
 
 **Skip** marks a step as not wanted at this venue (no moving heads, say). Skips
 are kept per rig in the browser's localStorage under `venueSetup.skipped.<rigId>`.
@@ -41,7 +54,12 @@ its own focus, export or audio dialog is closed (or **Check again**).
 
 - `frontend/src/utils/venueSetupChecklist.ts`: the status logic, pure and tested
   in `frontend/src/__tests__/venueSetupChecklist.test.ts`.
-- `frontend/src/components/setup/VenueSetupChecklist.tsx`: the panel.
+  `nextVenueStep` picks the Next step and `venueSetupProgress` writes the
+  progress line.
+- `frontend/src/components/setup/VenueSetupChecklist.tsx`: the panel, tested in
+  `frontend/src/__tests__/VenueSetupChecklist.test.tsx` (the nine statuses for
+  an empty and a nearly ready rig, the step buttons, Not available yet, Skip
+  across a remount, Next, and the Rig builder's Venue Setup button).
 - Not to be confused with `utils/setupChecklist.ts`, the four-line pre-show
   check on the dashboard.
 
