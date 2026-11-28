@@ -21,6 +21,8 @@ import {
   MeetingRoom as RoomScanIcon,
   EditLocationAlt as EditRoomIcon,
   FactCheck as ReadinessIcon,
+  DeviceHub as RdmIcon,
+  QrCodeScanner as QrIcon,
 } from '@mui/icons-material';
 import type { SnapMode } from '../../stores/rigEditorStore';
 import { DEFAULT_LAY_CHOICE, LAY_MODES, LAY_MODE_LABELS, parseSpacing } from './rowSpace2d';
@@ -59,6 +61,10 @@ interface RigEditorToolbarProps {
   onEditRoom?: () => void;
   /** Opens the venue readiness checks. The button is left out when this is. */
   onReadiness?: () => void;
+  /** Opens RDM discovery, to add the devices it found to this rig. The button is left out when this is. */
+  onDiscoverRdm?: () => void;
+  /** Opens the QR scanner, to add fixtures by their labels. The button is left out when this is. */
+  onScanQr?: () => void;
   /** Selects the whole row the selected fixture is in. The button is left out when this is. */
   onSelectRow?: () => void;
   /** How many fixtures are selected: the button needs one to go by. */
@@ -109,6 +115,8 @@ export default function RigEditorToolbar({
   hasRoom = false,
   onEditRoom,
   onReadiness,
+  onDiscoverRdm,
+  onScanQr,
   onSelectRow,
   selectedCount = 0,
   onLayRow,
@@ -308,6 +316,20 @@ export default function RigEditorToolbar({
       <Button size="small" startIcon={<TestIcon />} onClick={onTestAll}>
         Test All
       </Button>
+      {onDiscoverRdm && (
+        <Tooltip title="Find fixtures on the DMX line by RDM and add the ones you pick to this rig, at the address each reports">
+          <Button size="small" startIcon={<RdmIcon />} onClick={onDiscoverRdm}>
+            Discover RDM
+          </Button>
+        </Tooltip>
+      )}
+      {onScanQr && (
+        <Tooltip title="Add fixtures by scanning their QR labels with the camera, a USB scanner, or by typing the code">
+          <Button size="small" startIcon={<QrIcon />} onClick={onScanQr}>
+            Scan QR
+          </Button>
+        </Tooltip>
+      )}
       <Tooltip title="Light one fixture at a time and tap where it is on the plan">
         <Button size="small" startIcon={<IdentifyIcon />} onClick={onIdentify}>
           Identify Lights
