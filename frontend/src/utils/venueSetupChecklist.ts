@@ -340,6 +340,16 @@ export interface VenueSetupSummary {
   next: VenueStep | null;
 }
 
+/**
+ * The step the panel marks Next: the first, in order, that is neither done nor
+ * skipped and has a button to press. A step that is not available yet on this
+ * build has nothing to press, so Next passes over it rather than pointing at a
+ * dead end; null when every step is done, skipped or unavailable.
+ */
+export function nextVenueStep(steps: readonly VenueStep[]): VenueStep | null {
+  return steps.find((s) => (s.status === 'attention' || s.status === 'not_started') && s.actions.length > 0) ?? null;
+}
+
 export function summarizeVenueSetup(steps: VenueStep[]): VenueSetupSummary {
   const count = (status: VenueStepStatus) => steps.filter((s) => s.status === status).length;
   return {
@@ -347,8 +357,16 @@ export function summarizeVenueSetup(steps: VenueStep[]): VenueSetupSummary {
     done: count('done'),
     attention: count('attention'),
     skipped: count('skipped'),
-    next: steps.find((s) => (s.status === 'attention' || s.status === 'not_started') && s.actions.length > 0) ?? null,
+    next: nextVenueStep(steps),
   };
+}
+
+/** The panel's progress line, e.g. "6 of 9 done, 1 needs attention, 1 skipped." */
+export function venueSetupProgress(summary: VenueSetupSummary): string {
+  const parts = [`${summary.done} of ${summary.total} done`];
+  if (summary.attention > 0) parts.push(`${summary.attention} ${summary.attention === 1 ? 'needs' : 'need'} attention`);
+  if (summary.skipped > 0) parts.push(`${summary.skipped} skipped`);
+  return `${parts.join(', ')}.`;
 }
 
 // Skipped steps are remembered per rig, in the browser that skipped them.

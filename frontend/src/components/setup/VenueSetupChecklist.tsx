@@ -29,6 +29,7 @@ import {
   saveSkipped,
   summarizeVenueSetup,
   toggleSkipped,
+  venueSetupProgress,
 } from '../../utils/venueSetupChecklist';
 import type {
   KeyValueStore,
@@ -183,24 +184,34 @@ export default function VenueSetupChecklist({
       <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth data-testid="venue-setup-checklist">
         <DialogTitle>
           New venue setup
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2" color="text.secondary" data-testid="venue-setup-progress">
             {rig ? `"${rig.name}": ` : ''}
-            {summary.done} of {summary.total} done
-            {summary.attention > 0 ? `, ${summary.attention} need attention` : ''}
-            {summary.skipped > 0 ? `, ${summary.skipped} skipped` : ''}.
-            {summary.next ? ` Next: ${summary.next.number} ${summary.next.title}.` : ''}
+            {venueSetupProgress(summary)}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" data-testid="venue-setup-next">
+            {summary.next
+              ? `Next: ${summary.next.number}. ${summary.next.title}`
+              : 'Nothing left to open: every step is done, skipped or not available yet.'}
           </Typography>
         </DialogTitle>
         {loading && <LinearProgress />}
         <DialogContent dividers>
           <Box component="div" sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {steps.map((step) => (
+            {steps.map((step) => {
+              const isNext = summary.next?.key === step.key;
+              return (
               <Box
                 component="div"
                 key={step.key}
                 data-testid={`venue-step-${step.key}`}
                 data-status={step.status}
-                sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}
+                data-next={isNext ? 'true' : undefined}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 1.5,
+                  ...(isNext ? { borderLeft: 3, borderColor: 'primary.main', pl: 1, ml: -1.375 } : {}),
+                }}
               >
                 <Box component="div" sx={{ pt: 0.25 }}>{STATUS_ICON[step.status]}</Box>
                 <Box component="div" sx={{ flexGrow: 1, minWidth: 0 }}>
@@ -209,6 +220,7 @@ export default function VenueSetupChecklist({
                       {step.number}. {step.title}
                     </Typography>
                     <Typography variant="caption" color="text.secondary">{STATUS_TEXT[step.status]}</Typography>
+                    {isNext && <Chip size="small" color="primary" label="Next" data-testid="venue-setup-next-chip" />}
                   </Box>
                   <Typography variant="body2" color="text.secondary">{step.detail}</Typography>
                   <Box component="div" sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
@@ -216,7 +228,7 @@ export default function VenueSetupChecklist({
                       <Button
                         key={key}
                         size="small"
-                        variant={summary.next?.key === step.key ? 'contained' : 'outlined'}
+                        variant={isNext ? 'contained' : 'outlined'}
                         onClick={() => run(key)}
                       >
                         {ACTION_LABELS[key]}
@@ -239,7 +251,8 @@ export default function VenueSetupChecklist({
                   </Box>
                 </Box>
               </Box>
-            ))}
+              );
+            })}
           </Box>
         </DialogContent>
         <DialogActions>

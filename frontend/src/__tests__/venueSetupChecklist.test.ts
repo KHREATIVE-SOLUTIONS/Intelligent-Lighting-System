@@ -5,10 +5,12 @@ import {
   VENUE_STEP_ORDER,
   buildVenueSetupSteps,
   loadSkipped,
+  nextVenueStep,
   saveSkipped,
   skippedStorageKey,
   summarizeVenueSetup,
   toggleSkipped,
+  venueSetupProgress,
 } from '../utils/venueSetupChecklist';
 import type {
   KeyValueStore,
@@ -267,6 +269,67 @@ describe('summarizeVenueSetup', () => {
     expect(summary.done).toBe(7);
     expect(summary.attention).toBe(1);
     expect(summary.next?.key).toBe('locate');
+  });
+});
+
+describe('nextVenueStep', () => {
+  const nearlyReady = (over: Partial<VenueSetupInput> = {}) =>
+    input({
+      rig: rig([fixture(), fixture({ tags: ['position_unconfirmed'] })], { hasScannedRoom: true }),
+      conflictCount: 0,
+      readiness: { ok: 3, warn: 0, fail: 0 },
+      focus: { heads: 0, targets: 0 },
+      audio: ok('Hearing USB.'),
+      output: ok('Sending ArtNet.'),
+      ...over,
+    });
+
+  it('is the first step that is not done, needing attention or not started alike', () => {
+    expect(nextVenueStep(buildVenueSetupSteps(nearlyReady()))?.key).toBe('locate');
+    expect(nextVenueStep(buildVenueSetupSteps(input()))?.key).toBe('venue');
+  });
+
+  it('passes over a skipped step', () => {
+    const steps = buildVenueSetupSteps(nearlyReady({ skipped: new Set<VenueStepKey>(['locate']) }));
+    expect(nextVenueStep(steps)?.key).toBe('export');
+  });
+
+  it('passes over a step that is not available yet, which has nothing to press', () => {
+    const available = new Set<VenueActionKey>(ALL_ACTIONS);
+    available.delete('locate');
+    const steps = buildVenueSetupSteps(nearlyReady({ available }));
+    expect(steps.find((s) => s.key === 'locate')!.status).toBe('attention');
+    expect(steps.find((s) => s.key === 'locate')!.actions).toEqual([]);
+    expect(nextVenueStep(steps)?.key).toBe('export');
+
+    const noOutput = buildVenueSetupSteps(
+      nearlyReady({ output: down('DMX output is not set up on the box.'), available: new Set<VenueActionKey>(['locate']) }),
+    );
+    expect(noOutput.find((s) => s.key === 'output')!.status).toBe('unavailable');
+    expect(nextVenueStep(noOutput)?.key).toBe('locate');
+  });
+
+  it('is null once every step is done or skipped', () => {
+    const steps = buildVenueSetupSteps(nearlyReady({ skipped: new Set<VenueStepKey>(['locate', 'export']) }));
+    expect(nextVenueStep(steps)).toBeNull();
+  });
+
+  it('is what the summary reports as next', () => {
+    const steps = buildVenueSetupSteps(nearlyReady());
+    expect(summarizeVenueSetup(steps).next).toBe(nextVenueStep(steps));
+  });
+});
+
+describe('venueSetupProgress', () => {
+  const summary = (done: number, attention = 0, skipped = 0) => ({ total: 9, done, attention, skipped, next: null });
+
+  it('says how many of the nine are done', () => {
+    expect(venueSetupProgress(summary(6))).toBe('6 of 9 done.');
+  });
+
+  it('adds what needs attention and what was skipped', () => {
+    expect(venueSetupProgress(summary(6, 1, 1))).toBe('6 of 9 done, 1 needs attention, 1 skipped.');
+    expect(venueSetupProgress(summary(0, 2))).toBe('0 of 9 done, 2 need attention.');
   });
 });
 
