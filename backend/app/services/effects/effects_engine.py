@@ -1872,7 +1872,9 @@ class EffectsEngine:
     # whatever the level, so in no_strobe it is never a flash at all.
     _PULSE_GENTLE_MAX_DEPTH = 0.15
     # General-audience limit; a pulse is held to it even where strobes run faster.
-    _PULSE_LIMIT_HZ = 3.0
+    # Held to the look library's beam limit (live_dimmer.MAX_CYCLES_PER_S, 2.5/s),
+    # under the 3/s general-audience flash limit, so pulse plus chase never exceed it.
+    _PULSE_LIMIT_HZ = 2.5
     _PULSE_MARGIN_S = 0.02
     _PULSE_ATTACK_S = 0.008
     _PULSE_GENTLE_ATTACK_S = 0.06
