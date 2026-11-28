@@ -184,8 +184,8 @@ export function planDemoReady(input: DemoReadyInput): DemoReadyPlan {
           label: FIX_LABELS[check.fix] ?? 'Make groups',
           detail:
             `${check.title}: ${plural(check.fixture_count, 'fixture')}. Gives each placed fixture that is in no group a group ` +
-            'named for where it hangs and what it is. No fixture is taken out of a group and no address or mode changes; ' +
-            'Undo Make groups in the readiness checks puts them back.',
+            'named for where it hangs and what it is. No fixture is taken out of a group and no address or mode changes. ' +
+            'Its undo is kept on the rig, but the Undo button only shows in the readiness checks after a fix run there.',
         });
       } else {
         manual.push({

@@ -50,6 +50,51 @@ A done step is never hidden behind a skip.
 Readiness and focus are read only while the panel is open, and again after
 its own focus, export or audio dialog is closed (or **Check again**).
 
+## Get demo-ready
+
+**Get demo-ready** (bottom left of the panel) takes an operator from nothing to
+a demo in one click, on the LIV Miami demo rig or the rig the panel is open on.
+
+1. Pressing it reads the box and writes nothing: the readiness report (when a
+   saved rig is open) and the audio capture status and devices.
+2. It shows the plan in three lists: what it will do, in order, each with one
+   line on what it does; what it left as it is and why (already running,
+   already captured, no saved rig); and what **stays with you**.
+3. Nothing runs until **Do these N**. Each action then gets a line: Done,
+   Skipped (it had nothing to change) or Failed with the box's error text. A
+   failure does not stop the actions after it. When the run ends the
+   checklist reads its statuses again.
+
+What it may do, and only this (`DEMO_ACTION_KINDS`):
+
+| Action | When | Call |
+| --- | --- | --- |
+| Load the LIV Miami demo | no rig with fixtures is open, no demo is running, and output is verifiably not sending | `demoApi.applyPreset('liv_miami_approx')` |
+| Run the readiness checks | a saved rig is open | `readinessApi.get` (reads only) |
+| Make groups | a check that is not OK offers it | `readinessApi.autoGroups` |
+| Start the audio input | nothing is captured and no feed reaches the box | `audioApi.startCapture` |
+| Refresh the focus presets | a saved rig is open | `focusPresetsApi.get` (reads only) |
+
+- **Output stays the operator's.** It never changes the output target, never
+  starts output, never flashes a fixture and never sends Art-Net or DMX. Locate
+  (flash and tap), Output target and Export to console are always in the
+  manual list. Loading the demo swaps the engine's fixtures, so it is planned
+  only when output is not set up, not connected, or held until a rig is
+  patched (`outputVerifiablyIdle`); otherwise loading the demo is a manual step
+  too. The box also refuses (409) to load a demo over a patched live rig; the
+  run shows that as Failed. It never activates a saved rig.
+- **Only Make groups is applied.** It adds groups and nothing else; its undo
+  record is kept on the rig as for any fix (see Open). Re-address and
+  Set modes change the patch, which must then be matched on each fixture, and
+  Locate flashes fixtures: each is listed as manual with its reason
+  (`AUTO_READINESS_FIXES`).
+- **Audio:** the device the box remembers, else the one this browser last
+  started, else this computer's loopback, after the same filtering as the
+  audio chooser. It never picks a line input nobody chose; with nothing to
+  pick, audio is a manual step.
+- **On the LIV demo** there is no saved rig, so readiness and focus are listed
+  under "left as it is", not run.
+
 ## Code
 
 - `frontend/src/utils/venueSetupChecklist.ts`: the status logic, pure and tested
@@ -60,6 +105,12 @@ its own focus, export or audio dialog is closed (or **Check again**).
   `frontend/src/__tests__/VenueSetupChecklist.test.tsx` (the nine statuses for
   an empty and a nearly ready rig, the step buttons, Not available yet, Skip
   across a remount, Next, and the Rig builder's Venue Setup button).
+- `frontend/src/utils/demoReady.ts`: Get demo-ready's planner (`planDemoReady`)
+  and runner (`runDemoReadyPlan`), pure and tested in
+  `frontend/src/__tests__/demoReady.test.ts`; the button in
+  `frontend/src/__tests__/VenueSetupChecklist.demoReady.test.tsx` (plan before
+  confirm, the run, a failure that does not stop the rest, the refresh, and
+  the demo left manual while output may be sending).
 - Not to be confused with `utils/setupChecklist.ts`, the four-line pre-show
   check on the dashboard.
 
@@ -78,3 +129,9 @@ its own focus, export or audio dialog is closed (or **Check again**).
   status only.
 - Patch sheet import is the console (MA2 XML / CSV) import, which makes a new
   rig. Nothing lays fixtures out from a patch sheet automatically.
+- Get demo-ready cannot tell which demo preset is running, only that one is;
+  if another demo is on the engine it leaves it there.
+- The readiness panel offers Undo only beside a fix it ran itself, so a Make
+  groups run by Get demo-ready has no Undo button. The undo record is on the
+  rig (`POST /api/rigs/{id}/readiness/fix/undo` takes it back) until the next
+  fix replaces it; otherwise groups are edited by hand.
