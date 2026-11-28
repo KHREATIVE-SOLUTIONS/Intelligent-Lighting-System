@@ -374,7 +374,7 @@ export const rigsApi = {
    * one already there). Through this client so it carries the operator's
    * token and is announced as a rig change like every other rig write.
    */
-  scanQr: async (rigId: number, qrData: string) => {
+  scanQr: async (rigId: number, qrData: string): Promise<QrScanAnswer> => {
     const response = await api.post(`/rigs/${rigId}/scan`, { qr_data: qrData });
     return response.data;
   },
@@ -398,6 +398,16 @@ export const rigsApi = {
     return response.data;
   },
 };
+
+/** What POST /rigs/{id}/scan answers (backend/app/api/endpoints/qr_scanning.py). */
+export interface QrScanAnswer {
+  /** Added to the rig, or already in it with this code. */
+  action: 'added' | 'identified';
+  rig_fixture_id: number;
+  /** Only when added: an already-patched fixture's address is in `message`. */
+  dmx_address?: number;
+  message: string;
+}
 
 // RDM discovery (backend/app/api/endpoints/discovery.py). Through the app's
 // client so every call carries the operator's token.
