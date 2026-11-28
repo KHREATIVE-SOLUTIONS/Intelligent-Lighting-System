@@ -101,8 +101,13 @@ def test_a_paused_feed_stands_the_stage_down():
     """WASAPI loopback sends no blocks at all while nothing plays."""
     engine = _engine()
     _run(engine, 6.0)
+    # The locked beat clock may still land the one beat it had already
+    # predicted inside the freshness window; after that nothing fires.
     count = engine.beat_pulse_count
-    _run(engine, 2.0, audio=False)
+    _run(engine, 0.5, audio=False)
+    assert engine.beat_pulse_count <= count + 1
+    count = engine.beat_pulse_count
+    _run(engine, 1.5, audio=False)
     assert engine._makeup_mix == 0.0
     assert engine.beat_pulse_count == count
 
