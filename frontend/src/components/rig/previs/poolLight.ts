@@ -102,3 +102,55 @@ export function poolRadius(throwDistance: number, coneRad: number): number {
   const half = (edge + inner) / 2;
   return (throwDistance * Math.sqrt(Math.max(0, 1 - half * half))) / half;
 }
+
+// ---------------------------------------------------------------------------
+// Pools drawn as decals (docs/PREVIZ_PERFORMANCE.md)
+//
+// A three.js spot light per fixture made every lit surface loop over every
+// light for every pixel: 24 lights on a canvas of several million pixels. The
+// pools are now drawn as soft discs laid on the surface each beam lands on,
+// all of them in one instanced draw, with no light at all. Their size and
+// brightness come from the numbers above, so a decal pool and the spot light
+// it replaces agree on where, how wide and how bright.
+// ---------------------------------------------------------------------------
+
+/**
+ * How bright a decal pool at full is, as a share of white added to the
+ * surface. With the spot lights, a white beam at full lit the floor very nearly
+ * white (see POOL_LIGHT_AT_FULL); 1 gives the same. Tune here.
+ */
+export const POOL_DECAL_GAIN = 1;
+
+/** How far off its surface a decal pool is drawn: over the stage plot (0.024), so it is not hidden by it. */
+export const POOL_DECAL_LIFT = 0.028;
+
+/** Decal brightness for a fixture level of 0 to 1: in step with the spot light it replaces. */
+export function poolDecalStrength(level: number): number {
+  return (poolLightIntensity(level) / POOL_LIGHT_AT_FULL) * POOL_DECAL_GAIN;
+}
+
+/**
+ * The disc a decal pool is drawn as, on a surface square to the beam,
+ * `throwDistance` from the light whose cone is `coneRad` either side of its
+ * axis: `outer`, where the light ends (the cone's edge), and `innerFrac`, the
+ * share of that radius inside which it is full (the inner cone).
+ *
+ * The decal fades with the square of the distance from its centre between the
+ * two, which puts its half-way ring where `poolRadius` puts the spot light's,
+ * so the drawn beam still ends as wide as its pool.
+ */
+export function poolDecal(throwDistance: number, coneRad: number): { outer: number; innerFrac: number } {
+  const throwSafe = throwDistance > 0 ? throwDistance : 0;
+  const cone = Math.min(Math.max(coneRad, 1e-4), Math.PI / 2 - 1e-3);
+  const outerTan = Math.tan(cone);
+  const innerTan = Math.tan(cone * (1 - POOL_LIGHT_PENUMBRA));
+  return { outer: throwSafe * outerTan, innerFrac: innerTan / outerTan };
+}
+
+/**
+ * Where a decal's fade is at half, as a share of its outer radius: the fade is
+ * a smoothstep on the squared radius from innerFrac² to 1.
+ */
+export function poolDecalHalfFrac(innerFrac: number): number {
+  return Math.sqrt((innerFrac * innerFrac + 1) / 2);
+}
