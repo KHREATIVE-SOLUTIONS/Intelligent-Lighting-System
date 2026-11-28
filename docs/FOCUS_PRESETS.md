@@ -130,10 +130,14 @@ for a database rig only; a demo preset has no room to aim in.
 
 **The reach follows the rig.** Every rig write the app's client makes and the
 server accepts (a fixture dragged in the 2D plan or the 3D view, turned,
-retagged, added or removed, a rig saved, the room edited, a scan applied) is
-announced, in this tab and in others (`announceRigChange` in
-`utils/focusTargetsSync.ts`, from the client's response handler in
-`services/api.ts`). The panel and the 3D markers read the table again 400 ms
+retagged, added or removed, a rig saved, the room edited, a scan applied, a
+fixture's QR code scanned) is announced, in this tab and in others
+(`announceRigChange` in `utils/focusTargetsSync.ts`, from the client's
+response handler in `services/api.ts`). The QR scanner and the RDM import
+go through that client too (`rigsApi.scanQr`, `rigsApi.importRdmDevices`);
+the RDM import's route, `/rdm/import`, names no rig, so it announces its
+rig itself. No component in the app calls the rig API with bare axios or
+`fetch` any more. The panel and the 3D markers read the table again 400 ms
 after the last one, so a drag's run of saves is one read, and the reach
 colours change without turning the markers off and on. Lighting a fixture to
 find it, the identify session's keep-alive, the focus targets' own writes and
@@ -157,8 +161,12 @@ the engine's frames draw them.
 - A moved fixture moves the preview too: it reads the same table.
 - **Standing heads.** The 3D view draws every moving head hung, so a standing
   head's angles are turned into the hung head's that point its beam the same
-  way (pan 180 - p, tilt +-180 - t). A standing head aimed within 45 degrees
-  of the ceiling cannot be drawn that way and stays at home, listed.
+  way (pan 180 - p, tilt +-180 - t), exactly, under any yaw or lean. A
+  standing head aimed within 45 degrees of the ceiling needs the hung head
+  tilted past its 135 each way (180 is straight up), so while it is
+  previewed the view lets it go past its travel (`viewTravelLimit`) and it is
+  drawn aimed, the hung model turned over in its yoke. When the preview
+  stops it eases back into its travel. Live motion keeps the travel.
 - Heads are found by `rig_fixture_id`. A row the view has no fixture for is
   listed ("it is not in the 3D view"), never put on another head.
 
@@ -184,7 +192,8 @@ choice is kept per rig in the browser (`localStorage`,
 
 Code: `frontend/src/utils/focusPresets.ts` (reading the table, checking a
 typed target, the sentences, the marker look),
-`utils/focusPreview.ts` (the preview's aims, pure), `utils/focusTargetsSync.ts`
+`utils/focusPreview.ts` (the preview's aims and how far past its travel a
+previewed head may go, pure), `utils/focusTargetsSync.ts`
 (target and rig change announcements), `stores/focusPreviewStore.ts` (which
 target is previewed, and which rig a 3D view shows),
 `components/rig/useFocusPresets.ts`, `components/rig/FocusPresetsPanel.tsx`,
@@ -192,8 +201,10 @@ target is previewed, and which rig a 3D view shows),
 `FocusTargets3dToggle.tsx` and `FocusPreviewNotice.tsx`; the frame loop in
 `RigVisualizer.tsx` (`previewAims`). Tests: `focusPresets.test.ts`,
 `FocusPresetsPanel.test.tsx`, `FocusTargets3d.test.tsx`,
-`focusPreview.test.ts` and `FocusPresetsPreview.test.tsx` in
-`frontend/src/__tests__`.
+`focusPreview.test.ts` (with standing heads aimed straight up and near the
+ceiling against backend `aim()` numbers), `FocusPresetsPreview.test.tsx` and
+`focusRigWritePaths.test.tsx` (a QR scan and an RDM import read the table
+again, once, only while it is shown) in `frontend/src/__tests__`.
 
 ## The maths, in short
 
@@ -287,15 +298,20 @@ reason and the head columns blank.
 - The preview is in the 3D view only. Putting a real head on a target (a
   live preview through the output stage, with the operator's say-so) is not
   built.
-- The preview draws a standing head on the view's hung head; one aimed near
-  the ceiling is left at home. The view does not yet stand a mover on its
-  base.
+- The preview draws a standing head on the view's hung head, turned past its
+  travel when it is aimed near the ceiling: the beam is right, the housing
+  is drawn hanging. The view does not yet stand a mover on its base.
 - The frontend tests for this work (`focusPreview.test.ts`,
-  `FocusPresetsPreview.test.tsx`) were written in a worktree with no
-  `node_modules` and have not been run yet; run them, and `npx tsc --noEmit`,
-  before merging. The backend test was run.
-- A rig write made outside the app's client (a script against the API, the
-  database edited, and the QR scanner's `/rigs/{id}/scan`, which posts with
-  bare axios) is not announced; reopen the panel or the view.
+  `FocusPresetsPreview.test.tsx`, `focusRigWritePaths.test.tsx`) have not
+  been run with vitest: it was refused in the worktrees they were written in.
+  `npx tsc --noEmit` passes them (only the 13 older errors elsewhere), and
+  the ceiling maths was checked against backend `aim()` in Python over the
+  whole ceiling cone. Run them before merging.
+- A rig write made outside the app (a script against the API, the database
+  edited) is not announced; reopen the panel or the view.
+- The QR scanner and RDM discovery dialogs are not opened from anywhere in
+  the app yet. The RDM import also sends `{device_uids, rig_id}` where the
+  server takes a list of device ids as the body and `rig_id` as a query
+  parameter, so it is refused (422) until one of them changes.
 - Mount is guessed from height when not tagged; there is no column for it.
 - grandMA3 is not targeted.
