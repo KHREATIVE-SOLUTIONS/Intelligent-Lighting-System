@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Box, Button, Checkbox, FormControlLabel, Typography, Paper, Snackbar, Alert } from '@mui/material';
+import {
+  Box, Button, Checkbox, Dialog, DialogActions, DialogContent, FormControlLabel, Typography, Paper, Snackbar, Alert,
+} from '@mui/material';
 import axios from 'axios';
 import { rigsApi, fixturesApi, roomScanApi } from '../../services/api';
 import { useRigEditorStore, computeTrussLines } from '../../stores/rigEditorStore';
@@ -23,6 +25,8 @@ import FixtureProperties from './FixtureProperties';
 import IdentifyWalkthrough from './IdentifyWalkthrough';
 import RoomScanDialog from './RoomScanDialog';
 import ReadinessDialog from './ReadinessDialog';
+import RDMDiscovery from './RDMDiscovery';
+import QRScanner from './QRScanner';
 import { pendingCarryOverOf, undoCount } from '../../utils/roomScan';
 import RoomShellEditDialog from './RoomShellEditDialog';
 import {
@@ -61,6 +65,8 @@ export default function RigBuilder() {
   const [roomScanOpen, setRoomScanOpen] = useState(false);
   const [roomEditOpen, setRoomEditOpen] = useState(false);
   const [readinessOpen, setReadinessOpen] = useState(false);
+  const [rdmOpen, setRdmOpen] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
   // The fixtures Readiness's Locate these named: flash-and-tap walks just those.
   const [locateIds, setLocateIds] = useState<number[] | undefined>(undefined);
   // Edit Room's walls mode: the dialog is put away and the corners of the
@@ -245,6 +251,19 @@ export default function RigBuilder() {
     // written would be judged where it was, not where it is on screen.
     await flushPositions();
     setReadinessOpen(true);
+  };
+
+  const handleDiscoverRdm = async () => {
+    // An import adds fixtures and the rig is read again after it: a drag still
+    // waiting to be written would be read back where it was.
+    await flushPositions();
+    setRdmOpen(true);
+  };
+
+  const handleScanQr = async () => {
+    // Each scan can add a fixture, and the rig is read again after it, as above.
+    await flushPositions();
+    setQrOpen(true);
   };
 
   const handleEditRoom = async () => {
@@ -805,10 +824,13 @@ export default function RigBuilder() {
   const scannedTruss = planTrussTargets(rig.room_shell);
   // Walls mode is only ever on over a scanned room: a room taken off, or
   // another dialog in front of the plan, is not something to drag walls under.
-  const wallsOn = wallsMode && rig.room_shell?.source === 'scan' && !identifyOpen && !roomScanOpen && !roomEditOpen;
+  // RDM discovery or the QR scanner in front of the plan: the scanner's code
+  // box takes typing (a USB scanner types too), which must not reach the plan's keys.
+  const addOpen = rdmOpen || qrOpen;
+  const wallsOn = wallsMode && rig.room_shell?.source === 'scan' && !identifyOpen && !roomScanOpen && !roomEditOpen && !addOpen;
   // Arranging the room's items, on the same terms.
   const itemsOn = itemsMode && !wallsOn && rig.room_shell?.source === 'scan'
-    && !identifyOpen && !roomScanOpen && !roomEditOpen;
+    && !identifyOpen && !roomScanOpen && !roomEditOpen && !addOpen;
   const selectedItem = itemsOn
     ? shellItems(rig.room_shell).find((item) => shellItemKey(item) === selectedItemKey) ?? null
     : null;
@@ -835,6 +857,8 @@ export default function RigBuilder() {
         hasRoom={rig.room_shell?.source === 'scan'}
         onEditRoom={() => { void handleEditRoom(); }}
         onReadiness={() => { void handleReadiness(); }}
+        onDiscoverRdm={() => { void handleDiscoverRdm(); }}
+        onScanQr={() => { void handleScanQr(); }}
         selectedCount={selectedFixtures.length}
         onSelectRow={() => { if (selectedFixtures.length > 0) handleSelectRow(selectedFixtures[0].id); }}
         onLayRow={scannedTruss.length > 0 ? handleLayRow : undefined}
@@ -995,10 +1019,10 @@ export default function RigBuilder() {
             // Nor in walls mode, where nothing is selected or nudged.
             // Nor while the room's items are arranged, which has keys of its own.
             // Nor while a stage plot is calibrated, when a nudge would move (and confirm) a fixture.
-            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn && !itemsOn && !stagePlot.calibrating}
+            keyboard={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !addOpen && !wallsOn && !itemsOn && !stagePlot.calibrating}
             // The same keys as buttons over the plan, for a phone or a
             // tablet: shown while something is selected, on the same terms.
-            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !wallsOn && !itemsOn && !stagePlot.calibrating}
+            nudgePad={viewMode === '2d' && !identifyOpen && !roomScanOpen && !roomEditOpen && !addOpen && !wallsOn && !itemsOn && !stagePlot.calibrating}
             // Edit Room's "Arrange room items on the plan": a raised area, a
             // truss line or a ring is dragged, or nudged with the arrow keys,
             // each change one request and one step of the room's own undo.
@@ -1139,6 +1163,33 @@ export default function RigBuilder() {
         onDragWalls={handleDragWalls}
         onArrangeItems={handleArrangeItems}
       />
+
+      {/* Adding fixtures from what is on the line or on their labels. Either
+          adds rig fixtures on the server (positions of the ones already there
+          are untouched, so the editor's undo stays true): the rig is read again. */}
+      <Dialog open={rdmOpen} onClose={() => setRdmOpen(false)} maxWidth="md" fullWidth>
+        <DialogContent>
+          <RDMDiscovery
+            rigId={rig.id}
+            onImport={(_ids, imported) => {
+              setNotice({ severity: 'success', text: `${imported} RDM device${imported === 1 ? '' : 's'} added to the rig.` });
+              void fetchRig();
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRdmOpen(false)}>Done</Button>
+        </DialogActions>
+      </Dialog>
+
+      {qrOpen && (
+        <QRScanner
+          rigId={rig.id}
+          open={qrOpen}
+          onScan={(_rigFixtureId, added) => { if (added) void fetchRig(); }}
+          onClose={() => setQrOpen(false)}
+        />
+      )}
 
       <Snackbar
         open={!!notice}

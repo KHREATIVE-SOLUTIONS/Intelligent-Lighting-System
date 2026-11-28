@@ -135,8 +135,9 @@ fixture's QR code scanned) is announced, in this tab and in others
 (`announceRigChange` in `utils/focusTargetsSync.ts`, from the client's
 response handler in `services/api.ts`). The QR scanner and the RDM import
 go through that client too (`rigsApi.scanQr`, `rigsApi.importRdmDevices`);
-the RDM import's route, `/rdm/import`, names no rig, so it announces its
-rig itself. No component in the app calls the rig API with bare axios or
+the RDM import's route, `/rdm/import`, names its rig only in the `rig_id`
+query parameter, which the response handler does not read, so the import
+announces its rig itself (see [RDM_AND_QR.md](RDM_AND_QR.md)). No component in the app calls the rig API with bare axios or
 `fetch` any more. The panel and the 3D markers read the table again 400 ms
 after the last one, so a drag's run of saves is one read, and the reach
 colours change without turning the markers off and on. Lighting a fixture to

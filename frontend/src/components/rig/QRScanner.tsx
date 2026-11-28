@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import type { FormEvent } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -17,6 +18,7 @@ import {
   ListItemText,
   IconButton,
   LinearProgress,
+  TextField,
 } from '@mui/material';
 import {
   QrCodeScanner as ScannerIcon,
@@ -29,20 +31,32 @@ import {
 } from '@mui/icons-material';
 import axios from 'axios';
 import { rigsApi } from '../../services/api';
+import type { QrScanAnswer } from '../../services/api';
 
 interface QRScannerProps {
   rigId: number;
-  onScan?: (fixtureId: number) => void;
+  /** After each code the server took: the rig fixture it added or named, and whether it was added. */
+  onScan?: (rigFixtureId: number, added: boolean) => void;
   open: boolean;
   onClose: () => void;
 }
 
-interface ScanResult {
-  fixture_id: number;
-  fixture_name: string;
-  dmx_address: number;
-  universe: number;
+/** One answered scan, from the route's own answer (`QrScanAnswer`). */
+export interface ScanResult {
+  rig_fixture_id: number;
+  added: boolean;
+  /** The server's sentence: "Added Spot 3 at address 17", or where it already is. */
+  message: string;
   timestamp: number;
+}
+
+export function scanResultOf(answer: QrScanAnswer, now = Date.now()): ScanResult {
+  return {
+    rig_fixture_id: answer.rig_fixture_id,
+    added: answer.action === 'added',
+    message: answer.message || (answer.action === 'added' ? 'Added to the rig' : 'Already in the rig'),
+    timestamp: now,
+  };
 }
 
 export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerProps) {
@@ -59,6 +73,7 @@ export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerPro
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [generatingLabels, setGeneratingLabels] = useState(false);
+  const [typedCode, setTypedCode] = useState('');
 
   // Check if BarcodeDetector is available
   const hasBarcodeDetector = typeof window !== 'undefined' && 'BarcodeDetector' in window;
@@ -130,17 +145,20 @@ export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerPro
   }, [stopCamera]);
 
   const handleQRData = useCallback(
-    async (qrData: string) => {
-      // Debounce: don't scan the same code repeatedly
-      if (qrData === lastScannedRef.current) return;
-      lastScannedRef.current = qrData;
+    async (qrData: string, typed = false) => {
+      // Debounce: the camera sees the same code on every frame. A code typed or
+      // sent by a handheld scanner is meant every time.
+      if (!typed) {
+        if (qrData === lastScannedRef.current) return;
+        lastScannedRef.current = qrData;
 
-      // Clear the debounce after 3 seconds so the same code can be scanned again
-      setTimeout(() => {
-        if (lastScannedRef.current === qrData) {
-          lastScannedRef.current = '';
-        }
-      }, 3000);
+        // Clear the debounce after 3 seconds so the same code can be scanned again
+        setTimeout(() => {
+          if (lastScannedRef.current === qrData) {
+            lastScannedRef.current = '';
+          }
+        }, 3000);
+      }
 
       setProcessing(true);
       setError(null);
@@ -148,25 +166,16 @@ export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerPro
       try {
         // Through the app's client: it carries the token, and announces the
         // rig change so the focus table and 3D reach markers read again.
-        const data = await rigsApi.scanQr(rigId, qrData);
-
-        const result: ScanResult = {
-          fixture_id: data.fixture_id,
-          fixture_name: data.fixture_name || 'Unknown Fixture',
-          dmx_address: data.dmx_address || 0,
-          universe: data.universe || 0,
-          timestamp: Date.now(),
-        };
+        const result = scanResultOf(await rigsApi.scanQr(rigId, qrData));
 
         setLastResult(result);
         setScanResults((prev) => {
-          // Avoid duplicates
-          const exists = prev.some((r) => r.fixture_id === result.fixture_id);
-          if (exists) return prev;
-          return [result, ...prev];
+          // One line per rig fixture: a second scan of it says so again on top.
+          const rest = prev.filter((r) => r.rig_fixture_id !== result.rig_fixture_id);
+          return [result, ...rest];
         });
 
-        onScan?.(result.fixture_id);
+        onScan?.(result.rig_fixture_id, result.added);
       } catch (err) {
         if (axios.isAxiosError(err)) {
           setError(
@@ -264,10 +273,14 @@ export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerPro
     setGeneratingLabels(true);
     setError(null);
     try {
-      const url = URL.createObjectURL(await rigsApi.labelsPdf(rigId));
+      const blob = await rigsApi.labelsPdf(rigId);
+      // The route answers the label data as JSON until it can draw a PDF
+      // (qr_scanning.py, generate_label_sheet): saved as what it is.
+      const isPdf = blob.type.includes('pdf');
+      const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `rig_${rigId}_labels.pdf`;
+      link.download = `rig_${rigId}_labels.${isPdf ? 'pdf' : 'json'}`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -409,15 +422,48 @@ export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerPro
 
         {/* Last scan result */}
         {lastResult && (
-          <Alert severity="success" sx={{ mb: 2 }}>
+          <Alert severity={lastResult.added ? 'success' : 'info'} sx={{ mb: 2 }}>
             <Typography variant="body2" fontWeight="bold">
-              {lastResult.fixture_name}
+              {lastResult.added ? 'Added to the rig' : 'Already in the rig'}
             </Typography>
-            <Typography variant="caption">
-              Universe {lastResult.universe}, Address {lastResult.dmx_address}
-            </Typography>
+            <Typography variant="caption">{lastResult.message}</Typography>
           </Alert>
         )}
+
+        {/* The camera only reads codes where the browser has BarcodeDetector
+            (Chrome on Android and macOS; not Chrome or Edge on Windows, nor
+            Firefox). Typing the code, or a USB handheld scanner, which types it
+            and presses Enter, works everywhere. */}
+        {!hasBarcodeDetector && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            This browser cannot read QR codes from the camera. Type the code below,
+            or use a USB barcode scanner: click the box and scan.
+          </Alert>
+        )}
+        <Box
+          component="form"
+          onSubmit={(e: FormEvent) => {
+            e.preventDefault();
+            const code = typedCode.trim();
+            if (!code || processing) return;
+            setTypedCode('');
+            void handleQRData(code, true);
+          }}
+          sx={{ display: 'flex', gap: 1, mb: 2 }}
+        >
+          <TextField
+            size="small"
+            fullWidth
+            label="QR code or fixture ID"
+            value={typedCode}
+            onChange={(e) => setTypedCode(e.target.value)}
+            autoFocus={!hasBarcodeDetector}
+            inputProps={{ 'aria-label': 'QR code or fixture ID' }}
+          />
+          <Button type="submit" variant="outlined" disabled={!typedCode.trim() || processing}>
+            Add
+          </Button>
+        </Box>
 
         {/* Camera toggle */}
         <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
@@ -446,13 +492,13 @@ export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerPro
         {scanResults.length > 0 ? (
           <List dense sx={{ maxHeight: 200, overflow: 'auto' }}>
             {scanResults.map((result) => (
-              <ListItem key={result.fixture_id}>
+              <ListItem key={result.rig_fixture_id}>
                 <ListItemIcon sx={{ minWidth: 36 }}>
-                  <CheckIcon color="success" fontSize="small" />
+                  <CheckIcon color={result.added ? 'success' : 'disabled'} fontSize="small" />
                 </ListItemIcon>
                 <ListItemText
-                  primary={result.fixture_name}
-                  secondary={`Universe ${result.universe}, Address ${result.dmx_address}`}
+                  primary={result.message}
+                  secondary={result.added ? 'Added' : 'Already in the rig'}
                 />
               </ListItem>
             ))}

@@ -374,7 +374,7 @@ export const rigsApi = {
    * one already there). Through this client so it carries the operator's
    * token and is announced as a rig change like every other rig write.
    */
-  scanQr: async (rigId: number, qrData: string) => {
+  scanQr: async (rigId: number, qrData: string): Promise<QrScanAnswer> => {
     const response = await api.post(`/rigs/${rigId}/scan`, { qr_data: qrData });
     return response.data;
   },
@@ -386,13 +386,74 @@ export const rigsApi = {
   },
 
   /**
-   * Discovered RDM devices added to a rig. The route is not under /rigs/{id},
-   * so the response handler cannot tell which rig it wrote: announced here.
+   * Discovered RDM devices added to a rig. The route takes the devices' stored
+   * row ids (`saved_devices[].id` from `rdmApi.devices`, not their RDM UIDs)
+   * as a bare JSON list, and the rig as the `rig_id` query parameter. The
+   * route is not under /rigs/{id}, so the response handler cannot tell which
+   * rig it wrote: announced here.
    */
-  importRdmDevices: async (rigId: number, deviceUids: string[]) => {
-    const response = await api.post('/rdm/import', { device_uids: deviceUids, rig_id: rigId });
+  importRdmDevices: async (rigId: number, deviceIds: number[]): Promise<RdmImportResult> => {
+    const response = await api.post('/rdm/import', deviceIds, { params: { rig_id: rigId } });
     announceRigChange(rigId);
     return response.data;
+  },
+};
+
+/** What POST /rigs/{id}/scan answers (backend/app/api/endpoints/qr_scanning.py). */
+export interface QrScanAnswer {
+  /** Added to the rig, or already in it with this code. */
+  action: 'added' | 'identified';
+  rig_fixture_id: number;
+  /** Only when added: an already-patched fixture's address is in `message`. */
+  dmx_address?: number;
+  message: string;
+}
+
+// RDM discovery (backend/app/api/endpoints/discovery.py). Through the app's
+// client so every call carries the operator's token.
+export interface RdmSavedDevice {
+  id: number;
+  uid: string;
+  manufacturer: string | null;
+  model: string | null;
+  label: string | null;
+  dmx_footprint: number | null;
+  dmx_address: number | null;
+  universe: number | null;
+  is_imported: boolean;
+  matched_fixture_id: number | null;
+  last_seen: string | null;
+}
+
+export interface RdmDevicesAnswer {
+  scanning: boolean;
+  /** What the scan under way has seen. Not stored yet, so not importable. */
+  live_devices: Record<string, unknown>[];
+  /** Devices stored by an earlier scan: these carry the id the import takes. */
+  saved_devices: RdmSavedDevice[];
+}
+
+export interface RdmImportResult {
+  /** How many were added. Devices already imported, or not found, are skipped. */
+  imported: number;
+}
+
+export const rdmApi = {
+  start: async (universes = '0') => {
+    const response = await api.post('/rdm/start', null, { params: { universes } });
+    return response.data as { status: string; universes?: number[] };
+  },
+  stop: async () => {
+    const response = await api.post('/rdm/stop');
+    return response.data as { status: string };
+  },
+  devices: async (): Promise<RdmDevicesAnswer> => {
+    const response = await api.get('/rdm/devices');
+    return response.data;
+  },
+  identify: async (uid: string) => {
+    const response = await api.get(`/rdm/device/${encodeURIComponent(uid)}/identify`);
+    return response.data as { status?: string; error?: string };
   },
 };
 
