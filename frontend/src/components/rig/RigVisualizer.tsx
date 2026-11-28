@@ -76,8 +76,10 @@ import {
 import { StatsOverlay, StatsSampler } from './previs/PrevizStats';
 import { createLookUniforms } from './previs/lookUniforms';
 import {
-  HAZE_DRIFT_COUNT, fogDensity, readLookSettings, staticHazeStrength, writeLookSettings,
+  BLOOM_SAMPLES, HAZE_DRIFT_COUNT, bloomFor, canvasExposure, fogDensity, readLookSettings,
+  staticHazeStrength, withBloom, writeLookSettings,
 } from './previs/lookSettings';
+import { BloomComposer } from './previs/PostFX';
 import type { LookSettings } from './previs/lookSettings';
 import { HazeDrift } from './previs/HazeDrift';
 import type { HazeBounds } from './previs/hazePuffs';
@@ -905,6 +907,14 @@ export default function RigVisualizer() {
       return updated;
     });
   }, []);
+  const bloomOn = bloomFor(lookSettings, qualityMode);
+  const setBloom = useCallback((on: boolean) => {
+    setLookSettings((current) => {
+      const updated = withBloom(current, qualityMode, on);
+      writeLookSettings(updated);
+      return updated;
+    });
+  }, [qualityMode]);
   // Beat and section for the crowd. A ref, so a message re-renders nothing.
   const beatClock = useRef<BeatClock>(createBeatClock());
   // The frames the engine outputs, as they arrive. A ref for the same reason;
@@ -1305,7 +1315,7 @@ export default function RigVisualizer() {
             </Button>
           </Tooltip>
         </ButtonGroup>
-        <LookControls settings={lookSettings} onChange={changeLook} />
+        <LookControls settings={lookSettings} onChange={changeLook} bloom={bloomOn} onBloom={setBloom} />
         <StagePlot3dToggle status={stagePlot.status} on={stagePlot.on} onChange={stagePlot.setOn} />
         <FocusTargets3dToggle available={focusTargets.available} on={focusTargets.on} onChange={focusTargets.setOn} />
         {/* The rig on screen, written out for a desk or a visualiser. */}
@@ -1386,7 +1396,8 @@ export default function RigVisualizer() {
             // integrated one; the browser may still decide otherwise.
             powerPreference: 'high-performance',
             toneMapping: THREE.ACESFilmicToneMapping,
-            toneMappingExposure: qualityMode === 'ultra' ? 1.32 : 1.2,
+            // The one place exposure is set; OutputPass reads it from here too with bloom on.
+            toneMappingExposure: canvasExposure(lookSettings.exposure, qualityMode),
           }}
           dpr={previzDpr(qualityMode, typeof window === 'undefined' ? 1 : window.devicePixelRatio)}
         >
@@ -1407,6 +1418,8 @@ export default function RigVisualizer() {
             lookSettings={lookSettings}
           />
           <StatsSampler sink={statsSink} />
+          {/* Bloom: with it on, the composer draws the frame (priority 1) and r3f does not. */}
+          {bloomOn && <BloomComposer key={qualityMode} samples={BLOOM_SAMPLES[qualityMode]} />}
         </Canvas>
       </Box>
 
