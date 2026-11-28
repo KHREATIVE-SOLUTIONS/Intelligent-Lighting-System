@@ -657,6 +657,7 @@ class EffectsEngine:
         self._rebuild_base_color: RGB = RGB(1.0, 1.0, 1.0)
         # Live colour: the base hue and its crossfade (live_colour).
         self._live_hue = live_colour.HueFade()
+        self._live_colour_key: Optional[Tuple[str, Optional[int]]] = None
         self._rebuild_snare_strobe_until: float = -999.0
         self._rebuild_snare_last_trigger: float = -999.0
         # The look library's current look, by name, and the movement it uses.
@@ -1638,8 +1639,36 @@ class EffectsEngine:
         colour_floor = max(0.0, min(1.0, float(getattr(self.config, "colour_min_saturation", 0.72))))
         live_sat = 0.0
         if live_colour_on:
-            if recolour or not self._live_hue.ready:
-                self._rebuild_color_key = (section, phrase) if phrase is not None else None
+            # A new colour on a new section, a new phrase, or (with no phrase
+            # grid) once `colour_hold_bars` have passed. The clock gaining or
+            # losing its lock mid-section is not a musical change: the key is
+            # adopted without a recolour.
+            key = (section, phrase)
+            prev_key = self._live_colour_key
+            if prev_key is None or not self._live_hue.ready:
+                recolour = True
+            elif prev_key[0] != section:
+                recolour = True
+            elif (prev_key[1] is None) != (phrase is None):
+                recolour = False
+                self._live_colour_key = key
+            elif phrase is None:
+                recolour = self.time >= self._rebuild_color_hold_until
+            elif key != prev_key:
+                # A phrase line, unless the grid itself moved (the clock
+                # settling its downbeat): a phrase line within half a
+                # colour's hold of the last change is taken without one.
+                min_s = 0.5 * max(1.0, float(getattr(self.config, "colour_hold_bars", 8.0))) * 4.0 * 60.0 / max(60.0, bpm)
+                recolour = self.time - self._live_hue.since >= min_s
+                if not recolour:
+                    self._live_colour_key = key
+            else:
+                recolour = False
+            if self._track_transition > 0.0 and prev_key is not None and self._live_hue.ready:
+                recolour = False
+            if recolour:
+                self._live_colour_key = key
+                self._rebuild_color_key = key if phrase is not None else None
                 hue = live_colour.next_hue(
                     live_colour.anchors(self._current_song_palette),
                     self._live_hue.steps,
@@ -3416,6 +3445,7 @@ class EffectsEngine:
         self._phrase_origin_bar = None
         self._rebuild_pattern_key = None
         self._rebuild_color_key = None
+        self._live_colour_key = None
         self._rebuild_color_hold_until = 0.0
 
         print(f"[Effects] Song changed! New palette: {self._current_song_palette.value}")
