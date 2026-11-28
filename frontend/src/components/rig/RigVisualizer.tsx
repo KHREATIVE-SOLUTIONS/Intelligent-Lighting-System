@@ -75,6 +75,13 @@ import {
 } from './previs/viewSettings';
 import { StatsOverlay, StatsSampler } from './previs/PrevizStats';
 import { createLookUniforms } from './previs/lookUniforms';
+import {
+  HAZE_DRIFT_COUNT, fogDensity, readLookSettings, staticHazeStrength, writeLookSettings,
+} from './previs/lookSettings';
+import type { LookSettings } from './previs/lookSettings';
+import { HazeDrift } from './previs/HazeDrift';
+import type { HazeBounds } from './previs/hazeDrift';
+import LookControls from './previs/LookControls';
 import type { PrevizStatsSample } from './previs/PrevizStats';
 
 type QualityMode = 'performance' | 'balanced' | 'ultra';
@@ -198,7 +205,16 @@ function KeyZoneHighlights({
 // HAZE PARTICLES (SUBTLE ATMOSPHERIC EFFECT)
 // ============================================================================
 
-function HazeParticles({ count, spread }: { count: number; spread: [number, number, number] }) {
+function HazeParticles({
+  count,
+  spread,
+  strength,
+}: {
+  count: number;
+  spread: [number, number, number];
+  /** 1 as they always were; scaled with the Haze slider. */
+  strength: number;
+}) {
   const particlesRef = useRef<THREE.Points>(null);
 
   const [positions, sizes] = useMemo(() => {
@@ -247,7 +263,7 @@ function HazeParticles({ count, spread }: { count: number; spread: [number, numb
         color="#888"
         size={0.08}
         transparent
-        opacity={0.06}
+        opacity={Math.min(1, 0.06 * strength)}
         depthWrite={false}
         blending={THREE.AdditiveBlending}
         sizeAttenuation
@@ -295,9 +311,23 @@ const atmosphereMaterial = new THREE.MeshBasicMaterial({
   depthWrite: false,
 });
 
-function AtmosphereLayers({ width, depth, height }: { width: number; depth: number; height: number }) {
+function AtmosphereLayers({
+  width,
+  depth,
+  height,
+  strength,
+}: {
+  width: number;
+  depth: number;
+  height: number;
+  /** 1 as they always were; scaled with the Haze slider (the material's colour multiplies the baked sheets). */
+  strength: number;
+}) {
   const geometry = useMemo(() => buildAtmosphere(width, depth, height), [width, depth, height]);
   useEffect(() => () => geometry.dispose(), [geometry]);
+  useLayoutEffect(() => {
+    atmosphereMaterial.color.setScalar(strength);
+  }, [strength]);
   return <mesh geometry={geometry} material={atmosphereMaterial} dispose={null} />;
 }
 
@@ -322,8 +352,11 @@ function Scene({
   move,
   stagePlot = null,
   focusTargets = NO_FOCUS_TARGETS,
+  lookSettings,
 }: {
   rig: Rig;
+  /** Haze, soft beams, gobos and the drifting haze (lookSettings.ts). Bloom and exposure are the canvas's. */
+  lookSettings: LookSettings;
   /** Shadows on: the brightest few beams get a real, shadow-casting spot light. */
   shadows: boolean;
   /** The calibrated stage plot to lay on the floor, or null. */
@@ -517,8 +550,29 @@ function Scene({
   }, [rig, debugBuffer]);
 
   // The look controls as uniforms the beam, pool and haze materials share
-  // (lookUniforms.ts): made once, written below, read on the next frame.
+  // (lookUniforms.ts): made once, written here, read on the next frame.
   const look = useMemo(() => createLookUniforms(), []);
+  useLayoutEffect(() => {
+    look.haze.value = lookSettings.haze;
+    look.softBeams.value = lookSettings.softBeams ? 1 : 0;
+    look.gobos.value = lookSettings.gobos ? 1 : 0;
+  }, [look, lookSettings.haze, lookSettings.softBeams, lookSettings.gobos]);
+
+  // What the drifting haze fills: the club room, or above the bare stage.
+  const hazeBounds = useMemo<HazeBounds>(() => {
+    const { layout } = venue;
+    return showVenue
+      ? { xMin: -layout.wallX, xMax: layout.wallX, zMin: layout.backZ, zMax: layout.houseZ, floorY: 0, ceilingY: layout.ceilingY }
+      : {
+          xMin: -rig.stage_width / 2,
+          xMax: rig.stage_width / 2,
+          zMin: -rig.stage_depth / 2,
+          zMax: rig.stage_depth / 2,
+          floorY: 0,
+          ceilingY: Math.max(3, rig.stage_height),
+        };
+  }, [venue, showVenue, rig.stage_width, rig.stage_depth, rig.stage_height]);
+  const staticHaze = staticHazeStrength(lookSettings.haze);
 
   return (
     <>
@@ -576,16 +630,31 @@ function Scene({
           the hoists up to the ceiling go, because the ceiling has. */}
       <RigTruss rows={venue.trussRows} hangTo={showVenue ? venue.layout.ceilingY : undefined} />
 
-      {/* Haze particles for atmospheric effect */}
-      <AtmosphereLayers width={rig.stage_width} depth={rig.stage_depth} height={rig.stage_height} />
+      {/* The static haze: faint sheets and specks, as strong as the Haze slider
+          says (as they always were at its default, gone in clean air). */}
+      {staticHaze > 0 && (
+        <AtmosphereLayers
+          width={rig.stage_width}
+          depth={rig.stage_depth}
+          height={rig.stage_height}
+          strength={staticHaze}
+        />
+      )}
       {/* Keyed on the count: three cannot resize a buffer attribute in place, so
           switching quality with the same geometry threw on every frame and froze
           the view until the original quality was selected again. */}
-      <HazeParticles
-        key={`haze-${quality.hazeCount}`}
-        count={quality.hazeCount}
-        spread={[rig.stage_width, rig.stage_height, rig.stage_depth]}
-      />
+      {staticHaze > 0 && (
+        <HazeParticles
+          key={`haze-${quality.hazeCount}`}
+          count={quality.hazeCount}
+          spread={[rig.stage_width, rig.stage_height, rig.stage_depth]}
+          strength={staticHaze}
+        />
+      )}
+      {/* The drifting haze: a few big soft puffs, lit by the rig (HazeDrift.tsx). */}
+      {lookSettings.hazeDrift && lookSettings.haze > 0 && (
+        <HazeDrift look={look} count={HAZE_DRIFT_COUNT[qualityMode]} bounds={hazeBounds} />
+      )}
 
       {/* Fixtures */}
       {/* Every fixture: bodies, beams and floor pools as instanced draws,
@@ -623,8 +692,10 @@ function Scene({
         />
       )}
 
-      {/* Exponential fog for haze effect */}
-      <fogExp2 attach="fog" args={['#05070a', 0.006]} />
+      {/* Exponential fog for haze effect: a trace in clean air, thicker with the Haze slider. */}
+      <fogExp2 attach="fog" args={['#05070a', 0.006]} density={fogDensity(lookSettings.haze)} />
+      {/* Black behind everything, drawn or post-processed: bloom must not see a transparent canvas. */}
+      <color attach="background" args={['#000000']} />
     </>
   );
 }
@@ -825,6 +896,15 @@ export default function RigVisualizer() {
     writeViewToggle(PREVIZ_STATS_KEY, on);
   }, []);
   const statsSink = useRef<((sample: PrevizStatsSample) => void) | null>(null);
+  // Haze, bloom, exposure, soft beams, gobos (lookSettings.ts), kept for this machine.
+  const [lookSettings, setLookSettings] = useState<LookSettings>(() => readLookSettings());
+  const changeLook = useCallback((next: Partial<LookSettings>) => {
+    setLookSettings((current) => {
+      const updated = { ...current, ...next };
+      writeLookSettings(updated);
+      return updated;
+    });
+  }, []);
   // Beat and section for the crowd. A ref, so a message re-renders nothing.
   const beatClock = useRef<BeatClock>(createBeatClock());
   // The frames the engine outputs, as they arrive. A ref for the same reason;
@@ -1225,6 +1305,7 @@ export default function RigVisualizer() {
             </Button>
           </Tooltip>
         </ButtonGroup>
+        <LookControls settings={lookSettings} onChange={changeLook} />
         <StagePlot3dToggle status={stagePlot.status} on={stagePlot.on} onChange={stagePlot.setOn} />
         <FocusTargets3dToggle available={focusTargets.available} on={focusTargets.on} onChange={focusTargets.setOn} />
         {/* The rig on screen, written out for a desk or a visualiser. */}
@@ -1323,6 +1404,7 @@ export default function RigVisualizer() {
             move={sceneMove}
             stagePlot={stagePlot.floor}
             focusTargets={focusTargets.markers}
+            lookSettings={lookSettings}
           />
           <StatsSampler sink={statsSink} />
         </Canvas>
