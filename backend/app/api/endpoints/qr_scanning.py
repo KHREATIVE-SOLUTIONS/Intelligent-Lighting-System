@@ -6,13 +6,14 @@ API endpoints for scanning QR codes on fixtures and generating
 labels for fixture identification.
 """
 
+import asyncio
 import io
 import json
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,7 @@ from sqlalchemy.orm import selectinload
 from app.db.database import get_db
 from app.models.rig import Rig, RigFixture
 from app.models.fixture import Fixture
+from app.services.label_sheet import Label, label_sheet_pdf
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -166,9 +168,16 @@ async def generate_qr_code(
 @router.get("/rigs/{rig_id}/labels/pdf")
 async def generate_label_sheet(
     rig_id: int,
+    output: str = Query(default="pdf", alias="format", pattern="^(pdf|json)$"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a printable label sheet for all fixtures in a rig."""
+    """A printable label sheet for every fixture in a rig.
+
+    A US Letter PDF laid out for Avery 5160 labels (app/services/label_sheet.py):
+    each label has a QR code the scan route reads back, the fixture's name,
+    number, universe.address and group. A rig with nothing patched gets a
+    one-page PDF that says so. `?format=json` answers the label data instead.
+    """
     result = await db.execute(select(Rig).where(Rig.id == rig_id))
     rig = result.scalar_one_or_none()
     if not rig:
@@ -182,7 +191,6 @@ async def generate_label_sheet(
     )
     fixtures = result.scalars().all()
 
-    # Return fixture label data (PDF generation requires reportlab)
     labels = []
     for rf in fixtures:
         fixture = rf.fixture
@@ -195,9 +203,19 @@ async def generate_label_sheet(
             "qr_data": json.dumps({"fixture_id": rf.fixture_id, "rig_fixture_id": rf.id}),
         })
 
-    return {
-        "rig_name": rig.name,
-        "labels": labels,
-        "total": len(labels),
-        "message": "Label data generated. Install 'reportlab' for PDF output.",
-    }
+    if output == "json":
+        return {
+            "rig_name": rig.name,
+            "labels": labels,
+            "total": len(labels),
+            "message": "Label data. Leave out ?format=json for the printable PDF.",
+        }
+
+    # Plain values only past this point: drawing runs off the event loop.
+    sheet = [Label(**label) for label in labels]
+    pdf = await asyncio.to_thread(label_sheet_pdf, rig.name, sheet)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="rig_{rig_id}_labels.pdf"'},
+    )
