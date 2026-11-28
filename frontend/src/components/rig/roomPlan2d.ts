@@ -24,7 +24,7 @@ import type { Span } from './previs/outline';
 import { pickDjBooth } from './previs/boothPick';
 import type { BoothSource } from './previs/boothPick';
 import { boxCorners, boxHeading, headingText } from './previs/raisedArea';
-import { scanRings, scanRisers, usableLine } from './previs/roomShell';
+import { scanRings, scanRisers, usableLine } from './previs/roomShellData';
 
 export type PlanPoint = { x: number; z: number };
 export type PlanBounds = { xMin: number; xMax: number; zMin: number; zMax: number };

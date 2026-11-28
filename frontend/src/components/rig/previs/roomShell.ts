@@ -19,6 +19,11 @@ import type { Hanger, KnownRoom, TrussRow } from './layout';
 import { outlineBox, outlineSpansX, outlineSpansZ, spansInBoth } from './outline';
 import { boxHeading } from './raisedArea';
 import type { OutlinePoint } from './outline';
+import { finite, scanRings, usableLine } from './roomShellData';
+
+// The shell checks with no three.js in them live in roomShellData.ts, so the
+// 2D plan can read them without loading three.js.
+export { scanRings, scanRisers, usableBox, usableLine, usableRing } from './roomShellData';
 
 // The outline's own maths has no three.js in it and lives in outline.ts, where
 // the layout, the beams and the drag can read it too.
@@ -47,7 +52,6 @@ const LED_FRAME = '#15161a';
 export const LED_IDLE = '#16224a';
 
 const DEG = Math.PI / 180;
-const finite = (...values: unknown[]) => values.every((value) => typeof value === 'number' && Number.isFinite(value));
 
 /** A point on the plan at `deg` clockwise from upstage: [x, z]. */
 export function ringPoint(centerX: number, centerZ: number, radius: number, deg: number): [number, number] {
@@ -210,11 +214,6 @@ export function buildBalcony(balcony: Balcony): THREE.BufferGeometry {
   return geometry;
 }
 
-export function usableBox(shape: RoomShellBox | null | undefined): shape is RoomShellBox {
-  return Boolean(shape) && finite(shape!.center_x, shape!.center_z, shape!.width, shape!.depth, shape!.height)
-    && shape!.width > 0 && shape!.depth > 0 && shape!.height > 0;
-}
-
 /** Risers and other solid boxes, merged. Null when there are none. */
 export function buildRisers(shapes: RoomShellBox[]): THREE.BufferGeometry | null {
   const parts: THREE.BufferGeometry[] = [];
@@ -297,17 +296,6 @@ export function scannedRoom(shell: RoomShell | null | undefined): KnownRoom | nu
   return { width: room.width, depth: room.depth, height: room.height };
 }
 
-/** The raised areas a scan found that can be drawn: stage, risers, booth. */
-export function scanRisers(shell: RoomShell | null | undefined): RoomShellBox[] {
-  return (shell?.risers ?? []).filter(usableBox);
-}
-
-export function usableLine(line: RoomShellLine | null | undefined): line is RoomShellLine {
-  return Boolean(line) && finite(line!.x1, line!.z1, line!.x2, line!.z2, line!.height)
-    && line!.height > 0
-    && Math.hypot(line!.x2 - line!.x1, line!.z2 - line!.z1) > 0.2;
-}
-
 /** A line within this of straight across the room is one the view's own truss can stand in for. */
 const ACROSS_WITHIN_DEG = 2;
 
@@ -317,16 +305,6 @@ const ACROSS_WITHIN_DEG = 2;
  */
 export function runsAcross(line: RoomShellLine): boolean {
   return Math.abs(line.z2 - line.z1) <= Math.abs(line.x2 - line.x1) * Math.tan(ACROSS_WITHIN_DEG * DEG);
-}
-
-export function usableRing(ring: RoomShellRing | null | undefined): ring is RoomShellRing {
-  return Boolean(ring) && finite(ring!.center_x, ring!.center_z, ring!.radius, ring!.height)
-    && ring!.radius > 0.2 && ring!.height > 0;
-}
-
-/** The rings of truss a scan found that can be drawn. */
-export function scanRings(shell: RoomShell | null | undefined): RoomShellRing[] {
-  return (shell?.truss_rings ?? []).filter(usableRing);
 }
 
 /**

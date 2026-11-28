@@ -6,7 +6,7 @@
 import type { RoomShell, RoomShellBox, RoomShellEdits, RoomShellLine, RoomShellRing } from '../types';
 import { isDjBooth } from '../components/rig/previs/boothPick';
 import { boxHeading, foldHeading, headingText } from '../components/rig/previs/raisedArea';
-import { usableBox, usableLine, usableRing } from '../components/rig/previs/roomShell';
+import { usableBox, usableLine, usableRing } from '../components/rig/previs/roomShellData';
 import { lineRunText } from './roomScan';
 
 /** The list of the stored shell an item is in: what the server addresses it by. */
