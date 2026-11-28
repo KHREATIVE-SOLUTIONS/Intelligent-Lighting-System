@@ -43,14 +43,16 @@ Heavy libraries:
 
 ### three.js leak through the 2D plan
 
-Making the visualizer route lazy is not enough by itself. Rollup places a
-module by the static import graph, not by which exports survive tree-shaking,
-and the 2D room plan reached three.js:
+Rollup places a module by the static import graph, not by which exports
+survive tree-shaking, and the 2D room builder reached three.js:
 
 ```
-RigEditor -> RigEditorToolbar -> rowSpace2d -> roomPlan2d -> previs/roomShell -> three
-                                         utils/roomShellEdit -> previs/roomShell -> three
+RigBuilder -> RigEditorToolbar / StageView2D -> rowSpace2d -> roomPlan2d -> previs/roomShell -> three
+RigBuilder -> RoomShellEditDialog -> utils/roomShellEdit -> previs/roomShell -> three
 ```
+
+RigBuilder was already lazy, so this did not put three in the entry chunk,
+but it made the 2D builder page download three.js for nothing.
 
 `roomPlan2d` and `roomShellEdit` only need the plain checks `usableBox`,
 `usableLine`, `usableRing`, `scanRings` and `scanRisers`. Those now live in
