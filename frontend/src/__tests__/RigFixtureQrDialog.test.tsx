@@ -19,7 +19,7 @@ describe('RigFixtureQrDialog', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    createObjectURL = vi.fn(() => BLOB_URL);
+    createObjectURL = vi.fn<any[], unknown>(() => BLOB_URL);
     revokeObjectURL = vi.fn();
     Object.assign(URL, { createObjectURL, revokeObjectURL });
     api.rigFixtureQrPng.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
