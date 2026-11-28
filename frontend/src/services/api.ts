@@ -1743,8 +1743,12 @@ export const readinessApi = {
   },
 
   /** The venue handoff pack zip (docs/HANDOFF_PACK.md). Reads only. */
-  handoffPack: async (rigId: number): Promise<{ blob: Blob; filename: string }> => {
-    const response = await api.get(handoffPackPath(rigId), { responseType: 'blob' });
+  handoffPack: async (rigId: number, starterPresets = true): Promise<{ blob: Blob; filename: string }> => {
+    const response = await api.get(handoffPackPath(rigId), {
+      responseType: 'blob',
+      // The grandMA2 starter presets file is in by default; only "off" is sent.
+      ...(starterPresets ? {} : { params: { starter_presets: false } }),
+    });
     return {
       blob: response.data as Blob,
       filename: filenameFromDisposition(response.headers?.['content-disposition'], `rig_${rigId}_handoff_pack.zip`),

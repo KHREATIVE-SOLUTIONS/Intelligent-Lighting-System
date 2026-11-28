@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, Box, Button, CircularProgress, Typography } from '@mui/material';
+import { Alert, Box, Button, Checkbox, CircularProgress, FormControlLabel, Typography } from '@mui/material';
 import { Download as DownloadIcon } from '@mui/icons-material';
 import axios from 'axios';
 import { readinessApi } from '../../services/api';
@@ -20,6 +20,7 @@ interface HandoffPackButtonProps {
  */
 export default function HandoffPackButton({ rigId, failCount }: HandoffPackButtonProps) {
   const [busy, setBusy] = useState(false);
+  const [starterPresets, setStarterPresets] = useState(true);
   const [note, setNote] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
   const warning = handoffWarning(failCount);
 
@@ -27,7 +28,9 @@ export default function HandoffPackButton({ rigId, failCount }: HandoffPackButto
     setBusy(true);
     setNote(null);
     try {
-      const file = await readinessApi.handoffPack(rigId);
+      const file = starterPresets
+        ? await readinessApi.handoffPack(rigId)
+        : await readinessApi.handoffPack(rigId, false);
       saveBlob(file.blob, file.filename);
       setNote({ severity: 'success', text: `${file.filename} downloaded.` });
     } catch (err) {
@@ -59,6 +62,17 @@ export default function HandoffPackButton({ rigId, failCount }: HandoffPackButto
           Download handoff pack
         </Button>
         <PatchSheetButton rigId={rigId} />
+        <FormControlLabel
+          control={
+            <Checkbox
+              size="small"
+              checked={starterPresets}
+              onChange={(event) => setStarterPresets(event.target.checked)}
+              inputProps={{ 'aria-label': 'Starter presets (colour, dimmer, beam)' }}
+            />
+          }
+          label={<Typography variant="caption">Starter presets (colour, dimmer, beam)</Typography>}
+        />
         <Typography variant="caption" color="text.secondary">
           Patch, groups, this report, a printable patch sheet, grandMA2 and MVR files, in one zip.
         </Typography>

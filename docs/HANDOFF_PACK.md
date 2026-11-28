@@ -28,6 +28,7 @@ alone: `GET /api/rigs/{rig_id}/patch-sheet` (see below). Code:
 | `<rig>_ma2.xml` | grandMA2 fixture layer XML, the same bytes as `.../export/ma2-xml`. |
 | `<rig>_ma2_script.txt` | grandMA2 command-line script, the same bytes as `.../export/ma2-macro`. |
 | `<rig>.mvr` | MVR for MA3D, Capture or another visualiser, the same bytes as `.../export/mvr`. |
+| `<rig>_ma2_starter_presets.txt` | grandMA2 dimmer, colour and beam starter presets ([CONSOLE_EXPORT.md](CONSOLE_EXPORT.md#grandma2-starter-presets)). On by default; `?starter_presets=false` leaves it out. |
 
 The console files come from the same writers as the export routes, with their
 defaults (no "(position unconfirmed)" in names, groups from 1, notes on). See

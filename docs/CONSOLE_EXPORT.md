@@ -192,6 +192,72 @@ straight down, and any custom points), with guessed positions marked in the
 notes. How they are worked out and what to check on the desk:
 [FOCUS_PRESETS.md](FOCUS_PRESETS.md).
 
+## grandMA2 starter presets
+
+So a programmer can busk on day one, the handoff pack
+(`GET /api/rigs/{id}/handoff-pack`, [HANDOFF_PACK.md](HANDOFF_PACK.md)) also
+carries `<rig>_ma2_starter_presets.txt`: command-line text in the same style as
+the focus presets (`ClearAll`, select fixtures, `Attribute "..." At ...`,
+`Store Preset P.N`, `Label Preset P.N "name"`). Paste it **after** the MA2
+script: it selects fixtures by the ids that script patches. It is on by
+default; `?starter_presets=false` leaves the file out. Written by
+`backend/app/services/console_export/starter_presets.py` from each fixture's
+profile channels (the rig's DMX mode). Database rigs only: a demo preset has no
+channel lists.
+
+| Pool | Slots | Presets |
+|---|---|---|
+| 1 Dimmer | 1.1-1.5 | Full, 75, 50, 25, Out |
+| 4 Colour | 4.1-4.13 | White, Warm White, Red, Orange, Amber, Yellow, Green, Cyan, Light Blue, Blue, Congo, Magenta, Pink |
+| 5 Beam | 5.1-5.5 | Shutter Open, Strobe Slow, Strobe Fast, Zoom Narrow, Zoom Wide |
+
+Every preset keeps its slot even when nothing is stored in it, so Red is
+always 4.3. Fixtures given the same values are selected together.
+
+**Colour**, per fixture, in this order:
+
+- **RGB mixing** (red, green and blue channels). With a white channel, the
+  common part of R, G and B moves to white (RGBW). With an amber channel, the
+  part amber can make moves to it. UV is set for Congo only. Every mix channel
+  the fixture has is written, zeros included.
+- **CMY**: cyan = 100 - red and so on.
+- **Colour wheel**: the slot whose name gives the nearest hue, within 18
+  degrees; White takes an Open/White slot, Warm White a CTO/warm slot. Split
+  slots ("Red / Yellow"), rotation and rainbow ranges are ignored. A colour no
+  slot is close to leaves that fixture out of that preset, and the notes say
+  which slot was nearest.
+
+**Dimmer**: fixtures with a dimmer channel. A fixture with no DMX mode is put
+in with a dimmer assumed (said in the notes); an RGB fixture with no dimmer
+channel is left out.
+
+**Beam**, only where the profile has the channel:
+
+- Shutter Open: the profile's named open value; a shutter channel with no
+  ranges is taken as open at 255 (said in the notes).
+- Strobe Slow / Fast: 10% and 90% of the profile's plain strobe range, read the
+  same way as the identify and output code (`services/dmx/channel_ranges.py`).
+  **A profile that names no strobe range gets no strobe preset**: none is
+  invented.
+- Zoom Narrow / Wide: ranges named narrow/spot and wide/flood; with no such
+  names, 0 is taken as narrow and 255 as wide (said in the notes).
+
+**Left out, with the reason in the file's notes**: fixtures with no DMX mode
+(channels unknown) from colour and beam; fixtures with no colour control, or
+only part of a mix (say red and blue); wheel colours with no close slot; beam
+presets for a fixture without that channel or range.
+
+**Unverified on a real desk.** Not run on a grandMA2 or onPC. In particular:
+
+- The attribute names (`Dim`, `ColorRGB1`-`ColorRGB5`, `ColorMixC/M/Y`,
+  `Color1`, `Shutter`, `Zoom`) are in one table, `MA2_ATTRIBUTES`, and must be
+  checked against the show's fixture types.
+- Dimmer and colour mix values are percent. Wheel, shutter, strobe and zoom
+  values are the profile's DMX byte as a percent of 255. How the desk reads
+  those depends on its fixture type far more than for dimmer and mix.
+- Whether `Store Preset` makes a selective or universal preset follows the
+  desk's store defaults.
+
 ## MVR
 
 A ZIP holding `GeneralSceneDescription.xml` (MVR 1.6) and GDTF files.

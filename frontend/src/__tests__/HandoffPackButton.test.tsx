@@ -65,6 +65,18 @@ describe('HandoffPackButton', () => {
     expect(screen.getByTestId('handoff-pack-note').textContent).toContain('Club_handoff_pack.zip downloaded.');
   });
 
+  it('has the starter presets on by default and asks for the pack without them when unticked', async () => {
+    render(<HandoffPackButton rigId={7} failCount={0} />);
+    const box = screen.getByRole('checkbox', { name: 'Starter presets (colour, dimmer, beam)' }) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+
+    fireEvent.click(box);
+    fireEvent.click(screen.getByRole('button', { name: /download handoff pack/i }));
+    await flush();
+
+    expect(api.handoffPack).toHaveBeenCalledWith(7, false);
+  });
+
   it('warns first when a check fails, and still downloads', async () => {
     render(<HandoffPackButton rigId={7} failCount={2} />);
 
