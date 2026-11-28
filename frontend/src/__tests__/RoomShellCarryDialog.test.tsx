@@ -12,6 +12,10 @@ import type { RoomShell, RoomShellEdits } from '../types';
 import { carriedCount, carriedText, carriesFixtures, withCarry } from '../utils/roomShellEdit';
 import type { CarriedFixture } from '../utils/roomShellEdit';
 
+// Each test renders the full dialog: they pass alone, but in a full parallel run on a
+// busy machine some went past the 5 s default (Nov 2026). See docs/TESTING.md.
+vi.setConfig({ testTimeout: 30_000 });
+
 vi.mock('../services/api', () => ({
   roomScanApi: { editShellItem: vi.fn(), deleteShellItem: vi.fn(), addShellItem: vi.fn(), undoShellEdit: vi.fn() },
 }));

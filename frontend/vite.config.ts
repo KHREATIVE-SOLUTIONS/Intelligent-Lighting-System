@@ -16,6 +16,13 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    setupFiles: ['./src/setupTests.ts'],
+    // Vitest 1.x runs test files in worker threads, one per core by default. On a 16-thread
+    // machine that starved the heavy RigBuilder/RoomShell dialog files into timeouts; about
+    // half the cores keeps a full run reliable. See docs/TESTING.md.
+    poolOptions: {
+      threads: { maxThreads: 8, minThreads: 1 },
+    },
   },
   server: {
     port: 5173,

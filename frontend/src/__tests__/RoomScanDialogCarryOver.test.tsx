@@ -9,6 +9,10 @@ import { roomScanApi } from '../services/api';
 import { carryOverButtonText, handEditCarryOver, roomScanCarryOverPath } from '../utils/roomScan';
 import type { RoomScanCarryOver, RoomScanHandEdits, RoomScanPreview } from '../utils/roomScan';
 
+// Each test renders the full dialog: they pass alone, but in a full parallel run on a
+// busy machine some went past the 5 s default (Nov 2026). See docs/TESTING.md.
+vi.setConfig({ testTimeout: 30_000 });
+
 vi.mock('../services/api', () => ({
   roomScanApi: { preview: vi.fn(), apply: vi.fn(), remove: vi.fn(), undoMoves: vi.fn(), carryOver: vi.fn() },
 }));
