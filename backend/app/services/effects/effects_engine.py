@@ -38,6 +38,7 @@ from .decision_engine import (
     DecisionEngine, LightingState, AudioState, EffectSelection
 )
 from .lfo_engine import LFOEngine
+from . import live_colour
 from . import live_dimmer
 from . import live_library
 from . import live_looks
@@ -166,6 +167,31 @@ class EffectsConfig:
     makeup_target: float = 0.5               # rig mean dimmer the AGC aims for
     makeup_gain_max: float = 5.0             # bounded: 1x .. this
     makeup_time_constant_s: float = 4.0
+    # Live colour (live_colour): one saturated palette hue at a time, changed
+    # on a phrase or section change and crossfaded round the hue wheel, the
+    # bed a second hue at the same saturation. No hue averaging, no greying
+    # breakdown, white accents only as far as `colour_min_saturation` allows.
+    # Off, the previous mood blend.
+    live_colour_enabled: bool = True
+    colour_saturation: float = 0.95            # HSV S of the base colour
+    colour_breakdown_saturation: float = 0.85  # a dim saturated colour, never grey
+    colour_min_saturation: float = 0.72        # floor after every accent and mix
+    colour_crossfade_s: float = 1.2            # the fade to a new hue
+    colour_min_hue_step_deg: float = 40.0      # a new hue is at least this far round
+    colour_hold_bars: float = 8.0              # without a locked clock: bars per colour
+    # Mover drift (live_looks.SectionMotion drift): a slow mirrored pan/tilt
+    # under every look, small in the verse and larger and quicker in the
+    # build and drop. Breakdown takes the verse's at `mover_drift_breakdown_scale`,
+    # buildup and chorus sit between the verse and the drop. Every head still
+    # goes through the look's aim (range clamps), its speed fit and the slew.
+    mover_drift_enabled: bool = True
+    mover_drift_verse_pan_deg: float = 7.0
+    mover_drift_verse_tilt_deg: float = 5.0
+    mover_drift_verse_cycle_beats: float = 16.0
+    mover_drift_drop_pan_deg: float = 16.0
+    mover_drift_drop_tilt_deg: float = 10.0
+    mover_drift_drop_cycle_beats: float = 4.0
+    mover_drift_breakdown_scale: float = 0.5
     camera_mode: bool = False
     major_change_min_bars: int = 2
 
@@ -629,6 +655,8 @@ class EffectsEngine:
         self._operator_then: Optional[Tuple[str, float]] = None
         self._rebuild_color_hold_until: float = 0.0
         self._rebuild_base_color: RGB = RGB(1.0, 1.0, 1.0)
+        # Live colour: the base hue and its crossfade (live_colour).
+        self._live_hue = live_colour.HueFade()
         self._rebuild_snare_strobe_until: float = -999.0
         self._rebuild_snare_last_trigger: float = -999.0
         # The look library's current look, by name, and the movement it uses.
@@ -1252,6 +1280,45 @@ class EffectsEngine:
         except Exception:
             pass
 
+    def _section_motion(self, section: str) -> "live_looks.SectionMotion":
+        """The section's motion, with the configured mover drift laid under it."""
+        base = live_looks.SECTION_MOTION.get(section, live_looks.DEFAULT_MOTION)
+        cfg = self.config
+        if not bool(getattr(cfg, "mover_drift_enabled", False)):
+            return base
+
+        def _num(name: str, default: float) -> float:
+            try:
+                value = float(getattr(cfg, name, default))
+            except (TypeError, ValueError):
+                return default
+            return value if math.isfinite(value) else default
+
+        verse = (max(0.0, _num("mover_drift_verse_pan_deg", 7.0)),
+                 max(0.0, _num("mover_drift_verse_tilt_deg", 5.0)),
+                 max(1.0, _num("mover_drift_verse_cycle_beats", 16.0)))
+        drop = (max(0.0, _num("mover_drift_drop_pan_deg", 16.0)),
+                max(0.0, _num("mover_drift_drop_tilt_deg", 10.0)),
+                max(1.0, _num("mover_drift_drop_cycle_beats", 4.0)))
+        if section == "drop":
+            pan, tilt, cycle = drop
+        elif section in ("buildup", "chorus"):
+            # Between the two, on the drop's cycle doubled: bigger and quicker
+            # than the verse, still short of the drop.
+            pan, tilt = (verse[0] + drop[0]) / 2.0, (verse[1] + drop[1]) / 2.0
+            cycle = min(verse[2], 2.0 * drop[2])
+        elif section == "breakdown":
+            k = max(0.0, min(1.0, _num("mover_drift_breakdown_scale", 0.5)))
+            pan, tilt, cycle = verse[0] * k, verse[1] * k, verse[2]
+        else:
+            pan, tilt, cycle = verse
+        # Whole bars, so the drift ends on a bar line like every other move.
+        cycle = max(4.0, 4.0 * round(cycle / 4.0))
+        return live_looks.SectionMotion(
+            size=base.size, cycle_beats=base.cycle_beats,
+            drift_pan_deg=pan, drift_tilt_deg=tilt, drift_cycle_beats=cycle,
+        )
+
     def _update_fixtures_rebuild(self, delta_time: float):
         """Scratch-built pro busker rendering pipeline (single source of truth)."""
         all_fixtures = self.fixtures.get_fixtures_in_group("all")
@@ -1328,7 +1395,7 @@ class EffectsEngine:
         # a new section or a new phrase, and its movement is a position for
         # every head to aim at with a motion laid over it (live_looks).
         bar_clock = int(math.floor(self._beat_clock_bars()))
-        motion = live_looks.SECTION_MOTION.get(section, live_looks.DEFAULT_MOTION)
+        motion = self._section_motion(section)
         style_look = _CLUB_STYLE_LOOKS.get(self._club_style or "")
         style_speed = float(style_look["speed"]) if style_look else 1.0
         style_amp = float(style_look["amp"]) if style_look else 1.0
@@ -1385,7 +1452,7 @@ class EffectsEngine:
         # would jump the heads. The tempo is the beat clock's own, the one
         # that advances `beats`, not the figure clamped for display. Fitted
         # again if the section or the rig changes under the look.
-        fit_key = (pattern, section, look_rig.heads)
+        fit_key = (pattern, section, look_rig.heads, motion)
         if new_look or self._rebuild_fit_key != fit_key:
             self._rebuild_fit_key = fit_key
             self._rebuild_speed_fit = live_looks.speed_fit(
@@ -1567,6 +1634,31 @@ class EffectsEngine:
             recolour = (section, phrase) != self._rebuild_color_key
         if self._track_transition > 0.0 and self._rebuild_color_key is not None:
             recolour = False
+        live_colour_on = bool(getattr(self.config, "live_colour_enabled", False))
+        colour_floor = max(0.0, min(1.0, float(getattr(self.config, "colour_min_saturation", 0.72))))
+        live_sat = 0.0
+        if live_colour_on:
+            if recolour or not self._live_hue.ready:
+                self._rebuild_color_key = (section, phrase) if phrase is not None else None
+                hue = live_colour.next_hue(
+                    live_colour.anchors(self._current_song_palette),
+                    self._live_hue.steps,
+                    self._live_hue.end,
+                    section,
+                    float(getattr(self.config, "colour_min_hue_step_deg", 40.0)),
+                )
+                self._live_hue.change(hue, self.time, float(getattr(self.config, "colour_crossfade_s", 1.2)))
+                hold_bars = max(1.0, float(getattr(self.config, "colour_hold_bars", 8.0)))
+                self._rebuild_color_hold_until = self.time + hold_bars * 4.0 * 60.0 / max(60.0, bpm)
+            live_sat = live_colour.saturation_for(
+                section,
+                float(getattr(self.config, "colour_saturation", 0.95)),
+                float(getattr(self.config, "colour_breakdown_saturation", 0.85)),
+                colour_floor,
+            )
+            r_, g_, b_ = live_colour.colour(self._live_hue.at(self.time), live_sat, 1.0)
+            self._rebuild_base_color = RGB(r_, g_, b_)
+            recolour = False
         if recolour:
             self._rebuild_color_key = (section, phrase) if phrase is not None else None
             palette_color = self.color.get_color(self.audio_features, 0, 0.0)
@@ -1583,8 +1675,10 @@ class EffectsEngine:
             self._rebuild_color_hold_until = self.time + phrase_s
 
         # Gentle continuous blend toward current emotional target avoids abrupt color jumps.
-        live_emotional = self._rebuild_get_emotional_color(section)
-        self._rebuild_base_color = self._rebuild_base_color.blend(live_emotional, 0.018)
+        # (Live colour holds its hue for the phrase: no drift toward a blend.)
+        if not live_colour_on:
+            live_emotional = self._rebuild_get_emotional_color(section)
+            self._rebuild_base_color = self._rebuild_base_color.blend(live_emotional, 0.018)
         base_color = self._rebuild_base_color
         bed_color = live_roles.secondary_colour(base_color.r, base_color.g, base_color.b, section)
         white_accent = 0.0
@@ -1606,7 +1700,11 @@ class EffectsEngine:
                 motion_peak = 0.5 + 0.5 * math.sin(2.0 * math.pi * beat_phase)
                 white_accent += 0.04 + 0.10 * motion_peak
             white_accent += self._white_accent_level
-            white_accent = max(0.0, min(0.40, white_accent))
+            white_cap = 0.40
+            if live_colour_on:
+                # Punch without washing out: never below the saturation floor.
+                white_cap = min(white_cap, live_colour.white_accent_cap(live_sat, colour_floor))
+            white_accent = max(0.0, min(white_cap, white_accent))
 
         chase_active = section in {"verse", "buildup", "chorus"}
         looks_light_beams = (
@@ -1833,7 +1931,10 @@ class EffectsEngine:
                 fixture.green = max(0.0, min(1.0, cg * (1.0 - white_accent) + white_accent))
                 fixture.blue = max(0.0, min(1.0, cb * (1.0 - white_accent) + white_accent))
                 # Apply section narrative shaping (saturation/whiteness/accent behavior).
-                self._apply_palette_narrative_to_fixture(fixture, i, section)
+                # Not under live colour: its one-colour breakdown is r = g = b
+                # (grey), and its odd/even r-b swap breaks the mirror.
+                if not live_colour_on:
+                    self._apply_palette_narrative_to_fixture(fixture, i, section)
 
             snapshot.append({
                 'id': fixture.id,

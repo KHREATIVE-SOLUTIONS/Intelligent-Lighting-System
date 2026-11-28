@@ -240,6 +240,14 @@ class SectionMotion:
 
     size: float          # scales every motion; 1.0 is a chorus
     cycle_beats: float   # beats for one full movement; whole bars, so moves end on a bar line
+    # A slow mirrored drift laid under every look but a fly-out, so even a
+    # held position breathes: the two halves of a truss pan opposite ways by
+    # up to `drift_pan_deg`, and every beam leans out and back by up to
+    # `drift_tilt_deg`, once every `drift_cycle_beats` (whole bars, locked to
+    # the beat clock). Zero is no drift, the looks exactly as designed.
+    drift_pan_deg: float = 0.0
+    drift_tilt_deg: float = 0.0
+    drift_cycle_beats: float = 16.0
 
 
 SECTION_MOTION: Dict[str, SectionMotion] = {
@@ -303,20 +311,30 @@ def head_target(
         # (see `_fly`). This is where it starts.
         return _keep_in_front(head, base)
 
-    if look.motion == "hold":
+    drifting = float(motion.drift_pan_deg) > 0.0 or float(motion.drift_tilt_deg) > 0.0
+    if look.motion == "hold" and not drifting:
         return _keep_in_front(head, base)
 
     # The throw, as seen from above: from the point under the head to the target.
     gx, gz = base[0] - head.x, base[2] - head.z
+    # Mirrored: the two halves of the truss swing opposite ways. A centre
+    # head has no side, so it swings with the right-hand half.
+    turn = -1.0 if head.u < -1e-6 else 1.0
     stretch, swing = 1.0, 0.0
     if look.motion in ("tilt", "circle"):
         wave = math.cos(theta) if look.motion == "circle" else math.sin(theta)
         stretch = _tilt_stretch(math.hypot(gx, gz), head.y - base[1], size, wave)
     if look.motion in ("sweep", "circle"):
-        # Mirrored: the two halves of the truss swing opposite ways. A centre
-        # head has no side, so it swings with the right-hand half.
-        turn = -1.0 if head.u < -1e-6 else 1.0
         swing = turn * head.forward * math.radians(SWEEP_DEG * size) * math.sin(theta)
+    if drifting:
+        # Beat-locked and independent of the look's speed, so a slow look
+        # still breathes on the tempo. Pan and tilt a quarter cycle apart
+        # make a smooth ellipse, never a stop-start.
+        d_theta = 2.0 * math.pi * float(beats) / max(1.0, float(motion.drift_cycle_beats))
+        swing += turn * head.forward * math.radians(float(motion.drift_pan_deg)) * math.sin(d_theta)
+        if float(motion.drift_tilt_deg) > 0.0:
+            stretch *= _tilt_stretch(math.hypot(gx, gz), head.y - base[1],
+                                     float(motion.drift_tilt_deg) / TILT_DEG, math.cos(d_theta))
     cos_s, sin_s = math.cos(swing), math.sin(swing)
     rx = (gx * cos_s + gz * sin_s) * stretch
     rz = (-gx * sin_s + gz * cos_s) * stretch
@@ -433,13 +451,22 @@ def peak_rates(look_name: str, rig: Rig, motion: SectionMotion, amp: float = 1.0
         return cached
     look = LOOKS.get(look_name) or LOOKS[DEFAULT_LOOK]
     peak_pan = peak_tilt = 0.0
-    if look.motion != "hold" and rig.heads:
+    drifting = look.motion != "fly" and (float(motion.drift_pan_deg) > 0.0 or float(motion.drift_tilt_deg) > 0.0)
+    if (look.motion != "hold" or drifting) and rig.heads:
         span = float(motion.cycle_beats) * (2.0 if look.motion == "fly" else 1.0)
-        step = span / _RATE_SAMPLES
+        if drifting:
+            # One whole period of look and drift together, so the closing
+            # sample is the first one again and not a false jump.
+            a, b = int(round(span)), int(round(max(1.0, float(motion.drift_cycle_beats))))
+            span = float(a * b // math.gcd(a, b)) if a > 0 and b > 0 else max(span, float(b))
+            if look.motion == "hold":
+                span = float(b)
+        samples = int(min(4 * _RATE_SAMPLES, max(_RATE_SAMPLES, round(_RATE_SAMPLES * span / max(1.0, float(motion.cycle_beats))))))
+        step = span / samples
         for head in rig.heads:
             first = last = head_pan_tilt(look_name, head, rig, 0.0, motion, 1.0, amp)
-            for i in range(1, _RATE_SAMPLES + 1):
-                now = first if i == _RATE_SAMPLES else head_pan_tilt(look_name, head, rig, i * step, motion, 1.0, amp)
+            for i in range(1, samples + 1):
+                now = first if i == samples else head_pan_tilt(look_name, head, rig, i * step, motion, 1.0, amp)
                 peak_pan = max(peak_pan, abs(now[0] - last[0]) / step)
                 peak_tilt = max(peak_tilt, abs(now[1] - last[1]) / step)
                 last = now
