@@ -53,6 +53,15 @@ import type {
 import type {
   RoomScanCarriedAll, RoomScanCarriedOver, RoomScanCarryOver, RoomScanOptions, RoomScanPreview, RoomScanUndoResult, RoomShellRemoved,
 } from '../utils/roomScan';
+import {
+  cloudFileName,
+  referenceParams,
+  roomVideoCloudPath,
+  roomVideoJobPath,
+  roomVideoPath,
+  roomVideoToolsPath,
+} from '../utils/roomVideo';
+import type { RoomVideoJob, RoomVideoQuality, RoomVideoReference, RoomVideoTools } from '../utils/roomVideo';
 import type {
   SetupCheckFixture,
   SetupCheckListing,
@@ -1646,6 +1655,58 @@ export const roomScanApi = {
   deleteOutlineCorner: async (rigId: number, index: number): Promise<OutlineAnswer> => {
     const response = await api.delete(roomOutlineCornerPath(rigId, index));
     return response.data;
+  },
+};
+
+/**
+ * Room from a walkthrough video (docs/ROOM_SCAN.md). The server turns the
+ * video into a point cloud as a background job; the finished cloud comes back
+ * as a PLY that goes through roomScanApi like any other scan.
+ */
+export const roomVideoApi = {
+  /** Which free tools are installed on the server, and what to install when a video cannot be read. */
+  tools: async (): Promise<RoomVideoTools> => {
+    const response = await api.get(roomVideoToolsPath);
+    return response.data;
+  },
+
+  /** Sends the video (as the request body itself) and starts the job. Answers as soon as it is uploaded. */
+  start: async (
+    rigId: number,
+    file: File,
+    quality: RoomVideoQuality,
+    onUploaded?: (fraction: number) => void,
+    signal?: AbortSignal,
+  ): Promise<RoomVideoJob> => {
+    const response = await api.post(roomVideoPath(rigId), file, {
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      params: { filename: file.name, quality },
+      timeout: 0,
+      signal,
+      onUploadProgress: (event) => {
+        if (onUploaded && event.total) onUploaded(event.loaded / event.total);
+      },
+    });
+    return response.data;
+  },
+
+  status: async (rigId: number, jobId: string): Promise<RoomVideoJob> => {
+    const response = await api.get(roomVideoJobPath(rigId, jobId));
+    return response.data;
+  },
+
+  /** The finished cloud, scaled by the measurement, as a file to preview and apply. */
+  cloud: async (rigId: number, jobId: string, reference: RoomVideoReference): Promise<File> => {
+    const response = await api.get(roomVideoCloudPath(rigId, jobId), {
+      responseType: 'blob',
+      params: referenceParams(reference),
+    });
+    return new File([response.data], cloudFileName(jobId), { type: 'application/octet-stream' });
+  },
+
+  /** Stops a running job, or forgets a finished one. Nothing on the rig is touched. */
+  stop: async (rigId: number, jobId: string): Promise<void> => {
+    await api.delete(roomVideoJobPath(rigId, jobId));
   },
 };
 
