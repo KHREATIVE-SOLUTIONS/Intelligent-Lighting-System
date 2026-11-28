@@ -276,6 +276,28 @@ export function reachText(target: FocusTarget, heads: number): string {
   return `${reach} of ${heads} moving heads can reach it.`;
 }
 
+/** Degrees to one decimal, or a dash for a head that cannot reach. */
+export function degreesText(deg: number | null): string {
+  if (deg === null) return '-';
+  const rounded = Math.round(deg * 10) / 10;
+  return `${(Object.is(rounded, -0) ? 0 : rounded).toFixed(1)}°`;
+}
+
+/** A channel's DMX as the API gives it: "128" on an 8-bit axis, "128 / 64" (coarse / fine) on a 16-bit one. */
+export function dmxText(coarse: number | null, fine: number | null): string {
+  if (coarse === null) return '-';
+  return fine === null ? String(coarse) : `${coarse} / ${fine}`;
+}
+
+/** 16 or 8 bit, as the rows say. */
+export const aimBits = (aim: FocusHeadAim): 8 | 16 => (aim.pan_fine_dmx !== null || aim.tilt_fine_dmx !== null ? 16 : 8);
+
+/** The rows by console number, up or down, ties by name; a new list. */
+export function sortAims(aims: FocusHeadAim[], direction: 'asc' | 'desc' = 'asc'): FocusHeadAim[] {
+  const way = direction === 'asc' ? 1 : -1;
+  return [...aims].sort((a, b) => way * (a.fixture_id - b.fixture_id || a.name.localeCompare(b.name)));
+}
+
 // ---------------------------------------------------------------------------
 // In the 3D view
 // ---------------------------------------------------------------------------

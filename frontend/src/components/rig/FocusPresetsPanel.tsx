@@ -24,6 +24,12 @@ import {
   IconButton,
   LinearProgress,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  TableSortLabel,
   TextField,
   Tooltip,
   Typography,
@@ -32,7 +38,9 @@ import { Add as AddIcon, Delete as DeleteIcon, Download as DownloadIcon } from '
 import axios from 'axios';
 import { focusPresetsApi } from '../../services/focusPresetsApi';
 import { saveBlob } from '../../utils/download';
-import { EMPTY_DRAFT, checkDraft, reachText, whereText } from '../../utils/focusPresets';
+import {
+  EMPTY_DRAFT, aimBits, checkDraft, degreesText, dmxText, reachText, sortAims, whereText,
+} from '../../utils/focusPresets';
 import type { DraftErrors, FocusTarget, TargetDraft } from '../../utils/focusPresets';
 import useFocusPresets from './useFocusPresets';
 import { useFocusPreviewStore } from '../../stores/focusPreviewStore';
@@ -47,6 +55,49 @@ interface PreviewControl {
   onStop: () => void;
 }
 
+/** Every head against one target: fixture, pan and tilt in degrees, and DMX, sortable by fixture. */
+function HeadTable({ target }: { target: FocusTarget }) {
+  const [direction, setDirection] = useState<'asc' | 'desc'>('asc');
+  const rows = sortAims(target.aims, direction);
+  return (
+    <Table size="small" data-testid={`focus-heads-${target.key}`} aria-label={`Each head against ${target.name}`}>
+      <TableHead>
+        <TableRow>
+          <TableCell sortDirection={direction}>
+            <TableSortLabel
+              active
+              direction={direction}
+              onClick={() => setDirection((d) => (d === 'asc' ? 'desc' : 'asc'))}
+            >
+              Fixture
+            </TableSortLabel>
+          </TableCell>
+          <TableCell align="right">Pan</TableCell>
+          <TableCell align="right">Tilt</TableCell>
+          <TableCell align="right">Pan DMX</TableCell>
+          <TableCell align="right">Tilt DMX</TableCell>
+        </TableRow>
+      </TableHead>
+      <TableBody>
+        {rows.map((aim) => (
+          <TableRow key={`${aim.fixture_id}-${aim.rigFixtureId ?? aim.name}`} data-testid="focus-head-row">
+            <TableCell>
+              {aim.fixture_id}. {aim.name}
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                {aim.mount}, {aimBits(aim)}-bit{aim.reachable ? '' : `. Cannot reach: ${aim.reason}`}
+              </Typography>
+            </TableCell>
+            <TableCell align="right">{degreesText(aim.reachable ? aim.pan_deg : null)}</TableCell>
+            <TableCell align="right">{degreesText(aim.reachable ? aim.tilt_deg : null)}</TableCell>
+            <TableCell align="right">{aim.reachable ? dmxText(aim.pan_dmx, aim.pan_fine_dmx) : '-'}</TableCell>
+            <TableCell align="right">{aim.reachable ? dmxText(aim.tilt_dmx, aim.tilt_fine_dmx) : '-'}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
 function TargetRow({ target, heads, onRemove, busy, preview }: {
   target: FocusTarget;
   heads: number;
@@ -55,6 +106,8 @@ function TargetRow({ target, heads, onRemove, busy, preview }: {
   preview: PreviewControl;
 }) {
   const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState(false);
+  const detailId = `focus-heads-panel-${target.key}`;
   const cannot = target.unreachable.length;
   const listId = `focus-unreachable-${target.key}`;
   const previewable = !target.skipped && target.aims.length > 0;
@@ -136,6 +189,24 @@ function TargetRow({ target, heads, onRemove, busy, preview }: {
                   {item.fixture_id}. {item.name}: {item.reason}
                 </Typography>
               ))}
+            </Box>
+          </Collapse>
+        </>
+      )}
+      {previewable && (
+        <>
+          <Button
+            size="small"
+            sx={{ px: 0, ml: cannot > 0 ? 2 : 0, minWidth: 0, textTransform: 'none' }}
+            aria-expanded={detail}
+            aria-controls={detailId}
+            onClick={() => setDetail((d) => !d)}
+          >
+            {detail ? 'Hide' : 'Show'} pan, tilt and DMX for each head
+          </Button>
+          <Collapse in={detail} unmountOnExit>
+            <Box id={detailId} sx={{ overflowX: 'auto' }}>
+              <HeadTable target={target} />
             </Box>
           </Collapse>
         </>
