@@ -16,7 +16,7 @@ import {
   withBloom,
   writeLookSettings,
 } from '../components/rig/previs/lookSettings';
-import { hazeNoisePixels, layoutHazePuffs, seededRandom } from '../components/rig/previs/hazeDrift';
+import { hazeNoisePixels, layoutHazePuffs, seededRandom } from '../components/rig/previs/hazePuffs';
 
 describe('look settings', () => {
   afterEach(() => window.localStorage.removeItem(PREVIZ_LOOK_KEY));

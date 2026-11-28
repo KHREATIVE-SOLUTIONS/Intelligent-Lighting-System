@@ -80,7 +80,7 @@ import {
 } from './previs/lookSettings';
 import type { LookSettings } from './previs/lookSettings';
 import { HazeDrift } from './previs/HazeDrift';
-import type { HazeBounds } from './previs/hazeDrift';
+import type { HazeBounds } from './previs/hazePuffs';
 import LookControls from './previs/LookControls';
 import type { PrevizStatsSample } from './previs/PrevizStats';
 

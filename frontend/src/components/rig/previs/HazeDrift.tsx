@@ -11,8 +11,8 @@
 import { memo, useEffect, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { hazeNoisePixels, layoutHazePuffs } from './hazeDrift';
-import type { HazeBounds } from './hazeDrift';
+import { hazeNoisePixels, layoutHazePuffs } from './hazePuffs';
+import type { HazeBounds } from './hazePuffs';
 import type { LookUniforms } from './lookUniforms';
 
 /** How much the puffs show of their own (a dark blue-grey) and of the rig's light. */
