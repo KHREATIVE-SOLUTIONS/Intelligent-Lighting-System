@@ -15,9 +15,12 @@
  * setting share one geometry.
  */
 import * as THREE from 'three';
+import { BEAM_LOOK_GLSL } from './beamLook';
 import type { BeamSurface } from './beamThrow';
 import { getFixtureGeometry } from './fixtureGeometry';
 import type { FixtureModelKind } from './fixtureSpecs';
+import { createLookUniforms } from './lookUniforms';
+import type { LookUniforms } from './lookUniforms';
 
 /** Where a fixture's beam leaves it, and its half-width and half-depth there. */
 export type BeamMouth = {
@@ -142,6 +145,154 @@ export function createBeamMaterial(): THREE.ShaderMaterial {
     depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Every beam in one draw (docs/PREVIZ_PERFORMANCE.md)
+//
+// The same tube and the same shaping as above, with the six uniforms turned
+// into per-instance attributes so all of a rig's beams are one InstancedMesh.
+// ---------------------------------------------------------------------------
+
+/** Per-instance attribute names, and how many floats each takes. */
+export const BEAM_INSTANCE_ATTRIBUTES = {
+  beamShape: 4, // near half-width, near half-depth, far half-width, far half-depth
+  beamSurface: 4,
+  beamPaint: 4, // r, g, b, intensity
+  beamLength: 1,
+} as const;
+
+// Besides the shape, the vertex shader hands the fragment shader what the soft
+// beam needs (docs/PREVIZ_LOOK.md): how far down the beam the point is, in
+// metres (0 all round the mouth, the edge's own length at the far end), the
+// tube's outward normal in the room (radial, from the ellipse the ring is at)
+// and the way to the eye.
+export const INSTANCED_BEAM_VERTEX_SHADER = `
+  attribute vec4 beamShape;
+  attribute vec4 beamSurface;
+  attribute vec4 beamPaint;
+  attribute float beamLength;
+  varying vec4 vBeamPaint;
+  varying float vAlong;
+  varying vec3 vNormalW;
+  varying vec3 vToEye;
+  void main() {
+    mat4 placeMatrix = modelMatrix;
+    #ifdef USE_INSTANCING
+      placeMatrix = modelMatrix * instanceMatrix;
+    #endif
+    vBeamPaint = beamPaint;
+    vec4 place = placeMatrix * vec4(position.x * beamShape.x, 0.0, position.z * beamShape.y, 1.0);
+    vec2 across = vec2(position.x / max(beamShape.x, 0.0001), position.z / max(beamShape.y, 0.0001));
+    vAlong = 0.0;
+    if (position.y < -0.5) {
+      vec4 flatEnd = placeMatrix * vec4(position.x * beamShape.z, -beamLength, position.z * beamShape.w, 1.0);
+      vec3 edge = flatEnd.xyz - place.xyz;
+      float closing = dot(beamSurface.xyz, edge);
+      float share = 1.0;
+      if (abs(closing) > 0.000001) {
+        float meets = (beamSurface.w - dot(beamSurface.xyz, place.xyz)) / closing;
+        if (meets > 0.0) share = clamp(meets, ${BEAM_EDGE_SHORTEST.toFixed(2)}, ${BEAM_EDGE_LONGEST.toFixed(2)});
+      }
+      place.xyz += edge * share;
+      vAlong = length(edge) * share;
+      across = vec2(position.x / max(beamShape.z, 0.0001), position.z / max(beamShape.w, 0.0001));
+    }
+    vNormalW = mat3(placeMatrix) * vec3(across.x, 0.0, across.y);
+    vToEye = cameraPosition - place.xyz;
+    gl_Position = projectionMatrix * viewMatrix * place;
+  }
+`;
+
+// Soft: bright at the lens, falling off down the beam, fading at the edge of
+// the cone, all scaled by the haze (beamLook.ts). Flat (Soft beams off): one
+// strength end to end, the beam as it was, scaled by the haze. Tone mapped and
+// put in the output colour space like three's own materials (in a render
+// target the two includes do nothing and OutputPass does it instead). That
+// brings Bloom on and off closer, not level: the strength is in alpha, which
+// the composer blends in linear light and the direct path in display space,
+// so beams read brighter with Bloom on (docs/PREVIZ_LOOK.md).
+export const INSTANCED_BEAM_FRAGMENT_SHADER = `
+  uniform float uHaze;
+  uniform float uSoftBeams;
+  varying vec4 vBeamPaint;
+  varying float vAlong;
+  varying vec3 vNormalW;
+  varying vec3 vToEye;
+  ${BEAM_LOOK_GLSL}
+  void main() {
+    float level = vBeamPaint.a;
+    float alpha;
+    if (uSoftBeams > 0.5) {
+      float facing = abs(dot(normalize(vNormalW), normalize(vToEye)));
+      alpha = softBeamAlpha(level, vAlong, uHaze, facing);
+    } else {
+      alpha = flatBeamAlpha(level, uHaze);
+    }
+    gl_FragColor = vec4(vBeamPaint.rgb, clamp(alpha, 0.0, 1.0));
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }
+`;
+
+/**
+ * The material every beam of a rig is drawn with, in one instanced draw.
+ * `look` gives it the shared haze and soft-beam uniforms; without one it has
+ * its own, at the defaults.
+ */
+export function createInstancedBeamMaterial(look: LookUniforms = createLookUniforms()): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: INSTANCED_BEAM_VERTEX_SHADER,
+    fragmentShader: INSTANCED_BEAM_FRAGMENT_SHADER,
+    uniforms: {
+      uHaze: look.haze,
+      uSoftBeams: look.softBeams,
+    },
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+}
+
+/** The typed arrays one instanced beam mesh draws from. */
+export type BeamInstanceArrays = {
+  shape: Float32Array;
+  surface: Float32Array;
+  paint: Float32Array;
+  length: Float32Array;
+};
+
+/**
+ * Write one beam's shape and paint at instance `i`: the same numbers
+ * `shapeBeam` gives the uniforms, plus its colour and intensity.
+ */
+export function packBeamInstance(
+  out: BeamInstanceArrays,
+  i: number,
+  mouth: BeamMouth,
+  landing: number,
+  endRadius: number,
+  surface: BeamSurface,
+  r: number,
+  g: number,
+  b: number,
+  intensity: number,
+): void {
+  const k = i * 4;
+  out.shape[k] = mouth.halfX;
+  out.shape[k + 1] = mouth.halfZ;
+  out.shape[k + 2] = Math.max(mouth.halfX, endRadius);
+  out.shape[k + 3] = Math.max(mouth.halfZ, endRadius);
+  out.surface[k] = surface.x;
+  out.surface[k + 1] = surface.y;
+  out.surface[k + 2] = surface.z;
+  out.surface[k + 3] = surface.d;
+  out.paint[k] = r;
+  out.paint[k + 1] = g;
+  out.paint[k + 2] = b;
+  out.paint[k + 3] = intensity;
+  out.length[i] = beamLengthFrom(mouth, landing);
 }
 
 /**
