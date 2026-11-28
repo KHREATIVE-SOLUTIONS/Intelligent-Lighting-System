@@ -4,7 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import { aimBits, degreesText, dmxText, parseFocusPresets, sortAims } from '../utils/focusPresets';
 import type { FocusHeadAim } from '../utils/focusPresets';
-import { VIEW_MIN_STANDING_TILT, previewPlan, previewText, viewAim } from '../utils/focusPreview';
+import { previewPlan, previewText, viewAim, viewTravelLimit } from '../utils/focusPreview';
+import { beamDirection, hangBeam } from '../components/rig/previs/beamThrow';
 import { rigChangedBy } from '../utils/focusTargetsSync';
 import { VIEW_FIXTURES, previewAnswer } from './focusPreviewFixture';
 
@@ -66,8 +67,45 @@ describe('the angles the 3D view is given', () => {
     }
   });
 
-  it('leaves a standing head aimed near the ceiling at home', () => {
-    expect(viewAim(aim({ mount: 'standing', tilt_deg: VIEW_MIN_STANDING_TILT - 1 }))).toBeNull();
+  // Numbers from backend aim() (app/services/focus_presets/aim.py: aim and
+  // beam_direction) for standing heads, 270 tilt and 540 pan: straight up, 30
+  // degrees from vertical, the same with the rig's 40 degree yaw, and one with
+  // a lean. Each is drawn as the 3D view draws it: viewAim, the frame loop's
+  // travel limit, then beamDirection and hangBeam with the rig's turns.
+  it.each([
+    { name: 'straight up', pan: 0, tilt: 0, rot: [0, 0, 0], want: [0, 1, 0] },
+    { name: '30 degrees from vertical', pan: -90, tilt: 30, rot: [0, 0, 0], want: [0.5, 0.8660254, 0] },
+    { name: '30 from vertical, yawed 40', pan: 76.869898, tilt: 30, rot: [0, 40, 0], want: [-0.3, 0.8660254, 0.4] },
+    { name: 'leaning', pan: 58.831066, tilt: -53.125816, rot: [10, -25, 5], want: [0.6946584, 0.7193398, 0] },
+  ])('draws a standing head aimed near the ceiling where aim() points it: $name', ({ pan, tilt, rot, want }) => {
+    const view = viewAim(aim({ mount: 'standing', pan_deg: pan, tilt_deg: tilt }));
+    expect(view).not.toBeNull();
+    const rad = (d: number) => (d * Math.PI) / 180;
+    // The frame loop's clamp, from a head at centre, with this preview.
+    const tiltLimit = viewTravelLimit(rad(135), 0, rad(view!.tiltDeg));
+    const panLimit = viewTravelLimit(rad(270), 0, rad(view!.panDeg));
+    const tiltDrawn = Math.max(-tiltLimit, Math.min(tiltLimit, rad(view!.tiltDeg)));
+    const panDrawn = Math.max(-panLimit, Math.min(panLimit, rad(view!.panDeg)));
+    expect(tiltDrawn).toBeCloseTo(rad(view!.tiltDeg), 12);
+    const got = hangBeam(beamDirection(tiltDrawn, panDrawn, false, { x: 0, y: 0, z: 0 }), rad(rot[0]), rad(rot[2]), rad(rot[1]));
+    const dot = got.x * want[0] + got.y * want[1] + got.z * want[2];
+    const offDeg = (Math.acos(Math.min(1, dot / Math.hypot(...want))) * 180) / Math.PI;
+    expect(offDeg).toBeLessThan(1);
+  });
+
+  it('would have clamped those aims without the preview, which is why they used to stay home', () => {
+    const view = viewAim(aim({ mount: 'standing', pan_deg: -90, tilt_deg: 30 }))!;
+    expect(Math.abs(view.tiltDeg)).toBe(150);
+    expect(viewTravelLimit(135, 0, null)).toBe(135);
+    expect(viewTravelLimit(135, 0, view.tiltDeg)).toBe(150);
+  });
+
+  it('lets a head past its travel ease back once the preview stops, never further out', () => {
+    // Stopped at 180: the limit is where it is, so it can only come in.
+    expect(viewTravelLimit(135, 180, null)).toBe(180);
+    expect(viewTravelLimit(135, -150, null)).toBe(150);
+    // Back inside: the travel again.
+    expect(viewTravelLimit(135, 120, null)).toBe(135);
   });
 
   it('leaves a head that cannot reach at home', () => {

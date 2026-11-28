@@ -71,6 +71,7 @@ import useFocusTargets3d from './previs/useFocusTargets3d';
 import FocusPreviewNotice from './previs/FocusPreviewNotice';
 import { useFocusPreviewStore } from '../../stores/focusPreviewStore';
 import type { ViewAim } from '../../utils/focusPreview';
+import { viewTravelLimit } from '../../utils/focusPreview';
 import type { FocusMarker } from '../../utils/focusPresets';
 
 type BeamDebugSnapshot = {
@@ -334,8 +335,12 @@ const Fixture3D = memo(function Fixture3D({
     readBeamState(profile, feed.current.frames.get(universe), fixture.dmx_address, beam);
     // A focus preset previewed: drawn over what was read, never written back.
     const previewed = previewAims.current;
+    // A previewed aim may be past the head's travel (a standing head aimed near
+    // the ceiling, drawn on the hung head): the clamps below let it get there.
+    let previewAimed = false;
     if (previewed && previewed.has(fixture.id)) {
       const at = previewed.get(fixture.id) ?? null;
+      previewAimed = at !== null;
       beam.panDeg = at ? at.panDeg : 0;
       beam.tiltDeg = at ? at.tiltDeg : 0;
       beam.lit = at !== null;
@@ -462,11 +467,16 @@ const Fixture3D = memo(function Fixture3D({
         o.panVelocityRadPerSec *= motionProfile.damping;
         o.tiltVelocityRadPerSec *= motionProfile.damping;
 
+        // The travel, unless a previewed aim is past it or the head is still
+        // easing back from one (viewTravelLimit).
+        const panLimit = viewTravelLimit(panRangeRad / 2, o.previousPanRad, previewAimed ? targetPan : null);
+        const tiltLimit = viewTravelLimit(tiltRangeRad / 2, o.previousTiltRad, previewAimed ? targetTilt : null);
+
         o.currentPanRad += o.panVelocityRadPerSec * FIXED_CONTROL_DT;
         o.currentTiltRad += o.tiltVelocityRadPerSec * FIXED_CONTROL_DT;
 
-        o.currentPanRad = THREE.MathUtils.clamp(o.currentPanRad, -panRangeRad / 2, panRangeRad / 2);
-        o.currentTiltRad = THREE.MathUtils.clamp(o.currentTiltRad, -tiltRangeRad / 2, tiltRangeRad / 2);
+        o.currentPanRad = THREE.MathUtils.clamp(o.currentPanRad, -panLimit, panLimit);
+        o.currentTiltRad = THREE.MathUtils.clamp(o.currentTiltRad, -tiltLimit, tiltLimit);
 
         const panErr = Math.abs(o.targetPanRad - o.currentPanRad);
         const tiltErr = Math.abs(o.targetTiltRad - o.currentTiltRad);

@@ -12,9 +12,11 @@
  *   standing (p, t)  ->  hung (180 - p, sign(t) * 180 - t)
  *
  * (the local beam (-sin t sin p, -cos t, -sin t cos p), turned over about X,
- * is the hung beam at those angles). That tilt is 180 - |t| from straight
- * down, so a standing head aimed within VIEW_MIN_STANDING_TILT of the ceiling
- * cannot be drawn inside the view's tilt travel and is left at home, listed.
+ * is the hung beam at those angles, exactly, at every tilt and under any yaw
+ * or lean). That tilt is 180 - |t| from straight down, so a standing head
+ * aimed within 45 degrees of the ceiling is past the hung head's 135 each way:
+ * the frame loop lets a previewed head go past its travel to get there
+ * (viewTravelLimit), and its beam is drawn where the real one points.
  */
 import type { FocusHeadAim, FocusTarget } from './focusPresets';
 
@@ -39,9 +41,6 @@ export interface FocusPreviewPlan {
   home: HomeHead[];
 }
 
-/** The view's tilt travel is 135 each way for a 270 head: a standing head needs at least this from the ceiling. */
-export const VIEW_MIN_STANDING_TILT = 45;
-
 /** The fixture as the 3D view knows it. */
 export interface ViewFixture {
   id: number;
@@ -53,13 +52,28 @@ const wrap180 = (deg: number) => {
   return Object.is(d, -0) ? 0 : d;
 };
 
-/** The hung head's pan and tilt for a head's physical ones; null when the view cannot draw it. */
+/**
+ * The hung head's pan and tilt for a head's physical ones; null when it
+ * cannot reach. A standing head's tilt can be past the hung head's travel
+ * (up to 180, straight up): see viewTravelLimit.
+ */
 export function viewAim(aim: FocusHeadAim): ViewAim | null {
   if (!aim.reachable || aim.pan_deg === null || aim.tilt_deg === null) return null;
   if (aim.mount !== 'standing') return { panDeg: aim.pan_deg, tiltDeg: aim.tilt_deg };
   const t = aim.tilt_deg;
-  if (Math.abs(t) < VIEW_MIN_STANDING_TILT) return null;
   return { panDeg: wrap180(180 - aim.pan_deg), tiltDeg: (t >= 0 ? 180 : -180) - t };
+}
+
+/**
+ * How far from centre the 3D view lets a head's pan or tilt go on this step
+ * (any unit, the caller's). Its own travel, `half` either way; further for a
+ * previewed aim past it (a standing head aimed near the ceiling, drawn on the
+ * hung head); and, once a preview stops, as far as the head already is, so it
+ * eases back into its travel instead of jumping there in one frame. With no
+ * preview and the head inside its travel, this is the travel.
+ */
+export function viewTravelLimit(half: number, previous: number, previewTarget: number | null): number {
+  return Math.max(half, Math.abs(previous), previewTarget === null ? 0 : Math.abs(previewTarget));
 }
 
 /**
@@ -90,10 +104,8 @@ export function previewPlan(target: FocusTarget, fixtures: ViewFixture[]): Focus
     aims.set(id, at);
     if (at) {
       aimed += 1;
-    } else if (!row.reachable) {
-      home.push({ name, reason: row.reason || 'it cannot reach the target' });
     } else {
-      home.push({ name, reason: 'standing and aimed near the ceiling, which the 3D view cannot draw' });
+      home.push({ name, reason: row.reason || 'it cannot reach the target' });
     }
   }
   return { key: target.key, name: target.name, aims, aimed, home };
