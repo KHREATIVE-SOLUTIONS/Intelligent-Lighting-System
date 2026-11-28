@@ -12,6 +12,10 @@ import { rigsApi, roomScanApi } from '../services/api';
 import { useRigEditorStore } from '../stores/rigEditorStore';
 import type { Rig, RoomShell } from '../types';
 
+// Each test renders the whole RigBuilder: alone they take 1-3 s, but in a full parallel run
+// on a busy machine they can pass the 5 s default. See docs/TESTING.md.
+vi.setConfig({ testTimeout: 30_000 });
+
 vi.mock('../services/api', () => ({
   rigsApi: {
     get: vi.fn(),
