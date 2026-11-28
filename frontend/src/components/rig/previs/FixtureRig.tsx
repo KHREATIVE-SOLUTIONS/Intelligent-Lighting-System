@@ -33,6 +33,7 @@ import type { BeamDebugSnapshot, FixtureRuntime } from './fixtureRuntime';
 import { FloorPools, createPoolBuffer, emptyPoolRenderer, updatePools, writePoolSlot } from './FloorPools';
 import type { PoolRenderer } from './FloorPools';
 import type { FixtureMount } from './layout';
+import type { LookUniforms } from './lookUniforms';
 import { bodyMaterial } from './materials';
 import type { OutputFeed } from './outputFeed';
 
@@ -98,7 +99,10 @@ export const FixtureRig = memo(function FixtureRig({
   showLabels,
   debug,
   debugBuffer,
+  look,
 }: {
+  /** The look controls as shared uniforms (lookUniforms.ts): haze, soft beams, gobos. */
+  look: LookUniforms;
   fixtures: RigFixture[];
   mounts: Map<number, FixtureMount>;
   /** The frames the engine outputs, read in the frame loop. Never written. */
@@ -145,7 +149,7 @@ export const FixtureRig = memo(function FixtureRig({
   }, [batches, runtimes]);
 
   // All the beams: one tube with its shaping as per-instance attributes.
-  const beamMaterial = useMemo(() => createInstancedBeamMaterial(), []);
+  const beamMaterial = useMemo(() => createInstancedBeamMaterial(look), [look]);
   useEffect(() => () => beamMaterial.dispose(), [beamMaterial]);
   const beams = useMemo(() => {
     const size = Math.max(1, count);
@@ -180,6 +184,9 @@ export const FixtureRig = memo(function FixtureRig({
     const now = performance.now();
     const frames = feed.current.frames;
 
+    let glowR = 0;
+    let glowG = 0;
+    let glowB = 0;
     for (let i = 0; i < count; i += 1) {
       const rt = runtimes[i];
       stepFixture(rt, frames.get(rt.universe), rawDelta, now, room, longestThrow);
@@ -189,8 +196,14 @@ export const FixtureRig = memo(function FixtureRig({
         rt.fixture.position_x, rt.sourceY, rt.fixture.position_z,
         rt.pointing, rt.reach, rt.lightDepth, rt.coneRad, rt.surface,
       );
+      glowR += s.r * rt.effectiveIntensity;
+      glowG += s.g * rt.effectiveIntensity;
+      glowB += s.b * rt.effectiveIntensity;
       if (debug) debugBuffer.current[rt.id] = debugSnapshot(rt);
     }
+    // The rig's light, averaged over every fixture: what the drifting haze glows with.
+    const share = count > 0 ? 1 / count : 0;
+    look.rigGlow.value.setRGB(glowR * share, glowG * share, glowB * share);
 
     for (const batch of batches) {
       if (batch.part === 'support') continue;

@@ -74,6 +74,7 @@ import {
   PREVIZ_SHADOWS_KEY, PREVIZ_STATS_KEY, defaultShowLabels, previzDpr, readViewToggle, writeViewToggle,
 } from './previs/viewSettings';
 import { StatsOverlay, StatsSampler } from './previs/PrevizStats';
+import { createLookUniforms } from './previs/lookUniforms';
 import type { PrevizStatsSample } from './previs/PrevizStats';
 
 type QualityMode = 'performance' | 'balanced' | 'ultra';
@@ -515,6 +516,10 @@ function Scene({
     debugBuffer.current = {};
   }, [rig, debugBuffer]);
 
+  // The look controls as uniforms the beam, pool and haze materials share
+  // (lookUniforms.ts): made once, written below, read on the next frame.
+  const look = useMemo(() => createLookUniforms(), []);
+
   return (
     <>
       <PerspectiveCamera key={`cam-${cameraMode}`} makeDefault position={camera.position} fov={camera.fov} />
@@ -597,6 +602,7 @@ function Scene({
         showLabels={showLabels}
         debug={debug}
         debugBuffer={debugBuffer}
+        look={look}
       />
 
       {/* Positions that are a guess, marked as one */}

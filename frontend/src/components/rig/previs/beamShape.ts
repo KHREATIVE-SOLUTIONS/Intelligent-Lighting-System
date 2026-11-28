@@ -15,9 +15,12 @@
  * setting share one geometry.
  */
 import * as THREE from 'three';
+import { BEAM_LOOK_GLSL } from './beamLook';
 import type { BeamSurface } from './beamThrow';
 import { getFixtureGeometry } from './fixtureGeometry';
 import type { FixtureModelKind } from './fixtureSpecs';
+import { createLookUniforms } from './lookUniforms';
+import type { LookUniforms } from './lookUniforms';
 
 /** Where a fixture's beam leaves it, and its half-width and half-depth there. */
 export type BeamMouth = {
@@ -159,12 +162,20 @@ export const BEAM_INSTANCE_ATTRIBUTES = {
   beamLength: 1,
 } as const;
 
+// Besides the shape, the vertex shader hands the fragment shader what the soft
+// beam needs (docs/PREVIZ_LOOK.md): how far down the beam the point is, in
+// metres (0 all round the mouth, the edge's own length at the far end), the
+// tube's outward normal in the room (radial, from the ellipse the ring is at)
+// and the way to the eye.
 export const INSTANCED_BEAM_VERTEX_SHADER = `
   attribute vec4 beamShape;
   attribute vec4 beamSurface;
   attribute vec4 beamPaint;
   attribute float beamLength;
   varying vec4 vBeamPaint;
+  varying float vAlong;
+  varying vec3 vNormalW;
+  varying vec3 vToEye;
   void main() {
     mat4 placeMatrix = modelMatrix;
     #ifdef USE_INSTANCING
@@ -172,6 +183,8 @@ export const INSTANCED_BEAM_VERTEX_SHADER = `
     #endif
     vBeamPaint = beamPaint;
     vec4 place = placeMatrix * vec4(position.x * beamShape.x, 0.0, position.z * beamShape.y, 1.0);
+    vec2 across = vec2(position.x / max(beamShape.x, 0.0001), position.z / max(beamShape.y, 0.0001));
+    vAlong = 0.0;
     if (position.y < -0.5) {
       vec4 flatEnd = placeMatrix * vec4(position.x * beamShape.z, -beamLength, position.z * beamShape.w, 1.0);
       vec3 edge = flatEnd.xyz - place.xyz;
@@ -182,23 +195,57 @@ export const INSTANCED_BEAM_VERTEX_SHADER = `
         if (meets > 0.0) share = clamp(meets, ${BEAM_EDGE_SHORTEST.toFixed(2)}, ${BEAM_EDGE_LONGEST.toFixed(2)});
       }
       place.xyz += edge * share;
+      vAlong = length(edge) * share;
+      across = vec2(position.x / max(beamShape.z, 0.0001), position.z / max(beamShape.w, 0.0001));
     }
+    vNormalW = mat3(placeMatrix) * vec3(across.x, 0.0, across.y);
+    vToEye = cameraPosition - place.xyz;
     gl_Position = projectionMatrix * viewMatrix * place;
   }
 `;
 
+// Soft: bright at the lens, falling off down the beam, fading at the edge of
+// the cone, all scaled by the haze (beamLook.ts). Flat (Soft beams off): one
+// strength end to end, the beam as it was, scaled by the haze. Tone mapped and
+// put in the output colour space like three's own materials, so the picture
+// grades the same whether or not bloom is on (in a render target the two
+// includes do nothing and OutputPass does it instead).
 export const INSTANCED_BEAM_FRAGMENT_SHADER = `
+  uniform float uHaze;
+  uniform float uSoftBeams;
   varying vec4 vBeamPaint;
+  varying float vAlong;
+  varying vec3 vNormalW;
+  varying vec3 vToEye;
+  ${BEAM_LOOK_GLSL}
   void main() {
-    gl_FragColor = vec4(vBeamPaint.rgb, vBeamPaint.a * 0.42);
+    float level = vBeamPaint.a;
+    float alpha;
+    if (uSoftBeams > 0.5) {
+      float facing = abs(dot(normalize(vNormalW), normalize(vToEye)));
+      alpha = softBeamAlpha(level, vAlong, uHaze, facing);
+    } else {
+      alpha = flatBeamAlpha(level, uHaze);
+    }
+    gl_FragColor = vec4(vBeamPaint.rgb, clamp(alpha, 0.0, 1.0));
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
   }
 `;
 
-/** The material every beam of a rig is drawn with, in one instanced draw. */
-export function createInstancedBeamMaterial(): THREE.ShaderMaterial {
+/**
+ * The material every beam of a rig is drawn with, in one instanced draw.
+ * `look` gives it the shared haze and soft-beam uniforms; without one it has
+ * its own, at the defaults.
+ */
+export function createInstancedBeamMaterial(look: LookUniforms = createLookUniforms()): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     vertexShader: INSTANCED_BEAM_VERTEX_SHADER,
     fragmentShader: INSTANCED_BEAM_FRAGMENT_SHADER,
+    uniforms: {
+      uHaze: look.haze,
+      uSoftBeams: look.softBeams,
+    },
     transparent: true,
     side: THREE.DoubleSide,
     depthWrite: false,
