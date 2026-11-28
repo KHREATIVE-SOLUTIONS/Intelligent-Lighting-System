@@ -68,6 +68,7 @@ import { FocusTargetMarkers } from './previs/FocusTargetMarkers';
 import FocusTargets3dToggle from './previs/FocusTargets3dToggle';
 import useFocusTargets3d from './previs/useFocusTargets3d';
 import type { FocusMarker } from '../../utils/focusPresets';
+import { createLightingWriter, createTrailingThrottle } from './previs/storeThrottle';
 import {
   PREVIZ_SHADOWS_KEY, defaultShowLabels, previzDpr, readViewToggle, writeViewToggle,
 } from './previs/viewSettings';
@@ -141,15 +142,18 @@ function Stage({ width, depth }: { width: number; depth: number }) {
 // KEY LIGHTING ZONES (drawn on the floor, with or without the venue)
 // ============================================================================
 
+// Subscribes to the zones itself, so a change re-renders these few discs and
+// not the scene they sit in. The store is written only when the zones change.
 function KeyZoneHighlights({
   width,
   depth,
-  keyZones,
 }: {
   width: number;
   depth: number;
-  keyZones: Array<{ zone: string; active: boolean; intensity: number; color: { r: number; g: number; b: number } }>;
 }) {
+  const keyZones = useDMXStore((state) => state.proLighting.keyLightingZones) as Array<{
+    zone: string; active: boolean; intensity: number; color: { r: number; g: number; b: number };
+  }>;
   return (
     <group>
       {keyZones
@@ -319,7 +323,6 @@ function Scene({
     onMove: (id: number, to: Point3) => void;
   } | null;
 }) {
-  const keyLightingZones = useDMXStore((state) => state.proLighting.keyLightingZones);
 
   // Crowd size rides on the same switch as haze and spot lights; the floor's
   // own capacity caps it for a small room.
@@ -539,7 +542,6 @@ function Scene({
       <KeyZoneHighlights
         width={rig.stage_width}
         depth={rig.stage_depth}
-        keyZones={keyLightingZones}
       />
       {/* Truss is part of the rig, so it stays when the venue is hidden; only
           the hoists up to the ceiling go, because the ceiling has. */}
@@ -807,17 +809,11 @@ export default function RigVisualizer() {
     // subscribed this whole page to every store change, so each of the 45
     // messages a second re-rendered the header, the dropdowns and the debug
     // table, and the 3D view was left a few frames a second.
-    const {
-      setUniverse,
-      setFixtureStates,
-      setEffectsInfo,
-      setGenre,
-      setSection,
-      setActiveEffects,
-      setKeyLightingZones,
-      setEmotionVector,
-      setBeatPhrase,
-    } = useDMXStore.getState();
+    // The store is written at most ten times a second, and only with values
+    // that changed (storeThrottle.ts). The 3D view does not wait on it: the
+    // beat clock and the output feed below are refs fed on every message.
+    const writer = createLightingWriter(useDMXStore.getState());
+    const throttle = createTrailingThrottle(() => { writer.flush(); });
 
     const handleAnalysis = (data: any) => {
       const msg = data as any;
@@ -825,21 +821,8 @@ export default function RigVisualizer() {
       if (msg.lighting) {
         const l = msg.lighting;
         ingestOutput(outputFeed.current, l, performance.now());
-        if (l.dmx_frames) {
-          Object.entries(l.dmx_frames).forEach(([universe, frame]) => {
-            setUniverse(Number(universe) || 0, frame as number[]);
-          });
-        } else if (l.dmx_frame) {
-          setUniverse(Number(l.dmx_universe) || 0, l.dmx_frame);
-        }
-        if (l.fixtures) setFixtureStates(l.fixtures);
-        if (l.state) setEffectsInfo(l.state, l.movement || 'none', l.dimmer || 'none');
-        if (l.genre) setGenre(l.genre);
-        if (l.section) setSection(l.section, l.section_intensity ?? 0);
-        if (l.pro_effects) setActiveEffects(l.pro_effects);
-        if (l.key_zones) setKeyLightingZones(l.key_zones);
-        if (l.emotion_vector) setEmotionVector(l.emotion_vector);
-        if (l.beat_phrase !== undefined) setBeatPhrase(l.beat_phrase, l.beats_per_phrase ?? 4);
+        writer.ingest(l);
+        throttle.request();
       }
     };
 
@@ -850,6 +833,7 @@ export default function RigVisualizer() {
 
     return () => {
       audioWebSocket.off('analysis', handleAnalysis);
+      throttle.cancel();
     };
   }, []);
 
