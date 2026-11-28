@@ -104,8 +104,10 @@ async def process_qr_scan(
             }
         if labelled is None:
             label_note = f"The label's rig fixture {label_rf_id} no longer exists. "
-        else:
+        elif labelled.rig_id != rig_id:
             label_note = f"The label's rig fixture {label_rf_id} is not in this rig. "
+        else:
+            label_note = f"The label's rig fixture {label_rf_id} is now a different fixture. "
 
     # Find or verify fixture
     result = await db.execute(select(Fixture).where(Fixture.id == fixture_id))

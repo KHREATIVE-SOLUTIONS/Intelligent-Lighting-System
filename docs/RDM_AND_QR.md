@@ -65,10 +65,15 @@ The scan route takes three kinds of code, and tries them in this order:
    `matched_by: "qr_code_data"`.
 3. **Otherwise it adds** the `fixture_id` (from the JSON, or a bare id) at the
    next free address: `action: added`, `already_patched: false`. If the code
-   was a label whose rig fixture no longer exists or is in another rig, the
-   message says so first ("The label's rig fixture 9 no longer exists. Added
-   ..."). The new rig fixture stores the code's text, so scanning the same
-   label again matches by step 2 instead of adding another.
+   was a label whose rig fixture no longer exists, is in another rig, or is
+   now a different fixture (its id reused by another profile), the message
+   says so first ("The label's rig fixture 9 no longer exists. Added ...").
+   The new rig fixture stores the code's text, so scanning the same label
+   again matches by step 2 instead of adding another.
+
+   Not caught: if a deleted rig fixture's id is reused by another unit of the
+   **same** profile, its old label identifies the new unit. Closing that needs
+   AUTOINCREMENT ids on `rig_fixtures` or a per-label token.
 
 A `rig_fixture_id` that is not a whole number is ignored. The scanner shows
 `identified` answers as "Already in the rig" and an add as "Added to the rig",

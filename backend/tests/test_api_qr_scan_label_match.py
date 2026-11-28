@@ -162,10 +162,13 @@ async def test_a_reused_rig_fixture_id_on_another_profile_is_not_a_match(client,
     gone = await _patch(client, rig_id, spot, 1, "Old spot")
     code = await _label(client, rig_id, gone)
     assert (await client.delete(f"/api/rigs/{rig_id}/fixtures/{gone}")).status_code == 204
-    await _patch(client, rig_id, wash, 1, "New wash")
+    new_wash = await _patch(client, rig_id, wash, 1, "New wash")
 
     answer = await _scan(client, rig_id, code)
     assert answer["action"] == "added"
+    # Reuse is likely, not certain: the reason names whichever happened.
+    reason = "is now a different fixture" if new_wash == gone else "no longer exists"
+    assert f"rig fixture {gone} {reason}" in answer["message"]
     rows = await _rows(client, rig_id)
     assert sorted(r["fixture_id"] for r in rows) == sorted([spot["id"], wash["id"]])
 

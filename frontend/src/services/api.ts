@@ -401,7 +401,7 @@ export const rigsApi = {
 
 /** What POST /rigs/{id}/scan answers (backend/app/api/endpoints/qr_scanning.py). */
 export interface QrScanAnswer {
-  /** Added to the rig, or already in it with this code. */
+  /** Added to the rig, or already in it: named by the label's rig_fixture_id or by this code's text. */
   action: 'added' | 'identified';
   /** True when the code named a fixture already in the rig: nothing was added. */
   already_patched?: boolean;
