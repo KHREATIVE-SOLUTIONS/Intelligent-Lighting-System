@@ -144,10 +144,8 @@ export function planDemoReady(input: DemoReadyInput): DemoReadyPlan {
   const manual: DemoManualStep[] = [];
   const skipped: DemoReadyPlan['skipped'] = [];
   const { rig } = input;
-  const useRig = rig !== null && activeCount(rig) > 0;
-
   // 1. A rig to show: this one when it has fixtures, else the LIV demo.
-  if (useRig) {
+  if (rig && activeCount(rig) > 0) {
     skipped.push({ kind: 'loadDemo', label: 'Demo rig', detail: `Using "${rig.name}", ${plural(activeCount(rig), 'fixture')}.` });
   } else if (input.demoRunning) {
     skipped.push({ kind: 'loadDemo', label: 'Demo rig', detail: 'A demo rig is already running on the box.' });

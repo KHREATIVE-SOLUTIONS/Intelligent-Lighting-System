@@ -18,9 +18,11 @@ import {
   SkipNext as SkippedIcon,
   Warning as WarnIcon,
 } from '@mui/icons-material';
-import { readinessApi } from '../../services/api';
+import { audioApi, demoApi, readinessApi } from '../../services/api';
 import { focusPresetsApi } from '../../services/focusPresetsApi';
 import { useHealthStore } from '../../stores/healthStore';
+import { outputVerifiablyIdle, planDemoReady, runDemoReadyPlan } from '../../utils/demoReady';
+import type { DemoActionResult, DemoOutcome, DemoReadyAudio, DemoReadyPlan } from '../../utils/demoReady';
 import { readAudioHealth, readDmxHealth } from '../../utils/showHealth';
 import {
   ACTION_LABELS,
@@ -39,7 +41,7 @@ import type {
   VenueStepKey,
   VenueStepStatus,
 } from '../../utils/venueSetupChecklist';
-import AudioDeviceChooser from '../common/AudioDeviceChooser';
+import AudioDeviceChooser, { readLastDevice, sortCaptureDevices } from '../common/AudioDeviceChooser';
 import ConsoleExportSection from '../rig/ConsoleExportSection';
 import FocusPresetsPanel from '../rig/FocusPresetsPanel';
 
@@ -78,6 +80,14 @@ const STATUS_TEXT: Record<VenueStepStatus, string> = {
 };
 
 type SubDialog = 'focus' | 'export' | 'audio' | null;
+
+/** Get demo-ready: reading the box, the plan shown, then its results as they come in. */
+type DemoState =
+  | { step: 'planning' }
+  | { step: 'plan'; plan: DemoReadyPlan }
+  | { step: 'running' | 'done'; plan: DemoReadyPlan; results: DemoActionResult[] };
+
+const OUTCOME_TEXT: Record<DemoOutcome, string> = { done: 'Done', skipped: 'Skipped', failed: 'Failed' };
 
 const browserStore = (): KeyValueStore | null => {
   try {
@@ -179,6 +189,62 @@ export default function VenueSetupChecklist({
     setRefresh((n) => n + 1);
   };
 
+  const [demo, setDemo] = useState<DemoState | null>(null);
+
+  // Get demo-ready, step one: read the box (readiness and audio, nothing
+  // written) and show the plan. Nothing runs until the operator confirms.
+  const planDemo = async () => {
+    setDemo({ step: 'planning' });
+    const [report, status, devices] = await Promise.allSettled([
+      rigId !== null ? readinessApi.get(rigId) : Promise.resolve(null),
+      audioApi.getCaptureStatus(),
+      audioApi.getCaptureDevices(),
+    ]);
+    let audio: DemoReadyAudio | null = null;
+    if (status.status === 'fulfilled' && devices.status === 'fulfilled') {
+      audio = {
+        // A feed sent to the box counts as heard, as the status bar reads it.
+        running: !!status.value.running || box?.services?.audio_input === 'live',
+        ...sortCaptureDevices(devices.value),
+        remembered: { name: status.value.remembered_device, hostapi: status.value.remembered_hostapi },
+        browserName: readLastDevice(),
+      };
+    }
+    setDemo({
+      step: 'plan',
+      plan: planDemoReady({
+        rig,
+        demoRunning: effects?.live_rig_demo ?? null,
+        outputIdle: outputVerifiablyIdle(dmx, reachable, box),
+        readiness: report.status === 'fulfilled' ? report.value : null,
+        audio,
+      }),
+    });
+  };
+
+  // Step two, on confirm: each action in turn, a line for each, then read the statuses again.
+  const runDemo = async (plan: DemoReadyPlan) => {
+    const results: DemoActionResult[] = [];
+    setDemo({ step: 'running', plan, results });
+    await runDemoReadyPlan(
+      plan,
+      rigId,
+      {
+        applyDemoPreset: demoApi.applyPreset,
+        readReadiness: readinessApi.get,
+        makeGroups: readinessApi.autoGroups,
+        startCapture: audioApi.startCapture,
+        readFocus: focusPresetsApi.get,
+      },
+      (result) => {
+        results.push(result);
+        setDemo({ step: 'running', plan, results: [...results] });
+      },
+    );
+    setDemo({ step: 'done', plan, results: [...results] });
+    setRefresh((n) => n + 1);
+  };
+
   return (
     <>
       <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth data-testid="venue-setup-checklist">
@@ -256,8 +322,98 @@ export default function VenueSetupChecklist({
           </Box>
         </DialogContent>
         <DialogActions>
+          <Button
+            variant="contained"
+            data-testid="venue-setup-demo-ready"
+            disabled={demo !== null}
+            onClick={() => { void planDemo(); }}
+            sx={{ mr: 'auto' }}
+          >
+            Get demo-ready
+          </Button>
           {rigId !== null && <Button onClick={() => setRefresh((n) => n + 1)}>Check again</Button>}
           <Button onClick={onClose}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={demo !== null}
+        onClose={() => { if (demo?.step !== 'running') setDemo(null); }}
+        maxWidth="sm"
+        fullWidth
+        data-testid="demo-ready-dialog"
+      >
+        <DialogTitle>Get demo-ready</DialogTitle>
+        {(demo?.step === 'planning' || demo?.step === 'running') && <LinearProgress />}
+        <DialogContent dividers>
+          {demo?.step === 'planning' && (
+            <Typography variant="body2">Reading the readiness checks and the audio inputs. Nothing is changed.</Typography>
+          )}
+          {demo && demo.step !== 'planning' && (
+            <Box component="div" sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              {demo.step === 'plan' ? (
+                <Box component="div" data-testid="demo-ready-plan">
+                  <Typography variant="subtitle2">
+                    {demo.plan.actions.length > 0 ? 'It will, in this order:' : 'Nothing to do by itself: everything it could do is done.'}
+                  </Typography>
+                  {demo.plan.actions.map((a) => (
+                    <Typography key={`${a.kind}-${a.label}`} variant="body2" data-testid={`demo-ready-action-${a.kind}`}>
+                      {a.label}: {a.detail}
+                    </Typography>
+                  ))}
+                </Box>
+              ) : (
+                <Box component="div" data-testid="demo-ready-results">
+                  <Typography variant="subtitle2">{demo.step === 'running' ? 'Running...' : 'Finished. The checklist has been read again.'}</Typography>
+                  {demo.results.map((r) => (
+                    <Typography
+                      key={`${r.kind}-${r.label}`}
+                      variant="body2"
+                      color={r.outcome === 'failed' ? 'error' : undefined}
+                      data-testid={`demo-ready-result-${r.kind}`}
+                      data-outcome={r.outcome}
+                    >
+                      {r.label}: {OUTCOME_TEXT[r.outcome]}. {r.message}
+                    </Typography>
+                  ))}
+                </Box>
+              )}
+              {demo.plan.skipped.length > 0 && (
+                <Box component="div" data-testid="demo-ready-skipped">
+                  <Typography variant="subtitle2">Left as it is:</Typography>
+                  {demo.plan.skipped.map((s) => (
+                    <Typography key={s.kind} variant="body2" color="text.secondary">{s.label}: {s.detail}</Typography>
+                  ))}
+                </Box>
+              )}
+              <Box component="div" data-testid="demo-ready-manual">
+                <Typography variant="subtitle2">Stays with you (never done by this button):</Typography>
+                {demo.plan.manual.map((m) => (
+                  <Typography key={m.key} variant="body2" color="text.secondary" data-testid={`demo-ready-manual-${m.key}`}>
+                    {m.label}: {m.detail}
+                  </Typography>
+                ))}
+              </Box>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          {demo?.step === 'plan' && (
+            <>
+              <Button onClick={() => setDemo(null)}>Cancel</Button>
+              <Button
+                variant="contained"
+                data-testid="demo-ready-confirm"
+                disabled={demo.plan.actions.length === 0}
+                onClick={() => { void runDemo(demo.plan); }}
+              >
+                Do {demo.plan.actions.length === 1 ? 'it' : `these ${demo.plan.actions.length}`}
+              </Button>
+            </>
+          )}
+          {(demo?.step === 'done' || demo?.step === 'planning') && (
+            <Button data-testid="demo-ready-close" onClick={() => setDemo(null)}>Close</Button>
+          )}
         </DialogActions>
       </Dialog>
 

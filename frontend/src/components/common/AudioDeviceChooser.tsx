@@ -31,7 +31,7 @@ import { useAudioStore } from '../../stores/audioStore';
 // Remembered by name: indexes shift when a USB interface is replugged.
 const LAST_DEVICE_KEY = 'audio.lastDeviceName';
 
-const readLastDevice = (): string | null => {
+export const readLastDevice = (): string | null => {
   try {
     return window.localStorage.getItem(LAST_DEVICE_KEY);
   } catch {
