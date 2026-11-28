@@ -129,11 +129,12 @@ def _wait_for_a_step_after_now(steps):
 
 
 def _stop_and_join(capture):
-    watchdog = capture._watchdog
+    watchdog, device_thread = capture._watchdog, capture._thread
     capture.stop()
-    if watchdog is not None:
-        watchdog.join(timeout=5.0)
-        assert not watchdog.is_alive()
+    for thread in (watchdog, device_thread):
+        if thread is not None:
+            thread.join(timeout=5.0)
+            assert not thread.is_alive()
 
 
 def test_a_device_that_dies_is_restarted():
