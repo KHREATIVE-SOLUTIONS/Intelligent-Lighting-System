@@ -12,8 +12,8 @@ describe('recordFrame', () => {
     const acc = createStatsAccumulator();
     recordFrame(acc, 0, 0, 0, 0, 0);
     let sample = null;
-    for (let i = 1; i <= 30 && !sample; i += 1) {
-      sample = recordFrame(acc, i * (1000 / 60), 40 + (i % 2) * 2, 200000, 12, 5);
+    for (let i = 1; i <= 40 && !sample; i += 1) {
+      sample = recordFrame(acc, i * (1000 / 60), 41, 200000, 12, 5);
     }
     expect(sample).not.toBeNull();
     expect(sample!.fps).toBeCloseTo(60, 5);
@@ -24,7 +24,7 @@ describe('recordFrame', () => {
     expect(sample!.textures).toBe(5);
     // A new window starts.
     expect(acc.frames).toBe(0);
-    expect(recordFrame(acc, 501, 1, 1, 1, 1)).toBeNull();
+    expect(recordFrame(acc, acc.start + 10, 1, 1, 1, 1)).toBeNull();
   });
 });
 

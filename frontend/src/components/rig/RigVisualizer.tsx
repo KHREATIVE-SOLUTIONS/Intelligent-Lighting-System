@@ -10,6 +10,7 @@ import {
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { demoApi, effectsApi, rigsApi } from '../../services/api';
 import type { DemoPresetSummary } from '../../services/api';
 import type { Rig, RoomShellBox } from '../../types';
@@ -254,28 +255,49 @@ function HazeParticles({ count, spread }: { count: number; spread: [number, numb
   );
 }
 
+const ATMOSPHERE_LAYERS = [0.22, 0.45, 0.66, 0.84];
+
+/**
+ * Four faint haze sheets at rising heights, merged into one draw. They are
+ * added to what is behind them, so each sheet's colour times its opacity is
+ * baked into its vertex colours and the merged sheet is drawn at full opacity:
+ * the same light added as four meshes with their own opacity gave.
+ */
+function buildAtmosphere(width: number, depth: number, height: number): THREE.BufferGeometry {
+  const sheets = ATMOSPHERE_LAYERS.map((t) => {
+    const sheet = new THREE.PlaneGeometry(width * 1.15, depth * 1.15)
+      .rotateX(-Math.PI / 2)
+      .translate(0, Math.max(0.7, t * height), 0);
+    const opacity = 0.012 + t * 0.012;
+    const r = (0.28 + t * 0.22) * opacity;
+    const g = (0.36 + t * 0.18) * opacity;
+    const b = (0.52 + t * 0.12) * opacity;
+    const count = sheet.getAttribute('position').count;
+    const colors = new Float32Array(count * 3);
+    for (let i = 0; i < count; i += 1) {
+      colors[i * 3] = r;
+      colors[i * 3 + 1] = g;
+      colors[i * 3 + 2] = b;
+    }
+    sheet.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    return sheet;
+  });
+  const merged = mergeGeometries(sheets, false);
+  sheets.forEach((sheet) => sheet.dispose());
+  return merged ?? new THREE.BufferGeometry();
+}
+
+const atmosphereMaterial = new THREE.MeshBasicMaterial({
+  vertexColors: true,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+
 function AtmosphereLayers({ width, depth, height }: { width: number; depth: number; height: number }) {
-  const layers = [0.22, 0.45, 0.66, 0.84];
-  return (
-    <group>
-      {layers.map((t, i) => (
-        <mesh
-          key={`atm-${i}`}
-          rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, Math.max(0.7, t * height), 0]}
-        >
-          <planeGeometry args={[width * 1.15, depth * 1.15]} />
-          <meshBasicMaterial
-            color={new THREE.Color(0.28 + t * 0.22, 0.36 + t * 0.18, 0.52 + t * 0.12)}
-            transparent
-            opacity={0.012 + t * 0.012}
-            blending={THREE.AdditiveBlending}
-            depthWrite={false}
-          />
-        </mesh>
-      ))}
-    </group>
-  );
+  const geometry = useMemo(() => buildAtmosphere(width, depth, height), [width, depth, height]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return <mesh geometry={geometry} material={atmosphereMaterial} dispose={null} />;
 }
 
 // ============================================================================
