@@ -405,7 +405,9 @@ def frame_clock():
 
 def build_engine(**overrides) -> EffectsEngine:
     kwargs = dict(fps=FPS, auto_mode=True, movement_enabled=True,
-                  dimmer_enabled=True, strobe_enabled=False)
+                  dimmer_enabled=True, strobe_enabled=False,
+                  # These pin the anticipation levels; the beat stage is tested on its own.
+                  beat_pulse_enabled=False, output_makeup_gain_enabled=False)
     kwargs.update(overrides)
     engine = EffectsEngine(EffectsConfig(**kwargs))
     engine.enable_pro_lighting(True)

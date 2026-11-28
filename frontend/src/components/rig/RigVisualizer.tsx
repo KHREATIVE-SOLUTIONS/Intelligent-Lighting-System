@@ -28,6 +28,7 @@ import {
 } from '../../utils/demoRigSync';
 import type { EngineRigApis } from '../../utils/demoRigSync';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
+import LevelMeter from '../common/LevelMeter';
 import { ConsoleExportButton } from './ConsoleExportSection';
 import { createBeatClock, ingestAnalysis } from './previs/beatClock';
 import type { BeatClock } from './previs/beatClock';
@@ -1378,6 +1379,7 @@ export default function RigVisualizer() {
       {/* Audio Device Chooser */}
       <Box sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
         <AudioDeviceChooser />
+        <LevelMeter compact />
         <FeedReadout
           feed={outputFeed}
           guessCount={(rig.fixtures || []).filter(isPositionUnconfirmed).length}

@@ -286,6 +286,10 @@ def test_the_fit_only_ever_slows_a_look_and_only_as_far_as_it_must():
 def _engine(seed, look_dimmer_effects=True):
     engine = EffectsEngine(EffectsConfig(fps=60.0, auto_mode=True, movement_enabled=True, dimmer_enabled=True,
                                          strobe_enabled=False, look_seed=seed,
+                                         # The make-up gain lifts the rig above the moment's energy by
+                                         # design; these pin the look library on its own. The beat pulse
+                                         # stays on (2.37 passes/s at 320 BPM with it, under 2.5).
+                                         output_makeup_gain_enabled=False,
                                          look_dimmer_effects=look_dimmer_effects))
     manager, _ = create_venue_rig("club_night")
     engine.set_fixture_manager(manager)

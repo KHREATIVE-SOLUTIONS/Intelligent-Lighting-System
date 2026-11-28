@@ -23,6 +23,7 @@ import FrequencyBands from './FrequencyBands';
 import ProLightingPanel from './ProLightingPanel';
 import SectionTimeline from './SectionTimeline';
 import AudioDeviceChooser from '../common/AudioDeviceChooser';
+import LevelMeter from '../common/LevelMeter';
 import SetupChecklist from './SetupChecklist';
 import GenreCheckPanel from './GenreCheckPanel';
 
@@ -133,6 +134,9 @@ export default function Dashboard() {
             Audio input
           </Typography>
           <AudioDeviceChooser />
+          <Box sx={{ mt: 1 }}>
+            <LevelMeter />
+          </Box>
         </CardContent>
       </Card>
 
