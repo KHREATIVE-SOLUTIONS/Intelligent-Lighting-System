@@ -70,8 +70,10 @@ import useFocusTargets3d from './previs/useFocusTargets3d';
 import type { FocusMarker } from '../../utils/focusPresets';
 import { createLightingWriter, createTrailingThrottle } from './previs/storeThrottle';
 import {
-  PREVIZ_SHADOWS_KEY, defaultShowLabels, previzDpr, readViewToggle, writeViewToggle,
+  PREVIZ_SHADOWS_KEY, PREVIZ_STATS_KEY, defaultShowLabels, previzDpr, readViewToggle, writeViewToggle,
 } from './previs/viewSettings';
+import { StatsOverlay, StatsSampler } from './previs/PrevizStats';
+import type { PrevizStatsSample } from './previs/PrevizStats';
 
 type QualityMode = 'performance' | 'balanced' | 'ultra';
 
@@ -788,6 +790,13 @@ export default function RigVisualizer() {
     setShadowsState(on);
     writeViewToggle(PREVIZ_SHADOWS_KEY, on);
   }, []);
+  // The frame-rate overlay. The numbers are published on window.__previzStats either way.
+  const [showStats, setShowStatsState] = useState<boolean>(() => readViewToggle(PREVIZ_STATS_KEY) ?? false);
+  const setShowStats = useCallback((on: boolean) => {
+    setShowStatsState(on);
+    writeViewToggle(PREVIZ_STATS_KEY, on);
+  }, []);
+  const statsSink = useRef<((sample: PrevizStatsSample) => void) | null>(null);
   // Beat and section for the crowd. A ref, so a message re-renders nothing.
   const beatClock = useRef<BeatClock>(createBeatClock());
   // The frames the engine outputs, as they arrive. A ref for the same reason;
@@ -1169,6 +1178,15 @@ export default function RigVisualizer() {
               Shadows
             </Button>
           </Tooltip>
+          <Tooltip describeChild title="Show frame rate, frame time, draw calls and triangles (also on window.__previzStats)">
+            <Button
+              variant={showStats ? 'contained' : 'outlined'}
+              aria-pressed={showStats}
+              onClick={() => setShowStats(!showStats)}
+            >
+              Stats
+            </Button>
+          </Tooltip>
           <Tooltip describeChild title="Show the beam debug table: what each fixture is sent and how it is drawn">
             <Button
               variant={showDebug ? 'contained' : 'outlined'}
@@ -1249,7 +1267,8 @@ export default function RigVisualizer() {
       </Box>
 
       {/* 3D Canvas */}
-      <Box sx={{ flexGrow: 1, bgcolor: '#000', borderRadius: 2, overflow: 'hidden' }}>
+      <Box sx={{ flexGrow: 1, bgcolor: '#000', borderRadius: 2, overflow: 'hidden', position: 'relative' }}>
+        {showStats && <StatsOverlay sink={statsSink} />}
         <Canvas
           shadows={shadows}
           gl={{
@@ -1277,6 +1296,7 @@ export default function RigVisualizer() {
             stagePlot={stagePlot.floor}
             focusTargets={focusTargets.markers}
           />
+          <StatsSampler sink={statsSink} />
         </Canvas>
       </Box>
 
