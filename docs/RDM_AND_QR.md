@@ -23,8 +23,9 @@ token and are announced as rig changes ([FOCUS_PRESETS.md](FOCUS_PRESETS.md)).
 |------|------|------|------|
 | `rdmApi.devices()` | `GET /api/rdm/devices` (discovery.py) | | `{scanning, live_devices, saved_devices}` |
 | `rigsApi.importRdmDevices(rigId, ids)` | `POST /api/rdm/import` | body: a bare JSON list of **stored device ids** (`saved_devices[].id`, integers, not RDM UIDs); query: `rig_id` | `{imported}`, how many were added |
-| `rigsApi.scanQr(rigId, code)` | `POST /api/rigs/{id}/scan` (qr_scanning.py) | `{qr_data}` | `{action: added\|identified, already_patched, matched_by?, rig_fixture_id, universe?, dmx_address?, message}` (see [Scanning a label](#scanning-a-label)) |
+| `rigsApi.scanQr(rigId, code)` | `POST /api/rigs/{id}/scan` (qr_scanning.py) | `{qr_data}` | `{action: added\|identified, already_patched, matched_by?, older_label?, rig_fixture_id, universe?, dmx_address?, message}` (see [Scanning a label](#scanning-a-label)) |
 | `rigsApi.labelsPdf(rigId)` | `GET /api/rigs/{id}/labels/pdf` (qr_scanning.py) | | a PDF (`application/pdf`, attachment); on error a JSON `{detail}` read out of the blob |
+| `rigsApi.rigFixtureQrPng(rigId, rfId)` | `GET /api/rigs/{id}/fixtures/{rf_id}/qr-code` (qr_scanning.py) | query: `size` (50 to 1000 px, default 300), `format=png\|json` | a PNG (`image/png`) of the rig fixture's label code, `{fixture_id, rig_fixture_id, label_token}`, the same text the label sheet prints; `?format=json` gives `{qr_data, rig_fixture_id, label_token, message}`; 404 for a missing rig, or a rig fixture not in that rig |
 | (no client call yet) | `GET /api/fixtures/{id}/qr-code` (qr_scanning.py) | query: `size` (50 to 500 px, default 200), `format=png\|json` | a PNG (`image/png`) of a code holding `{fixture_id, manufacturer, model}`; `?format=json` gives `{qr_data, message}`; 404 for a missing fixture profile |
 
 Only stored devices can be imported: `live_devices` carry no id. A device
@@ -50,34 +51,58 @@ that the client sends it.
 
 The scan route takes three kinds of code, and tries them in this order:
 
-1. **A printed label** (`{"fixture_id", "rig_fixture_id"}`, from Generate
-   Labels). If that rig fixture is in this rig and is the same fixture profile,
-   the fixture is already patched, however it got there (the UI, an import,
-   RDM, an earlier scan). Nothing is added: the answer is `action: identified`,
-   `already_patched: true`, `matched_by: "rig_fixture_id"`, with its
-   `universe`, `dmx_address` and a message such as "Spot SL is already
-   patched at 0.33: nothing added". The label's text is stored as the rig
-   fixture's `qr_code_data` if it had none. The profile must agree because
-   rig fixture ids are SQLite rowids, which can be reused after a delete, so a
-   stale label could otherwise name a different fixture.
+1. **A printed label** (`{"fixture_id", "rig_fixture_id", "label_token"}`,
+   from Generate Labels or Show QR). If that rig fixture is in this rig, is the
+   same fixture profile, and its label token is the label's, the fixture is
+   already patched, however it got there (the UI, an import, RDM, an earlier
+   scan). Nothing is added: the answer is `action: identified`,
+   `already_patched: true`, `matched_by: "rig_fixture_id"`,
+   `older_label: false`, with its `universe`, `dmx_address` and a message such
+   as "Spot SL is already patched at 0.33: nothing added". The label's text is
+   stored as the rig fixture's `qr_code_data` if it had none.
+
+   **The label token.** Rig fixture ids are SQLite rowids: delete the newest
+   rig fixture and the next one patched gets its id back. So every rig fixture
+   has a `label_token`, 32 random hex digits (uuid4) made when the row is
+   inserted and never changed or reused; the API does not let it be written.
+   Migration 012 adds the column to an existing database and gives every
+   existing row its own token; a row still without one gets it the first time
+   its label is printed. A label whose token does not match (a label of a
+   deleted fixture whose id was reused, even by the same profile) is never
+   read as that row: it falls to step 3 with the reason.
+
+   **Older labels**, printed before labels carried a token
+   (`{"fixture_id", "rig_fixture_id"}` with no `label_token` key), keep the old
+   rule: the rig fixture id and the profile must agree. The answer has
+   `older_label: true` and the message says it is an older label, printed
+   without a token, and to reprint it to be sure. Such a label can still name
+   a new unit of the same profile that took a deleted one's id; reprinting the
+   sheet closes that.
 2. **A code scanned before** in this rig: a rig fixture of the same profile
    whose `qr_code_data` is this exact text. Same answer, with
    `matched_by: "qr_code_data"`.
 3. **Otherwise it adds** the `fixture_id` (from the JSON, or a bare id) at the
    next free address: `action: added`, `already_patched: false`. If the code
-   was a label whose rig fixture no longer exists, is in another rig, or is
-   now a different fixture (its id reused by another profile), the message
-   says so first ("The label's rig fixture 9 no longer exists. Added ...").
-   The new rig fixture stores the code's text, so scanning the same label
-   again matches by step 2 instead of adding another.
-
-   Not caught: if a deleted rig fixture's id is reused by another unit of the
-   **same** profile, its old label identifies the new unit. Closing that needs
-   AUTOINCREMENT ids on `rig_fixtures` or a per-label token.
+   was a label whose rig fixture no longer exists, is in another rig, is now a
+   different fixture (its id reused by another profile), or has a different
+   token (its id reused by a new unit of the same profile), the message says so
+   first ("The label's token does not match rig fixture 9: it was printed for a
+   fixture since deleted, whose id was reused. Added ..."). The new rig fixture
+   stores the code's text, so scanning the same label again matches by step 2
+   instead of adding another.
 
 A `rig_fixture_id` that is not a whole number is ignored. The scanner shows
 `identified` answers as "Already in the rig" and an add as "Added to the rig",
 each with the server's message.
+
+**Show QR**: each row of the patch table (the rig builder's right-hand
+panel) has a Show QR button. It opens a dialog titled "QR label: <name>" with
+that rig fixture's code from `GET /api/rigs/{id}/fixtures/{rf_id}/qr-code`
+(alt text "QR code label for <name>"), a **Download PNG** button that saves
+`rig_<id>_fixture_<rf_id>_qr.png`, and Close; Escape closes it too. The PNG is
+fetched through the API client and shown from a blob URL, since every `/api`
+GET needs the operator's token. Its code is the label sheet's, token included,
+so a single reprinted or stuck-on label scans the same as one from the sheet.
 
 `GET /api/fixtures/{id}/qr-code` draws a single code for a fixture profile
 with the same encoder, as a PNG. `size` is rounded down to a whole number of
@@ -94,7 +119,7 @@ rig name and page N of M. Print at 100% ("actual size"), not "fit to page", or
 the labels drift off the die cuts.
 
 Each label carries a QR code (level M, 0.5 to 0.6 mm a module) holding
-`{"fixture_id": ..., "rig_fixture_id": ...}`, the fixture's name (cut short
+`{"fixture_id": ..., "rig_fixture_id": ..., "label_token": ...}`, the fixture's name (cut short
 with an ellipsis if long), its number, `DMX universe.address` as the patch
 table numbers them, and its group. A rig with nothing patched gets one page
 that says so.
@@ -112,5 +137,9 @@ route, page counts, and every printed code decoded off the 300 dpi page),
 `backend/tests/test_api_qr_scan_label_match.py` (label scans against fixtures
 patched other ways, repeat scans, labels from another rig or a deleted or
 reused rig fixture, the old text match, plain ids, and the PNG route decoded by
-OpenCV), and the QR scanner cases in
-`frontend/src/__tests__/rigAddFixturesEntryPoints.test.tsx`.
+OpenCV), `backend/tests/test_api_qr_label_token.py` (tokens made and stable,
+a matching token, a reused id's old label falling back with the reason, wrong
+tokens, older labels, the rig fixture PNG decoded by OpenCV, its JSON and 404s,
+and migration 012 on an existing database), the QR scanner cases in
+`frontend/src/__tests__/rigAddFixturesEntryPoints.test.tsx`, and the Show QR
+dialog in `frontend/src/__tests__/RigFixtureQrDialog.test.tsx`.
