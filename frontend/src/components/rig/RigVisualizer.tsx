@@ -52,14 +52,9 @@ import { isDjBooth } from './previs/boothPick';
 import type { FloorCamera } from './previs/scanFloor';
 import { RoomShellView } from './previs/RoomShellView';
 import { beamRoom, buildVenue, cameraPreset, roomSpan } from './previs/layout';
-import {
-  POOL_LIGHT_DECAY,
-  POOL_LIGHT_PENUMBRA,
-  poolConeDeg,
-  poolLightIntensity,
-  poolLightRange,
-  poolRadius,
-} from './previs/poolLight';
+import { poolConeDeg, poolRadius } from './previs/poolLight';
+import { FloorPools, createPoolBuffer, emptyPoolRenderer, updatePools, writePoolSlot } from './previs/FloorPools';
+import type { PoolBuffer, PoolRenderer } from './previs/FloorPools';
 import type { CameraMode, FixtureMount } from './previs/layout';
 import { RigTruss } from './previs/Truss';
 import { FixtureDragLayer } from './previs/FixtureDragLayer';
@@ -172,11 +167,6 @@ function describeFixture(fixture: RigFixture, channelMap: Record<string, number>
   };
 }
 
-// Where the spot light's target sits in the head group: straight down the beam
-// from the head, further out than any lens. One array for every fixture, so
-// the prop is the same object on every render.
-const SPOT_TARGET_POSITION: [number, number, number] = [0, -10, 0];
-
 // The two ways a fixture can face. Everything that points (housing, beam, spot
 // light) is built pointing down its own -Y; half a turn about X points it up.
 const FACING_DOWN: [number, number, number] = [0, 0, 0];
@@ -197,7 +187,7 @@ const Fixture3D = memo(function Fixture3D({
   fixture,
   feed,
   fixtureIndex,
-  spotCap,
+  pools,
   beamSegments,
   mount,
   room,
@@ -210,7 +200,8 @@ const Fixture3D = memo(function Fixture3D({
   /** The frames the engine outputs, read in the frame loop. Never written. */
   feed: MutableRefObject<OutputFeed>;
   fixtureIndex: number;
-  spotCap: number;
+  /** Where this fixture writes its floor pool each frame, at slot `fixtureIndex`. */
+  pools: MutableRefObject<PoolBuffer>;
   beamSegments: number;
   mount: FixtureMount;
   /** What a beam can land on: the floor, the ceiling and, when drawn, the walls. */
@@ -226,18 +217,7 @@ const Fixture3D = memo(function Fixture3D({
   const headRef = useRef<THREE.Group>(null);
   const yokeRef = useRef<THREE.Group>(null);
   const lensRef = useRef<THREE.Mesh>(null);
-  const spotRef = useRef<THREE.SpotLight>(null);
   const beamRef = useRef<THREE.Mesh>(null);
-
-  // What the spot light aims at. A light points at its target's place in the
-  // world, and three.js only works that out for an object that is in the
-  // scene. The light's own target never was, so it stayed at the world's
-  // origin and every fixture lit one pool at stage centre, up to 88 degrees
-  // off its own beam. This one is mounted in the head group, down the beam
-  // from the head, so it takes pan, tilt and the body's yaw exactly as the
-  // beam cone does. Held in state, not wired up in an effect: the light is
-  // remounted when the quality changes and must get the same target again.
-  const [spotTarget] = useState(() => new THREE.Object3D());
 
   // What this fixture does with the values it is sent: its channels, travel,
   // invert and beam angle, worked out once. The frame loop reads a frame
@@ -388,14 +368,8 @@ const Fixture3D = memo(function Fixture3D({
       lensMat.color.setRGB(0.045 + s.r * lensTint, 0.05 + s.g * lensTint, 0.06 + s.b * lensTint);
     }
 
-    // Update spotlight for floor projection
     // How wide the light is. The pool and the drawn beam both come from this.
     const finalSpotAngleDeg = poolConeDeg(isSpotLike, zoom);
-    if (spotRef.current) {
-      spotRef.current.color.setRGB(s.r, s.g, s.b);
-      spotRef.current.intensity = poolLightIntensity(effectiveIntensity);
-      spotRef.current.angle = THREE.MathUtils.degToRad(finalSpotAngleDeg); // Narrower to wider with zoom
-    }
 
     let targetPanDeg = 0;
     let targetTiltDeg = 0;
@@ -528,18 +502,19 @@ const Fixture3D = memo(function Fixture3D({
     // itself: this frame's pan and tilt, the ones the beam is drawn with. A
     // fixture that cannot move stays at 0.
     const head = headRef.current;
+    // In the fixture's own frame first, then turned by how it is hung: the
+    // same nest of turns the groups below are drawn with.
+    const pointing = hangBeam(
+      beamDirection(head ? head.rotation.x : 0, head ? head.rotation.y : 0, lensUp, beamPointing.current),
+      hangRx,
+      hangRz,
+      bodyYawRad
+    );
     const reach = beamLanding(
       fixture.position_x,
       sourceY,
       fixture.position_z,
-      // In the fixture's own frame first, then turned by how it is hung: the
-      // same nest of turns the groups below are drawn with.
-      hangBeam(
-        beamDirection(head ? head.rotation.x : 0, head ? head.rotation.y : 0, lensUp, beamPointing.current),
-        hangRx,
-        hangRz,
-        bodyYawRad
-      ),
+      pointing,
       room,
       longestThrow,
       beamSurface.current
@@ -547,18 +522,33 @@ const Fixture3D = memo(function Fixture3D({
     // Shaped here and not in the beam's own frame callback: that one runs
     // before this, so it would draw the beam with last frame's length on this
     // frame's head, and its end would trail its pool as the head moves.
-    // It ends as wide as its pool, measured from where the spot light sits, and
-    // on the surface the pool is on. A fixture past the cap on spot lights has
-    // no pool; its beam is the width its pool would be, so a beam does not
-    // change with the quality setting.
+    // It ends as wide as its pool, measured from where the light sits (the
+    // lens), and on the surface the pool is on.
+    const coneRad = THREE.MathUtils.degToRad(finalSpotAngleDeg);
     shapeBeam(
       beamMaterial,
       mouth,
       reach,
-      poolRadius(reach - lightDepth, THREE.MathUtils.degToRad(finalSpotAngleDeg)),
+      poolRadius(reach - lightDepth, coneRad),
       beamSurface.current
     );
-    if (spotRef.current) spotRef.current.distance = poolLightRange(reach);
+    // The pool where it lands: a decal (FloorPools.tsx), from the same numbers.
+    writePoolSlot(
+      pools.current,
+      fixtureIndex,
+      effectiveIntensity,
+      s.r,
+      s.g,
+      s.b,
+      fixture.position_x,
+      sourceY,
+      fixture.position_z,
+      pointing,
+      reach,
+      lightDepth,
+      coneRad,
+      beamSurface.current
+    );
 
     if (!debug) return;
     const strobeChannel = beam.strobeSource === 'none' ? undefined : channelMap[beam.strobeSource];
@@ -635,34 +625,6 @@ const Fixture3D = memo(function Fixture3D({
             frustumCulled={false}
             dispose={null}
           />
-
-          {/* SpotLight for floor color projection (cap count for performance).
-              It stays mounted and is switched with its intensity. Mounting it
-              only while the fixture was lit changed the number of lights in the
-              scene every time a fixture faded or strobed, and three.js builds a
-              new shader for every lit material at each new count: 168 shaders
-              in 100 seconds of music, each a freeze of a second or more the
-              first time a machine meets it.
-              Its range is not set here: the frame loop sets it from where the
-              beam is pointing, before the first frame it is drawn in. */}
-          {fixtureIndex < spotCap && (
-            <>
-              <spotLight
-                ref={spotRef}
-                position={[0, -lightDepth, 0]}
-                angle={0.3}
-                penumbra={POOL_LIGHT_PENUMBRA}
-                intensity={0}
-                color={beamColor}
-                castShadow={fixtureIndex < 4}
-                shadow-mapSize-width={256}
-                shadow-mapSize-height={256}
-                decay={POOL_LIGHT_DECAY}
-                target={spotTarget}
-              />
-              <primitive object={spotTarget} position={SPOT_TARGET_POSITION} />
-            </>
-          )}
         </group>
       </group>
       </group>
@@ -854,6 +816,21 @@ function HazeParticles({ count, spread }: { count: number; spread: [number, numb
   );
 }
 
+// Draws the pools the fixtures wrote this frame. Mounted after them, so its
+// frame callback runs after theirs.
+function PoolsDriver({
+  renderer,
+  pools,
+}: {
+  renderer: MutableRefObject<PoolRenderer>;
+  pools: MutableRefObject<PoolBuffer>;
+}) {
+  useFrame(() => {
+    updatePools(renderer.current, pools.current, pools.current.capacity);
+  });
+  return null;
+}
+
 function AtmosphereLayers({ width, depth, height }: { width: number; depth: number; height: number }) {
   const layers = [0.22, 0.45, 0.66, 0.84];
   return (
@@ -892,6 +869,7 @@ function Scene({
   qualityMode,
   showVenue,
   showLabels,
+  shadows,
   beatClock,
   feed,
   debug,
@@ -900,6 +878,8 @@ function Scene({
   focusTargets = NO_FOCUS_TARGETS,
 }: {
   rig: Rig;
+  /** Shadows on: the brightest few beams get a real, shadow-casting spot light. */
+  shadows: boolean;
   /** The calibrated stage plot to lay on the floor, or null. */
   stagePlot?: StagePlotFloorProps | null;
   /** The focus presets' target points to mark (docs/FOCUS_PRESETS.md); empty with the toggle off. */
@@ -927,10 +907,17 @@ function Scene({
   // Crowd size rides on the same switch as haze and spot lights; the floor's
   // own capacity caps it for a small room.
   const quality = useMemo(() => {
-    if (qualityMode === 'performance') return { hazeCount: 120, beamSegments: 10, spotCap: 12, crowdCount: 80 };
-    if (qualityMode === 'ultra') return { hazeCount: 360, beamSegments: 24, spotCap: 40, crowdCount: 320 };
-    return { hazeCount: 220, beamSegments: 16, spotCap: 24, crowdCount: 180 };
+    if (qualityMode === 'performance') return { hazeCount: 120, beamSegments: 10, crowdCount: 80 };
+    if (qualityMode === 'ultra') return { hazeCount: 360, beamSegments: 24, crowdCount: 320 };
+    return { hazeCount: 220, beamSegments: 16, crowdCount: 180 };
   }, [qualityMode]);
+
+  // Every fixture's floor pool, one slot each, written in the frame loop and
+  // drawn as decals in one draw (FloorPools.tsx). Sized to the rig.
+  const fixtureCount = rig.fixtures?.length ?? 0;
+  const pools = useRef<PoolBuffer>(createPoolBuffer(fixtureCount));
+  if (pools.current.capacity !== fixtureCount) pools.current = createPoolBuffer(fixtureCount);
+  const poolRenderer = useRef<PoolRenderer>(emptyPoolRenderer());
 
   // The room, the truss and how each fixture is mounted all come from one
   // layout, so they agree with each other and with the cameras.
@@ -1165,7 +1152,7 @@ function Scene({
           fixture={fixture}
           feed={feed}
           fixtureIndex={index}
-          spotCap={quality.spotCap}
+          pools={pools}
           beamSegments={quality.beamSegments}
           mount={venue.mounts.get(fixture.id) ?? DEFAULT_MOUNT}
           room={room}
@@ -1175,6 +1162,12 @@ function Scene({
           debug={debug}
         />
       ))}
+
+      {/* The pools where the beams land; with Shadows on, the brightest few
+          get a real shadow-casting light instead. Driven after the fixtures
+          have written this frame's pools. */}
+      <FloorPools capacity={fixtureCount} realLights={shadows} renderer={poolRenderer} />
+      <PoolsDriver renderer={poolRenderer} pools={pools} />
 
       {/* Positions that are a guess, marked as one */}
       <GuessMarkers points={guesses} />
@@ -1888,6 +1881,7 @@ export default function RigVisualizer() {
             qualityMode={qualityMode}
             showVenue={showVenue}
             showLabels={showLabels}
+            shadows={shadows}
             beatClock={beatClock}
             feed={outputFeed}
             debug={showDebug}
