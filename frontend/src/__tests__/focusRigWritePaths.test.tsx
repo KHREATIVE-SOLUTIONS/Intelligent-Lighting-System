@@ -102,11 +102,23 @@ describe('an RDM import into a rig is a rig change', () => {
     render(<ViewProbe />);
     await waitFor(() => expect(focus.get).toHaveBeenCalledTimes(1));
     await act(async () => {
-      await rigsApi.importRdmDevices(RIG_ID, ['0001:00000001']);
+      await rigsApi.importRdmDevices(RIG_ID, [4, 9]);
     });
     expect(sent.map((c) => `${c.method} ${c.url}`)).toEqual(['post /rdm/import']);
     await act(settle);
     expect(focus.get).toHaveBeenCalledTimes(2);
+  });
+
+  // The request backend/tests/integration/test_api_rdm_import.py posts: the
+  // route takes `device_ids: List[int]` as the body and `rig_id` as a query.
+  it('sends the stored ids as a bare list, and the rig as a query parameter', async () => {
+    await rigsApi.importRdmDevices(RIG_ID, [4, 9]);
+    expect(sent).toHaveLength(1);
+    const [config] = sent;
+    expect(config.params).toEqual({ rig_id: RIG_ID });
+    const body = typeof config.data === 'string' ? JSON.parse(config.data) : config.data;
+    expect(body).toEqual([4, 9]);
+    expect(Array.isArray(body)).toBe(true);
   });
 });
 

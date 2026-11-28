@@ -29,26 +29,47 @@ import {
   HelpOutline as UnmatchedIcon,
 } from '@mui/icons-material';
 import axios from 'axios';
-import { rigsApi } from '../../services/api';
+import { rdmApi, rigsApi } from '../../services/api';
+import type { RdmSavedDevice } from '../../services/api';
 
-interface RDMDevice {
+/** One row of the table: a device a scan has stored, so the import can name it by id. */
+export interface RDMDeviceRow {
+  id: number;
   uid: string;
   manufacturer: string;
   model: string;
-  dmx_footprint: number;
+  dmx_footprint: number | null;
+  universe: number | null;
+  dmx_address: number | null;
   status: 'matched' | 'unmatched';
-  fixture_id?: number;
+  imported: boolean;
+}
+
+/** The stored devices from `GET /rdm/devices`, as rows. Live ones carry no id yet and are left out. */
+export function deviceRows(saved: RdmSavedDevice[]): RDMDeviceRow[] {
+  return saved.map((d) => ({
+    id: d.id,
+    uid: d.uid,
+    manufacturer: d.manufacturer ?? '',
+    model: d.model ?? d.label ?? '',
+    dmx_footprint: d.dmx_footprint,
+    universe: d.universe,
+    dmx_address: d.dmx_address,
+    status: d.matched_fixture_id != null ? 'matched' : 'unmatched',
+    imported: d.is_imported,
+  }));
 }
 
 interface RDMDiscoveryProps {
   rigId?: number;
-  onImport?: (deviceIds: string[]) => void;
+  /** After an import that added at least one device: the ids sent, and how many were added. */
+  onImport?: (deviceIds: number[], imported: number) => void;
 }
 
 export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
   const [discovering, setDiscovering] = useState(false);
-  const [devices, setDevices] = useState<RDMDevice[]>([]);
-  const [selectedUids, setSelectedUids] = useState<Set<string>>(new Set());
+  const [devices, setDevices] = useState<RDMDeviceRow[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -57,9 +78,14 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
 
   const fetchDevices = useCallback(async () => {
     try {
-      const response = await axios.get('/api/rdm/devices');
-      const fetchedDevices: RDMDevice[] = response.data;
-      setDevices(fetchedDevices);
+      const answer = await rdmApi.devices();
+      setDevices(deviceRows(answer.saved_devices ?? []));
+      // The scan ends by itself: stop polling once the server says so.
+      if (!answer.scanning && pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+        setDiscovering(false);
+      }
     } catch (err) {
       // During discovery, failed polls are expected sometimes
       if (!discovering) {
@@ -67,6 +93,9 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
       }
     }
   }, [discovering]);
+
+  // What was stored by an earlier scan is shown as soon as the panel opens.
+  useEffect(() => { void fetchDevices(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startPolling = useCallback(() => {
     if (pollIntervalRef.current) {
@@ -92,11 +121,10 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
     setError(null);
     setSuccess(null);
     setDiscovering(true);
-    setDevices([]);
-    setSelectedUids(new Set());
+    setSelectedIds(new Set());
 
     try {
-      await axios.post('/api/rdm/start');
+      await rdmApi.start();
       startPolling();
       // Also do an immediate fetch
       await fetchDevices();
@@ -112,7 +140,7 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
 
   const handleStopDiscovery = async () => {
     try {
-      await axios.post('/api/rdm/stop');
+      await rdmApi.stop();
     } catch (err) {
       console.error('Failed to stop discovery:', err);
     } finally {
@@ -135,7 +163,9 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
   const handleIdentify = async (uid: string) => {
     setIdentifyingUid(uid);
     try {
-      await axios.get(`/api/rdm/device/${uid}/identify`);
+      const answer = await rdmApi.identify(uid);
+      // The route answers 200 with an error for a device the scan under way has not seen.
+      if (answer?.error) setError(`Could not identify ${uid}: ${answer.error}.`);
     } catch (err) {
       if (axios.isAxiosError(err)) {
         setError(err.response?.data?.detail || `Failed to identify device ${uid}.`);
@@ -148,41 +178,49 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
     }
   };
 
-  const handleToggleSelect = (uid: string) => {
-    setSelectedUids((prev) => {
+  // A device already imported is shown, but cannot be picked again.
+  const importable = devices.filter((d) => !d.imported);
+
+  const handleToggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(uid)) {
-        next.delete(uid);
+      if (next.has(id)) {
+        next.delete(id);
       } else {
-        next.add(uid);
+        next.add(id);
       }
       return next;
     });
   };
 
   const handleSelectAll = () => {
-    if (selectedUids.size === devices.length) {
-      setSelectedUids(new Set());
+    if (importable.length > 0 && selectedIds.size === importable.length) {
+      setSelectedIds(new Set());
     } else {
-      setSelectedUids(new Set(devices.map((d) => d.uid)));
+      setSelectedIds(new Set(importable.map((d) => d.id)));
     }
   };
 
   const handleImportSelected = async () => {
-    if (selectedUids.size === 0 || !rigId) return;
+    if (selectedIds.size === 0 || !rigId) return;
 
     setLoading(true);
     setError(null);
     setSuccess(null);
 
-    const uids = Array.from(selectedUids);
+    const ids = Array.from(selectedIds);
 
     try {
       // Through the app's client, which announces the rig change.
-      await rigsApi.importRdmDevices(rigId, uids);
-      setSuccess(`Successfully imported ${uids.length} device${uids.length > 1 ? 's' : ''} into rig.`);
-      setSelectedUids(new Set());
-      onImport?.(uids);
+      const { imported } = await rigsApi.importRdmDevices(rigId, ids);
+      const skipped = ids.length - imported;
+      setSuccess(
+        `Added ${imported} device${imported === 1 ? '' : 's'} to the rig.` +
+          (skipped > 0 ? ` ${skipped} skipped: already imported or no longer stored.` : ''),
+      );
+      setSelectedIds(new Set());
+      await fetchDevices();
+      if (imported > 0) onImport?.(ids, imported);
     } catch (err) {
       if (axios.isAxiosError(err)) {
         setError(err.response?.data?.detail || 'Failed to import selected devices.');
@@ -290,15 +328,17 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
             <TableRow>
               <TableCell padding="checkbox">
                 <Checkbox
-                  indeterminate={selectedUids.size > 0 && selectedUids.size < devices.length}
-                  checked={devices.length > 0 && selectedUids.size === devices.length}
+                  inputProps={{ 'aria-label': 'Select every device not yet imported' }}
+                  indeterminate={selectedIds.size > 0 && selectedIds.size < importable.length}
+                  checked={importable.length > 0 && selectedIds.size === importable.length}
                   onChange={handleSelectAll}
-                  disabled={devices.length === 0}
+                  disabled={importable.length === 0}
                 />
               </TableCell>
               <TableCell>UID</TableCell>
               <TableCell>Manufacturer</TableCell>
               <TableCell>Model</TableCell>
+              <TableCell align="center">Address</TableCell>
               <TableCell align="center">DMX Footprint</TableCell>
               <TableCell align="center">Status</TableCell>
               <TableCell align="center">Actions</TableCell>
@@ -307,17 +347,20 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
           <TableBody>
             {devices.map((device) => (
               <TableRow
-                key={device.uid}
+                key={device.id}
                 hover
-                selected={selectedUids.has(device.uid)}
+                selected={selectedIds.has(device.id)}
                 sx={{
                   bgcolor: identifyingUid === device.uid ? 'action.selected' : undefined,
+                  opacity: device.imported ? 0.6 : undefined,
                 }}
               >
                 <TableCell padding="checkbox">
                   <Checkbox
-                    checked={selectedUids.has(device.uid)}
-                    onChange={() => handleToggleSelect(device.uid)}
+                    inputProps={{ 'aria-label': `Select ${device.uid}` }}
+                    checked={selectedIds.has(device.id)}
+                    disabled={device.imported}
+                    onChange={() => handleToggleSelect(device.id)}
                   />
                 </TableCell>
                 <TableCell>
@@ -327,14 +370,21 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
                 </TableCell>
                 <TableCell>{device.manufacturer || 'Unknown'}</TableCell>
                 <TableCell>{device.model || 'Unknown'}</TableCell>
+                <TableCell align="center">
+                  {device.dmx_address ? `${device.universe ?? 0}.${device.dmx_address}` : '-'}
+                </TableCell>
                 <TableCell align="center">{device.dmx_footprint || '-'}</TableCell>
                 <TableCell align="center">
-                  <Chip
-                    label={device.status === 'matched' ? 'Matched' : 'Unmatched'}
-                    color={device.status === 'matched' ? 'success' : 'warning'}
-                    size="small"
-                    variant="outlined"
-                  />
+                  {device.imported ? (
+                    <Chip label="Imported" size="small" variant="outlined" />
+                  ) : (
+                    <Chip
+                      label={device.status === 'matched' ? 'Matched' : 'Unmatched'}
+                      color={device.status === 'matched' ? 'success' : 'warning'}
+                      size="small"
+                      variant="outlined"
+                    />
+                  )}
                 </TableCell>
                 <TableCell align="center">
                   <Tooltip title="Identify device (flash)">
@@ -352,16 +402,23 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
             ))}
             {devices.length === 0 && !discovering && (
               <TableRow>
-                <TableCell colSpan={7} align="center" sx={{ py: 4 }}>
+                <TableCell colSpan={8} align="center" sx={{ py: 4 }}>
                   <Typography color="text.secondary">
-                    No devices found. Click "Start Discovery" to scan for RDM devices.
+                    No RDM devices stored. Click "Start Discovery" to scan.
+                  </Typography>
+                  {/* Said plainly: the backend's scan is a placeholder with no RDM
+                      interface driver (services/discovery/rdm_service.py). */}
+                  <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>
+                    Finding devices needs an RDM-capable USB DMX interface, and this
+                    build cannot talk to one yet: a scan here finds nothing. Patch by
+                    make and model, or scan the fixtures' QR labels, instead.
                   </Typography>
                 </TableCell>
               </TableRow>
             )}
             {devices.length === 0 && discovering && (
               <TableRow>
-                <TableCell colSpan={7} align="center" sx={{ py: 4 }}>
+                <TableCell colSpan={8} align="center" sx={{ py: 4 }}>
                   <Typography color="text.secondary">
                     Scanning... Devices will appear here as they are discovered.
                   </Typography>
@@ -379,11 +436,11 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
             variant="contained"
             startIcon={<ImportIcon />}
             onClick={handleImportSelected}
-            disabled={selectedUids.size === 0 || loading}
+            disabled={selectedIds.size === 0 || loading}
           >
             {loading
               ? 'Importing...'
-              : `Import Selected (${selectedUids.size})`}
+              : `Import Selected (${selectedIds.size})`}
           </Button>
         </Box>
       )}
