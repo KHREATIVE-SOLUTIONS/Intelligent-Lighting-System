@@ -407,6 +407,11 @@ def _build_fixture(
     fixture.channel_limits = limits
     fixture.channel_defaults = defaults
     fixture.range_values = ranges
+    # How the unit is hung. A patch saved before the flags existed has no such
+    # attribute, or NULL in it; both mean "hung the ordinary way".
+    fixture.pan_invert = bool(getattr(rf, "pan_invert", False) or False)
+    fixture.tilt_invert = bool(getattr(rf, "tilt_invert", False) or False)
+    fixture.pan_tilt_swap = bool(getattr(rf, "pan_tilt_swap", False) or False)
     # Which way the body is turned. Without it the engine aims every head as
     # if it faced downstage, and the 3D view - which does turn the body - shows
     # a beam the engine never meant.

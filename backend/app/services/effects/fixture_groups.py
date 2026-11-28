@@ -57,6 +57,14 @@ class Fixture:
     pan_range: float = 540.0
     tilt_range: float = 270.0
 
+    # How this one unit is hung, set per patch. A head rigged the other way
+    # round runs an axis backwards, and one rigged on its side has its axes
+    # exchanged; these correct for that where pan/tilt become DMX, so a look
+    # never has to know. See route_pan_tilt for the exact order.
+    pan_invert: bool = False
+    tilt_invert: bool = False
+    pan_tilt_swap: bool = False
+
     # Profile clamps: channel name -> (min_value, max_value)
     channel_limits: Dict[str, tuple] = field(default_factory=dict)
 
@@ -214,6 +222,58 @@ def profile_range_values(fixture, channel_name: str) -> Optional[ChannelRangeVal
     return values if isinstance(values, ChannelRangeValues) else None
 
 
+PAN_TILT_AXES = ('pan', 'tilt')
+
+
+def _flag(fixture, name: str) -> bool:
+    """A hang flag as a bool. Rows written before the flags existed read None."""
+    return bool(getattr(fixture, name, False) or False)
+
+
+def pan_tilt_swapped(fixture) -> bool:
+    """Whether this fixture's pan and tilt are exchanged on the wire.
+
+    Only when the fixture has both axes to exchange: a swap on a unit with one
+    movement channel, or with no travel on one axis, would send a position to a
+    channel the profile does not have or to an axis that must stay still.
+    """
+    if not _flag(fixture, 'pan_tilt_swap'):
+        return False
+    channels = getattr(fixture, 'channels', None) or {}
+    if 'pan' not in channels or 'tilt' not in channels:
+        return False
+    return (
+        _level(getattr(fixture, 'pan_range', 0.0)) > 0
+        and _level(getattr(fixture, 'tilt_range', 0.0)) > 0
+    )
+
+
+def route_pan_tilt(fixture, axis: str) -> tuple:
+    """Where a logical axis goes on this fixture: (channel name, inverted).
+
+    ``axis`` is the logical 'pan' or 'tilt' a look asks for. The invert flag of
+    that logical axis is applied to its value first, then the swap decides
+    which of the fixture's two movement channels carries it. So "invert pan"
+    always reverses what the software calls pan, whichever motor ends up
+    doing the work. Decoders (the look bench, the 3D view) undo exactly this.
+    """
+    inverted = _flag(fixture, f'{axis}_invert')
+    if pan_tilt_swapped(fixture):
+        return ('tilt' if axis == 'pan' else 'pan'), inverted
+    return axis, inverted
+
+
+def route_pan_tilt_byte(fixture, axis: str, value: float) -> tuple:
+    """(channel name, value) for a writer that already holds an 8-bit position.
+
+    For paths that address pan/tilt channels directly instead of going through
+    _render_fixture, so they honour the same hang flags.
+    """
+    channel, inverted = route_pan_tilt(fixture, axis)
+    level = max(0.0, min(255.0, _level(value)))
+    return channel, (255.0 - level if inverted else level)
+
+
 def _render_fixture(fixture: Fixture, master: float = 1.0) -> Dict[str, int]:
     """Map a fixture's state onto the channel types its profile declares.
 
@@ -275,24 +335,32 @@ def _render_fixture(fixture: Fixture, master: float = 1.0) -> Dict[str, int]:
     # A pan_range of 0 marks a fixture that cannot move, so neither axis is driven.
     pan_range = _level(fixture.pan_range)
     tilt_range = _level(fixture.tilt_range)
+    logical: Dict[str, float] = {}
     if pan_range > 0:
         if fixture.has_channel('pan'):
-            pan_norm = max(0.0, min(1.0, (_level(fixture.pan) + pan_range / 2.0) / pan_range))
-            if fixture.has_channel('pan_fine'):
-                pan_16 = int(round(pan_norm * 65535.0))
-                values['pan'] = (pan_16 >> 8) & 0xFF
-                values['pan_fine'] = pan_16 & 0xFF
-            else:
-                values['pan'] = int(round(pan_norm * 255.0))
-
+            logical['pan'] = max(0.0, min(1.0, (_level(fixture.pan) + pan_range / 2.0) / pan_range))
         if tilt_range > 0 and fixture.has_channel('tilt'):
-            tilt_norm = max(0.0, min(1.0, (_level(fixture.tilt) + tilt_range / 2.0) / tilt_range))
-            if fixture.has_channel('tilt_fine'):
-                tilt_16 = int(round(tilt_norm * 65535.0))
-                values['tilt'] = (tilt_16 >> 8) & 0xFF
-                values['tilt_fine'] = tilt_16 & 0xFF
-            else:
-                values['tilt'] = int(round(tilt_norm * 255.0))
+            logical['tilt'] = max(0.0, min(1.0, (_level(fixture.tilt) + tilt_range / 2.0) / tilt_range))
+
+    # The one place a logical position becomes DMX. The hang flags are applied
+    # here and nowhere upstream, so every look, movement and position preset
+    # honours them. The value is quantised at the resolution of the channel
+    # that carries it, and inverted as that integer, so the coarse and fine
+    # bytes of a 16-bit pair always describe the same reversed position.
+    for axis in PAN_TILT_AXES:
+        if axis not in logical:
+            continue
+        channel, inverted = route_pan_tilt(fixture, axis)
+        fine = f'{channel}_fine'
+        if fixture.has_channel(fine):
+            value = int(round(logical[axis] * 65535.0))
+            if inverted:
+                value = 65535 - value
+            values[channel] = (value >> 8) & 0xFF
+            values[fine] = value & 0xFF
+        else:
+            value = int(round(logical[axis] * 255.0))
+            values[channel] = 255 - value if inverted else value
 
     strobe = max(0.0, min(1.0, _level(fixture.strobe)))
     # Which byte opens a shutter, and which rest a strobe channel, is the

@@ -18,7 +18,7 @@ import numpy as np
 from ...core.config import settings
 from ...core.security import verify_token
 from ...schemas.audio import engine_energy, programme_level
-from ...services.effects.fixture_groups import profile_range_values
+from ...services.effects.fixture_groups import profile_range_values, route_pan_tilt_byte
 from ...services.ml.training_recorder import get_recorder
 
 router = APIRouter()
@@ -1053,12 +1053,18 @@ async def apply_reactive_lighting(dmx_controller, analysis: dict, rig_id: int = 
         return ranges.strobe_byte(fallback / 255.0) if ranges is not None else fallback
 
     async def write(fixture, channel_name: str, value: float):
-        offset = fixture.channels.get(channel_name)
-        if offset is None:
+        if channel_name not in fixture.channels:
             return
         # A fixture with no travel must never be given movement, whatever its
         # channel map claims - the engine's own renderer applies the same rule.
         if channel_name in ('pan', 'pan_fine', 'tilt', 'tilt_fine') and not _can_move(fixture):
+            return
+        if channel_name in ('pan', 'tilt'):
+            # This path writes position bytes itself, so it has to apply the
+            # fixture's hang flags the way the engine's renderer does.
+            channel_name, value = route_pan_tilt_byte(fixture, channel_name, value)
+        offset = fixture.channels.get(channel_name)
+        if offset is None:
             return
         if channel_name in ('tilt', 'tilt_fine'):
             try:

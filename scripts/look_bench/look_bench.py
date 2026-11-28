@@ -142,10 +142,21 @@ class Tap:
     ch: Dict[str, int]
     pan_range: float
     tilt_range: float
+    # How the unit is hung (see fixture_groups.route_pan_tilt). The bench reads
+    # the wire, so it undoes these to report where the beam actually points.
+    pan_invert: bool = False
+    tilt_invert: bool = False
+    pan_tilt_swap: bool = False
 
     @property
     def moves(self) -> bool:
         return "pan" in self.ch and "tilt" in self.ch and self.pan_range > 0
+
+    @property
+    def swapped(self) -> bool:
+        # The engine only exchanges the axes when both have a channel and travel.
+        return (self.pan_tilt_swap and "pan" in self.ch and "tilt" in self.ch
+                and self.pan_range > 0 and self.tilt_range > 0)
 
 
 def build_taps(manager) -> List[Tap]:
@@ -157,7 +168,10 @@ def build_taps(manager) -> List[Tap]:
         group = prefixes[f.id] if use_prefix else str(f.fixture_type)
         taps.append(Tap(str(f.id), group, float(f.x), float(f.y), float(f.z), int(f.universe or 0),
                         int(f.dmx_address) - 1, dict(f.channels or {}),
-                        float(f.pan_range or 0.0), float(f.tilt_range or 0.0)))
+                        float(f.pan_range or 0.0), float(f.tilt_range or 0.0),
+                        bool(getattr(f, "pan_invert", False)),
+                        bool(getattr(f, "tilt_invert", False)),
+                        bool(getattr(f, "pan_tilt_swap", False))))
     # Rows read top to bottom as: upstage to downstage, left to right.
     order: Dict[str, Tuple[float, float]] = {}
     for t in taps:
@@ -198,11 +212,28 @@ def decode(taps: List[Tap], frames: Dict[int, List[int]]):
         else:
             level[i] = dim / 255.0 if dim is not None else 0.0
         if t.moves:
-            p, pf = get("pan"), get("pan_fine") or 0
-            q, qf = get("tilt"), get("tilt_fine") or 0
+            def axis(logical, inverted):
+                """Where the beam is on a logical axis, 0-1, read back off the wire.
+
+                The exact inverse of the engine's mapping: find the channel
+                that carries this axis (the other one when the unit is
+                swapped), then undo the invert at that channel's resolution.
+                """
+                channel = logical
+                if t.swapped:
+                    channel = "tilt" if logical == "pan" else "pan"
+                coarse = get(channel)
+                if coarse is None:
+                    return None
+                if f"{channel}_fine" in t.ch:
+                    raw = coarse * 256 + (get(f"{channel}_fine") or 0)
+                    return ((65535 - raw) if inverted else raw) / 65535.0
+                return ((255 - coarse) if inverted else coarse) * 256 / 65535.0
+
+            p, q = axis("pan", t.pan_invert), axis("tilt", t.tilt_invert)
             if p is not None and q is not None:
-                pan[i] = (p * 256 + pf) / 65535.0
-                tilt[i] = (q * 256 + qf) / 65535.0
+                pan[i] = p
+                tilt[i] = q
     return level, rgb, pan, tilt
 
 
