@@ -34,6 +34,31 @@ export interface FocusTarget {
   unreachable: FocusUnreachable[];
   /** The stored id of a custom target (from its `custom_<id>` key); null for a default one. */
   customId: number | null;
+  /** Every moving head against this target, in fixture-number order; empty for a skipped one. */
+  aims: FocusHeadAim[];
+}
+
+/**
+ * One head against one target, as the API gives it (table.py, `_entry_dict`).
+ * Degrees are physical: from the centre of the travel, before invert and swap.
+ * DMX is what goes on the channels, after them; a fine value is null on an
+ * 8-bit axis, and every number is null when the head cannot reach the target.
+ */
+export interface FocusHeadAim {
+  /** The console number. */
+  fixture_id: number;
+  /** The rig fixture row: the id the 3D view draws the head by. Null from an older server. */
+  rigFixtureId: number | null;
+  name: string;
+  mount: 'hung' | 'standing';
+  reachable: boolean;
+  reason: string;
+  pan_deg: number | null;
+  tilt_deg: number | null;
+  pan_dmx: number | null;
+  pan_fine_dmx: number | null;
+  tilt_dmx: number | null;
+  tilt_fine_dmx: number | null;
 }
 
 export interface FocusLeftOut {
@@ -90,6 +115,32 @@ function readFixtureList(value: unknown): FocusUnreachable[] {
   }));
 }
 
+const numberOrNull = (value: unknown): number | null => (finite(value) ? value : null);
+
+function readAims(value: unknown): FocusHeadAim[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).map((item) => {
+    const reachable = item.reachable === true;
+    const pan = numberOrNull(item.pan_deg);
+    const tilt = numberOrNull(item.tilt_deg);
+    return {
+      fixture_id: finite(item.fixture_id) ? item.fixture_id : 0,
+      rigFixtureId: numberOrNull(item.rig_fixture_id),
+      name: text(item.name),
+      mount: item.mount === 'standing' ? 'standing' : 'hung',
+      // A head is only aimed with both its angles.
+      reachable: reachable && pan !== null && tilt !== null,
+      reason: text(item.reason),
+      pan_deg: pan,
+      tilt_deg: tilt,
+      pan_dmx: numberOrNull(item.pan_dmx),
+      pan_fine_dmx: numberOrNull(item.pan_fine_dmx),
+      tilt_dmx: numberOrNull(item.tilt_dmx),
+      tilt_fine_dmx: numberOrNull(item.tilt_fine_dmx),
+    };
+  });
+}
+
 function readTarget(raw: Record<string, unknown>): FocusTarget | null {
   const key = text(raw.key);
   if (!key) return null;
@@ -110,6 +161,7 @@ function readTarget(raw: Record<string, unknown>): FocusTarget | null {
     reachable_count: finite(raw.reachable_count) ? raw.reachable_count : 0,
     unreachable: readFixtureList(raw.unreachable),
     customId: custom ? customIdFromKey(key) : null,
+    aims: readAims(raw.fixtures),
   };
 }
 

@@ -35,18 +35,29 @@ import { saveBlob } from '../../utils/download';
 import { EMPTY_DRAFT, checkDraft, reachText, whereText } from '../../utils/focusPresets';
 import type { DraftErrors, FocusTarget, TargetDraft } from '../../utils/focusPresets';
 import useFocusPresets from './useFocusPresets';
+import { useFocusPreviewStore } from '../../stores/focusPreviewStore';
 
 type Note = { severity: 'success' | 'error' | 'info'; text: string };
 
-function TargetRow({ target, heads, onRemove, busy }: {
+/** Preview in the 3D view: offered while a 3D view shows this rig. */
+interface PreviewControl {
+  canPreview: boolean;
+  previewing: boolean;
+  onPreview: (target: FocusTarget) => void;
+  onStop: () => void;
+}
+
+function TargetRow({ target, heads, onRemove, busy, preview }: {
   target: FocusTarget;
   heads: number;
   onRemove: (target: FocusTarget) => void;
   busy: boolean;
+  preview: PreviewControl;
 }) {
   const [open, setOpen] = useState(false);
   const cannot = target.unreachable.length;
   const listId = `focus-unreachable-${target.key}`;
+  const previewable = !target.skipped && target.aims.length > 0;
   return (
     <Box
       data-testid={`focus-target-${target.key}`}
@@ -57,6 +68,29 @@ function TargetRow({ target, heads, onRemove, busy }: {
           {target.name}
         </Typography>
         <Chip size="small" variant="outlined" label={target.custom ? 'Custom' : 'Default'} />
+        {previewable && (preview.previewing ? (
+          <Button size="small" color="warning" variant="contained" onClick={preview.onStop}>
+            Stop preview
+          </Button>
+        ) : (
+          <Tooltip
+            title={preview.canPreview
+              ? 'Aim the heads at it in the 3D view. Nothing is sent to the lights.'
+              : "Open this rig's 3D view to preview a preset there."}
+          >
+            <span>
+              <Button
+                size="small"
+                variant="outlined"
+                aria-label={`Preview ${target.name}`}
+                disabled={!preview.canPreview}
+                onClick={() => preview.onPreview(target)}
+              >
+                Preview
+              </Button>
+            </span>
+          </Tooltip>
+        ))}
         {target.custom && target.customId !== null && (
           <Tooltip title="Remove this target">
             <span>
@@ -119,6 +153,12 @@ export default function FocusPresetsPanel({ rigId }: { rigId: number }) {
   const [note, setNote] = useState<Note | null>(null);
   const [confirm, setConfirm] = useState<FocusTarget | null>(null);
   const { table, status } = focus;
+  const viewRigId = useFocusPreviewStore((s) => s.viewRigId);
+  const previewKey = useFocusPreviewStore((s) => (s.preview?.rigId === rigId ? s.preview.key : null));
+  const startPreview = useFocusPreviewStore((s) => s.start);
+  const stopPreview = useFocusPreviewStore((s) => s.stop);
+  const canPreview = viewRigId === rigId;
+  const previewed = previewKey !== null ? table?.targets.find((t) => t.key === previewKey) ?? null : null;
 
   const edit = (field: keyof TargetDraft) => (event: { target: { value: string } }) => {
     const value = event.target.value;
@@ -210,6 +250,17 @@ export default function FocusPresetsPanel({ rigId }: { rigId: number }) {
         </Alert>
       )}
 
+      {previewKey !== null && (
+        <Alert
+          severity="info"
+          data-testid="focus-preview-active"
+          sx={{ mb: 1 }}
+          action={<Button color="inherit" size="small" onClick={stopPreview}>Stop preview</Button>}
+        >
+          Previewing {previewed?.name ?? 'a target'} in the 3D view. Nothing is sent to the lights.
+        </Alert>
+      )}
+
       {status === 'loading' && (
         <Box data-testid="focus-presets-loading" sx={{ mb: 1 }}>
           <Typography variant="body2">Reading the focus presets...</Typography>
@@ -243,7 +294,19 @@ export default function FocusPresetsPanel({ rigId }: { rigId: number }) {
           )}
           <Box data-testid="focus-presets-list" sx={{ mb: 1.5 }}>
             {table.targets.map((target) => (
-              <TargetRow key={target.key} target={target} heads={table.heads} onRemove={setConfirm} busy={busy} />
+              <TargetRow
+                key={target.key}
+                target={target}
+                heads={table.heads}
+                onRemove={setConfirm}
+                busy={busy}
+                preview={{
+                  canPreview,
+                  previewing: previewKey === target.key,
+                  onPreview: (t) => startPreview(rigId, t.key),
+                  onStop: stopPreview,
+                }}
+              />
             ))}
           </Box>
 

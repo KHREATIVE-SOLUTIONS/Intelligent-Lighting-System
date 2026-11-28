@@ -68,6 +68,9 @@ import useStagePlot3d from './previs/useStagePlot3d';
 import { FocusTargetMarkers } from './previs/FocusTargetMarkers';
 import FocusTargets3dToggle from './previs/FocusTargets3dToggle';
 import useFocusTargets3d from './previs/useFocusTargets3d';
+import FocusPreviewNotice from './previs/FocusPreviewNotice';
+import { useFocusPreviewStore } from '../../stores/focusPreviewStore';
+import type { ViewAim } from '../../utils/focusPreview';
 import type { FocusMarker } from '../../utils/focusPresets';
 
 type BeamDebugSnapshot = {
@@ -193,7 +196,14 @@ const Fixture3D = memo(function Fixture3D({
   showLabel,
   debugBuffer,
   debug,
+  previewAims,
 }: {
+  /**
+   * A focus preset being previewed (focusPreview.ts): this head's pan and tilt,
+   * or null to stay at home and dark; no entry, the engine's frame as usual.
+   * Read in the frame loop and drawn only: nothing is sent to the lights.
+   */
+  previewAims: MutableRefObject<Map<number, ViewAim | null> | null>;
   fixture: RigFixture;
   /** The frames the engine outputs, read in the frame loop. Never written. */
   feed: MutableRefObject<OutputFeed>;
@@ -322,6 +332,20 @@ const Fixture3D = memo(function Fixture3D({
     // show here exactly as they would in the room. With no frame yet the
     // fixture is dark and its head at centre.
     readBeamState(profile, feed.current.frames.get(universe), fixture.dmx_address, beam);
+    // A focus preset previewed: drawn over what was read, never written back.
+    const previewed = previewAims.current;
+    if (previewed && previewed.has(fixture.id)) {
+      const at = previewed.get(fixture.id) ?? null;
+      beam.panDeg = at ? at.panDeg : 0;
+      beam.tiltDeg = at ? at.tiltDeg : 0;
+      beam.lit = at !== null;
+      beam.intensity = at ? 0.85 : 0;
+      beam.r = 1;
+      beam.g = 1;
+      beam.b = 1;
+      beam.shutter = 'open';
+      beam.strobeRate = 0;
+    }
     // A closed shutter, a zero dimmer and a colour mixed to black are all dark.
     const rawDimmer = beam.lit ? beam.intensity : 0;
     const strobe = beam.shutter === 'strobe' ? beam.strobeRate : 0;
@@ -872,6 +896,8 @@ function AtmosphereLayers({ width, depth, height }: { width: number; depth: numb
 
 /** One empty list for "no focus targets", so the scene's default does not change on every render. */
 const NO_FOCUS_TARGETS: FocusMarker[] = [];
+/** No preset previewed. */
+const NO_PREVIEW: MutableRefObject<Map<number, ViewAim | null> | null> = { current: null };
 
 function Scene({
   rig,
@@ -886,8 +912,11 @@ function Scene({
   move,
   stagePlot = null,
   focusTargets = NO_FOCUS_TARGETS,
+  previewAims = NO_PREVIEW,
 }: {
   rig: Rig;
+  /** The focus preset previewed, head by head; a ref, read in each fixture's frame loop. */
+  previewAims?: MutableRefObject<Map<number, ViewAim | null> | null>;
   /** The calibrated stage plot to lay on the floor, or null. */
   stagePlot?: StagePlotFloorProps | null;
   /** The focus presets' target points to mark (docs/FOCUS_PRESETS.md); empty with the toggle off. */
@@ -1161,6 +1190,7 @@ function Scene({
           showLabel={showLabels}
           debugBuffer={debugBuffer}
           debug={debug}
+          previewAims={previewAims}
         />
       ))}
 
@@ -1373,7 +1403,13 @@ export default function RigVisualizer() {
   // The rig's stage plot, on the floor once it is calibrated (docs/STAGE_PLOT.md). The demo rig has none to ask for.
   const stagePlot = useStagePlot3d(isDemo ? null : Number(id), rig?.stage_width ?? 10, rig?.stage_depth ?? 8);
   // The focus presets' targets, marked when the operator asks (docs/FOCUS_PRESETS.md). The demo rig has no room to aim in.
-  const focusTargets = useFocusTargets3d(isDemo ? null : Number(id));
+  const focusTargets = useFocusTargets3d(isDemo ? null : Number(id), rig?.fixtures);
+  // Previewing a focus preset is offered while this view shows the rig, and
+  // stops when it leaves it (another rig, or another page).
+  const attachFocusView = useFocusPreviewStore((s) => s.attachView);
+  useEffect(() => (isDemo ? undefined : attachFocusView(Number(id))), [isDemo, id, attachFocusView]);
+  const previewAims = useRef<Map<number, ViewAim | null> | null>(null);
+  previewAims.current = focusTargets.preview?.aims ?? null;
   const [demoPresets, setDemoPresets] = useState<DemoPresetSummary[]>([]);
   const [demoPresetError, setDemoPresetError] = useState<string | null>(null);
 
@@ -1788,6 +1824,10 @@ export default function RigVisualizer() {
         </Alert>
       )}
 
+      {focusTargets.preview && (
+        <FocusPreviewNotice plan={focusTargets.preview} onStop={focusTargets.stopPreview} />
+      )}
+
       {/* Audio Device Chooser */}
       <Box sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
         <AudioDeviceChooser />
@@ -1822,6 +1862,7 @@ export default function RigVisualizer() {
             move={sceneMove}
             stagePlot={stagePlot.floor}
             focusTargets={focusTargets.markers}
+            previewAims={previewAims}
           />
         </Canvas>
       </Box>
