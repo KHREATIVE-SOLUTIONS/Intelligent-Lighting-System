@@ -368,6 +368,32 @@ export const rigsApi = {
     const response = await api.post(`/rigs/${rigId}/patch-from-library`, request);
     return response.data;
   },
+
+  /**
+   * A fixture's QR code scanned: the server adds it to the rig (or names the
+   * one already there). Through this client so it carries the operator's
+   * token and is announced as a rig change like every other rig write.
+   */
+  scanQr: async (rigId: number, qrData: string) => {
+    const response = await api.post(`/rigs/${rigId}/scan`, { qr_data: qrData });
+    return response.data;
+  },
+
+  /** The rig's QR labels as a PDF blob. */
+  labelsPdf: async (rigId: number): Promise<Blob> => {
+    const response = await api.get(`/rigs/${rigId}/labels/pdf`, { responseType: 'blob' });
+    return response.data as Blob;
+  },
+
+  /**
+   * Discovered RDM devices added to a rig. The route is not under /rigs/{id},
+   * so the response handler cannot tell which rig it wrote: announced here.
+   */
+  importRdmDevices: async (rigId: number, deviceUids: string[]) => {
+    const response = await api.post('/rdm/import', { device_uids: deviceUids, rig_id: rigId });
+    announceRigChange(rigId);
+    return response.data;
+  },
 };
 
 // Fixture library catalog (offline Open Fixture Library + the local library)

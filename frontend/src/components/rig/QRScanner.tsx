@@ -28,6 +28,7 @@ import {
   VideocamOff as VideocamOffIcon,
 } from '@mui/icons-material';
 import axios from 'axios';
+import { rigsApi } from '../../services/api';
 
 interface QRScannerProps {
   rigId: number;
@@ -145,15 +146,15 @@ export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerPro
       setError(null);
 
       try {
-        const response = await axios.post(`/api/rigs/${rigId}/scan`, {
-          qr_data: qrData,
-        });
+        // Through the app's client: it carries the token, and announces the
+        // rig change so the focus table and 3D reach markers read again.
+        const data = await rigsApi.scanQr(rigId, qrData);
 
         const result: ScanResult = {
-          fixture_id: response.data.fixture_id,
-          fixture_name: response.data.fixture_name || 'Unknown Fixture',
-          dmx_address: response.data.dmx_address || 0,
-          universe: response.data.universe || 0,
+          fixture_id: data.fixture_id,
+          fixture_name: data.fixture_name || 'Unknown Fixture',
+          dmx_address: data.dmx_address || 0,
+          universe: data.universe || 0,
           timestamp: Date.now(),
         };
 
@@ -263,10 +264,7 @@ export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerPro
     setGeneratingLabels(true);
     setError(null);
     try {
-      const response = await axios.get(`/api/rigs/${rigId}/labels/pdf`, {
-        responseType: 'blob',
-      });
-      const url = URL.createObjectURL(response.data);
+      const url = URL.createObjectURL(await rigsApi.labelsPdf(rigId));
       const link = document.createElement('a');
       link.href = url;
       link.download = `rig_${rigId}_labels.pdf`;
