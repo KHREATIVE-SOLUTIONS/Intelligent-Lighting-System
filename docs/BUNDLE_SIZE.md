@@ -97,3 +97,15 @@ Vite prints one line per chunk with its raw and gzip size. Check:
 
 Then `npx tsc --noEmit -p .` (13 pre-existing errors, no new ones) and
 `npx vitest run`.
+
+
+## Measured (Grok run, Nov 28 2026 ~7:20 AM ET, npm run build, gzip computed locally)
+
+| Chunk | master aa058a0 | this branch |
+|---|---|---|
+| Entry (index-*.js) | 1,651 KB raw / 482 KB gzip | 590 KB raw / 186 KB gzip |
+| RigVisualizer (three.js + previs, now lazy) | in entry | 905 KB raw / 252 KB gzip |
+| pdf (already lazy) | 357 KB / 105 KB | 357 KB / 105 KB |
+| RigBuilder | 159 KB / 52 KB | 160 KB / 52 KB |
+
+WebGLRenderer appears in the entry chunk on master and not on this branch. The first screen now loads about 61% less gzipped JS.
