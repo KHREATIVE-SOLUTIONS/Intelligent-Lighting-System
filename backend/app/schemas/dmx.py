@@ -5,8 +5,9 @@ DMX Control Schemas
 Pydantic schemas for DMX/ArtNet operations.
 """
 
-from typing import List, Optional, Dict
-from pydantic import BaseModel, Field
+import ipaddress
+from typing import List, Literal, Optional, Dict
+from pydantic import BaseModel, Field, model_validator
 
 
 class DMXChannel(BaseModel):
@@ -63,6 +64,91 @@ class ArtNetConfig(BaseModel):
     net: int = Field(default=0, ge=0, le=127)
     subnet: int = Field(default=0, ge=0, le=15)
     universes: List[int] = Field(default_factory=lambda: [0])
+
+
+def validate_target_ip(ip_address: str, allow_broadcast: bool = False) -> str:
+    """A unicast IPv4 destination for lighting data, or ValueError.
+
+    Broadcast (limited, or a host part of .255) only passes when the caller
+    asked for it by name: a remembered target must never be the reason a show
+    lands on every device on the venue's network.
+    """
+    text = (ip_address or "").strip()
+    try:
+        address = ipaddress.IPv4Address(text)
+    except ValueError:
+        raise ValueError(f"'{ip_address}' is not a valid IPv4 address")
+    if address.is_unspecified:
+        raise ValueError("0.0.0.0 is not a destination")
+    if address.is_multicast:
+        raise ValueError(
+            f"{text} is a multicast address; for sACN multicast set multicast=true instead"
+        )
+    if text == "255.255.255.255" or text.endswith(".255"):
+        if not allow_broadcast:
+            raise ValueError(
+                f"{text} is a broadcast address; give the node's own IP, "
+                "or set allow_broadcast=true to broadcast on purpose"
+            )
+    elif address.is_reserved:
+        raise ValueError(f"{text} is a reserved address")
+    return text
+
+
+class OutputTarget(BaseModel):
+    """Where the show is sent: the remembered demo destination.
+
+    ``universe`` is where the engine's first universe (0) lands; later engine
+    universes follow on from it. For Art-Net it is the 0-15 Universe field,
+    packed with ``net`` and ``subnet`` into the Port-Address. For sACN it is
+    the E1.31 universe, 1-63999. Left out, it is 0 for Art-Net and 1 for sACN.
+    """
+    protocol: Literal["artnet", "sacn"] = "artnet"
+    ip_address: Optional[str] = None
+    # None means the protocol's own port: 6454 for Art-Net, 5568 for sACN.
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
+    universe: Optional[int] = None
+    net: int = Field(default=0, ge=0, le=127)
+    subnet: int = Field(default=0, ge=0, le=15)
+    priority: int = Field(default=100, ge=0, le=200)
+    multicast: bool = False
+    allow_broadcast: bool = False
+    source_name: str = Field(
+        default="Intelligent Lighting System", min_length=1, max_length=63
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> "OutputTarget":
+        if self.protocol == "artnet":
+            if self.multicast:
+                raise ValueError("multicast is an sACN option; Art-Net is unicast or broadcast")
+            if self.universe is None:
+                self.universe = 0
+            if not 0 <= self.universe <= 15:
+                raise ValueError(
+                    "Art-Net universe must be 0-15 (use net and subnet for the rest "
+                    "of the Port-Address)"
+                )
+        else:
+            if self.universe is None:
+                self.universe = 1
+            if not 1 <= self.universe <= 63999:
+                raise ValueError("sACN universe must be 1-63999")
+
+        if self.protocol == "sacn" and self.multicast:
+            # Multicast derives its group from the universe; an IP would only mislead.
+            self.ip_address = None
+        else:
+            if not self.ip_address:
+                raise ValueError("ip_address is required for a unicast target")
+            self.ip_address = validate_target_ip(self.ip_address, self.allow_broadcast)
+        return self
+
+    @property
+    def resolved_port(self) -> int:
+        if self.port is not None:
+            return self.port
+        return 6454 if self.protocol == "artnet" else 5568
 
 
 class DMXFixtureState(BaseModel):

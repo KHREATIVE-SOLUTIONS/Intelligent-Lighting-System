@@ -133,6 +133,18 @@ Pick one of three ways, by machine:
   (unicast works), then send audio from the host with
   `scripts/audio_capture.py`. It needs an operator token in `ILS_TOKEN`.
 
+To send to one node instead of broadcasting, give it the node's IP once and
+it is remembered across restarts (Art-Net shown; `"protocol": "sacn"` sends
+E1.31 to port 5568). Either protocol carries exactly what the output stage
+passes: blackout, master level, flash limit and watchdog apply the same way.
+Details in [docs/DEMO_OUTPUT_TARGET.md](docs/DEMO_OUTPUT_TARGET.md).
+
+```bash
+curl -X PUT http://localhost:8000/api/dmx/output-target \
+  -H "Authorization: Bearer $ILS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"protocol": "artnet", "ip_address": "192.168.1.50", "net": 0, "subnet": 0, "universe": 0}'
+```
+
 Patch the venue's rig in the app and activate it. Until then, the built-in
 demo rig drives the visualizer but nothing is sent to the network.
 `ILS_RIG_ID` pins the audio feed (`start.py --audio`), the visualizer or the capture script to one rig;

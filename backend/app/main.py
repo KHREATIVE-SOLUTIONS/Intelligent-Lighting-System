@@ -95,6 +95,25 @@ def _send_engine_frame(app: FastAPI, universe: int, frame: list):
         controller.write_universe(universe, frame)
 
 
+async def _restore_output_target(controller) -> None:
+    """Give the controller this install's sACN identity and its remembered target.
+
+    Never fatal: a damaged file leaves the settings default in place, which is
+    still a working output.
+    """
+    try:
+        from app.services.dmx import output_target
+
+        controller.sacn_cid = output_target.load_or_create_cid()
+        remembered = output_target.load()
+        if remembered is not None:
+            await controller.apply_output_target(remembered)
+            print(f" DMX output target: {remembered.protocol} -> "
+                  f"{controller.target_ip} (remembered)")
+    except Exception as e:
+        print(f"Warning: Could not restore the remembered DMX output target: {e}")
+
+
 def _release_engine_universe(app: FastAPI, universe: int):
     """Black out a universe the show stopped driving and take it off the wire."""
     controller = getattr(app.state, "dmx_controller", None)
@@ -240,6 +259,9 @@ async def lifespan(app: FastAPI):
         # Initialize DMX controller
         print(" Creating DMX controller...")
         app.state.dmx_controller = DMXController()
+        # Before connect, so the first frame already goes to the remembered
+        # node rather than to the settings default (limited broadcast).
+        await _restore_output_target(app.state.dmx_controller)
         await app.state.dmx_controller.connect()
     except Exception as e:
         print(f"Warning: Could not connect DMX controller: {e}")
