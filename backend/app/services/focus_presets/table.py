@@ -181,10 +181,22 @@ def build_table(rig: Any, rows: Sequence[Any], export: ExportRig) -> FocusTable:
 # As the API answers and as a CSV
 # ---------------------------------------------------------------------------
 
+def _rig_fixture_id(key: str) -> Optional[int]:
+    """The rig fixture row's id, from its export key `fixture-<id>`.
+
+    `fixture_id` is the console number, which is renumbered when two fixtures
+    share one or one has none, so the app cannot find the head it means in the
+    3D view from it. This is the id the view draws the head under.
+    """
+    _, _, tail = key.rpartition("-")
+    return int(tail) if tail.isdigit() else None
+
+
 def _entry_dict(entry: FocusEntry) -> Dict[str, Any]:
     a = entry.aim
     return {
         "fixture_id": entry.fixture.number,
+        "rig_fixture_id": _rig_fixture_id(entry.fixture.key),
         "name": entry.fixture.name,
         "mount": entry.fixture.mount,
         "mount_assumed": entry.fixture.mount_assumed,
