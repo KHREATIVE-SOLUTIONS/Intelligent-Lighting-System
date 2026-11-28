@@ -50,16 +50,17 @@ describe('the toolbar entry points', () => {
     const onDiscoverRdm = vi.fn();
     const onScanQr = vi.fn();
     toolbar({ onDiscoverRdm, onScanQr });
-    fireEvent.click(screen.getByRole('button', { name: /discover rdm/i }));
-    fireEvent.click(screen.getByRole('button', { name: /scan qr/i }));
+    // Named by their text: the tooltips describe them (describeChild), they do not rename them.
+    fireEvent.click(screen.getByRole('button', { name: 'Discover RDM' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Scan QR' }));
     expect(onDiscoverRdm).toHaveBeenCalledTimes(1);
     expect(onScanQr).toHaveBeenCalledTimes(1);
   });
 
   it('leaves both out where no handler is given', () => {
     toolbar();
-    expect(screen.queryByRole('button', { name: /discover rdm/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /scan qr/i })).toBeNull();
+    expect(screen.queryByText('Discover RDM')).toBeNull();
+    expect(screen.queryByText('Scan QR')).toBeNull();
   });
 });
 
@@ -86,7 +87,8 @@ describe('RDM discovery', () => {
 
     await waitFor(() => expect(calls.importRdmDevices).toHaveBeenCalledWith(RIG_ID, [4]));
     expect(await screen.findByText(/added 1 device to the rig/i)).toBeTruthy();
-    expect(onImport).toHaveBeenCalledWith([4], 1);
+    // Called once the list has been read again, which can be after the message shows.
+    await waitFor(() => expect(onImport).toHaveBeenCalledWith([4], 1));
   });
 
   it('says plainly that a scan finds nothing without an RDM interface', async () => {
@@ -116,6 +118,6 @@ describe('the QR scanner', () => {
 
     await waitFor(() => expect(calls.scanQr).toHaveBeenCalledWith(RIG_ID, '12'));
     expect(await screen.findAllByText('Added Spot 3 at address 17')).not.toHaveLength(0);
-    expect(onScan).toHaveBeenCalledWith(31, true);
+    await waitFor(() => expect(onScan).toHaveBeenCalledWith(31, true));
   });
 });

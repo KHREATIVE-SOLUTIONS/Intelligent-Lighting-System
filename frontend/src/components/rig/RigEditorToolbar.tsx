@@ -317,14 +317,15 @@ export default function RigEditorToolbar({
         Test All
       </Button>
       {onDiscoverRdm && (
-        <Tooltip title="Find fixtures on the DMX line by RDM and add the ones you pick to this rig, at the address each reports">
+        // describeChild: the tooltip describes the button, its name stays "Discover RDM".
+        <Tooltip describeChild title="Find fixtures on the DMX line by RDM and add the ones you pick to this rig, at the address each reports">
           <Button size="small" startIcon={<RdmIcon />} onClick={onDiscoverRdm}>
             Discover RDM
           </Button>
         </Tooltip>
       )}
       {onScanQr && (
-        <Tooltip title="Add fixtures by scanning their QR labels with the camera, a USB scanner, or by typing the code">
+        <Tooltip describeChild title="Add fixtures by scanning their QR labels with the camera, a USB scanner, or by typing the code">
           <Button size="small" startIcon={<QrIcon />} onClick={onScanQr}>
             Scan QR
           </Button>
