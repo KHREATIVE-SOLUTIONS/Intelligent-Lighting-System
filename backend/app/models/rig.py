@@ -6,6 +6,8 @@ Database models for lighting rigs and fixture placements.
 """
 
 from datetime import datetime
+from uuid import uuid4
+
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, DateTime,
     ForeignKey, JSON, Text
@@ -13,6 +15,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from app.db.database import Base
+
+
+def new_label_token() -> str:
+    """A fresh rig fixture label token: 32 hex digits, never reused."""
+    return uuid4().hex
 
 
 class Rig(Base):
@@ -137,6 +144,11 @@ class RigFixture(Base):
     # Identification
     serial_number = Column(String(100), nullable=True)
     qr_code_data = Column(String(500), nullable=True)
+    # Printed into this fixture's label QR. Ids are SQLite rowids and come back
+    # after a delete; the token never does, so a stale label cannot name the
+    # fixture that took its id. Set on insert, backfilled by migration 012, and
+    # filled on first print for any row still without one.
+    label_token = Column(String(32), nullable=True, default=new_label_token)
 
     # Relationships
     rig = relationship("Rig", back_populates="fixtures")

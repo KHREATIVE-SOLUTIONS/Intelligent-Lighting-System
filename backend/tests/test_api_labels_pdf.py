@@ -74,7 +74,10 @@ async def test_json_on_request_keeps_the_old_fields(client, sample_rig_data, sam
     first = body["labels"][0]
     assert set(first) == {"name", "universe", "dmx_address", "fixture_number", "group", "qr_data"}
     assert (first["name"], first["universe"], first["dmx_address"]) == ("Spot 1", 0, 1)
-    assert json.loads(first["qr_data"]) == {"fixture_id": fixture_id, "rig_fixture_id": ids[0]}
+    code = json.loads(first["qr_data"])
+    assert set(code) == {"fixture_id", "rig_fixture_id", "label_token"}
+    assert (code["fixture_id"], code["rig_fixture_id"]) == (fixture_id, ids[0])
+    assert isinstance(code["label_token"], str) and len(code["label_token"]) == 32
 
 
 @pytest.mark.asyncio

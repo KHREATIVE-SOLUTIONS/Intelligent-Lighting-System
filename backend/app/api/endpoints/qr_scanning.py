@@ -20,13 +20,49 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
-from app.models.rig import Rig, RigFixture
+from app.models.rig import Rig, RigFixture, new_label_token
 from app.models.fixture import Fixture
 from app.services import qr_encode
 from app.services.label_sheet import Label, label_sheet_pdf
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _ensure_label_token(db: AsyncSession, rf: RigFixture) -> str:
+    """The rig fixture's label token, made on first print for a row without one.
+
+    Rows get a token on insert and migration 012 backfilled older ones, so this
+    only writes for a row some raw insert left empty.
+    """
+    if not rf.label_token:
+        rf.label_token = new_label_token()
+        await db.flush()
+    return rf.label_token
+
+
+def _label_qr_data(rf: RigFixture) -> str:
+    """The QR text of a rig fixture's label: the one format both routes print."""
+    return json.dumps({
+        "fixture_id": rf.fixture_id,
+        "rig_fixture_id": rf.id,
+        "label_token": rf.label_token,
+    })
+
+
+def _qr_png(qr_data: str, size: int, filename: str) -> Response:
+    """`qr_data` as a QR PNG about `size` pixels a side, in whole pixels a module."""
+    matrix = qr_encode.encode(qr_data, ecc="M")
+    quiet = 4
+    module_px = max(1, size // (len(matrix) + 2 * quiet))
+    img = qr_encode.to_image(matrix, module_px=module_px, quiet=quiet)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 class QRScanRequest(BaseModel):
@@ -71,11 +107,14 @@ async def process_qr_scan(
     if not fixture_id:
         raise HTTPException(status_code=400, detail="Could not parse QR code data")
 
-    # A printed label (generate_label_sheet) names its rig fixture. When that
-    # rig fixture is in this rig, the fixture is already patched, however it got
-    # there (UI, import, RDM, an earlier scan): say so and add nothing. Its
-    # fixture_id must agree too: rig fixture ids are SQLite rowids and can be
-    # reused after a delete, so a stale label could name some other fixture.
+    # A printed label (generate_label_sheet, rig_fixture_qr_code) names its rig
+    # fixture. When that rig fixture is in this rig, the fixture is already
+    # patched, however it got there (UI, import, RDM, an earlier scan): say so
+    # and add nothing. Rig fixture ids are SQLite rowids and come back after a
+    # delete, so the id alone could name whatever row took it: the label's
+    # token has to agree with the row's. A label printed before tokens existed
+    # has none; it is trusted when its fixture_id agrees, and the answer says
+    # it is an older label.
     label_rf_id = scan_data.get("rig_fixture_id")
     if not isinstance(label_rf_id, int) or isinstance(label_rf_id, bool):
         label_rf_id = None
@@ -85,29 +124,54 @@ async def process_qr_scan(
         # the session is seen.
         result = await db.execute(select(RigFixture).where(RigFixture.id == label_rf_id))
         labelled = result.scalar_one_or_none()
-        if labelled is not None and labelled.rig_id == rig_id and labelled.fixture_id == fixture_id:
+        older_label = "label_token" not in scan_data
+        label_token = scan_data.get("label_token")
+        token_ok = older_label or (
+            isinstance(label_token, str)
+            and labelled is not None
+            and bool(labelled.label_token)
+            and label_token == labelled.label_token
+        )
+        if (
+            labelled is not None
+            and labelled.rig_id == rig_id
+            and labelled.fixture_id == fixture_id
+            and token_ok
+        ):
             if not labelled.qr_code_data:
                 # Later scans match on the text as well.
                 labelled.qr_code_data = qr_data
                 await db.flush()
+            message = (
+                f"{labelled.name or 'Fixture'} is already patched at "
+                f"{labelled.universe}.{labelled.dmx_address}: nothing added"
+            )
+            if older_label:
+                message += (
+                    ". An older label, printed without a token: matched on its "
+                    "rig fixture id and profile only. Reprint it to be sure."
+                )
             return {
                 "action": "identified",
                 "already_patched": True,
                 "matched_by": "rig_fixture_id",
+                "older_label": older_label,
                 "rig_fixture_id": labelled.id,
                 "universe": labelled.universe,
                 "dmx_address": labelled.dmx_address,
-                "message": (
-                    f"{labelled.name or 'Fixture'} is already patched at "
-                    f"{labelled.universe}.{labelled.dmx_address}: nothing added"
-                ),
+                "message": message,
             }
         if labelled is None:
             label_note = f"The label's rig fixture {label_rf_id} no longer exists. "
         elif labelled.rig_id != rig_id:
             label_note = f"The label's rig fixture {label_rf_id} is not in this rig. "
-        else:
+        elif labelled.fixture_id != fixture_id:
             label_note = f"The label's rig fixture {label_rf_id} is now a different fixture. "
+        else:
+            label_note = (
+                f"The label's token does not match rig fixture {label_rf_id}: it was "
+                f"printed for a fixture since deleted, whose id was reused. "
+            )
 
     # Find or verify fixture
     result = await db.execute(select(Fixture).where(Fixture.id == fixture_id))
@@ -207,16 +271,44 @@ async def generate_qr_code(
             "message": "QR code text. Leave out ?format=json for the PNG.",
         }
 
-    quiet = 4
-    module_px = max(1, size // (len(matrix) + 2 * quiet))
-    img = qr_encode.to_image(matrix, module_px=module_px, quiet=quiet)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return Response(
-        content=buf.getvalue(),
-        media_type="image/png",
-        headers={"Content-Disposition": f'inline; filename="fixture_{fixture_id}_qr.png"'},
+    return _qr_png(qr_data, size, f"fixture_{fixture_id}_qr.png")
+
+
+@router.get("/rigs/{rig_id}/fixtures/{rig_fixture_id}/qr-code")
+async def rig_fixture_qr_code(
+    rig_id: int,
+    rig_fixture_id: int,
+    size: int = Query(default=300, ge=50, le=1000),
+    output: str = Query(default="png", alias="format", pattern="^(png|json)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    """The QR code of one rig fixture's label, as a PNG.
+
+    The same text the label sheet prints (`{"fixture_id", "rig_fixture_id",
+    "label_token"}`), so the scan route names this rig fixture, and only this
+    one, when it is scanned. `size` is the side in pixels, rounded down to
+    whole pixels a module. `?format=json` answers the text instead.
+    """
+    result = await db.execute(select(Rig.id).where(Rig.id == rig_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Rig not found")
+    result = await db.execute(
+        select(RigFixture).where(RigFixture.id == rig_fixture_id, RigFixture.rig_id == rig_id)
     )
+    rf = result.scalar_one_or_none()
+    if rf is None:
+        raise HTTPException(status_code=404, detail="Rig fixture not found in this rig")
+
+    await _ensure_label_token(db, rf)
+    qr_data = _label_qr_data(rf)
+    if output == "json":
+        return {
+            "qr_data": qr_data,
+            "rig_fixture_id": rf.id,
+            "label_token": rf.label_token,
+            "message": "Label QR code text. Leave out ?format=json for the PNG.",
+        }
+    return _qr_png(qr_data, size, f"rig_{rig_id}_fixture_{rf.id}_qr.png")
 
 
 @router.get("/rigs/{rig_id}/labels/pdf")
@@ -248,13 +340,14 @@ async def generate_label_sheet(
     labels = []
     for rf in fixtures:
         fixture = rf.fixture
+        await _ensure_label_token(db, rf)
         labels.append({
             "name": rf.name or (f"{fixture.manufacturer} {fixture.model}" if fixture else "Unknown"),
             "universe": rf.universe,
             "dmx_address": rf.dmx_address,
             "fixture_number": rf.fixture_number,
             "group": rf.group_name,
-            "qr_data": json.dumps({"fixture_id": rf.fixture_id, "rig_fixture_id": rf.id}),
+            "qr_data": _label_qr_data(rf),
         })
 
     if output == "json":
