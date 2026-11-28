@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AudioCaptureDevice } from '../services/api';
 import {
+  compareDemoPlans,
   DEMO_ACTION_KINDS,
   DEMO_PRESET,
   errorText,
@@ -182,5 +183,63 @@ describe('errorText', () => {
     expect(errorText({ response: { data: { detail: 'Refused.' } } })).toBe('Refused.');
     expect(errorText({ response: { data: { detail: { message: 'Changed since.' } } } })).toBe('Changed since.');
     expect(errorText(new Error('Network Error'))).toBe('Network Error');
+  });
+});
+
+describe('compareDemoPlans', () => {
+  const groupsWarn = (count: number) =>
+    report([check({ id: 'groups', title: 'Groups', status: 'warn', fixture_count: count, fix: 'auto-groups' })]);
+
+  it('finds no change between two plans read from the same state', () => {
+    const a = planDemoReady(input({ rig: RIG, readiness: groupsWarn(2) }));
+    const b = planDemoReady(input({ rig: RIG, readiness: groupsWarn(2) }));
+    const changes = compareDemoPlans(a, b);
+    expect(changes.changed).toBe(false);
+    expect(changes.lines).toEqual([]);
+  });
+
+  it('counts a difference only in the details (counts read at the time) as unchanged', () => {
+    const a = planDemoReady(input({ rig: RIG, readiness: groupsWarn(2) }));
+    const b = planDemoReady(input({ rig: RIG, readiness: groupsWarn(5) }));
+    const detail = (p: typeof a) => p.actions.find((x) => x.kind === 'makeGroups')?.detail;
+    expect(detail(a)).not.toBe(detail(b));
+    expect(compareDemoPlans(a, b).changed).toBe(false);
+  });
+
+  it('reports loading the demo moving from an action to a manual step when output goes live', () => {
+    const shown = planDemoReady(input({ outputIdle: true }));
+    const fresh = planDemoReady(input({ outputIdle: false }));
+    const changes = compareDemoPlans(shown, fresh);
+    expect(changes.changed).toBe(true);
+    expect(changes.removed.map((a) => a.kind)).toEqual(['loadDemo']);
+    expect(changes.nowManual.map((m) => m.key)).toEqual(['loadDemo']);
+    expect(changes.added).toEqual([]);
+    expect(changes.lines.join('\n')).toMatch(/No longer does: Load the LIV Miami/);
+    expect(changes.lines.join('\n')).toMatch(/Now left to you: Load the LIV Miami/);
+  });
+
+  it('reports a different audio device as a change', () => {
+    const shown = planDemoReady(input());
+    const fresh = planDemoReady(input({ audio: audioOff({ remembered: { name: LINE_IN.name, hostapi: LINE_IN.hostapi } }) }));
+    const changes = compareDemoPlans(shown, fresh);
+    expect(changes.changed).toBe(true);
+    expect(changes.added.map((a) => a.deviceIndex)).toEqual([LINE_IN.index]);
+    expect(changes.removed.map((a) => a.deviceIndex)).toEqual([LOOPBACK.index]);
+  });
+
+  it('reports Make groups appearing and disappearing', () => {
+    const without = planDemoReady(input({ rig: RIG, readiness: report([check({ id: 'groups' })]) }));
+    const withGroups = planDemoReady(input({ rig: RIG, readiness: groupsWarn(2) }));
+    expect(compareDemoPlans(without, withGroups).added.map((a) => a.kind)).toEqual(['makeGroups']);
+    expect(compareDemoPlans(withGroups, without).removed.map((a) => a.kind)).toEqual(['makeGroups']);
+  });
+
+  it('treats a failed re-read as a change, so nothing runs on it', () => {
+    const shown = planDemoReady(input({ rig: RIG, readiness: groupsWarn(2) }));
+    const fresh = planDemoReady(input({ rig: RIG, readiness: null, audio: null }));
+    const changes = compareDemoPlans(shown, fresh);
+    expect(changes.changed).toBe(true);
+    expect(changes.removed.map((a) => a.kind)).toEqual(['makeGroups', 'audioInput']);
+    expect(changes.nowManual.map((m) => m.key)).toEqual(['audio']);
   });
 });

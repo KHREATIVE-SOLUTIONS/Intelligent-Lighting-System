@@ -186,7 +186,7 @@ export function planDemoReady(input: DemoReadyInput): DemoReadyPlan {
           detail:
             `${check.title}: ${plural(check.fixture_count, 'fixture')}. Gives each placed fixture that is in no group a group ` +
             'named for where it hangs and what it is. No fixture is taken out of a group and no address or mode changes. ' +
-            'Its undo is kept on the rig, but the Undo button only shows in the readiness checks after a fix run there.',
+            'When it groups anything, its result line offers Undo.',
         });
       } else {
         manual.push({
@@ -233,6 +233,56 @@ const MANUAL_FIX_REASON: Record<string, string> = {
   [FIX_SET_MODES]: 'Changes DMX modes, which have to match the mode set on each fixture. Review its plan in the readiness checks.',
   [FIX_LOCATE]: 'Flashes the fixtures it names, so it is only started by hand.',
 };
+
+// Re-checking the plan on confirm.
+
+export interface DemoPlanChanges {
+  /** True when what would run, or what is left to the operator, differs. */
+  changed: boolean;
+  /** Actions in the new plan that the shown plan did not have (or with another device). */
+  added: DemoAction[];
+  /** Actions the shown plan had that the new plan does not. */
+  removed: DemoAction[];
+  /** Steps now left to the operator. */
+  nowManual: DemoManualStep[];
+  /** Steps no longer left to the operator. */
+  noLongerManual: DemoManualStep[];
+  /** One line per difference, for the operator. */
+  lines: string[];
+}
+
+// An action is the same when it is the same kind on the same device. Details
+// are left out: they carry counts read at the time, which can move without
+// changing what runs.
+const actionKey = (a: DemoAction) => `${a.kind}:${a.deviceIndex ?? ''}`;
+
+/**
+ * What changed between the plan the operator was shown and the plan read again
+ * on confirm. Compares the actions (kind, and device for audio) in order and
+ * the manual steps by key; any difference means the new plan has to be shown
+ * and confirmed before anything runs.
+ */
+export function compareDemoPlans(shown: DemoReadyPlan, fresh: DemoReadyPlan): DemoPlanChanges {
+  const shownActions = new Set(shown.actions.map(actionKey));
+  const freshActions = new Set(fresh.actions.map(actionKey));
+  const shownManual = new Set(shown.manual.map((m) => m.key));
+  const freshManual = new Set(fresh.manual.map((m) => m.key));
+  const added = fresh.actions.filter((a) => !shownActions.has(actionKey(a)));
+  const removed = shown.actions.filter((a) => !freshActions.has(actionKey(a)));
+  const nowManual = fresh.manual.filter((m) => !shownManual.has(m.key));
+  const noLongerManual = shown.manual.filter((m) => !freshManual.has(m.key));
+  const reordered =
+    added.length === 0 && removed.length === 0 &&
+    shown.actions.map(actionKey).join('|') !== fresh.actions.map(actionKey).join('|');
+  const lines = [
+    ...added.map((a) => `Now does: ${a.label}. ${a.detail}`),
+    ...removed.map((a) => `No longer does: ${a.label}.`),
+    ...nowManual.map((m) => `Now left to you: ${m.label}. ${m.detail}`),
+    ...noLongerManual.map((m) => `No longer left to you: ${m.label}.`),
+    ...(reordered ? ['The order of the actions changed.'] : []),
+  ];
+  return { changed: lines.length > 0, added, removed, nowManual, noLongerManual, lines };
+}
 
 // Running the plan.
 
