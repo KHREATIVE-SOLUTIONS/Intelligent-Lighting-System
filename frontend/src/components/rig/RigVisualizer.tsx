@@ -78,6 +78,9 @@ import { FocusTargetMarkers } from './previs/FocusTargetMarkers';
 import FocusTargets3dToggle from './previs/FocusTargets3dToggle';
 import useFocusTargets3d from './previs/useFocusTargets3d';
 import type { FocusMarker } from '../../utils/focusPresets';
+import {
+  PREVIZ_SHADOWS_KEY, defaultShowLabels, previzDpr, readViewToggle, writeViewToggle,
+} from './previs/viewSettings';
 
 type BeamDebugSnapshot = {
   fixtureId: number;
@@ -1375,9 +1378,17 @@ export default function RigVisualizer() {
   // The room, DJ and crowd. Off leaves the bare rig for inspection.
   const [showVenue, setShowVenue] = useState(true);
   // Fixture ID labels. Until the operator chooses, they follow the venue: off
-  // in the club view, on for the bare rig, where they are what you came for.
+  // in the club view, on for the bare rig, where they are what you came for;
+  // but off on a big rig, where a hundred HTML labels cost more than the rig.
   const [labelChoice, setLabelChoice] = useState<boolean | null>(null);
-  const showLabels = labelChoice ?? !showVenue;
+  const showLabels = labelChoice ?? defaultShowLabels(showVenue, rig?.fixtures?.length ?? 0);
+  // Shadows from the brightest beams. Off until the operator turns them on;
+  // the choice is kept for this machine.
+  const [shadows, setShadowsState] = useState<boolean>(() => readViewToggle(PREVIZ_SHADOWS_KEY) ?? false);
+  const setShadows = useCallback((on: boolean) => {
+    setShadowsState(on);
+    writeViewToggle(PREVIZ_SHADOWS_KEY, on);
+  }, []);
   // Beat and section for the crowd. A ref, so a message re-renders nothing.
   const beatClock = useRef<BeatClock>(createBeatClock());
   // The frames the engine outputs, as they arrive. A ref for the same reason;
@@ -1768,6 +1779,15 @@ export default function RigVisualizer() {
               IDs
             </Button>
           </Tooltip>
+          <Tooltip describeChild title="Cast shadows from the brightest few beams. Costs frame time; off by default.">
+            <Button
+              variant={shadows ? 'contained' : 'outlined'}
+              aria-pressed={shadows}
+              onClick={() => setShadows(!shadows)}
+            >
+              Shadows
+            </Button>
+          </Tooltip>
           <Tooltip describeChild title="Show the beam debug table: what each fixture is sent and how it is drawn">
             <Button
               variant={showDebug ? 'contained' : 'outlined'}
@@ -1850,13 +1870,16 @@ export default function RigVisualizer() {
       {/* 3D Canvas */}
       <Box sx={{ flexGrow: 1, bgcolor: '#000', borderRadius: 2, overflow: 'hidden' }}>
         <Canvas
-          shadows
+          shadows={shadows}
           gl={{
             antialias: true,
+            // Ask for the discrete GPU on a laptop or desktop that also has an
+            // integrated one; the browser may still decide otherwise.
+            powerPreference: 'high-performance',
             toneMapping: THREE.ACESFilmicToneMapping,
             toneMappingExposure: qualityMode === 'ultra' ? 1.32 : 1.2,
           }}
-          dpr={qualityMode === 'ultra' ? [1.2, 2] : qualityMode === 'performance' ? [1, 1.2] : [1, 1.5]}
+          dpr={previzDpr(qualityMode, typeof window === 'undefined' ? 1 : window.devicePixelRatio)}
         >
           <Scene
             rig={rig}
