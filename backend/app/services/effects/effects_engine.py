@@ -154,6 +154,18 @@ class EffectsConfig:
     # window the renderer already strobes in, under `strobe_hz_cap` as before.
     # Off, every drop strobes at the renderer's own rate.
     look_strobe_modes: bool = True
+    # Beat response: the final stage of the live renderer's dimmer chain (see
+    # `_beat_pulse_step` and `_makeup_gain_now`). The pulse dips every fixture
+    # between beats and opens it on the beat, so the beat reads on dense music;
+    # the make-up gain is a slow output AGC on the rig's mean dimmer so dense
+    # programme lands near `makeup_target` instead of 5-20%. Neither does
+    # anything while the input is silent, lost or the idle look is up.
+    beat_pulse_enabled: bool = True
+    beat_pulse_depth: float = 0.6            # 0..0.9, the drop's depth; sections scale it
+    output_makeup_gain_enabled: bool = True
+    makeup_target: float = 0.5               # rig mean dimmer the AGC aims for
+    makeup_gain_max: float = 5.0             # bounded: 1x .. this
+    makeup_time_constant_s: float = 4.0
     camera_mode: bool = False
     major_change_min_bars: int = 2
 
@@ -678,6 +690,19 @@ class EffectsEngine:
         self._drop_energy_ref: float = 0.0
         self._drop_hit_until: float = -999.0
         self._drop_bed_mix: float = 0.0
+
+        # Beat response stage: see `_beat_pulse_step` / `_makeup_gain_now`.
+        self._pulse_beat_index: Optional[int] = None
+        self._pulse_seen_beat_t: float = 0.0
+        self._pulse_source_beats: int = 0
+        self._pulse_fired_at: float = -1.0e9
+        self.beat_pulse_count: int = 0       # pulses actually fired
+        self.beat_pulse_level: float = 0.0   # envelope 0..1 on the last frame
+        self.beat_pulse_depth: float = 0.0   # depth applied on the last frame
+        self._makeup_ref: Optional[float] = None
+        self._makeup_gain: float = 1.0       # the AGC's gain before the mix
+        self._makeup_mix: float = 0.0        # 0 silent .. 1 music playing
+        self.makeup_gain_applied: float = 1.0
 
         # Pro lighting integration enabled flag
         self._pro_lighting_enabled = False
@@ -1672,6 +1697,20 @@ class EffectsEngine:
                     dimmer_beats, self._rebuild_dimmer_changed_beats, ceiling,
                 )
 
+        # Beat response stage, decided once for the frame: the make-up gain and
+        # the beat pulse's depth and envelope. Applied per fixture below, after
+        # the dimmer chain and the drop dip, before the audience cap.
+        stage_gain = self._makeup_gain_now(delta_time)
+        pulse_depth, pulse_env = self._beat_pulse_step(section, strobe_on)
+        pulse_depth *= self._makeup_mix
+        self.beat_pulse_depth = pulse_depth
+        # A trough under the clamped level, never a lift above it: the peak is
+        # the level the chain asked for, so nothing clips on the beat.
+        pulse_full = 1.0 - pulse_depth * (1.0 - pulse_env)
+        pulse_mover = 1.0 - 0.5 * pulse_depth * (1.0 - pulse_env)
+        stage_on = self._makeup_mix > 0.0
+        stage_ref_sum = 0.0
+
         snapshot = []
         for i, fixture in enumerate(all_fixtures):
             ftype = str(getattr(fixture, "fixture_type", "") or "").lower()
@@ -1742,8 +1781,22 @@ class EffectsEngine:
             # The speculative dip, applied as a fraction of whatever the frame
             # was going to be so a dip at zero energy is still zero.
             dim *= 1.0 - self._drop_dip
-            fixture.dimmer = max(0.0, min(1.0, dim))
             audience_cap = max(0.0, min(1.0, float(self.config.audience_intensity_cap)))
+            # Beat response stage. A strobe flash frame is left exactly as the
+            # governed strobe made it; strobes get the gain but no pulse.
+            flash_frame = strobe_on and strobe_flash and dim >= 1.0
+            if stage_on and not flash_frame:
+                if role in (live_roles.BAR, live_roles.BED, live_roles.WASH):
+                    factor = pulse_full
+                elif role == live_roles.BEAM:
+                    factor = pulse_mover
+                else:
+                    factor = 1.0
+                stage_ref_sum += max(0.0, min(1.0, dim)) * factor
+                dim = min(audience_cap, max(0.0, dim) * stage_gain) * factor
+            elif not flash_frame:
+                stage_ref_sum += max(0.0, min(1.0, dim))
+            fixture.dimmer = max(0.0, min(1.0, dim))
             if fixture.dimmer > audience_cap:
                 self._record_safety_event(
                     "audience_intensity_clamped",
@@ -1794,6 +1847,192 @@ class EffectsEngine:
                 'b': fixture.blue,
             })
         self._fixture_state_snapshot = snapshot
+        # The AGC learns only from ordinary playing: never from silence, the
+        # breakdown, the drop or the anticipation dip, so it cannot pump a
+        # noise floor up or level the build-to-drop step away.
+        self._makeup_adapt(
+            stage_ref_sum / float(total),
+            delta_time,
+            may_adapt=(
+                section not in ("breakdown", "drop")
+                and not drop_look
+                and self._drop_dip <= 0.0
+                and not strobe_on
+            ),
+        )
+
+    # === Beat response stage ===============================================
+    # How much of `beat_pulse_depth` each section gets.
+    _PULSE_SECTION_SCALE = {
+        "drop": 1.0, "peak": 1.0, "chorus": 1.0, "buildup": 0.9,
+        "verse": 0.8, "intro": 0.7, "breakdown": 0.35,
+    }
+    # The output stage counts a rise of 0.18 of full scale inside 100 ms as a
+    # flash (dmx/output_stage.FLASH_FREE_RISE). A gentle pulse stays under it
+    # whatever the level, so in no_strobe it is never a flash at all.
+    _PULSE_GENTLE_MAX_DEPTH = 0.15
+    # General-audience limit; a pulse is held to it even where strobes run faster.
+    _PULSE_LIMIT_HZ = 3.0
+    _PULSE_MARGIN_S = 0.02
+    _PULSE_ATTACK_S = 0.008
+    _PULSE_GENTLE_ATTACK_S = 0.06
+    # Audio older than this means the feed has paused (WASAPI loopback sends
+    # nothing at all while nothing plays), so the stage stands down.
+    _STAGE_AUDIO_FRESH_S = 0.5
+    _STAGE_RISE_S = 0.5
+    _STAGE_FALL_S = 0.25
+
+    def _beat_stage_active(self) -> bool:
+        """Music is arriving now: loud, fresh, not lost, no idle look."""
+        cfg = self.config
+        if not (getattr(cfg, "beat_pulse_enabled", False) or getattr(cfg, "output_makeup_gain_enabled", False)):
+            return False
+        if not self._idle_audio_loud or self._audio_lost or self._idle_active:
+            return False
+        if self._last_audio_t is None:
+            return False
+        return (self.time - self._last_audio_t) <= self._STAGE_AUDIO_FRESH_S
+
+    def _beat_pulse_gentle(self) -> bool:
+        """Whether the posture allows only a sub-flash pulse.
+
+        Read from the posture itself, not `flash_policy()`, whose answer the
+        accent governor flips frame by frame through `strobe_enabled`.
+        """
+        policy = str(getattr(self.config, "accessibility_mode", "no_strobe") or "no_strobe").lower()
+        venue_mode = str(getattr(self.config, "venue_mode", "concert") or "concert").lower()
+        return (
+            policy not in {"conservative", "performance"}
+            or bool(getattr(self.config, "camera_mode", False))
+            or venue_mode in {"theatre", "broadcast", "corporate"}
+            or self._strobe_cap_hz() <= 0.0
+        )
+
+    def _beat_pulse_min_interval(self) -> float:
+        """Shortest time between two pulses: the venue's flash cap, never over 3 Hz."""
+        cap = self._strobe_cap_hz()
+        limit = min(self._PULSE_LIMIT_HZ, cap) if cap > 0.0 else 2.0
+        return 1.0 / limit + self._PULSE_MARGIN_S
+
+    def _beat_pulse_step(self, section: str, strobe_on: bool) -> Tuple[float, float]:
+        """Fire a pulse on a new beat and return (depth, envelope) for this frame.
+
+        The beat is the locked beat clock's integer crossing when there is one
+        (it is phase-locked and predictive, so the pulse lands on the beat
+        rather than a block after it), else the analyser's `is_beat` as it
+        arrived in `update_audio`. Beats faster than the limit pulse every
+        other beat, and no two pulses are closer than the limit allows.
+        """
+        now = float(self.time)
+        if self._clock_locked and 0.02 < self._clock_period < 4.0:
+            period = float(self._clock_period)
+        else:
+            period = 60.0 / max(60.0, min(200.0, float(self.config.bpm or 128.0)))
+
+        beat_at: Optional[float] = None
+        if self._clock_locked:
+            beats = float(self._clock_beats)
+            idx = int(math.floor(beats + 1e-6))
+            if self._pulse_beat_index is not None and idx > self._pulse_beat_index:
+                # When the crossing happened, not when this frame saw it.
+                beat_at = now - max(0.0, beats - idx) * period
+            self._pulse_beat_index = idx
+            self._pulse_seen_beat_t = float(self.last_beat_time)
+        else:
+            self._pulse_beat_index = None
+            if float(self.last_beat_time) > self._pulse_seen_beat_t:
+                beat_at = min(now, float(self.last_beat_time))
+            self._pulse_seen_beat_t = float(self.last_beat_time)
+
+        pulse_on = bool(getattr(self.config, "beat_pulse_enabled", False)) and self._beat_stage_active()
+        if beat_at is not None and pulse_on and not strobe_on:
+            self._pulse_source_beats += 1
+            min_interval = self._beat_pulse_min_interval()
+            every_other = period < min_interval
+            if ((not every_other) or self._pulse_source_beats % 2 == 0) and (
+                    beat_at - self._pulse_fired_at) >= min_interval:
+                self._pulse_fired_at = beat_at
+                self.beat_pulse_count += 1
+
+        gentle = self._beat_pulse_gentle()
+        attack = self._PULSE_GENTLE_ATTACK_S if gentle else self._PULSE_ATTACK_S
+        tau = max(0.12, min(0.20, 0.33 * period))
+        t = now - self._pulse_fired_at
+        if t < 0.0:
+            env = 0.0
+        elif t < attack:
+            env = t / attack
+        else:
+            env = math.exp(-(t - attack) / tau)
+        self.beat_pulse_level = env
+
+        if not pulse_on or strobe_on:
+            return 0.0, env
+        try:
+            depth = max(0.0, min(0.9, float(self.config.beat_pulse_depth)))
+        except (TypeError, ValueError):
+            depth = 0.0
+        depth *= self._PULSE_SECTION_SCALE.get(section, 0.8)
+        if gentle:
+            depth = min(depth, self._PULSE_GENTLE_MAX_DEPTH)
+        return depth, env
+
+    def _makeup_gain_now(self, delta_time: float) -> float:
+        """The make-up gain to apply this frame (1.0 when silent or disabled)."""
+        step = float(delta_time) if delta_time else 0.0
+        if not (0.0 < step <= 0.25):
+            step = 1.0 / 60.0
+        if self._beat_stage_active():
+            self._makeup_mix = min(1.0, self._makeup_mix + step / self._STAGE_RISE_S)
+        else:
+            self._makeup_mix = max(0.0, self._makeup_mix - step / self._STAGE_FALL_S)
+        gain = 1.0
+        if bool(getattr(self.config, "output_makeup_gain_enabled", False)) and self._makeup_ref:
+            try:
+                target = max(0.05, min(1.0, float(self.config.makeup_target)))
+                gmax = max(1.0, float(self.config.makeup_gain_max))
+            except (TypeError, ValueError):
+                target, gmax = 0.5, 1.0
+            gain = max(1.0, min(gmax, target / max(1e-3, self._makeup_ref)))
+        self._makeup_gain = gain
+        self.makeup_gain_applied = 1.0 + (gain - 1.0) * self._makeup_mix
+        return self.makeup_gain_applied
+
+    def _makeup_adapt(self, mean_level: float, delta_time: float, may_adapt: bool) -> None:
+        """Track the rig's mean dimmer before gain (pulse included), slowly."""
+        if not (may_adapt and self._beat_stage_active()):
+            return
+        if not bool(getattr(self.config, "output_makeup_gain_enabled", False)):
+            return
+        if not (0.0 < mean_level <= 1.0):
+            return
+        step = float(delta_time) if delta_time else 0.0
+        if not (0.0 < step <= 0.25):
+            step = 1.0 / 60.0
+        if self._makeup_ref is None:
+            self._makeup_ref = mean_level
+            return
+        try:
+            tau = max(0.5, float(self.config.makeup_time_constant_s))
+        except (TypeError, ValueError):
+            tau = 4.0
+        self._makeup_ref += (mean_level - self._makeup_ref) * min(1.0, step / tau)
+
+    def beat_meter(self) -> Dict:
+        """Tempo and beat state for a level meter: no audio data, engine side only."""
+        since = float(self.time) - float(self.last_beat_time) if self.beat_count else None
+        bpm = (60.0 / self._clock_period) if (self._clock_locked and self._clock_period > 0) else float(
+            getattr(self.audio_state, "bpm", self.config.bpm) or 0.0)
+        return {
+            "bpm": round(bpm, 1),
+            "beat_count": int(self.beat_count),
+            "seconds_since_beat": None if since is None else round(max(0.0, since), 3),
+            "beat_phase": round(float(self.beat_phase), 3) if self._clock_locked else None,
+            "clock_locked": bool(self._clock_locked),
+            "pulse_count": int(self.beat_pulse_count),
+            "pulse_level": round(float(self.beat_pulse_level), 3),
+            "makeup_gain": round(float(self.makeup_gain_applied), 3),
+        }
 
     # Audio older than this is treated as lost.
     AUDIO_STALE_S = _AUDIO_LOSS_AFTER_S
