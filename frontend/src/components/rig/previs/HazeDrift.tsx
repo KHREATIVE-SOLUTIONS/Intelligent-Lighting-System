@@ -25,7 +25,7 @@ let noiseTexture: THREE.DataTexture | null = null;
 function hazeNoiseTexture(): THREE.DataTexture {
   if (!noiseTexture) {
     const size = 128;
-    noiseTexture = new THREE.DataTexture(hazeNoisePixels(size), size, size, THREE.RGBAFormat);
+    noiseTexture = new THREE.DataTexture(new Uint8Array(hazeNoisePixels(size)), size, size, THREE.RGBAFormat);
     noiseTexture.magFilter = THREE.LinearFilter;
     noiseTexture.minFilter = THREE.LinearMipmapLinearFilter;
     noiseTexture.generateMipmaps = true;

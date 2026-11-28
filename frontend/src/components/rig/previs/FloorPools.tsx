@@ -270,7 +270,7 @@ let goboAtlas: THREE.DataTexture | null = null;
 function goboAtlasTexture(): THREE.DataTexture {
   if (!goboAtlas) {
     goboAtlas = new THREE.DataTexture(
-      buildGoboAtlasPixels(), GOBO_ATLAS_CELLS * GOBO_CELL_PX, GOBO_CELL_PX, THREE.RGBAFormat,
+      new Uint8Array(buildGoboAtlasPixels()), GOBO_ATLAS_CELLS * GOBO_CELL_PX, GOBO_CELL_PX, THREE.RGBAFormat,
     );
     goboAtlas.magFilter = THREE.LinearFilter;
     goboAtlas.minFilter = THREE.LinearMipmapLinearFilter;
