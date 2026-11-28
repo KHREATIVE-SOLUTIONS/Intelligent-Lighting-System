@@ -461,6 +461,14 @@ export interface RigFixture {
   is_active: boolean;
   is_inverted: boolean;
   is_address_locked: boolean;
+  /**
+   * How this unit is hung: an axis that runs backwards, or the two exchanged.
+   * The engine applies them where pan/tilt become DMX. Optional because a rig
+   * loaded from an older backend, or the demo rig, does not carry them.
+   */
+  pan_invert?: boolean;
+  tilt_invert?: boolean;
+  pan_tilt_swap?: boolean;
   serial_number?: string;
   qr_code_data?: string;
   fixture?: Fixture;
@@ -484,6 +492,9 @@ export interface RigFixtureCreate {
   zone?: string | null;
   tags?: string[];
   is_address_locked?: boolean;
+  pan_invert?: boolean;
+  tilt_invert?: boolean;
+  pan_tilt_swap?: boolean;
 }
 
 // Professional Lighting Types

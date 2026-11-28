@@ -36,6 +36,21 @@ const ZONE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'entrance', label: 'The way in / out' },
 ];
 
+/**
+ * How one unit is hung. The engine applies these where pan/tilt become DMX, so
+ * a head rigged the other way round from its partner still mirrors it in every
+ * look. All three are off for a rig saved before they existed.
+ */
+const HANG_FLAGS: Array<{
+  field: 'pan_invert' | 'tilt_invert' | 'pan_tilt_swap';
+  label: string;
+  update: (on: boolean) => Partial<RigFixture>;
+}> = [
+  { field: 'pan_invert', label: 'Invert pan', update: (on) => ({ pan_invert: on }) },
+  { field: 'tilt_invert', label: 'Invert tilt', update: (on) => ({ tilt_invert: on }) },
+  { field: 'pan_tilt_swap', label: 'Swap pan/tilt', update: (on) => ({ pan_tilt_swap: on }) },
+];
+
 interface FixturePropertiesProps {
   fixture: RigFixture;
   availableModes?: Fixture['modes'];
@@ -141,6 +156,22 @@ export default function FixtureProperties({ fixture, availableModes = [], onChan
             sx={{ '& .MuiTypography-root': { fontSize: '0.75rem' } }}
           />
         </Grid>
+
+        {HANG_FLAGS.map(({ field, label, update }) => (
+          <Grid item xs={4} key={field}>
+            <FormControlLabel
+              control={
+                <Switch
+                  size="small"
+                  checked={Boolean(fixture[field])}
+                  onChange={(e) => onChange(update(e.target.checked))}
+                />
+              }
+              label={label}
+              sx={{ '& .MuiTypography-root': { fontSize: '0.75rem' } }}
+            />
+          </Grid>
+        ))}
 
         <Grid item xs={4}>
           <TextField

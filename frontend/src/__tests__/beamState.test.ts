@@ -15,7 +15,7 @@ type ChannelSpec = string | { type: string; ranges: ChannelValueRange[] };
 function fixtureOf(
   channels: ChannelSpec[],
   extra: Partial<NonNullable<BeamFixtureInput['fixture']>> = {},
-  patch: Pick<BeamFixtureInput, 'tags' | 'is_inverted'> = {},
+  patch: Pick<BeamFixtureInput, 'tags' | 'is_inverted' | 'pan_invert' | 'tilt_invert' | 'pan_tilt_swap'> = {},
 ): BeamFixtureInput {
   return {
     ...patch,
@@ -104,6 +104,36 @@ describe('beam state from a DMX frame', () => {
     const both = readBeamState(buildBeamProfile(fixtureOf(MOVER), { pan: true, tilt: true }), frame, 1);
     expect(both.panDeg).toBeCloseTo(-90, 1);
     expect(both.tiltDeg).toBeCloseTo(-30, 1);
+  });
+
+  it('undoes the engine\'s hang flags, so a flagged head is drawn where the look points', () => {
+    const [pan, panFine] = axisBytes(90, 540);
+    const [tilt, tiltFine] = axisBytes(30, 270);
+    const plain = readBeamState(
+      buildBeamProfile(fixtureOf(MOVER)),
+      moverFrame(1, { pan, pan_fine: panFine, tilt, tilt_fine: tiltFine }),
+      1,
+    );
+    expect(plain.panDeg).toBeCloseTo(90, 1);
+    expect(plain.tiltDeg).toBeCloseTo(30, 1);
+
+    // What fixture_groups.route_pan_tilt writes for that look with swap and
+    // pan invert: pan reversed, then carried on the tilt channels.
+    const panWord = 65535 - ((pan << 8) | panFine);
+    const wire = moverFrame(1, {
+      pan: tilt, pan_fine: tiltFine, tilt: (panWord >> 8) & 0xff, tilt_fine: panWord & 0xff,
+    });
+    const flagged = readBeamState(
+      buildBeamProfile(fixtureOf(MOVER, {}, { pan_invert: true, pan_tilt_swap: true })),
+      wire,
+      1,
+    );
+    expect(flagged.panDeg).toBeCloseTo(plain.panDeg, 6);
+    expect(flagged.tiltDeg).toBeCloseTo(plain.tiltDeg, 6);
+
+    // A fixture without both axes has nothing to swap.
+    const panOnly = buildBeamProfile(fixtureOf(['pan', 'dimmer'], {}, { pan_tilt_swap: true }));
+    expect(panOnly.hang.swap).toBe(false);
   });
 
   it('reads the rig\'s single invert flag as pan, and two inverts of one axis as none', () => {

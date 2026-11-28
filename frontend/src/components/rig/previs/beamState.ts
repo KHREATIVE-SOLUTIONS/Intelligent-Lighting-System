@@ -23,6 +23,12 @@
  * fixture may not have.
  */
 
+import { panTiltFromDmx } from './hangFlags';
+import type { HangFlags, PanTiltPosition } from './hangFlags';
+
+/** Reused by every read so the frame loop does not allocate. */
+const scratchPosition: PanTiltPosition = { pan: 0.5, tilt: 0.5 };
+
 /** A named span of one channel's values, as the fixture library stores it. */
 export type ChannelValueRange = {
   name?: string | null;
@@ -35,6 +41,10 @@ export type BeamFixtureInput = {
   mode_id?: number | null;
   tags?: string[] | null;
   is_inverted?: boolean | null;
+  /** Hang flags the engine applies on the way to DMX; see ./hangFlags.ts. */
+  pan_invert?: boolean | null;
+  tilt_invert?: boolean | null;
+  pan_tilt_swap?: boolean | null;
   fixture?: {
     fixture_type?: string | null;
     beam_angle?: number | null;
@@ -64,6 +74,12 @@ export type BeamProfile = {
   panRangeDeg: number;
   tiltRangeDeg: number;
   invert: BeamInvert;
+  /**
+   * The patch's hang flags, which the engine has already applied to the wire.
+   * Undone when reading a frame so the beam is drawn where the real one goes.
+   * Swap is only set when the fixture has both a pan and a tilt channel.
+   */
+  hang: HangFlags;
   /** Fixed beam angle from the profile, for a fixture with no zoom channel. */
   beamAngleDeg: number | null;
   /** Zoom used when the profile gives neither a zoom channel nor a beam angle. */
@@ -206,6 +222,11 @@ export function buildBeamProfile(
     panRangeDeg: Number(fixture.fixture?.pan_range) || (hasPanTilt ? 540 : 0),
     tiltRangeDeg: Number(fixture.fixture?.tilt_range) || (hasPanTilt ? 270 : 0),
     invert,
+    hang: {
+      panInvert: Boolean(fixture.pan_invert),
+      tiltInvert: Boolean(fixture.tilt_invert),
+      swap: Boolean(fixture.pan_tilt_swap) && hasPanTilt,
+    },
     beamAngleDeg: typeof beamAngle === 'number' && Number.isFinite(beamAngle) ? beamAngle : null,
     fallbackZoom: SPOT_TYPES.has(type) ? 0.45 : 0.12,
   };
@@ -449,15 +470,23 @@ export function readBeamState(
   // --- Pan and tilt ---------------------------------------------------------
   out.panDeg = 0;
   out.tiltDeg = 0;
-  if (frame && has('pan') && profile.panRangeDeg > 0) {
-    const norm = has('pan_fine') ? ((value('pan') << 8) | value('pan_fine')) / 65535 : value('pan') / 255;
-    const deg = (norm - 0.5) * profile.panRangeDeg;
-    out.panDeg = profile.invert.pan ? -deg : deg;
-  }
-  if (frame && has('tilt') && profile.tiltRangeDeg > 0) {
-    const norm = has('tilt_fine') ? ((value('tilt') << 8) | value('tilt_fine')) / 65535 : value('tilt') / 255;
-    const deg = (norm - 0.5) * profile.tiltRangeDeg;
-    out.tiltDeg = profile.invert.tilt ? -deg : deg;
+  if (frame && (has('pan') || has('tilt'))) {
+    // Undo the engine's hang mapping first (a plain read when no flag is set),
+    // then the fixture's own invert, which describes the head, not the wire.
+    const position = panTiltFromDmx(
+      { coarse: value('pan'), fine: has('pan_fine') ? value('pan_fine') : undefined },
+      { coarse: value('tilt'), fine: has('tilt_fine') ? value('tilt_fine') : undefined },
+      profile.hang,
+      scratchPosition
+    );
+    if (has('pan') && profile.panRangeDeg > 0) {
+      const deg = (position.pan - 0.5) * profile.panRangeDeg;
+      out.panDeg = profile.invert.pan ? -deg : deg;
+    }
+    if (has('tilt') && profile.tiltRangeDeg > 0) {
+      const deg = (position.tilt - 0.5) * profile.tiltRangeDeg;
+      out.tiltDeg = profile.invert.tilt ? -deg : deg;
+    }
   }
 
   // --- Zoom -----------------------------------------------------------------
