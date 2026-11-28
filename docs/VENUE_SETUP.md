@@ -60,10 +60,21 @@ a demo in one click, on the LIV Miami demo rig or the rig the panel is open on.
 2. It shows the plan in three lists: what it will do, in order, each with one
    line on what it does; what it left as it is and why (already running,
    already captured, no saved rig); and what **stays with you**.
-3. Nothing runs until **Do these N**. Each action then gets a line: Done,
-   Skipped (it had nothing to change) or Failed with the box's error text. A
-   failure does not stop the actions after it. When the run ends the
-   checklist reads its statuses again.
+3. Nothing runs until **Do these N**. Pressing it reads the output state, the
+   readiness report and the audio status again and plans afresh. If that plan
+   differs from the one shown (`compareDemoPlans`: a different action or audio
+   device, or a step moved to or from the manual list; counts in the details
+   alone do not count), **nothing runs**: the new plan is shown with a line for
+   each change, and runs only when confirmed again. A read that fails on
+   confirm changes the plan too, so it never runs on a missing reading.
+4. Each action then gets a line: Done, Skipped (it had nothing to change) or
+   Failed with the box's error text. A failure does not stop the actions after
+   it. When the run ends the checklist reads its statuses again.
+5. When Make groups grouped anything, its line has **Undo**
+   (`POST /api/rigs/{id}/readiness/fix/undo`). It shows "Undone" and the box's
+   message, or the error text (the button stays for another try), then reads
+   the statuses again. There is no Undo when Make groups was not planned or had
+   nothing to group.
 
 What it may do, and only this (`DEMO_ACTION_KINDS`):
 
@@ -85,7 +96,7 @@ What it may do, and only this (`DEMO_ACTION_KINDS`):
   too. The box also refuses (409) to load a demo over a patched live rig; the
   run shows that as Failed. It never activates a saved rig.
 - **Only Make groups is applied.** It adds groups and nothing else; its undo
-  record is kept on the rig as for any fix (see Open). Re-address and
+  record is kept on the rig as for any fix, and its result line offers Undo. Re-address and
   Set modes change the patch, which must then be matched on each fixture, and
   Locate flashes fixtures: each is listed as manual with its reason
   (`AUTO_READINESS_FIXES`).
@@ -106,12 +117,14 @@ What it may do, and only this (`DEMO_ACTION_KINDS`):
   `frontend/src/__tests__/VenueSetupChecklist.test.tsx` (the nine statuses for
   an empty and a nearly ready rig, the step buttons, Not available yet, Skip
   across a remount, Next, and the Rig builder's Venue Setup button).
-- `frontend/src/utils/demoReady.ts`: Get demo-ready's planner (`planDemoReady`)
-  and runner (`runDemoReadyPlan`), pure and tested in
-  `frontend/src/__tests__/demoReady.test.ts`; the button in
+- `frontend/src/utils/demoReady.ts`: Get demo-ready's planner (`planDemoReady`),
+  plan comparison (`compareDemoPlans`) and runner (`runDemoReadyPlan`), pure
+  and tested in `frontend/src/__tests__/demoReady.test.ts`; the button in
   `frontend/src/__tests__/VenueSetupChecklist.demoReady.test.tsx` (plan before
-  confirm, the run, a failure that does not stop the rest, the refresh, and
-  the demo left manual while output may be sending).
+  confirm, the run, a failure that does not stop the rest, the refresh, the
+  demo left manual while output may be sending, a plan that changed between
+  show and confirm, and Undo: done, failed, and not offered when Make groups
+  grouped nothing).
 - Not to be confused with `utils/setupChecklist.ts`, the four-line pre-show
   check on the dashboard.
 
@@ -133,11 +146,13 @@ What it may do, and only this (`DEMO_ACTION_KINDS`):
 - After a run the checklist reads readiness and focus again at once; the
   Venue, Audio and Output rows come from the status bar's poller and catch up
   on its next poll.
-- The plan is not re-checked on confirm: the output state is the one read when
-  the plan was shown. The box's 409 over a patched live rig is the guard after that.
+- The confirm-time re-check reads output from the status bar poller's latest
+  reading, not a fresh fetch, so a change in the last poll interval can be
+  missed. Between the re-check and the demo load, the box's 409 over a patched
+  live rig is the last guard.
 - Get demo-ready cannot tell which demo preset is running, only that one is;
   if another demo is on the engine it leaves it there.
-- The readiness panel offers Undo only beside a fix it ran itself, so a Make
-  groups run by Get demo-ready has no Undo button. The undo record is on the
-  rig (`POST /api/rigs/{id}/readiness/fix/undo` takes it back) until the next
-  fix replaces it; otherwise groups are edited by hand.
+- The rig keeps one undo record. If another fix ran on the rig after Get
+  demo-ready (from the readiness checks, or another browser), Undo takes back
+  that fix instead; the line then says which fix was taken back. The frontend
+  cannot check the record before undoing it.
