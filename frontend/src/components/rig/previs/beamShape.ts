@@ -207,9 +207,11 @@ export const INSTANCED_BEAM_VERTEX_SHADER = `
 // Soft: bright at the lens, falling off down the beam, fading at the edge of
 // the cone, all scaled by the haze (beamLook.ts). Flat (Soft beams off): one
 // strength end to end, the beam as it was, scaled by the haze. Tone mapped and
-// put in the output colour space like three's own materials, so the picture
-// grades the same whether or not bloom is on (in a render target the two
-// includes do nothing and OutputPass does it instead).
+// put in the output colour space like three's own materials (in a render
+// target the two includes do nothing and OutputPass does it instead). That
+// brings Bloom on and off closer, not level: the strength is in alpha, which
+// the composer blends in linear light and the direct path in display space,
+// so beams read brighter with Bloom on (docs/PREVIZ_LOOK.md).
 export const INSTANCED_BEAM_FRAGMENT_SHADER = `
   uniform float uHaze;
   uniform float uSoftBeams;
