@@ -29,6 +29,7 @@ import {
   HelpOutline as UnmatchedIcon,
 } from '@mui/icons-material';
 import axios from 'axios';
+import { rigsApi } from '../../services/api';
 
 interface RDMDevice {
   uid: string;
@@ -177,10 +178,8 @@ export default function RDMDiscovery({ rigId, onImport }: RDMDiscoveryProps) {
     const uids = Array.from(selectedUids);
 
     try {
-      await axios.post('/api/rdm/import', {
-        device_uids: uids,
-        rig_id: rigId,
-      });
+      // Through the app's client, which announces the rig change.
+      await rigsApi.importRdmDevices(rigId, uids);
       setSuccess(`Successfully imported ${uids.length} device${uids.length > 1 ? 's' : ''} into rig.`);
       setSelectedUids(new Set());
       onImport?.(uids);
