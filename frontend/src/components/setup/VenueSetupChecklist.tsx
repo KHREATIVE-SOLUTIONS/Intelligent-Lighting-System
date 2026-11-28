@@ -89,7 +89,10 @@ type SubDialog = 'focus' | 'export' | 'audio' | null;
  */
 type DemoState =
   | { step: 'planning' }
-  | { step: 'plan' | 'checking'; plan: DemoReadyPlan; changes?: string[] }
+  // Two members, not one with 'plan' | 'checking': a negative check only
+  // narrows a union member whose step is a single literal.
+  | { step: 'plan'; plan: DemoReadyPlan; changes?: string[] }
+  | { step: 'checking'; plan: DemoReadyPlan; changes?: string[] }
   | { step: 'running' | 'done'; plan: DemoReadyPlan; results: DemoActionResult[] };
 
 /** Undo for a Make groups this run applied. */
@@ -393,7 +396,7 @@ export default function VenueSetupChecklist({
 
       <Dialog
         open={demo !== null}
-        onClose={() => { if (demo?.step !== 'running' && demo?.step !== 'checking') closeDemo(); }}
+        onClose={() => { if (demo?.step !== 'running' && demo?.step !== 'checking' && undo?.state !== 'running') closeDemo(); }}
         maxWidth="sm"
         fullWidth
         data-testid="demo-ready-dialog"
