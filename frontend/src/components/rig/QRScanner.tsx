@@ -59,6 +59,54 @@ export function scanResultOf(answer: QrScanAnswer, now = Date.now()): ScanResult
   };
 }
 
+const LABELS_FAILED = 'Failed to generate labels.';
+
+function blobText(blob: Blob): Promise<string> {
+  if (typeof blob.text === 'function') return blob.text();
+  // Older jsdom Blobs have no text(): FileReader reads them everywhere.
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(blob);
+  });
+}
+
+/**
+ * The message for a failed label download. The request asks for a blob, so an
+ * error answer arrives as a Blob too: read its text and take FastAPI's
+ * `detail` (a string, or a list of validation errors), else the plain text.
+ */
+export async function labelsErrorOf(err: unknown): Promise<string> {
+  if (!axios.isAxiosError(err)) return LABELS_FAILED;
+  const data: unknown = err.response?.data;
+  let text: string | undefined;
+  if (data instanceof Blob) {
+    try {
+      text = await blobText(data);
+    } catch {
+      return LABELS_FAILED;
+    }
+  } else if (typeof data === 'string') {
+    text = data;
+  } else if (data && typeof data === 'object') {
+    text = JSON.stringify(data);
+  }
+  if (!text) return LABELS_FAILED;
+  try {
+    const detail = (JSON.parse(text) as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail) return detail;
+    if (Array.isArray(detail) && detail.length) {
+      const msg = (detail[0] as { msg?: unknown })?.msg;
+      if (typeof msg === 'string') return msg;
+    }
+    return LABELS_FAILED;
+  } catch {
+    const plain = text.trim();
+    return plain && plain.length <= 200 ? plain : LABELS_FAILED;
+  }
+}
+
 export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -274,8 +322,8 @@ export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerPro
     setError(null);
     try {
       const blob = await rigsApi.labelsPdf(rigId);
-      // The route answers the label data as JSON until it can draw a PDF
-      // (qr_scanning.py, generate_label_sheet): saved as what it is.
+      // A printable PDF (qr_scanning.py, generate_label_sheet); JSON only if
+      // asked for with ?format=json. Saved as what it is either way.
       const isPdf = blob.type.includes('pdf');
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -286,11 +334,7 @@ export default function QRScanner({ rigId, onScan, open, onClose }: QRScannerPro
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch (err) {
-      if (axios.isAxiosError(err)) {
-        setError(err.response?.data?.detail || 'Failed to generate labels.');
-      } else {
-        setError('Failed to generate labels.');
-      }
+      setError(await labelsErrorOf(err));
     } finally {
       setGeneratingLabels(false);
     }
