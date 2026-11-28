@@ -25,6 +25,11 @@ import {
   poolLightRange,
 } from './poolLight';
 import { REAL_POOL_LIGHTS, assignPoolLights } from './poolPick';
+import {
+  GOBO_ATLAS_CELLS, GOBO_ATLAS_INSET, GOBO_CELL_PX, GOBO_FILL, GOBO_POOL_SPAN, buildGoboAtlasPixels,
+} from './gobo';
+import { createLookUniforms } from './lookUniforms';
+import type { LookUniforms } from './lookUniforms';
 
 /**
  * One slot per fixture, written by the fixtures' frame loop. Plain typed
@@ -50,6 +55,10 @@ export type PoolBuffer = {
   cone: Float32Array;
   /** Normal of the surface it lands on, three per slot. All zero: it lands on nothing. */
   normal: Float32Array;
+  /** The gobo in the beam, as an atlas pattern (gobo.ts); 0 is an open pool. */
+  gobo: Float32Array;
+  /** The gobo's turn, radians. */
+  goboAngle: Float32Array;
 };
 
 export function createPoolBuffer(capacity: number): PoolBuffer {
@@ -65,6 +74,8 @@ export function createPoolBuffer(capacity: number): PoolBuffer {
     lightDepth: new Float32Array(n),
     cone: new Float32Array(n),
     normal: new Float32Array(n * 3),
+    gobo: new Float32Array(n),
+    goboAngle: new Float32Array(n),
   };
 }
 
@@ -84,8 +95,12 @@ export function writePoolSlot(
   lightDepth: number,
   coneRad: number,
   surface: { x: number; y: number; z: number },
+  gobo = 0,
+  goboAngle = 0,
 ): void {
   if (index < 0 || index >= buffer.capacity) return;
+  buffer.gobo[index] = gobo;
+  buffer.goboAngle[index] = goboAngle;
   const k = index * 3;
   const lands = surface.x !== 0 || surface.y !== 0 || surface.z !== 0;
   buffer.active[index] = lands && level > 0 ? 1 : 0;
@@ -126,6 +141,9 @@ export function packPoolDecal(
   matrixOffset: number,
   paintOut: Float32Array,
   paintOffset: number,
+  /** Where to write the gobo pattern and its turn (2 floats), if anywhere. */
+  goboOut?: Float32Array | null,
+  goboOffset = 0,
 ): boolean {
   if (!buffer.active[index]) return false;
   const k = index * 3;
@@ -189,16 +207,23 @@ export function packPoolDecal(
   paintOut[paintOffset + 1] = buffer.color[k + 1] * strength;
   paintOut[paintOffset + 2] = buffer.color[k + 2] * strength;
   paintOut[paintOffset + 3] = innerFrac;
+  if (goboOut) {
+    goboOut[goboOffset] = buffer.gobo[index];
+    goboOut[goboOffset + 1] = buffer.goboAngle[index];
+  }
   return true;
 }
 
 const POOL_VERTEX_SHADER = `
   attribute vec4 poolPaint;
+  attribute vec2 poolGobo;
   varying vec2 vDisc;
   varying vec4 vPaint;
+  varying vec2 vGobo;
   void main() {
     vDisc = position.xy;
     vPaint = poolPaint;
+    vGobo = poolGobo;
     vec4 place = vec4(position, 1.0);
     #ifdef USE_INSTANCING
       place = instanceMatrix * place;
@@ -208,23 +233,61 @@ const POOL_VERTEX_SHADER = `
 `;
 
 // Full inside the inner cone, nothing at the edge, a smoothstep on the squared
-// radius between: see poolDecal.
+// radius between: see poolDecal. With a gobo in (and Gobos on), the pattern
+// from the atlas, turned by the gobo's angle, across GOBO_POOL_SPAN of the
+// decal, under the same soft fall-off, so the pool keeps its soft edge and
+// its colour. Open pools never read the atlas and draw as before.
 const POOL_FRAGMENT_SHADER = `
+  uniform sampler2D uGoboAtlas;
+  uniform float uGobos;
   varying vec2 vDisc;
   varying vec4 vPaint;
+  varying vec2 vGobo;
   void main() {
     float r2 = dot(vDisc, vDisc);
     if (r2 >= 1.0) discard;
     float inner2 = vPaint.w * vPaint.w;
     float fall = 1.0 - smoothstep(inner2, 1.0, r2);
-    gl_FragColor = vec4(vPaint.rgb * fall, 1.0);
+    float pattern = 1.0;
+    if (uGobos > 0.5 && vGobo.x > 0.5) {
+      float c = cos(vGobo.y);
+      float s = sin(vGobo.y);
+      vec2 g = vec2(c * vDisc.x - s * vDisc.y, s * vDisc.x + c * vDisc.y) / ${GOBO_POOL_SPAN.toFixed(3)};
+      vec2 cell = clamp(g * 0.5 + 0.5, ${GOBO_ATLAS_INSET.toFixed(5)}, ${(1 - GOBO_ATLAS_INSET).toFixed(5)});
+      float through = texture2D(uGoboAtlas, vec2((floor(vGobo.x + 0.5) + cell.x) / ${GOBO_ATLAS_CELLS.toFixed(1)}, cell.y)).r;
+      through *= step(dot(g, g), 1.0);
+      pattern = mix(${GOBO_FILL.toFixed(3)}, 1.0, through);
+    }
+    gl_FragColor = vec4(vPaint.rgb * fall * pattern, 1.0);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
   }
 `;
 
-function createPoolMaterial(): THREE.ShaderMaterial {
+let goboAtlas: THREE.DataTexture | null = null;
+
+/** The gobo atlas (gobo.ts), made on first use and kept. */
+function goboAtlasTexture(): THREE.DataTexture {
+  if (!goboAtlas) {
+    goboAtlas = new THREE.DataTexture(
+      buildGoboAtlasPixels(), GOBO_ATLAS_CELLS * GOBO_CELL_PX, GOBO_CELL_PX, THREE.RGBAFormat,
+    );
+    goboAtlas.magFilter = THREE.LinearFilter;
+    goboAtlas.minFilter = THREE.LinearMipmapLinearFilter;
+    goboAtlas.generateMipmaps = true;
+    goboAtlas.needsUpdate = true;
+  }
+  return goboAtlas;
+}
+
+function createPoolMaterial(look: LookUniforms): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     vertexShader: POOL_VERTEX_SHADER,
     fragmentShader: POOL_FRAGMENT_SHADER,
+    uniforms: {
+      uGoboAtlas: { value: goboAtlasTexture() },
+      uGobos: look.gobos,
+    },
     transparent: true,
     depthWrite: false,
     depthTest: true,
@@ -243,6 +306,8 @@ type RealLight = { light: THREE.SpotLight; target: THREE.Object3D };
 export type PoolRenderer = {
   mesh: THREE.InstancedMesh | null;
   paint: THREE.InstancedBufferAttribute | null;
+  /** Each drawn pool's gobo pattern and turn. */
+  gobo: THREE.InstancedBufferAttribute | null;
   lights: RealLight[];
   assignment: Int32Array;
   taken: Uint8Array;
@@ -285,17 +350,20 @@ export function updatePools(renderer: PoolRenderer, buffer: PoolBuffer, count: n
   if (!mesh || !paint) return;
   const matrices = mesh.instanceMatrix.array as Float32Array;
   const paints = paint.array as Float32Array;
-  const limit = Math.min(n, paint.count);
+  const gobo = renderer.gobo;
+  const gobos = gobo ? (gobo.array as Float32Array) : null;
+  const limit = Math.min(n, paint.count, gobo ? gobo.count : paint.count);
   const realTaken = lights.length > 0 ? renderer.taken : null;
   let drawn = 0;
   for (let i = 0; i < limit; i += 1) {
     if (realTaken && realTaken[i]) continue;
-    if (packPoolDecal(buffer, i, matrices, drawn * 16, paints, drawn * 4)) drawn += 1;
+    if (packPoolDecal(buffer, i, matrices, drawn * 16, paints, drawn * 4, gobos, drawn * 2)) drawn += 1;
   }
   mesh.count = drawn;
   if (drawn > 0) {
     mesh.instanceMatrix.needsUpdate = true;
     paint.needsUpdate = true;
+    if (gobo) gobo.needsUpdate = true;
   }
 }
 
@@ -310,13 +378,17 @@ export const FloorPools = memo(function FloorPools({
   capacity,
   realLights,
   renderer,
+  look,
 }: {
   capacity: number;
   realLights: boolean;
   renderer: MutableRefObject<PoolRenderer>;
+  /** The shared look uniforms (Gobos on or off). Without them, gobos are on. */
+  look?: LookUniforms;
 }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
-  const material = useMemo(() => createPoolMaterial(), []);
+  const uniforms = useMemo(() => look ?? createLookUniforms(), [look]);
+  const material = useMemo(() => createPoolMaterial(uniforms), [uniforms]);
   useEffect(() => () => material.dispose(), [material]);
 
   // The quad with one paint slot per instance, its own copy so the attribute
@@ -327,7 +399,10 @@ export const FloorPools = memo(function FloorPools({
     const paint = new THREE.InstancedBufferAttribute(new Float32Array(size * 4), 4);
     paint.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute('poolPaint', paint);
-    return { geometry, paint };
+    const gobo = new THREE.InstancedBufferAttribute(new Float32Array(size * 2), 2);
+    gobo.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('poolGobo', gobo);
+    return { geometry, paint, gobo };
   }, [size]);
   useEffect(() => () => built.geometry.dispose(), [built]);
 
@@ -353,6 +428,7 @@ export const FloorPools = memo(function FloorPools({
     renderer.current = {
       mesh,
       paint: built.paint,
+      gobo: built.gobo,
       lights,
       assignment: new Int32Array(lights.length).fill(-1),
       taken: new Uint8Array(size),
@@ -382,5 +458,5 @@ export const FloorPools = memo(function FloorPools({
 
 /** A renderer with nothing to draw into yet: what the ref starts as. */
 export function emptyPoolRenderer(): PoolRenderer {
-  return { mesh: null, paint: null, lights: [], assignment: new Int32Array(0), taken: new Uint8Array(0) };
+  return { mesh: null, paint: null, gobo: null, lights: [], assignment: new Int32Array(0), taken: new Uint8Array(0) };
 }

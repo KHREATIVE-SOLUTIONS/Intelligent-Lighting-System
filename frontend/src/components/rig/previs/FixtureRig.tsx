@@ -195,6 +195,7 @@ export const FixtureRig = memo(function FixtureRig({
         poolBuffer, i, rt.effectiveIntensity, s.r, s.g, s.b,
         rt.fixture.position_x, rt.sourceY, rt.fixture.position_z,
         rt.pointing, rt.reach, rt.lightDepth, rt.coneRad, rt.surface,
+        rt.beam.gobo, rt.goboAngle,
       );
       glowR += s.r * rt.effectiveIntensity;
       glowG += s.g * rt.effectiveIntensity;
@@ -284,7 +285,7 @@ export const FixtureRig = memo(function FixtureRig({
         renderOrder={1}
         dispose={null}
       />
-      <FloorPools capacity={count} realLights={shadows} renderer={poolRenderer} />
+      <FloorPools capacity={count} realLights={shadows} renderer={poolRenderer} look={look} />
       {showLabels && <FixtureLabels runtimes={runtimes} />}
     </>
   );

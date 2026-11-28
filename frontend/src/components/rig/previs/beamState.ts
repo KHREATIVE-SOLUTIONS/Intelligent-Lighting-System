@@ -22,6 +22,7 @@
  * wheel is treated as open: a slot table made up here would show a colour the
  * fixture may not have.
  */
+import { GOBO_OPEN, goboIndex, goboRotation } from './gobo';
 
 /** A named span of one channel's values, as the fixture library stores it. */
 export type ChannelValueRange = {
@@ -101,6 +102,14 @@ export type BeamState = {
   zoom: number;
   zoomSource: 'zoom' | 'beam_angle' | 'fallback';
   zoomValue: number;
+  /** The gobo in the beam, as an atlas pattern (gobo.ts): 0 is open. */
+  gobo: number;
+  /** The raw value on the gobo channel. */
+  goboValue: number;
+  /** The gobo wheel held at goboAngle, or turning at goboSpin (gobo.ts, goboRotation). */
+  goboIndexed: boolean;
+  goboAngle: number;
+  goboSpin: number;
 };
 
 const clamp01 = (value: number) => (value < 0 ? 0 : value > 1 ? 1 : value);
@@ -136,6 +145,8 @@ export function canonicalChannel(raw: string): string {
   if (key === 'dimmer' || key === 'intensity' || key === 'master_dimmer') return 'dimmer';
   if (key === 'shutter_strobe') return 'strobe';
   if (key === 'colour_wheel') return 'color_wheel';
+  if (key === 'gobo_wheel' || key === 'gobo1' || key === 'gobo_1') return 'gobo';
+  if (key === 'gobo_rot' || key === 'gobo1_rotation' || key === 'gobo_1_rotation') return 'gobo_rotation';
   return key;
 }
 
@@ -231,6 +242,11 @@ export function createBeamState(): BeamState {
     zoom: 0,
     zoomSource: 'fallback',
     zoomValue: 0,
+    gobo: GOBO_OPEN,
+    goboValue: 0,
+    goboIndexed: true,
+    goboAngle: 0,
+    goboSpin: 0,
   };
 }
 
@@ -473,6 +489,24 @@ export function readBeamState(
     out.zoom = profile.fallbackZoom;
     out.zoomValue = Math.round(out.zoom * 255);
     out.zoomSource = 'fallback';
+  }
+
+  // --- Gobo -----------------------------------------------------------------
+  // Open with no gobo channel or no frame; named ranges first, then the
+  // engine's own slot positions and angle (gobo.ts).
+  if (has('gobo')) {
+    out.goboValue = value('gobo');
+    out.gobo = goboIndex(ranges.gobo, out.goboValue);
+  } else {
+    out.goboValue = 0;
+    out.gobo = GOBO_OPEN;
+  }
+  if (has('gobo_rotation')) {
+    goboRotation(ranges.gobo_rotation, value('gobo_rotation'), out);
+  } else {
+    out.goboIndexed = true;
+    out.goboAngle = 0;
+    out.goboSpin = 0;
   }
 
   return out;

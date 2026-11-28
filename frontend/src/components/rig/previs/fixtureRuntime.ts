@@ -157,6 +157,8 @@ export type FixtureRuntime = {
   reach: number;
   /** Half-width of the beam where it lands: its pool's radius. */
   endRadius: number;
+  /** The gobo's turn this frame, radians 0 to 2 pi: held where the channel puts it, or run on at its speed. */
+  goboAngle: number;
   // Debug numbers, kept so the table can be filled without redoing the step.
   motion: {
     targetPanDeg: number;
@@ -269,6 +271,7 @@ export function syncFixtureRuntime(
     surface: { x: 0, y: 0, z: 0, d: 0 },
     reach: 1,
     endRadius: 0,
+    goboAngle: 0,
     motion: {
       targetPanDeg: 0,
       targetTiltDeg: 0,
@@ -360,6 +363,16 @@ export function stepFixture(
     );
   } else {
     rt.beamColor.setRGB(s.r, s.g, s.b);
+  }
+
+  // The gobo's turn. An angle the channel gives is taken as it is (it wraps, so
+  // it is never smoothed: a lerp would spin it back the long way at 255 -> 0);
+  // a speed is run on from where it was.
+  if (beam.goboIndexed) {
+    rt.goboAngle = beam.goboAngle;
+  } else if (beam.goboSpin !== 0) {
+    const turned = (rt.goboAngle + beam.goboSpin * delta) % (Math.PI * 2);
+    rt.goboAngle = turned < 0 ? turned + Math.PI * 2 : turned;
   }
 
   // How wide the light is. The pool and the drawn beam both come from this.
