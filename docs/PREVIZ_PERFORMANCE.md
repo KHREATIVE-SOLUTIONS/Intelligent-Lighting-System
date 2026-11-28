@@ -23,3 +23,6 @@ Headless numbers on one GPU; a real browser at vsync will show a flat 60 (or the
 
 ## How to measure yourself
 Open the visualizer, press **Stats**. Or in the browser console: `window.__previzStats`.
+
+## Look controls
+Haze, soft beams, bloom, exposure, gobos and drifting haze, with what each is expected to cost, are in [PREVIZ_LOOK.md](PREVIZ_LOOK.md). The numbers above were measured before those were added. With Bloom on, the draw-call count includes the bloom passes.
