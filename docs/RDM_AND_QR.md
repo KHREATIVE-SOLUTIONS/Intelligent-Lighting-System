@@ -24,6 +24,7 @@ token and are announced as rig changes ([FOCUS_PRESETS.md](FOCUS_PRESETS.md)).
 | `rdmApi.devices()` | `GET /api/rdm/devices` (discovery.py) | | `{scanning, live_devices, saved_devices}` |
 | `rigsApi.importRdmDevices(rigId, ids)` | `POST /api/rdm/import` | body: a bare JSON list of **stored device ids** (`saved_devices[].id`, integers, not RDM UIDs); query: `rig_id` | `{imported}`, how many were added |
 | `rigsApi.scanQr(rigId, code)` | `POST /api/rigs/{id}/scan` (qr_scanning.py) | `{qr_data}` | `{action: added\|identified, rig_fixture_id, dmx_address?, message}` |
+| `rigsApi.labelsPdf(rigId)` | `GET /api/rigs/{id}/labels/pdf` (qr_scanning.py) | | a PDF (`application/pdf`, attachment); on error a JSON `{detail}` read out of the blob |
 
 Only stored devices can be imported: `live_devices` carry no id. A device
 already imported is shown but cannot be picked, and the route skips it if sent.
@@ -43,6 +44,33 @@ that the client sends it.
   (Chrome on Android and macOS). Chrome and Edge on Windows and Firefox do
   not have it, and the canvas fallback is a stub. The scanner says so and
   offers the code box, which also takes a USB scanner.
-- **Generate Labels gives JSON, not a PDF.** `/rigs/{id}/labels/pdf` returns
-  the label data (name, address, QR payload) until it can draw a PDF. The
-  button saves it as `.json`.
+- **Scanning a printed label adds the fixture again.** The scan route looks
+  for a rig fixture with the same `qr_code_data`, and a fixture patched any
+  other way has none, so it adds a second one. It also ignores the label's
+  `rig_fixture_id`. Matching on that id first would make a label identify its
+  own fixture.
+
+## Printing labels
+
+**Generate Labels** (in the QR scanner) downloads `rig_<id>_labels.pdf` from
+`GET /api/rigs/{id}/labels/pdf`: US Letter, laid out for Avery 5160 / 8160
+address labels (3 x 10 on a page, 2 5/8" x 1"), with a header line giving the
+rig name and page N of M. Print at 100% ("actual size"), not "fit to page", or
+the labels drift off the die cuts.
+
+Each label carries a QR code (level M, 0.5 to 0.6 mm a module) holding
+`{"fixture_id": ..., "rig_fixture_id": ...}`, the fixture's name (cut short
+with an ellipsis if long), its number, `DMX universe.address` as the patch
+table numbers them, and its group. A rig with nothing patched gets one page
+that says so.
+
+No PDF or QR library is needed: `backend/app/services/qr_encode.py` is a small
+QR encoder and `label_sheet.py` draws the pages with Pillow. The pages are
+1-bit, so Pillow writes them lossless (CCITT G4) rather than as JPEG, which
+would blur the codes. `?format=json` answers the label data instead (`rig_name`,
+`labels[]` with `name`, `universe`, `dmx_address`, `fixture_number`, `group`,
+`qr_data`, and `total`).
+
+Tests: `backend/tests/test_qr_encode.py` (known answers, and every version and
+level decoded by OpenCV) and `backend/tests/test_api_labels_pdf.py` (the
+route, page counts, and every printed code decoded off the 300 dpi page).

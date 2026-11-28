@@ -16,7 +16,7 @@ vi.mock('../services/api', () => ({
 
 import RigEditorToolbar from '../components/rig/RigEditorToolbar';
 import RDMDiscovery, { deviceRows } from '../components/rig/RDMDiscovery';
-import QRScanner, { scanResultOf } from '../components/rig/QRScanner';
+import QRScanner, { labelsErrorOf, scanResultOf } from '../components/rig/QRScanner';
 import type { RdmSavedDevice } from '../services/api';
 
 const RIG_ID = 7;
@@ -119,5 +119,65 @@ describe('the QR scanner', () => {
     await waitFor(() => expect(calls.scanQr).toHaveBeenCalledWith(RIG_ID, '12'));
     expect(await screen.findAllByText('Added Spot 3 at address 17')).not.toHaveLength(0);
     await waitFor(() => expect(onScan).toHaveBeenCalledWith(31, true));
+  });
+});
+
+describe('Generate Labels', () => {
+  // An axios error as the client gives it for a blob request: the body is a Blob.
+  const blobError = (body: string, type = 'application/json') => ({
+    isAxiosError: true,
+    response: { status: 404, data: new Blob([body], { type }) },
+  });
+
+  let created: Blob[];
+  let downloads: string[];
+  const realCreate = URL.createObjectURL;
+  const realRevoke = URL.revokeObjectURL;
+  const realClick = HTMLAnchorElement.prototype.click;
+  beforeEach(() => {
+    created = [];
+    downloads = [];
+    URL.createObjectURL = vi.fn((b: Blob) => { created.push(b); return 'blob:labels'; }) as typeof URL.createObjectURL;
+    URL.revokeObjectURL = vi.fn();
+    HTMLAnchorElement.prototype.click = function click(this: HTMLAnchorElement) { downloads.push(this.download); };
+  });
+  afterEach(() => {
+    URL.createObjectURL = realCreate;
+    URL.revokeObjectURL = realRevoke;
+    HTMLAnchorElement.prototype.click = realClick;
+  });
+
+  it('reads the route\'s detail out of an error blob', async () => {
+    expect(await labelsErrorOf(blobError('{"detail":"Rig not found"}'))).toBe('Rig not found');
+    expect(await labelsErrorOf(blobError('{"detail":[{"msg":"String should match pattern"}]}')))
+      .toBe('String should match pattern');
+    expect(await labelsErrorOf(blobError('Internal Server Error', 'text/plain'))).toBe('Internal Server Error');
+    expect(await labelsErrorOf(blobError(''))).toBe('Failed to generate labels.');
+    expect(await labelsErrorOf(new Error('offline'))).toBe('Failed to generate labels.');
+  });
+
+  it('saves the PDF the route answers as rig_N_labels.pdf', async () => {
+    const pdf = new Blob(['%PDF-1.4'], { type: 'application/pdf' });
+    calls.labelsPdf.mockResolvedValue(pdf);
+    render(<QRScanner rigId={RIG_ID} open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Labels' }));
+    await waitFor(() => expect(downloads).toEqual(['rig_7_labels.pdf']));
+    expect(calls.labelsPdf).toHaveBeenCalledWith(RIG_ID);
+    expect(created).toEqual([pdf]);
+  });
+
+  it('still saves JSON as .json', async () => {
+    calls.labelsPdf.mockResolvedValue(new Blob(['{}'], { type: 'application/json' }));
+    render(<QRScanner rigId={RIG_ID} open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Labels' }));
+    await waitFor(() => expect(downloads).toEqual(['rig_7_labels.json']));
+  });
+
+  it('shows the route\'s own message when it refuses', async () => {
+    calls.labelsPdf.mockRejectedValue(blobError('{"detail":"Rig not found"}'));
+    render(<QRScanner rigId={RIG_ID} open onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Labels' }));
+    expect(await screen.findByText('Rig not found')).toBeTruthy();
+    expect(downloads).toEqual([]);
   });
 });
