@@ -186,6 +186,9 @@ class SystemAudioCapture:
         self._last_chunk_t: Optional[float] = None
         self._reconnecting = False
         self._reconnect_attempts = 0
+        # Loopback silence: see `_loopback_silence`.
+        self._silent = False
+        self._presence_checked_t = 0.0
 
     # ------------------------------------------------------------------
     # Device enumeration
@@ -595,12 +598,78 @@ class SystemAudioCapture:
             self._watchdog.start()
         return started
 
-    # Seconds without a single block (silence still delivers blocks) before the
-    # device counts as gone, how often the watchdog looks, and the longest wait
-    # between reconnect attempts.
+    # Seconds without a single block before the device counts as gone, how
+    # often the watchdog looks, and the longest wait between reconnect attempts.
+    #
+    # That rule holds for inputs (sounddevice: a line-in or interface delivers
+    # blocks of near-zero samples when the room is quiet). It does NOT hold for
+    # loopback: WASAPI loopback (pyaudiowpatch, and soundcard on Windows)
+    # delivers no callbacks at all while nothing is playing. There a long gap
+    # with the stream still open and active is silence, not a lost device; see
+    # `_loopback_silence`.
     STALL_S = 5.0
     WATCH_S = 1.0
     MAX_BACKOFF_S = 30.0
+    # Capture methods whose stream is silent, not dead, when no blocks arrive.
+    LOOPBACK_METHODS = ("pyaudio_loopback", "soundcard_loopback")
+    # While a loopback stream is silent, how often to confirm its device is
+    # still listed. A scan that fails or finds nothing means "unknown", never
+    # "gone", so a crashing scanner cannot make capture flap.
+    SILENT_PRESENCE_CHECK_S = 30.0
+    # The level meter's rms/peak are this old at most before they read as zero.
+    LEVEL_STALE_S = 0.5
+
+    def _stream_alive(self) -> bool:
+        """Whether the open backend says its stream is still running."""
+        if not self._running:
+            return False
+        method = self._capture_method
+        if method == "pyaudio_loopback":
+            stream = self._stream
+            if stream is None:
+                return False
+            try:
+                return bool(stream.is_active())
+            except Exception:
+                return False
+        if method == "soundcard_loopback":
+            thread = self._thread
+            return thread is not None and thread.is_alive()
+        return False
+
+    def _device_still_listed(self) -> Optional[bool]:
+        """True or False if a scan could say, None when it could not."""
+        backend = {"pyaudio_loopback": "pyaudiowpatch", "soundcard_loopback": "soundcard"}.get(
+            self._capture_method)
+        try:
+            if self.list_devices is not SystemAudioCapture.list_devices and backend is not None:
+                devices = self.list_devices()   # a replaced (test) lister
+            else:
+                devices = _enumerate_via_subprocess(backends=(backend,) if backend else None)
+        except Exception:
+            return None
+        if not devices:
+            return None
+        name = str(self._device_name or "").replace("[Loopback] ", "")
+        if not name or name == "None":
+            return None
+        return any(name in str(d.get("name", "")) for d in devices)
+
+    def _loopback_silence(self, now: float) -> bool:
+        """No blocks from an open, active loopback stream: the music stopped."""
+        if self._capture_method not in self.LOOPBACK_METHODS:
+            return False
+        if not self._stream_alive():
+            return False
+        if now - self._presence_checked_t >= self.SILENT_PRESENCE_CHECK_S:
+            self._presence_checked_t = now
+            if self._device_still_listed() is False:
+                logger.warning("Loopback device %s is no longer listed", self._device_name)
+                return False
+        if not self._silent:
+            logger.info("Loopback capture is silent (nothing playing); keeping %s open", self._device_name)
+        self._silent = True
+        return True
 
     def _watchdog_loop(self):
         """Restart capture whenever it dies or goes quiet without being stopped.
@@ -609,9 +678,10 @@ class SystemAudioCapture:
         or a sleeping USB hub used to end audio for the night, because the
         capture thread exits on the first error and nothing restarts it. A
         sounddevice stream can also stop calling back without raising anything,
-        so silence from the device itself (not quiet audio, which still arrives
-        as blocks) counts as lost too. Nothing in here may end the watchdog
-        except `stop()`.
+        so on an input a gap in blocks (not quiet audio, which still arrives
+        as blocks) counts as lost too. On loopback a gap is what silence looks
+        like, so there only an inactive stream or a device that has left the
+        list counts. Nothing in here may end the watchdog except `stop()`.
         """
         wait = self.WATCH_S
         while not self._watchdog_stop.wait(wait):
@@ -629,9 +699,17 @@ class SystemAudioCapture:
     def _watchdog_step(self) -> float:
         """One look at the capture; returns how long to wait before the next."""
         last = self._last_chunk_t
-        stalled = (not self._running) or last is None or (time.monotonic() - last) > self.STALL_S
-        if not stalled:
+        now = time.monotonic()
+        stalled = (not self._running) or last is None or (now - last) > self.STALL_S
+        if stalled and self._running and last is not None and self._loopback_silence(now):
             return self.WATCH_S
+        if not stalled:
+            if self._silent:
+                logger.info("Loopback capture hears audio again on %s", self._device_name)
+            self._silent = False
+            self._presence_checked_t = now
+            return self.WATCH_S
+        self._silent = False
         if not self._reconnecting:
             logger.warning("Audio capture lost (%s); reconnecting", self._device_name)
         self._reconnecting = True
@@ -845,11 +923,47 @@ class SystemAudioCapture:
             "selected_device": self._selection_name,
             "last_rms": self._last_rms,
             "last_peak": self._last_peak,
+            "silent": self._silent,
+            "meter": self.level_meter(),
+        }
+
+    def level_meter(self) -> dict:
+        """Input level for a meter: rms and peak, linear and dBFS.
+
+        The last block's values stop counting once they are older than
+        `LEVEL_STALE_S`: loopback sends nothing during silence, and a meter
+        frozen at the last loud block would say music is still playing.
+        """
+        import math as _math
+
+        last = self._last_chunk_t
+        age = None if last is None else max(0.0, time.monotonic() - last)
+        fresh = self._running and age is not None and age <= self.LEVEL_STALE_S
+        rms = float(self._last_rms) if fresh else 0.0
+        peak = float(self._last_peak) if fresh else 0.0
+
+        def _db(v: float) -> float:
+            return round(20.0 * _math.log10(v), 1) if v > 1e-6 else -120.0
+
+        return {
+            "rms": round(rms, 5),
+            "peak": round(peak, 5),
+            "rms_dbfs": _db(rms),
+            "peak_dbfs": _db(peak),
+            "block_age_s": None if age is None else round(age, 3),
+            "running": bool(self._running),
+            "silent": bool(self._silent),
+            "device_name": self._device_name,
+            "capture_method": self._capture_method,
         }
 
 
-def _enumerate_via_subprocess():
+def _enumerate_via_subprocess(backends=None):
     """Device list assembled from one child process per backend.
+
+    `backends` limits the scan to those backends (the silent-loopback presence
+    check asks only the one in use, so a backend that crashes its scan on this
+    machine is not started every time the music pauses).
 
     One child per backend rather than one for all of them: a driver that never
     returns then costs only its own devices, and the backends that do work still
@@ -866,6 +980,8 @@ def _enumerate_via_subprocess():
     any_ok = False
 
     for backend in ("pyaudiowpatch", "sounddevice", "soundcard"):
+        if backends is not None and backend not in backends:
+            continue
         try:
             proc = subprocess.run(
                 [sys.executable, "-m", "app.services.audio.system_audio_capture",

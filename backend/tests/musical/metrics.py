@@ -64,6 +64,10 @@ LIVE_ENGINE_KWARGS = {
     "movement_enabled": True,
     "dimmer_enabled": True,
     "strobe_enabled": False,
+    # Every baseline here predates the beat response stage, so it is held off;
+    # the stage is measured in tests/musical/test_beat_response.py.
+    "beat_pulse_enabled": False,
+    "output_makeup_gain_enabled": False,
 }
 
 # What app/main.py:225-239 actually builds. Anything asserting a safety property
@@ -81,6 +85,11 @@ VENUE_ENGINE_KWARGS = {
     "strobe_max_duty_cycle": 0.34,
     "strobe_burst_max_s": 0.10,
     "strobe_refractory_s": 0.30,
+    # The contract baselines (drop step, anticipation deltas) predate the beat
+    # response stage. The venue posture with the stage on - silence, noise
+    # floor, flash rate, no_strobe - is asserted in test_beat_response.py.
+    "beat_pulse_enabled": False,
+    "output_makeup_gain_enabled": False,
 }
 
 

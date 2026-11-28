@@ -420,6 +420,14 @@ async def lifespan(app: FastAPI):
                                 response_payload.update(current_analysis)
                     except Exception:
                         pass
+                    # Level and beat for the UI meter. Added after the analysis
+                    # so it cannot overwrite or be overwritten by its fields.
+                    try:
+                        from app.services.audio.meter import build_meter_block
+                        response_payload["meter"] = build_meter_block(
+                            getattr(app.state, "audio_capture", None), ee)
+                    except Exception:
+                        pass
                     response = convert_numpy_types(response_payload)
 
                     await manager.broadcast("audio", response)

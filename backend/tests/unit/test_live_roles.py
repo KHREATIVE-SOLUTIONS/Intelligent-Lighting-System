@@ -92,7 +92,11 @@ def _run(engine, frames, section):
 
 def _club_engine() -> EffectsEngine:
     engine = EffectsEngine(EffectsConfig(fps=60.0, auto_mode=True, movement_enabled=True,
-                                         dimmer_enabled=True, strobe_enabled=False))
+                                         dimmer_enabled=True, strobe_enabled=False,
+                                         # Role shaping is measured before the beat
+                                         # response stage scales it.
+                                         beat_pulse_enabled=False,
+                                         output_makeup_gain_enabled=False))
     manager, _ = create_venue_rig("club_night")
     engine.set_fixture_manager(manager)
     return engine

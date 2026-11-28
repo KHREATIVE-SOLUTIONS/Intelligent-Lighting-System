@@ -318,13 +318,17 @@ async def get_capture_status(request: Request):
         "remembered_device": remembered["device_name"],
         "remembered_hostapi": remembered.get("hostapi"),
     }
+    from app.services.audio.meter import build_meter_block
+
+    engine = getattr(request.app.state, "effects_engine", None)
     if not hasattr(request.app.state, 'audio_capture') or request.app.state.audio_capture is None:
-        return {"running": False, "available": False, "device_name": None, **memory}
+        return {"running": False, "available": False, "device_name": None, **memory,
+                "meter": build_meter_block(None, engine)}
 
     status = request.app.state.audio_capture.get_status()
     status["available"] = True
     status.update(memory)
-    engine = getattr(request.app.state, "effects_engine", None)
+    status["meter"] = build_meter_block(request.app.state.audio_capture, engine)
     if engine is not None:
         status["effects_engine_id"] = id(engine)
         status["effects_engine_time"] = engine.time
